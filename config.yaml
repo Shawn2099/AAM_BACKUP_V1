@@ -5,18 +5,18 @@
 # Restart the serve.py process after changes.
 # ═══════════════════════════════════════════════════
 
-firm_name: "AAM Associates"
+firm_name: "AAM"
 
 # ═══════════════════════════════════════════════════
 # FILE SYSTEM PATHS
 # ═══════════════════════════════════════════════════
 paths:
-  source_drive: "D:\\"
-  lan_destination: "\\\\192.168.10.10\\hp srv manual backup$"
-  database_path: "C:\\BackupAgent\\manifest.db"
-  log_directory: "C:\\BackupAgent\\logs"
-  temp_directory: "C:\\BackupAgent\\rclone_temp"
-  gcs_key_path: "C:\\BackupAgent\\aam-demo-gcs-key.json"
+  source_drive: "E:\\test_backup"
+  lan_destination: "\\\\10.10.186.231\\lan_backup"
+  database_path: "C:\\AAM_Backup_V1\\manifest.db"
+  log_directory: "C:\\AAM_Backup_V1\\logs"
+  temp_directory: "C:\\AAM_Backup_V1\\rclone_temp"
+  gcs_key_path: "C:\\AAM_Backup_V1\\aam-demo-gcs-key.json"
 
 # ═══════════════════════════════════════════════════
 # LAN BACKUP
@@ -33,8 +33,8 @@ lan:
 # ═══════════════════════════════════════════════════
 wol:
   enabled: true
-  mac_address: "00:1A:2B:3C:4D:5E"
-  server_ip: "192.168.10.10"
+  mac_address: "6C-4B-90-25-70-5F"
+  server_ip: "10.10.186.231"
   wake_timeout_seconds: 300
   ping_interval_seconds: 15
   stability_wait_seconds: 30
@@ -43,7 +43,7 @@ wol:
 # CLOUD BACKUP (GCS)
 # ═══════════════════════════════════════════════════
 cloud:
-  enabled: true
+  enabled: false
   bucket: "aam-backup-demo-innovizta"
   project_number: "920173882190"
   location: "asia-south1"
@@ -56,14 +56,13 @@ cloud:
 # NOTIFICATIONS
 # ═══════════════════════════════════════════════════
 notifications:
-  smtp_host: "smtp.gmail.com"
+  smtp_host: ""
   smtp_port: 587
-  smtp_username: "backups@aam.com"
+  smtp_username: ""
   smtp_password: ""
-  sender: "backups@aam.com"
-  recipients:
-    - "admin@aam.com"
-  send_on_failure: true
+  sender: ""
+  recipients: []
+  send_on_failure: false
   send_on_success: false
   weekly_summary_day: "monday"
   weekly_summary_time: "08:00"
