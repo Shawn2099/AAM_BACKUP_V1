@@ -156,7 +156,7 @@ class AppConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str) -> "AppConfig":
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return cls(**data)
 

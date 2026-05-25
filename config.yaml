@@ -18,9 +18,7 @@ paths:
   temp_directory: "C:\\Users\\Administrator\\Desktop\\testing\\AAM_BACKUP_V1\\rclone_temp"
   gcs_key_path: "C:\\Users\\Administrator\\Desktop\\testing\\AAM_BACKUP_V1\\aam-demo-gcs-d9427ae2cacc.json"
 
-# ═══════════════════════════════════════════════════
-# LAN BACKUP
-# ═══════════════════════════════════════════════════
+# --- LAN BACKUP ---
 lan:
   enabled: true
   retry_count: 3
