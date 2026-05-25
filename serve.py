@@ -8,14 +8,15 @@ Registers three deployments:
   - weekly-report:    Every Monday at 8:00 AM IST
 """
 
-from prefect import serve  # noqa: E402
+from prefect import serve
+from prefect.schedules import Cron
 
 from flow import backup, weekly_report_flow
 
 cloud_deployment = backup.to_deployment(
     name="backup-cloud",
     parameters={"config_path": "config.yaml", "mode": "cloud"},
-    schedules=[{"cron": "0 18 * * *", "timezone": "Asia/Kolkata"}],
+    schedules=[Cron("0 18 * * *", "Asia/Kolkata")],
     tags=["production", "cloud"],
     description="Daily cloud backup — rclone sync to GCS (asia-south1)",
 )
@@ -23,7 +24,7 @@ cloud_deployment = backup.to_deployment(
 lan_deployment = backup.to_deployment(
     name="backup-lan",
     parameters={"config_path": "config.yaml", "mode": "lan"},
-    schedules=[{"cron": "0 1 * * *", "timezone": "Asia/Kolkata"}],
+    schedules=[Cron("0 1 * * *", "Asia/Kolkata")],
     tags=["production", "lan"],
     description="Daily LAN backup — robocopy /MIR, includes WoL and auto-shutdown",
 )
@@ -31,7 +32,7 @@ lan_deployment = backup.to_deployment(
 report_deployment = weekly_report_flow.to_deployment(
     name="weekly-report",
     parameters={"config_path": "config.yaml"},
-    schedules=[{"cron": "0 8 * * MON", "timezone": "Asia/Kolkata"}],
+    schedules=[Cron("0 8 * * MON", "Asia/Kolkata")],
     tags=["reporting"],
     description="Weekly backup summary email",
 )
