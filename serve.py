@@ -2,16 +2,17 @@
 
 Run from project root:  python serve.py
 
-Registers three deployments:
+Registers four deployments:
   - backup-cloud:     Daily at 6:00 PM IST
   - backup-lan:       Daily at 1:00 AM IST
   - weekly-report:    Every Monday at 8:00 AM IST
+  - monthly-report:   1st of every month at 8:00 AM IST
 """
 
 from prefect import serve
 from prefect.schedules import Cron
 
-from flow import backup, weekly_report_flow
+from flow import backup, weekly_report_flow, monthly_report_flow
 
 cloud_deployment = backup.to_deployment(
     name="backup-cloud",
@@ -37,5 +38,13 @@ report_deployment = weekly_report_flow.to_deployment(
     description="Weekly backup summary email",
 )
 
+monthly_deployment = monthly_report_flow.to_deployment(
+    name="monthly-report",
+    parameters={"config_path": "config.yaml"},
+    schedules=[Cron("0 8 1 * *", "Asia/Kolkata")],
+    tags=["reporting"],
+    description="Monthly backup summary email (1st of month)",
+)
+
 if __name__ == "__main__":
-    serve(cloud_deployment, lan_deployment, report_deployment)
+    serve(cloud_deployment, lan_deployment, report_deployment, monthly_deployment)

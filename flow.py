@@ -302,6 +302,19 @@ def weekly_report_flow(config_path: str = "config.yaml"):
         db.close()
 
 
+@flow(name="monthly-report", log_prints=True)
+def monthly_report_flow(config_path: str = "config.yaml"):
+    """Send monthly backup summary report."""
+    config = load_config(config_path)
+    configure_logging(config.paths.log_directory)
+    db = ManifestDB(config.paths.database_path)
+    try:
+        from core.report import send_monthly_report
+        send_monthly_report(db, config.notifications, config.firm_name)
+    finally:
+        db.close()
+
+
 # ═══════════════════════════════════════════════════════════════
 # Main backup flow — entry point for all modes
 # ═══════════════════════════════════════════════════════════════
