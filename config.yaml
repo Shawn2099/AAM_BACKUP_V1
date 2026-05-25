@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════
+# AAM BACKUP AUTOMATION V1 — CONFIGURATION
+# ═══════════════════════════════════════════════════
+# Edit this file to change any setting.
+# Restart the serve.py process after changes.
+# ═══════════════════════════════════════════════════
+
+firm_name: "AAM Associates"
+
+# ═══════════════════════════════════════════════════
+# FILE SYSTEM PATHS
+# ═══════════════════════════════════════════════════
+paths:
+  source_drive: "D:\\"
+  lan_destination: "\\\\192.168.10.10\\hp srv manual backup$"
+  database_path: "C:\\BackupAgent\\manifest.db"
+  log_directory: "C:\\BackupAgent\\logs"
+  temp_directory: "C:\\BackupAgent\\rclone_temp"
+  gcs_key_path: "C:\\BackupAgent\\aam-demo-gcs-key.json"
+
+# ═══════════════════════════════════════════════════
+# LAN BACKUP
+# ═══════════════════════════════════════════════════
+lan:
+  enabled: true
+  retry_count: 3
+  retry_wait_seconds: 10
+  subprocess_timeout_seconds: 14400
+  shutdown_after_backup: true
+
+# ═══════════════════════════════════════════════════
+# WAKE-ON-LAN
+# ═══════════════════════════════════════════════════
+wol:
+  enabled: true
+  mac_address: "00:1A:2B:3C:4D:5E"
+  server_ip: "192.168.10.10"
+  wake_timeout_seconds: 300
+  ping_interval_seconds: 15
+  stability_wait_seconds: 30
+
+# ═══════════════════════════════════════════════════
+# CLOUD BACKUP (GCS)
+# ═══════════════════════════════════════════════════
+cloud:
+  enabled: true
+  bucket: "aam-backup-demo-innovizta"
+  project_number: "920173882190"
+  location: "asia-south1"
+  storage_class: "COLDLINE"
+  bandwidth_limit: "10M"
+  retry_count: 3
+  subprocess_timeout_seconds: 21600
+
+# ═══════════════════════════════════════════════════
+# NOTIFICATIONS
+# ═══════════════════════════════════════════════════
+notifications:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_username: "backups@aam.com"
+  smtp_password: ""
+  sender: "backups@aam.com"
+  recipients:
+    - "admin@aam.com"
+  send_on_failure: true
+  send_on_success: false
+  weekly_summary_day: "monday"
+  weekly_summary_time: "08:00"

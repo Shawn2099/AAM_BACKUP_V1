@@ -1,0 +1,26 @@
+"""MD5 checksums — compatible with rclone hashsum md5."""
+
+import hashlib
+from pathlib import Path
+
+PENDING_CHECKSUM = "pending"
+
+
+def compute_md5(file_path: str | Path) -> str:
+    """Compute MD5 digest for a file using streaming (Python 3.11+ file_digest).
+
+    Returns:
+        Hex digest string matching rclone hashsum md5 output.
+    """
+    with open(file_path, "rb") as f:
+        return hashlib.file_digest(f, "md5").hexdigest()
+
+
+def verify_checksum(file_path: str | Path, expected: str) -> bool:
+    """Verify file checksum matches expected value.
+
+    Returns True if checksum matches or expected is PENDING_CHECKSUM.
+    """
+    if expected == PENDING_CHECKSUM:
+        return True
+    return compute_md5(file_path) == expected

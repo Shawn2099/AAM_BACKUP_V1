@@ -1,0 +1,288 @@
+"""ManifestDB — SQLite database for file catalog and run history.
+
+WAL mode on every connection. Thread-safe. Single writer (deployments run at
+different times, no contention).
+"""
+
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCHEMA_VERSION = 1
+
+DDL = """
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS file_entries (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    relative_path   TEXT NOT NULL UNIQUE,
+    file_size       INTEGER NOT NULL DEFAULT 0,
+    mtime           REAL NOT NULL DEFAULT 0,
+    md5_checksum    TEXT DEFAULT 'pending',
+    lan_status      TEXT DEFAULT 'unknown',
+    cloud_status    TEXT DEFAULT 'unknown',
+    lan_last_synced_at      TEXT,
+    cloud_last_synced_at    TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_entries_lan_status ON file_entries(lan_status);
+CREATE INDEX IF NOT EXISTS idx_file_entries_cloud_status ON file_entries(cloud_status);
+CREATE INDEX IF NOT EXISTS idx_file_entries_relative_path ON file_entries(relative_path);
+
+CREATE TABLE IF NOT EXISTS run_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL,
+    mode            TEXT NOT NULL,
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    status          TEXT NOT NULL,
+    exit_code       INTEGER,
+    files_copied    INTEGER DEFAULT 0,
+    bytes_copied    INTEGER DEFAULT 0,
+    files_failed    INTEGER DEFAULT 0,
+    duration_seconds REAL,
+    error_message   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_history_started_at ON run_history(started_at);
+CREATE INDEX IF NOT EXISTS idx_run_history_mode ON run_history(mode);
+
+CREATE TABLE IF NOT EXISTS db_meta (
+    key     TEXT PRIMARY KEY,
+    value   TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
+"""
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class ManifestDB:
+    """SQLite manifest with WAL mode, thread-safe writes."""
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = str(db_path)
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._local = threading.local()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(DDL)
+            self._local.conn = conn
+        return self._local.conn
+
+    def close(self):
+        if hasattr(self._local, "conn") and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None
+
+    # ── File Entries ─────────────────────────────────────────
+
+    def upsert_file_entry(
+        self,
+        relative_path: str,
+        file_size: int,
+        mtime: float,
+        *,
+        lan_status: str = None,
+        cloud_status: str = None,
+        md5_checksum: str = None,
+    ):
+        with self._lock:
+            conn = self._get_conn()
+            now = _utcnow()
+            conn.execute(
+                """INSERT INTO file_entries
+                   (relative_path, file_size, mtime, md5_checksum,
+                    lan_status, cloud_status, lan_last_synced_at, cloud_last_synced_at,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?,
+                           ?, ?, ?, ?,
+                           ?, ?)
+                   ON CONFLICT(relative_path) DO UPDATE SET
+                       file_size = excluded.file_size,
+                       mtime = excluded.mtime,
+                       md5_checksum = COALESCE(excluded.md5_checksum, file_entries.md5_checksum),
+                       lan_status = COALESCE(excluded.lan_status, file_entries.lan_status),
+                       cloud_status = COALESCE(excluded.cloud_status, file_entries.cloud_status),
+                       lan_last_synced_at = COALESCE(excluded.lan_last_synced_at, file_entries.lan_last_synced_at),
+                       cloud_last_synced_at = COALESCE(excluded.cloud_last_synced_at, file_entries.cloud_last_synced_at),
+                       updated_at = excluded.updated_at""",
+                (
+                    relative_path,
+                    file_size,
+                    mtime,
+                    md5_checksum,
+                    lan_status,
+                    cloud_status,
+                    now if lan_status else None,
+                    now if cloud_status else None,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def mark_lan_synced(self, paths: list[str]):
+        """Bulk update: set lan_status='synced' on all given paths."""
+        if not paths:
+            return
+        with self._lock:
+            conn = self._get_conn()
+            now = _utcnow()
+            conn.executemany(
+                """UPDATE file_entries
+                   SET lan_status = 'synced',
+                       lan_last_synced_at = ?,
+                       updated_at = ?
+                   WHERE relative_path = ?""",
+                [(now, now, p) for p in paths],
+            )
+            conn.commit()
+
+    def mark_cloud_synced(self, paths: list[str]):
+        """Bulk update: set cloud_status='synced' on all given paths."""
+        if not paths:
+            return
+        with self._lock:
+            conn = self._get_conn()
+            now = _utcnow()
+            conn.executemany(
+                """UPDATE file_entries
+                   SET cloud_status = 'synced',
+                       cloud_last_synced_at = ?,
+                       updated_at = ?
+                   WHERE relative_path = ?""",
+                [(now, now, p) for p in paths],
+            )
+            conn.commit()
+
+    def delete_entries(self, paths: list[str]):
+        """Delete entries for files no longer on destination."""
+        if not paths:
+            return
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                f"DELETE FROM file_entries WHERE relative_path IN ({','.join('?' * len(paths))})",
+                paths,
+            )
+            conn.commit()
+
+    def update_checksums(self, updates: dict[str, str]):
+        """Bulk update md5_checksum for multiple files."""
+        if not updates:
+            return
+        with self._lock:
+            conn = self._get_conn()
+            now = _utcnow()
+            conn.executemany(
+                """UPDATE file_entries SET md5_checksum = ?, updated_at = ?
+                   WHERE relative_path = ?""",
+                [(md5, now, path) for path, md5 in updates.items()],
+            )
+            conn.commit()
+
+    def get_entry(self, relative_path: str) -> dict | None:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM file_entries WHERE relative_path = ?", (relative_path,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_all_lan_entries(self) -> list[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT relative_path, file_size, mtime FROM file_entries WHERE lan_status = 'synced'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_cloud_entries(self) -> list[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT relative_path, file_size, mtime FROM file_entries WHERE cloud_status = 'synced'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def file_count(self, status_field: str = "lan_status") -> int:
+        conn = self._get_conn()
+        row = conn.execute(
+            f"SELECT COUNT(*) as cnt FROM file_entries WHERE {status_field} = 'synced'"
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    # ── Run History ──────────────────────────────────────────
+
+    def insert_run(self, data: dict):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO run_history
+                   (run_id, mode, started_at, ended_at, status, exit_code,
+                    files_copied, bytes_copied, files_failed, duration_seconds, error_message)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    data["run_id"],
+                    data["mode"],
+                    data["started_at"],
+                    data.get("ended_at"),
+                    data["status"],
+                    data.get("exit_code"),
+                    data.get("files_copied", 0),
+                    data.get("bytes_copied", 0),
+                    data.get("files_failed", 0),
+                    data.get("duration_seconds"),
+                    data.get("error_message"),
+                ),
+            )
+            conn.commit()
+
+    def get_runs_since(self, days: int, mode: str = None) -> list[dict]:
+        conn = self._get_conn()
+        if mode:
+            rows = conn.execute(
+                """SELECT * FROM run_history
+                   WHERE started_at >= datetime('now', ?)
+                   AND mode = ?
+                   ORDER BY started_at DESC""",
+                (f"-{days} days", mode),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM run_history
+                   WHERE started_at >= datetime('now', ?)
+                   ORDER BY started_at DESC""",
+                (f"-{days} days",),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def last_run(self, mode: str = None) -> dict | None:
+        conn = self._get_conn()
+        if mode:
+            row = conn.execute(
+                "SELECT * FROM run_history WHERE mode = ? ORDER BY started_at DESC LIMIT 1",
+                (mode,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM run_history ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+        return dict(row) if row else None
+
+    # ── Maintenance ──────────────────────────────────────────
+
+    def wal_checkpoint(self):
+        """Truncate WAL file after backup run to prevent bloat."""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
