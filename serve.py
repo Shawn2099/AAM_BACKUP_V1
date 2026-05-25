@@ -1,6 +1,6 @@
 """Prefect 3 deployment entry point for AAM Backup Automation V1.
 
-Run:  python deploy/serve.py
+Run from project root:  python serve.py
 
 Registers three deployments:
   - backup-cloud:     Daily at 6:00 PM IST
