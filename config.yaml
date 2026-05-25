@@ -43,7 +43,7 @@ wol:
 # CLOUD BACKUP (GCS)
 # ═══════════════════════════════════════════════════
 cloud:
-  enabled: false
+  enabled: true
   bucket: "aam-backup-demo-innovizta"
   project_number: "920173882190"
   location: "asia-south1"
