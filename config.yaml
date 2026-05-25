@@ -13,10 +13,10 @@ firm_name: "AAM"
 paths:
   source_drive: "E:\\test_backup"
   lan_destination: "\\\\10.10.186.231\\lan_backup"
-  database_path: "C:\\AAM_Backup_V1\\manifest.db"
-  log_directory: "C:\\AAM_Backup_V1\\logs"
-  temp_directory: "C:\\AAM_Backup_V1\\rclone_temp"
-  gcs_key_path: "C:\\AAM_Backup_V1\\aam-demo-gcs-key.json"
+  database_path: "C:\\Users\\Administrator\\Desktop\\testing\\AAM_BACKUP_V1\\manifest.db"
+  log_directory: "C:\\Users\\Administrator\\Desktop\\testing\\AAM_BACKUP_V1\\logs"
+  temp_directory: "C:\\Users\\Administrator\\Desktop\\testing\\AAM_BACKUP_V1\\rclone_temp"
+  gcs_key_path: "C:\\Users\\Administrator\\Desktop\\testing\\AAM_BACKUP_V1\\aam-demo-gcs-d9427ae2cacc.json"
 
 # ═══════════════════════════════════════════════════
 # LAN BACKUP
