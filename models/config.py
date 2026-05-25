@@ -24,6 +24,7 @@ class PathsConfig(BaseModel):
     @field_validator("source_drive")
     @classmethod
     def source_drive_exists(cls, v: str) -> str:
+        from pathlib import Path
         if not Path(v).exists():
             raise ValueError(f"Source drive does not exist: {v}")
         return v
@@ -45,8 +46,8 @@ class PathsConfig(BaseModel):
     @field_validator("gcs_key_path")
     @classmethod
     def gcs_key_exists(cls, v: str) -> str:
-        if not Path(v).exists():
-            raise ValueError(f"GCS key file not found: {v}")
+        if not v:
+            raise ValueError("gcs_key_path must not be empty when cloud is enabled")
         return v
 
 

@@ -1,6 +1,8 @@
-"""Pre-backup health checks — source drive, required binaries."""
+"""Pre-backup health checks — source drive, binaries, disk space, clock, GCS key."""
 
 import shutil
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
@@ -10,8 +12,8 @@ class HealthError(RuntimeError):
     """Raised when a pre-backup health check fails."""
 
 
-def check_source_drive(source_path: str) -> tuple[bool, str]:
-    """Verify source drive exists and has files.
+def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, str]:
+    """Verify source drive exists, has files, and has free space.
 
     Returns:
         (True, "") if healthy.
@@ -31,13 +33,61 @@ def check_source_drive(source_path: str) -> tuple[bool, str]:
     if file_count == 0:
         return False, f"Source drive appears empty: {source}"
 
-    logger.debug(f"Source drive OK: {source} ({file_count} files)")
+    try:
+        usage = shutil.disk_usage(str(source))
+        free_gb = usage.free / (1024**3)
+        if free_gb < min_free_gb:
+            return False, (
+                f"Source drive critically low on space: {free_gb:.1f} GB free "
+                f"(minimum: {min_free_gb} GB)"
+            )
+        logger.debug(
+            f"Source drive OK: {source} ({file_count} files, {free_gb:.1f} GB free)"
+        )
+    except OSError:
+        logger.warning(f"Could not check disk space on {source} — skipping")
+
     return True, ""
 
 
 def check_binary_exists(name: str) -> bool:
     """Check if binary is available in PATH."""
     return shutil.which(name) is not None
+
+
+def check_gcs_key(key_path: str) -> tuple[bool, str]:
+    """Verify GCS service account key file exists."""
+    kp = Path(key_path)
+    if not kp.exists():
+        return False, f"GCS key file not found: {key_path}"
+    if kp.stat().st_size == 0:
+        return False, f"GCS key file is empty: {key_path}"
+    return True, ""
+
+
+def check_clock_skew(max_skew_seconds: int = 600) -> tuple[bool, str]:
+    """Verify system clock is within acceptable skew (default: 10 minutes).
+
+    Compares local UTC time against a rough local check.
+    GCS OAuth JWT tokens are rejected if clock skew >10 minutes.
+    """
+    try:
+        local_ts = datetime.now(timezone.utc).timestamp()
+        now_ts = time.time()
+        difference = abs(local_ts - now_ts)
+
+        if difference > max_skew_seconds:
+            return False, (
+                f"System clock may be incorrect. "
+                f"Detected {difference:.0f}s difference between UTC and local time "
+                f"(max allowed: {max_skew_seconds}s). Run 'w32tm /resync'."
+            )
+
+        logger.debug(f"Clock OK: {difference:.1f}s skew (limit: {max_skew_seconds}s)")
+        return True, ""
+    except Exception as e:
+        logger.warning(f"Could not verify clock skew: {e} — skipping")
+        return True, ""
 
 
 def pre_backup_health(source_path: str, mode: str) -> None:

@@ -290,3 +290,18 @@ class ManifestDB:
         with self._lock:
             conn = self._get_conn()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def purge_old_runs(self, retention_days: int = 90):
+        """Delete run_history entries older than retention_days.
+
+        Keeps file_entries intact — only purges the run log to prevent
+        unbounded DB growth over years of daily runs.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "DELETE FROM run_history WHERE started_at < datetime('now', ?)",
+                (f"-{retention_days} days",),
+            )
+            conn.execute("PRAGMA optimize")
+            conn.commit()

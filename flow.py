@@ -21,7 +21,7 @@ from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_si
 from core.cloud_sync import run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.fy_router import get_fy_prefix
-from core.health import pre_backup_health
+from core.health import pre_backup_health, check_clock_skew, check_gcs_key, HealthError
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import run_lan_sync
@@ -49,9 +49,20 @@ def cloud_backup_task(config):
     db = ManifestDB(config.paths.database_path)
     error_msg = None
     status = "CLOUD_SKIPPED"
+    sync_result = {"exit_code": -1}
 
     try:
         fy_prefix = get_fy_prefix()
+
+        # ── Clock skew check (JWT auth requires <10 min skew) ──
+        ok, reason = check_clock_skew()
+        if not ok:
+            raise HealthError(reason)
+
+        # ── GCS key check ──
+        ok, reason = check_gcs_key(config.paths.gcs_key_path)
+        if not ok:
+            raise HealthError(reason)
 
         # ── Preflight ──
         dry_run = run_cloud_dry_run(
@@ -160,7 +171,7 @@ def cloud_backup_task(config):
             "started_at": started_at,
             "ended_at": ended_at,
             "status": status if status != "CLOUD_SKIPPED" else "CLOUD_FAILED",
-            "exit_code": sync_result.get("exit_code") if "sync_result" in dir() else -1,
+            "exit_code": sync_result.get("exit_code", -1),
             "duration_seconds": duration,
             "error_message": error_msg,
         })
@@ -189,6 +200,7 @@ def lan_backup_task(config):
     db = ManifestDB(config.paths.database_path)
     error_msg = None
     status = "LAN_SKIPPED"
+    sync_result = {"exit_code": -1}
 
     try:
         # ── WoL ──
@@ -261,7 +273,7 @@ def lan_backup_task(config):
             "started_at": started_at,
             "ended_at": ended_at,
             "status": status if status != "LAN_SKIPPED" else "LAN_FAILED",
-            "exit_code": sync_result.get("exit_code") if "sync_result" in dir() else -1,
+            "exit_code": sync_result.get("exit_code", -1),
             "duration_seconds": duration,
             "error_message": error_msg,
         })
@@ -358,5 +370,13 @@ def backup(config_path: str = "config.yaml", mode: str = "all"):
     if errors:
         logger.error(f"Backup completed with errors: {'; '.join(errors)}")
         raise RuntimeError(f"Backup completed with errors: {'; '.join(errors)}")
+
+    # ── Maintenance ──
+    try:
+        db = ManifestDB(config.paths.database_path)
+        db.purge_old_runs(retention_days=90)
+        db.close()
+    except Exception as e:
+        logger.warning(f"DB maintenance failed (non-critical): {e}")
 
     logger.info("AAM Backup completed successfully")
