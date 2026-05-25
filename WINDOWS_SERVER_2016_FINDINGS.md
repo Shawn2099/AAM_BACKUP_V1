@@ -105,6 +105,87 @@ Get-ChildItem -ErrorAction SilentlyContinue | Select-Object Name
 
 ---
 
+## Issue 8: `NamedTemporaryFile` keeps handle open — robocopy can't write to `/LOG:file`
+
+**Symptom**: Robocopy `/LOG:C:\Temp\robo.log` exits with code 16 (fatal) but no visible error in stderr. The log file is 0 bytes.
+
+**Cause**: `tempfile.NamedTemporaryFile(mode="w", delete=False)` opens a file handle for writing and keeps it open for the duration of the `with` block. On Windows, robocopy cannot write to a file that has an open handle. The `/LOG` flag silently fails.
+
+**Fix**: Use `tempfile.mkstemp()` instead, then immediately close the file descriptor before passing the path to robocopy:
+
+```python
+log_fd, log_path_str = tempfile.mkstemp(suffix=".log", prefix="robocopy_sync_")
+os.close(log_fd)  # Release handle so robocopy can write to it
+log_path = Path(log_path_str)
+```
+
+**Rule**: Never use `NamedTemporaryFile` for paths passed to external processes on Windows. Use `mkstemp` + immediate `os.close(fd)`.
+
+---
+
+## Issue 9: Robocopy flag `/BYTES` does not exist
+
+**Symptom**: Robocopy exits with code 16 (syntax error) when `/BYTES` is present in the command.
+
+**Cause**: The `/BYTES` flag is not a valid robocopy flag. Sizes are displayed by default with `/NP` (no progress). This was a documentation error carried forward from old code.
+
+**Fix**: Remove `/BYTES` from the robocopy command flags. Use `/V /TS /FP /NJH /NJS /NDL /NP` for clean verbose output.
+
+---
+
+## Issue 10: Network share operations fail over Windows SSH sessions
+
+**Symptom**: `net use X: \\server\share` fails with "System error 67: The network name cannot be found." Robocopy to UNC paths exits with "ERROR 5: Access is denied."
+
+**Cause**: SSH on Windows runs as SYSTEM (or a restricted token), which lacks the interactive user's network credentials. UNC path access and `net use` drive mapping operate in different security contexts — the Administrator's desktop session has the credentials, but the SSH service session does not.
+
+**Fix**: Network share mapping and LAN backup must be run from the interactive desktop session, not via SSH. For Prefect deployments:
+- Start `prefect server start` and `python serve.py` from the desktop session directly (not SSH)
+- Prefect's scheduler inherits the desktop session's network credentials
+- The mapped drive (`net use X: \\server\share`) persists across reboots with `/persistent:yes`
+
+**Rule**: All UNC path and network drive operations must run from the interactive desktop. SSH is for diagnostics and cloud-only operations.
+
+---
+
+## Issue 11: Prefect 3.7 `Cron()` constructor uses positional-only arguments
+
+**Symptom**: `TypeError: Cron() got some positional-only arguments passed as keyword arguments: 'cron'`
+
+**Cause**: In Prefect 3.7, the `Cron` schedule constructor from `prefect.schedules` accepts `cron` and `timezone` as **positional-only** arguments. The dict format `{"cron": "...", "timezone": "..."}` used in older Prefect versions no longer works.
+
+**Fix**: Use positional arguments:
+```python
+from prefect.schedules import Cron
+Cron("0 18 * * *", "Asia/Kolkata")  # NOT Cron(cron="...", timezone="...")
+```
+
+---
+
+## Issue 12: `serve.py` must be at project root for module resolution
+
+**Symptom**: `ModuleNotFoundError: No module named 'flow'` when running `python deploy/serve.py`.
+
+**Cause**: Python resolves imports relative to the script's directory. When `serve.py` is in `deploy/`, it can't find `flow.py` in the parent directory without `sys.path` manipulation.
+
+**Fix**: Move `serve.py` to the project root directory and run from there: `python serve.py`.
+
+---
+
+## Issue 13: TLS 1.2 must be enabled explicitly on Windows Server 2016 for HTTPS downloads
+
+**Symptom**: `Invoke-WebRequest` fails with "Could not create SSL/TLS secure channel" when downloading from HTTPS URLs.
+
+**Cause**: Windows Server 2016 does not enable TLS 1.2 by default for `Invoke-WebRequest` and .NET HTTP clients. Modern servers require TLS 1.2.
+
+**Fix**: Enable TLS 1.2 before making HTTPS requests in PowerShell:
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -Uri 'https://example.com/file.zip' -OutFile 'file.zip'
+```
+
+---
+
 ## Verified Working
 
 | Component | Version | Status |
@@ -116,20 +197,28 @@ Get-ChildItem -ErrorAction SilentlyContinue | Select-Object Name
 | Robocopy | Built-in | ✅ |
 | GCS auth (rclone) | — | ✅ (after clock fix) |
 | Cloud preflight | — | ✅ |
-| Cloud sync | — | ✅ (8 files, 137 bytes) |
-| Cloud verify | — | ✅ (verified=True) |
-| Cloud report | — | ✅ |
+| Cloud sync | — | ✅ (8 files, CLOUD_COMPLETE) |
+| Cloud verify | — | ✅ (verified=True, exit 0) |
+| Cloud report | — | ✅ (8 files, 137 bytes) |
+| LAN WoL | — | ✅ (magic packet + SMB wait) |
+| LAN preflight | — | ✅ (robocopy /L dry-run) |
+| LAN sync | — | ✅ (8 files, LAN_COMPLETE, exit 0) |
+| LAN manifest | — | ✅ (+0 -0 *0 =8 unchanged) |
+| LAN shutdown | — | ✅ (shutdown /s /t 300 initiated) |
+| ManifestDB | — | ✅ (8 entries, WAL checkpoint) |
 | FY auto-rollover | FY26-27 | ✅ |
-| 24/7 uptime (no restart) | — | ✅ |
+| Prefect deployments | 3 registered | ✅ |
 
 ---
 
 ## Deployment Checklist (for production)
 
-- [ ] Copy GCS key to `C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1\aam-demo-gcs-d9427ae2cacc.json`
-- [ ] Verify system clock: `Get-Date` matches real time within ±5 min
-- [ ] Rclone v1.74.2+ installed at `C:\Windows\System32\rclone.exe`
-- [ ] `prefect server start` running in persistent terminal/service
-- [ ] `uv run python deploy/serve.py` running (registers 3 deployments)
-- [ ] Test cloud: `uv run python test_cloud.py`
-- [ ] Test LAN: wake target server first, then `uv run python test_lan.py`
+- [x] Copy GCS key to `C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1\aam-demo-gcs-d9427ae2cacc.json`
+- [x] Verify system clock: `Get-Date` matches real time within ±5 min
+- [x] Rclone v1.74.2+ installed at `C:\Windows\System32\rclone.exe`
+- [ ] `prefect server start` running in persistent terminal
+- [ ] `uv run python serve.py` running from desktop session (registers 3 deployments)
+- [x] Test cloud: `uv run python test_cloud.py` — PASSED
+- [x] Test LAN: `uv run python test_lan.py` from desktop session — PASSED
+- [x] Drive mapping: `net use X: \\10.10.186.231\lan_backup /persistent:yes`
+- [x] UTF-8 encoding enforced in all file I/O
