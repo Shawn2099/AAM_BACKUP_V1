@@ -3,6 +3,7 @@
 Reference: AAM_BACKUP_V2/core/rclone.py — proven classification and temp config pattern.
 """
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -17,6 +18,7 @@ def write_temp_rclone_config(
 ) -> str:
     """Write temporary rclone config file for GCS access.
 
+    Uses mkstemp + close to avoid Windows file handle lock.
     Returns path to temp file. Caller cleans up in finally.
     """
     key_abs = str(Path(gcs_key_path).resolve()).replace("\\", "/")
@@ -30,14 +32,10 @@ bucket_policy_only = true
 location = {location}
 storage_class = COLDLINE
 """
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".conf",
-        prefix="rclone_sync_",
-        delete=False,
-    ) as f:
-        f.write(content)
-        return f.name
+    fd, cfg_path = tempfile.mkstemp(suffix=".conf", prefix="rclone_")
+    os.close(fd)
+    Path(cfg_path).write_text(content, encoding="utf-8")
+    return cfg_path
 
 
 def classify_rclone_exit(code: int) -> str:

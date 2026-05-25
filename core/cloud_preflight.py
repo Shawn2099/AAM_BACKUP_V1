@@ -4,6 +4,7 @@ Fast metadata-only comparison. Catches auth failures, missing buckets,
 and config errors before the multi-hour sync attempt.
 """
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -18,6 +19,7 @@ def _write_temp_config(
 ) -> str:
     """Write temporary rclone config file for GCS access.
 
+    Uses mkstemp + close to avoid Windows file handle lock.
     Returns path to temp file. Caller must clean up.
     """
     key_abs = str(Path(gcs_key_path).resolve()).replace("\\", "/")
@@ -31,14 +33,10 @@ bucket_policy_only = true
 location = {location}
 storage_class = COLDLINE
 """
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".conf",
-        prefix="rclone_preflight_",
-        delete=False,
-    ) as f:
-        f.write(content)
-        return f.name
+    fd, cfg_path = tempfile.mkstemp(suffix=".conf", prefix="rclone_")
+    os.close(fd)
+    Path(cfg_path).write_text(content, encoding="utf-8")
+    return cfg_path
 
 
 def run_cloud_dry_run(

@@ -5,6 +5,7 @@ Rclone IS the source of truth for GCS state.
 """
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -70,13 +71,8 @@ def get_cloud_diff(
     diff_file = None
 
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".txt",
-            prefix="cloud_diff_",
-            delete=False,
-        ) as f:
-            diff_file = f.name
+        fd, diff_file = tempfile.mkstemp(suffix=".txt", prefix="cloud_diff_")
+        os.close(fd)  # Release handle so rclone can write to it
 
         cmd = [
             "rclone", "check",

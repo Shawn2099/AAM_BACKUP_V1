@@ -224,6 +224,10 @@ class ManifestDB:
     # ── Run History ──────────────────────────────────────────
 
     def insert_run(self, data: dict):
+        required = ("run_id", "mode", "started_at", "status")
+        missing = [k for k in required if k not in data]
+        if missing:
+            raise KeyError(f"insert_run missing required keys: {missing}")
         with self._lock:
             conn = self._get_conn()
             conn.execute(
