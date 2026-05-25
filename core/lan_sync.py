@@ -3,6 +3,7 @@
 Reference: AAM_BACKUP_V2/core/robocopy.py — proven bitmask logic and flag set.
 """
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -83,13 +84,9 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
     log_path = None
 
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".log",
-            prefix="robocopy_sync_",
-            delete=False,
-        ) as log_file:
-            log_path = Path(log_file.name)
+        log_fd, log_path_str = tempfile.mkstemp(suffix=".log", prefix="robocopy_sync_")
+        os.close(log_fd)  # Close handle so robocopy can write to it
+        log_path = Path(log_path_str)
 
         cmd.extend([f"/LOG:{log_path}"])
 
