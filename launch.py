@@ -1,57 +1,50 @@
 """AAM Backup Automation V1 — Single Launch Script.
 
-Starts all three services in one command:
+Starts all three services in one process:
 
     uv run python launch.py
 
 Services:
-  - Prefect API server (port 4200)
-  - Dashboard UI (port 8080)
-  - Backup scheduler (4 deployments)
+  - Prefect API server (subprocess, port 4200)
+  - Dashboard UI (in-process, port 8080)
+  - Backup scheduler (in-process, 4 deployments)
+
+Ctrl+C stops all services cleanly.
 """
 
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-import uvicorn
-
 PROJECT_DIR = Path(__file__).resolve().parent
-_CONFIG_PATH = PROJECT_DIR / "config.yaml"
 
 
-def start_prefect_server():
-    """Start Prefect API server in a subprocess."""
+def _run_prefect():
+    """Start Prefect API server."""
     print("[launch] Starting Prefect API server...")
-    return subprocess.Popen(
+    subprocess.run(
         ["prefect", "server", "start"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        cwd=str(PROJECT_DIR),
         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
     )
 
 
-def start_dashboard():
-    """Start dashboard UI (uvicorn → FastAPI)."""
+def _run_dashboard():
+    """Start dashboard UI on port 8080 — imports in-thread to avoid early config load."""
     print("[launch] Starting Dashboard UI on http://0.0.0.0:8080 ...")
-    return subprocess.Popen(
-        [sys.executable, "-c", "from ui import run; run()"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=str(PROJECT_DIR),
-    )
+    import uvicorn
+    from ui import app
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
 
 
-def start_scheduler():
-    """Start Prefect deployment scheduler."""
+def _run_scheduler():
+    """Start Prefect deployment scheduler — imports in-thread after API is ready."""
     print("[launch] Starting backup scheduler...")
-    return subprocess.Popen(
-        [sys.executable, str(PROJECT_DIR / "serve.py")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=str(PROJECT_DIR),
-    )
+    from prefect import serve
+    from serve import cloud_deployment, lan_deployment, report_deployment, monthly_deployment
+    serve(cloud_deployment, lan_deployment, report_deployment, monthly_deployment)
 
 
 def main():
@@ -59,37 +52,45 @@ def main():
     print("  AAM Backup Automation V1 — Launch")
     print("=" * 50)
 
-    processes = []
+    # Start Prefect API in a subprocess (needs its own process group)
+    prefect_proc = subprocess.Popen(
+        ["prefect", "server", "start"],
+        cwd=str(PROJECT_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
+    )
+
+    # Start dashboard in background thread
+    dashboard_thread = threading.Thread(target=_run_dashboard, daemon=True)
+    dashboard_thread.start()
+
+    # Wait for Prefect API to be ready
+    print("[launch] Waiting 30s for Prefect API to be ready...")
+    time.sleep(30)
+
+    # Start scheduler in background thread
+    scheduler_thread = threading.Thread(target=_run_scheduler, daemon=True)
+    scheduler_thread.start()
+
+    print("[launch] All services started")
+    print("[launch] Dashboard: http://localhost:8080")
+    print("[launch] Prefect:   http://localhost:4200")
+    print("[launch] Press Ctrl+C to stop all services")
+    print()
 
     try:
-        processes.append(start_prefect_server())
-        print("[launch] Dashboard starting...")
-        processes.append(start_dashboard())
-
-        print("[launch] Waiting 30s for Prefect API to be ready...")
-        time.sleep(30)
-
-        processes.append(start_scheduler())
-
-        print("[launch] All services started")
-        print("[launch] Dashboard: http://localhost:8080")
-        print("[launch] Prefect:   http://localhost:4200")
-        print("[launch] Press Ctrl+C to stop all services")
-        print()
-
-        # Keep running until interrupted
-        for proc in processes:
-            proc.wait()
-
+        # Block until scheduler thread finishes (runs forever until Ctrl+C)
+        scheduler_thread.join()
     except KeyboardInterrupt:
-        print("\n[launch] Shutting down...")
+        pass
     finally:
-        for proc in processes:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
+        print("\n[launch] Shutting down...")
+        try:
+            prefect_proc.terminate()
+            prefect_proc.wait(timeout=5)
+        except Exception:
+            prefect_proc.kill()
         print("[launch] All services stopped")
 
 
