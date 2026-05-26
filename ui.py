@@ -9,6 +9,7 @@ FastAPI server on port 8080. Safety-first:
 import json
 import os
 import shutil
+import subprocess
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -87,23 +88,36 @@ def _release_lock(pipeline: str):
     _lock_path(pipeline).unlink(missing_ok=True)
 
 
-# ── Trigger pipeline (runs in background) ────────────────────
+# ── Trigger pipeline (via Prefect deployment API) ────────────
+
+
+def _trigger_deployment(pipeline: str) -> str:
+    """Fire a Prefect deployment run via CLI subprocess.
+
+    Runs completely external to the Python process — no Prefect
+    context conflict with the scheduler's serve() call.
+    """
+    result = subprocess.run(
+        ["prefect", "deployment", "run", f"aam-backup/backup-{pipeline}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Prefect deployment run failed: {result.stderr.strip()[:200]}"
+        )
+    return result.stdout
 
 
 def _run_in_background(pipeline: str, config_path: str):
+    """Trigger pipeline via Prefect scheduler. Lock prevents duplicate clicks."""
     run_id = str(uuid.uuid4())[:8]
     if not _acquire_lock(pipeline, run_id):
         logger.warning(f"{pipeline} already running — skipping trigger")
         return
 
     try:
-        from models.config import load_config
-        from flow import backup
-
-        config = load_config(config_path)
         logger.info(f"Manual trigger: {pipeline} (run={run_id})")
-        backup(config_path=config_path, mode=pipeline)
-
+        _trigger_deployment(pipeline)
     except Exception as e:
         logger.error(f"Manual {pipeline} trigger failed: {e}")
     finally:

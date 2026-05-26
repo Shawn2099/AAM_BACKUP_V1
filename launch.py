@@ -40,11 +40,18 @@ def _run_dashboard():
 
 
 def _run_scheduler():
-    """Start Prefect deployment scheduler — imports in-thread after API is ready."""
-    print("[launch] Starting backup scheduler...")
+    """Start Prefect deployment scheduler — retries on crash."""
+    import traceback
     from prefect import serve
     from serve import cloud_deployment, lan_deployment, report_deployment, monthly_deployment
-    serve(cloud_deployment, lan_deployment, report_deployment, monthly_deployment)
+    print("[launch] Starting backup scheduler...")
+    while True:
+        try:
+            serve(cloud_deployment, lan_deployment, report_deployment, monthly_deployment)
+        except Exception as e:
+            print(f"[launch] Scheduler crashed, restarting in 10s: {e}")
+            traceback.print_exc()
+            time.sleep(10)
 
 
 def main():
@@ -80,8 +87,8 @@ def main():
     print()
 
     try:
-        # Keep main process alive — wait on dashboard thread (runs forever)
-        dashboard_thread.join()
+        # Keep main process alive — wait on scheduler thread (now has retry loop)
+        scheduler_thread.join()
     except KeyboardInterrupt:
         pass
     finally:
