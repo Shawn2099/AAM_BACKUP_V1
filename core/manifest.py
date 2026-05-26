@@ -283,6 +283,14 @@ class ManifestDB:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_recent_runs(self, limit: int = 10) -> list[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM run_history ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # ── Maintenance ──────────────────────────────────────────
 
     def wal_checkpoint(self):

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from loguru import logger
 
 from core.fy_router import get_fy_prefix
@@ -114,8 +114,8 @@ def _run_in_background(pipeline: str, config_path: str):
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard():
-    return HTMLResponse(_render_dashboard())
+def dashboard(status: str = ""):
+    return HTMLResponse(_render_dashboard(status))
 
 
 @app.get("/status")
@@ -150,17 +150,17 @@ def status():
 @app.post("/trigger/cloud")
 def trigger_cloud(config_path: str = "config.yaml"):
     if _is_running("cloud"):
-        raise HTTPException(409, "Cloud backup is already running")
+        return RedirectResponse("/?status=already_running_cloud", status_code=303)
     threading.Thread(target=_run_in_background, args=("cloud", config_path), daemon=True).start()
-    return {"status": "triggered", "pipeline": "cloud"}
+    return RedirectResponse("/?status=triggered_cloud", status_code=303)
 
 
 @app.post("/trigger/lan")
 def trigger_lan(config_path: str = "config.yaml"):
     if _is_running("lan"):
-        raise HTTPException(409, "LAN backup is already running")
+        return RedirectResponse("/?status=already_running_lan", status_code=303)
     threading.Thread(target=_run_in_background, args=("lan", config_path), daemon=True).start()
-    return {"status": "triggered", "pipeline": "lan"}
+    return RedirectResponse("/?status=triggered_lan", status_code=303)
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -198,6 +198,9 @@ _CSS = """<style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; padding: 2rem; }
 h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #f9fafb; }
+.flash { padding: 0.75rem 1rem; border-radius: 0.375rem; margin-bottom: 1rem; font-weight: 600; }
+.flash.success { background: #065f46; color: #6ee7b7; }
+.flash.warning { background: #78350f; color: #fcd34d; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
 .card { background: #1f2937; border-radius: 0.5rem; padding: 1.25rem; border-left: 4px solid; }
 .card.success { border-color: #10b981; }
@@ -218,11 +221,21 @@ button { padding: 0.5rem 1rem; border: none; border-radius: 0.375rem; font-weigh
 .btn-trigger { background: #2563eb; color: #fff; }
 .btn-trigger:hover:not(:disabled) { background: #1d4ed8; }
 .btn-trigger:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
-.info { color: #9ca3af; font-size: 0.8rem; margin-top: 2rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 1.5rem; }
+th { text-align: left; color: #9ca3af; padding: 0.5rem 0.75rem; border-bottom: 1px solid #374151; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
+td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #1f2937; }
+tr:hover { background: #1f2937; }
+.tag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 999px; font-size: 0.65rem; font-weight: 600; }
+.tag.cloud { background: #1e3a5f; color: #93c5fd; }
+.tag.lan { background: #14532d; color: #86efac; }
+.tag.success { background: #065f46; color: #6ee7b7; }
+.tag.partial { background: #78350f; color: #fcd34d; }
+.tag.failed { background: #7f1d1d; color: #fca5a5; }
+.info { color: #9ca3af; font-size: 0.8rem; margin-top: 1.5rem; }
 </style>"""
 
 
-def _render_dashboard() -> str:
+def _render_dashboard(flash: str = "") -> str:
     cfg = _cfg()
     db_path = Path(cfg.paths.database_path)
     db = ManifestDB(db_path) if db_path.exists() else None
@@ -234,6 +247,8 @@ def _render_dashboard() -> str:
     cloud_last = lan_last = "No data"
     lan_files = cloud_files = 0
     health_info = "Unavailable"
+    flash_html = ""
+    history_rows = ""
 
     if db:
         try:
@@ -266,19 +281,52 @@ def _render_dashboard() -> str:
             h = _get_health()
             if "error" not in h:
                 health_info = f"Source: {h['source_free_gb']} GB free | FY: {get_fy_prefix()}"
+
+            # Run history table
+            runs = db.get_recent_runs(10)
+            for r in runs:
+                mode_tag = f'<span class="tag {r["mode"]}">{r["mode"].upper()}</span>'
+                s = r.get("status", "?")
+                if "COMPLETE" in s or s == "CLOUD_COMPLETE" or s == "LAN_COMPLETE":
+                    s_tag = '<span class="tag success">OK</span>'
+                elif "PARTIAL" in s:
+                    s_tag = '<span class="tag partial">PARTIAL</span>'
+                elif "FAILED" in s:
+                    s_tag = '<span class="tag failed">FAILED</span>'
+                else:
+                    s_tag = f'<span class="tag">{s[:10]}</span>'
+                ts = r.get("started_at", "")[:19]
+                files = r.get("files_copied", 0)
+                err = r.get("error_message", "")
+                dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
+                err_cell = f'<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">{err[:60]}</td>' if err else "<td>-</td>"
+                history_rows += f"<tr><td>{ts}</td><td>{mode_tag}</td><td>{s_tag}</td><td>{files}</td><td>{dur}</td>{err_cell}</tr>\n"
         finally:
             db.close()
+
+    # Flash messages
+    flash_map = {
+        "triggered_cloud": ("Cloud backup started. Check back in a few minutes.", "success"),
+        "triggered_lan": ("LAN backup started (WoL + sync + shutdown).", "success"),
+        "already_running_cloud": ("Cloud backup is already in progress.", "warning"),
+        "already_running_lan": ("LAN backup is already in progress.", "warning"),
+    }
+    if flash in flash_map:
+        msg, cls = flash_map[flash]
+        flash_html = f'<div class="flash {cls}">{msg}</div>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="30">
 <title>AAM Backup Dashboard</title>
 {_CSS}
 </head>
 <body>
 <h1>AAM Backup Dashboard</h1>
+{flash_html}
 
 <div class="stats">
     <div class="stat"><div class="num">{lan_files:,}</div><div class="label">LAN Files</div></div>
@@ -310,9 +358,15 @@ def _render_dashboard() -> str:
     </div>
 </div>
 
+<h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Run History</h2>
+<table>
+<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
+<tbody>{history_rows or '<tr><td colspan="6" style="color:#6b7280">No runs recorded yet</td></tr>'}</tbody>
+</table>
+
 <div class="info">
     <p>{health_info}</p>
-    <p style="margin-top:0.5rem">AAM Backup Automation V1</p>
+    <p style="margin-top:0.25rem">AAM Backup Automation V1 — Auto-refreshes every 30s</p>
 </div>
 </body>
 </html>"""
