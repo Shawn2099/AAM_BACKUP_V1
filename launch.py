@@ -100,8 +100,10 @@ def main():
         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
     )
 
-    # Start dashboard in non-daemon thread so it gets a chance to clean up
-    dash_thread = threading.Thread(target=_run_dashboard, daemon=False)
+    # Start dashboard in daemon thread — uvicorn has no critical state to clean up.
+    # Lock files are handled by main thread cleanup. Daemon ensures process
+    # exits cleanly even if the Python runtime struggles with thread joins on Win32.
+    dash_thread = threading.Thread(target=_run_dashboard, daemon=True)
     dash_thread.start()
 
     # Wait for Prefect API to be ready
@@ -139,11 +141,7 @@ def main():
     finally:
         print(f"\n[launch] Shutting down{' (clean)' if shutdown_clean else ' (interrupted)'}...")
 
-        # 1) Stop dashboard
-        if dash_thread.is_alive():
-            dash_thread.join(timeout=5)
-
-        # 2) Stop Prefect API server
+        # 1) Stop Prefect API server (before cleanup to cancel in-flight)
         try:
             prefect_proc.terminate()
             prefect_proc.wait(timeout=5)
@@ -153,7 +151,7 @@ def main():
         except Exception:
             prefect_proc.kill()
 
-        # 3) Cleanup lock files
+        # 2) Cleanup lock files
         _cleanup_lock_files()
 
         print("[launch] All services stopped")
