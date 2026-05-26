@@ -9,7 +9,8 @@ Services:
   - Dashboard UI (in-process, port 8080)
   - Backup scheduler (in-process, 4 deployments)
 
-Ctrl+C stops all services cleanly.
+Ctrl+C stops all services cleanly. Shutdown order: scheduler → dashboard → Prefect API.
+Lock files (.lock_cloud, .lock_lan) are cleaned up on exit.
 """
 
 import subprocess
@@ -21,16 +22,6 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 
 
-def _run_prefect():
-    """Start Prefect API server."""
-    print("[launch] Starting Prefect API server...")
-    subprocess.run(
-        ["prefect", "server", "start"],
-        cwd=str(PROJECT_DIR),
-        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
-    )
-
-
 def _run_dashboard():
     """Start dashboard UI on port 8080 — imports in-thread to avoid early config load."""
     print("[launch] Starting Dashboard UI on http://0.0.0.0:8080 ...")
@@ -39,19 +30,60 @@ def _run_dashboard():
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
 
 
-def _run_scheduler():
-    """Start Prefect deployment scheduler — retries on crash."""
-    import traceback
-    from prefect import serve
-    from serve import cloud_deployment, lan_deployment, report_deployment, monthly_deployment
-    print("[launch] Starting backup scheduler...")
-    while True:
-        try:
-            serve(cloud_deployment, lan_deployment, report_deployment, monthly_deployment)
-        except Exception as e:
-            print(f"[launch] Scheduler crashed, restarting in 10s: {e}")
-            traceback.print_exc()
-            time.sleep(10)
+def _cleanup_lock_files():
+    """Remove stale lock files from temp directory on exit."""
+    try:
+        from models.config import load_config
+        cfg = load_config("config.yaml")
+        temp_dir = Path(cfg.paths.temp_directory)
+        for lock in temp_dir.glob(".lock_*"):
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _cancel_orphaned_runs():
+    """Cancel any PENDING flow runs left over from a previous crashed session.
+
+    PENDING runs from `prefect deployment run` that were never picked up
+    by the old serve() loop before it died will never execute. Cancel them
+    so they don't clutter the UI and incorrectly show as "running."
+    """
+    try:
+        result = subprocess.run(
+            [
+                "prefect", "flow-run", "ls",
+                "--state", "PENDING",
+                "--limit", "50",
+                "--output", "json",
+            ],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(PROJECT_DIR),
+        )
+        if result.returncode != 0:
+            return
+
+        import json as _json
+        runs = _json.loads(result.stdout) if result.stdout.strip() else []
+        cancelled = 0
+        for run in runs:
+            run_id = run.get("id", "")
+            run_name = run.get("name", "")
+            if run_id:
+                subprocess.run(
+                    ["prefect", "flow-run", "cancel", run_id],
+                    capture_output=True, timeout=10,
+                    cwd=str(PROJECT_DIR),
+                )
+                print(f"[launch] Cancelled orphaned run: {run_name} ({run_id[:8]}...)")
+                cancelled += 1
+        if cancelled:
+            print(f"[launch] Cleaned up {cancelled} orphaned flow run(s)")
+    except Exception:
+        pass
 
 
 def main():
@@ -68,36 +100,62 @@ def main():
         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
     )
 
-    # Start dashboard in background thread
-    dashboard_thread = threading.Thread(target=_run_dashboard, daemon=True)
-    dashboard_thread.start()
+    # Start dashboard in non-daemon thread so it gets a chance to clean up
+    dash_thread = threading.Thread(target=_run_dashboard, daemon=False)
+    dash_thread.start()
 
     # Wait for Prefect API to be ready
     print("[launch] Waiting 30s for Prefect API to be ready...")
     time.sleep(30)
 
-    # Start scheduler in background thread
-    scheduler_thread = threading.Thread(target=_run_scheduler, daemon=True)
-    scheduler_thread.start()
+    # Cancel orphaned flow runs from previous crashed/shutdown sessions
+    _cancel_orphaned_runs()
 
+    # Run scheduler in main thread — serve() handles SIGINT internally,
+    # so it returns cleanly on Ctrl+C. With pause_on_shutdown=False,
+    # deployment schedules stay active across restarts.
+    print("[launch] Starting backup scheduler (main thread)...")
     print("[launch] All services started")
     print("[launch] Dashboard: http://localhost:8080")
     print("[launch] Prefect:   http://localhost:4200")
     print("[launch] Press Ctrl+C to stop all services")
     print()
 
+    from prefect import serve
+    from serve import cloud_deployment, lan_deployment, report_deployment, monthly_deployment
+
+    shutdown_clean = False
     try:
-        # Keep main process alive — wait on scheduler thread (now has retry loop)
-        scheduler_thread.join()
+        serve(
+            cloud_deployment,
+            lan_deployment,
+            report_deployment,
+            monthly_deployment,
+            pause_on_shutdown=False,
+        )
+        shutdown_clean = True
     except KeyboardInterrupt:
-        pass
+        shutdown_clean = True
     finally:
-        print("\n[launch] Shutting down...")
+        print(f"\n[launch] Shutting down{' (clean)' if shutdown_clean else ' (interrupted)'}...")
+
+        # 1) Stop dashboard
+        if dash_thread.is_alive():
+            dash_thread.join(timeout=5)
+
+        # 2) Stop Prefect API server
         try:
             prefect_proc.terminate()
             prefect_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            prefect_proc.kill()
+            prefect_proc.wait(timeout=3)
         except Exception:
             prefect_proc.kill()
+
+        # 3) Cleanup lock files
+        _cleanup_lock_files()
+
         print("[launch] All services stopped")
 
 

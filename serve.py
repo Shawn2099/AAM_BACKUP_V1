@@ -47,4 +47,10 @@ monthly_deployment = monthly_report_flow.to_deployment(
 )
 
 if __name__ == "__main__":
-    serve(cloud_deployment, lan_deployment, report_deployment, monthly_deployment)
+    serve(
+        cloud_deployment,
+        lan_deployment,
+        report_deployment,
+        monthly_deployment,
+        pause_on_shutdown=False,
+    )
