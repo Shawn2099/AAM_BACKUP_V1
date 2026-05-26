@@ -11,19 +11,23 @@ name = "aam-backup-automation"
 version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "loguru" },
     { name = "prefect" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "uvicorn" },
     { name = "wakeonlan" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.115.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "prefect", specifier = ">=3.4.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "uvicorn", specifier = ">=0.30.0" },
     { name = "wakeonlan", specifier = ">=3.1.0" },
 ]
 
