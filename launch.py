@@ -141,15 +141,19 @@ def main():
     finally:
         print(f"\n[launch] Shutting down{' (clean)' if shutdown_clean else ' (interrupted)'}...")
 
-        # 1) Stop Prefect API server (before cleanup to cancel in-flight)
+        # 1) Terminate Prefect API — don't block on wait to avoid signal races
         try:
             prefect_proc.terminate()
-            prefect_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            prefect_proc.kill()
-            prefect_proc.wait(timeout=3)
         except Exception:
-            prefect_proc.kill()
+            pass
+        try:
+            prefect_proc.wait(timeout=5)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            try:
+                prefect_proc.kill()
+                prefect_proc.wait(timeout=3)
+            except Exception:
+                pass
 
         # 2) Cleanup lock files
         _cleanup_lock_files()
