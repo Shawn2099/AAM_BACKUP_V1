@@ -80,8 +80,8 @@ def main():
     print()
 
     try:
-        # Block until scheduler thread finishes (runs forever until Ctrl+C)
-        scheduler_thread.join()
+        # Keep main process alive — wait on dashboard thread (runs forever)
+        dashboard_thread.join()
     except KeyboardInterrupt:
         pass
     finally:
