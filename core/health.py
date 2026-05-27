@@ -25,13 +25,13 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
         return False, f"Source drive not accessible: {source}"
 
     try:
-        file_count = sum(1 for _ in source.rglob("*") if _.is_file())
+        has_files = any(_.is_file() for _ in source.rglob("*"))
     except PermissionError:
         return False, f"Source drive permission denied: {source}"
     except OSError as e:
         return False, f"Source drive error: {e}"
 
-    if file_count == 0:
+    if not has_files:
         return False, f"Source drive appears empty: {source}"
 
     try:
@@ -43,7 +43,7 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
                 f"(minimum: {min_free_gb} GB)"
             )
         logger.debug(
-            f"Source drive OK: {source} ({file_count} files, {free_gb:.1f} GB free)"
+            f"Source drive OK: {source} (contains files, {free_gb:.1f} GB free)"
         )
     except OSError:
         logger.warning(f"Could not check disk space on {source} — skipping")

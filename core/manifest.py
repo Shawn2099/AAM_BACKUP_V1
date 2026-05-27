@@ -71,20 +71,24 @@ class ManifestDB:
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._local = threading.local()
+        self._conn = None
 
     def _get_conn(self) -> sqlite3.Connection:
-        if not hasattr(self._local, "conn") or self._local.conn is None:
+        if self._conn is None:
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.executescript(DDL)
-            self._local.conn = conn
-        return self._local.conn
+            self._conn = conn
+        return self._conn
 
     def close(self):
-        if hasattr(self._local, "conn") and self._local.conn:
-            self._local.conn.close()
-            self._local.conn = None
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     # ── File Entries ─────────────────────────────────────────
 
@@ -168,15 +172,18 @@ class ManifestDB:
             conn.commit()
 
     def delete_entries(self, paths: list[str]):
-        """Delete entries for files no longer on destination."""
+        """Delete entries for files no longer on destination. Chunk to avoid SQLite variable limit."""
         if not paths:
             return
         with self._lock:
             conn = self._get_conn()
-            conn.execute(
-                f"DELETE FROM file_entries WHERE relative_path IN ({','.join('?' * len(paths))})",
-                paths,
-            )
+            for i in range(0, len(paths), 500):
+                chunk = paths[i : i + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                conn.execute(
+                    f"DELETE FROM file_entries WHERE relative_path IN ({placeholders})",
+                    chunk,
+                )
             conn.commit()
 
     def update_checksums(self, updates: dict[str, str]):
@@ -194,32 +201,36 @@ class ManifestDB:
             conn.commit()
 
     def get_entry(self, relative_path: str) -> dict | None:
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT * FROM file_entries WHERE relative_path = ?", (relative_path,)
-        ).fetchone()
-        return dict(row) if row else None
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT * FROM file_entries WHERE relative_path = ?", (relative_path,)
+            ).fetchone()
+            return dict(row) if row else None
 
     def get_all_lan_entries(self) -> list[dict]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT relative_path, file_size, mtime FROM file_entries WHERE lan_status = 'synced'"
-        ).fetchall()
-        return [dict(r) for r in rows]
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT relative_path, file_size, mtime FROM file_entries WHERE lan_status = 'synced'"
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def get_all_cloud_entries(self) -> list[dict]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT relative_path, file_size, mtime FROM file_entries WHERE cloud_status = 'synced'"
-        ).fetchall()
-        return [dict(r) for r in rows]
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT relative_path, file_size, mtime FROM file_entries WHERE cloud_status = 'synced'"
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     def file_count(self, status_field: str = "lan_status") -> int:
-        conn = self._get_conn()
-        row = conn.execute(
-            f"SELECT COUNT(*) as cnt FROM file_entries WHERE {status_field} = 'synced'"
-        ).fetchone()
-        return row["cnt"] if row else 0
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM file_entries WHERE {status_field} = 'synced'"
+            ).fetchone()
+            return row["cnt"] if row else 0
 
     # ── Run History ──────────────────────────────────────────
 
@@ -252,44 +263,47 @@ class ManifestDB:
             conn.commit()
 
     def get_runs_since(self, days: int, mode: str | None = None) -> list[dict]:
-        conn = self._get_conn()
-        if mode:
-            rows = conn.execute(
-                """SELECT * FROM run_history
-                   WHERE started_at >= datetime('now', ?)
-                   AND mode = ?
-                   ORDER BY started_at DESC""",
-                (f"-{days} days", mode),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT * FROM run_history
-                   WHERE started_at >= datetime('now', ?)
-                   ORDER BY started_at DESC""",
-                (f"-{days} days",),
-            ).fetchall()
-        return [dict(r) for r in rows]
+        with self._lock:
+            conn = self._get_conn()
+            if mode:
+                rows = conn.execute(
+                    """SELECT * FROM run_history
+                       WHERE started_at >= datetime('now', ?)
+                       AND mode = ?
+                       ORDER BY started_at DESC""",
+                    (f"-{days} days", mode),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM run_history
+                       WHERE started_at >= datetime('now', ?)
+                       ORDER BY started_at DESC""",
+                    (f"-{days} days",),
+                ).fetchall()
+            return [dict(r) for r in rows]
 
     def last_run(self, mode: str | None = None) -> dict | None:
-        conn = self._get_conn()
-        if mode:
-            row = conn.execute(
-                "SELECT * FROM run_history WHERE mode = ? ORDER BY started_at DESC LIMIT 1",
-                (mode,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM run_history ORDER BY started_at DESC LIMIT 1"
-            ).fetchone()
-        return dict(row) if row else None
+        with self._lock:
+            conn = self._get_conn()
+            if mode:
+                row = conn.execute(
+                    "SELECT * FROM run_history WHERE mode = ? ORDER BY started_at DESC LIMIT 1",
+                    (mode,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM run_history ORDER BY started_at DESC LIMIT 1"
+                ).fetchone()
+            return dict(row) if row else None
 
     def get_recent_runs(self, limit: int = 10) -> list[dict]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM run_history ORDER BY started_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT * FROM run_history ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     # ── Maintenance ──────────────────────────────────────────
 

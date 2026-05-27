@@ -86,7 +86,7 @@ def get_cloud_diff(
         diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
 
         try:
-            with open(diff_file) as f:
+            with open(diff_file, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:

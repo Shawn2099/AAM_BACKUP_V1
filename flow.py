@@ -12,6 +12,7 @@ Reports pull from run_history across both.
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from loguru import logger
 from prefect import flow, task
@@ -37,6 +38,98 @@ def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _pid_alive(pid: int) -> bool:
+    """Check if a process is alive (cross-platform check)."""
+    import os
+    import sys
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return f"{pid}" in result.stdout
+        except Exception:
+            return False
+    return False
+
+
+def acquire_global_backup_lock(config, mode: str, timeout_seconds: int = 18000) -> bool:
+    """Acquire a global file-lock. If held, poll and wait until it is released, enforcing sequential execution."""
+    import os
+    import json
+    lock_dir = Path(config.paths.temp_directory)
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_dir / "global_backup.lock"
+    
+    start_time = time.time()
+    pid = os.getpid()
+    
+    while True:
+        if lock_file.exists():
+            try:
+                data = json.loads(lock_file.read_text())
+                active_pid = data.get("pid")
+                active_mode = data.get("mode")
+                
+                if active_pid == pid:
+                    logger.debug(f"Current process already holds global lock for {active_mode}")
+                    return True
+                
+                if _pid_alive(active_pid):
+                    logger.info(f"Another backup ({active_mode}, PID={active_pid}) is currently running. Waiting sequentially...")
+                else:
+                    logger.warning(f"Found stale backup lock from PID {active_pid} ({active_mode}). Cleaning up.")
+                    lock_file.unlink(missing_ok=True)
+            except Exception:
+                try:
+                    lock_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        
+        if not lock_file.exists():
+            try:
+                lock_file.write_text(json.dumps({
+                    "pid": pid,
+                    "mode": mode,
+                    "started_at": datetime.now(UTC).isoformat()
+                }))
+                logger.info(f"Acquired global backup lock for {mode} (PID={pid})")
+                return True
+            except OSError:
+                pass
+            
+        if time.time() - start_time > timeout_seconds:
+            logger.error(f"Timed out waiting for global backup lock after {timeout_seconds}s")
+            return False
+            
+        time.sleep(10)
+
+
+def release_global_backup_lock(config, mode: str):
+    """Release the global backup file-lock."""
+    import os
+    import json
+    lock_file = Path(config.paths.temp_directory) / "global_backup.lock"
+    if lock_file.exists():
+        try:
+            data = json.loads(lock_file.read_text())
+            if data.get("pid") == os.getpid() and data.get("mode") == mode:
+                lock_file.unlink(missing_ok=True)
+                logger.info(f"Released global backup lock for {mode}")
+        except Exception:
+            try:
+                lock_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 # ═══════════════════════════════════════════════════════════════
 # Cloud backup task
 # ═══════════════════════════════════════════════════════════════
@@ -57,9 +150,16 @@ def cloud_backup_task(config):
     max_attempts = config.cloud.max_attempts
     retry_delay = config.cloud.retry_delay_seconds
 
+    if not acquire_global_backup_lock(config, "cloud"):
+        error_msg = "Failed to acquire global backup lock (another backup run is currently active)"
+        raise RuntimeError(error_msg)
+
     try:
         for attempt in range(max_attempts):
             try:
+                from core.health import pre_backup_health
+                pre_backup_health(config.paths.source_drive, "cloud")
+
                 fy_prefix = get_fy_prefix()
 
                 ok, reason = check_clock_skew()
@@ -175,30 +275,35 @@ def cloud_backup_task(config):
                     raise
 
     finally:
-        ended_at = _utcnow()
-        duration = time.time() - datetime.fromisoformat(started_at).timestamp()
+        try:
+            ended_at = _utcnow()
+            duration = time.time() - datetime.fromisoformat(started_at).timestamp()
 
-        db.insert_run({
-            "run_id": run_id,
-            "mode": "cloud",
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "status": status if status != "CLOUD_SKIPPED" else "CLOUD_FAILED",
-            "exit_code": sync_result.get("exit_code", -1),
-            "duration_seconds": duration,
-            "error_message": error_msg,
-        })
+            db.insert_run({
+                "run_id": run_id,
+                "mode": "cloud",
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "status": status if status != "CLOUD_SKIPPED" else "CLOUD_FAILED",
+                "exit_code": sync_result.get("exit_code", -1),
+                "duration_seconds": duration,
+                "error_message": error_msg,
+            })
 
-        if error_msg:
-            send_failure_alert(
-                config.notifications,
-                config.firm_name,
-                error_msg,
-                {"mode": "cloud", "run_id": run_id, "status": status},
-            )
+            if error_msg:
+                send_failure_alert(
+                    config.notifications,
+                    config.firm_name,
+                    error_msg,
+                    {"mode": "cloud", "run_id": run_id, "status": status},
+                )
 
-        db.wal_checkpoint()
-        db.close()
+            db.wal_checkpoint()
+        except Exception as e:
+            logger.error(f"Failed to record run history / send alert: {e}")
+        finally:
+            db.close()
+            release_global_backup_lock(config, "cloud")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -221,9 +326,16 @@ def lan_backup_task(config):
     max_attempts = config.lan.max_attempts
     retry_delay = config.lan.retry_delay_seconds
 
+    if not acquire_global_backup_lock(config, "lan"):
+        error_msg = "Failed to acquire global backup lock (another backup run is currently active)"
+        raise RuntimeError(error_msg)
+
     try:
         for attempt in range(max_attempts):
             try:
+                from core.health import pre_backup_health
+                pre_backup_health(config.paths.source_drive, "lan")
+
                 if config.wol.enabled:
                     ensure_server_online(config)
 
@@ -287,36 +399,41 @@ def lan_backup_task(config):
                     raise
 
     finally:
-        ended_at = _utcnow()
-        duration = time.time() - datetime.fromisoformat(started_at).timestamp()
+        try:
+            ended_at = _utcnow()
+            duration = time.time() - datetime.fromisoformat(started_at).timestamp()
 
-        db.insert_run({
-            "run_id": run_id,
-            "mode": "lan",
-            "started_at": started_at,
-            "ended_at": ended_at,
-            "status": status if status != "LAN_SKIPPED" else "LAN_FAILED",
-            "exit_code": sync_result.get("exit_code", -1),
-            "duration_seconds": duration,
-            "error_message": error_msg,
-        })
+            db.insert_run({
+                "run_id": run_id,
+                "mode": "lan",
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "status": status if status != "LAN_SKIPPED" else "LAN_FAILED",
+                "exit_code": sync_result.get("exit_code", -1),
+                "duration_seconds": duration,
+                "error_message": error_msg,
+            })
 
-        if error_msg:
-            send_failure_alert(
-                config.notifications,
-                config.firm_name,
-                error_msg,
-                {"mode": "lan", "run_id": run_id, "status": status},
-            )
+            if error_msg:
+                send_failure_alert(
+                    config.notifications,
+                    config.firm_name,
+                    error_msg,
+                    {"mode": "lan", "run_id": run_id, "status": status},
+                )
 
-        db.wal_checkpoint()
-        db.close()
+            db.wal_checkpoint()
+        except Exception as e:
+            logger.error(f"Failed to record run history / send alert: {e}")
+        finally:
+            db.close()
+            release_global_backup_lock(config, "lan")
 
-        if config.lan.shutdown_after_backup and config.wol.enabled:
-            try:
-                shutdown_server(config.wol.server_ip)
-            except Exception as e:
-                logger.warning(f"Server shutdown failed (non-critical): {e}")
+            if config.lan.shutdown_after_backup and config.wol.enabled:
+                try:
+                    shutdown_server(config.wol.server_ip)
+                except Exception as e:
+                    logger.warning(f"Server shutdown failed (non-critical): {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -369,11 +486,13 @@ def backup(config_path: str = "config.yaml", mode: str = "all"):
 
     config = load_config(config_path)
     configure_logging(config.paths.log_directory)
+    try:
+        from core.logging import configure_prefect_bridge
+        configure_prefect_bridge()
+    except Exception:
+        pass
 
     logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
-
-    # Health check
-    pre_backup_health(config.paths.source_drive, mode)
 
     excs = []
 

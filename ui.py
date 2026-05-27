@@ -20,9 +20,15 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from loguru import logger
+
+from prefect.client.orchestration import get_client
+from prefect.client.schemas.filters import FlowRunFilter
+from prefect.client.schemas.objects import StateType
+from prefect.deployments import run_deployment
 
 from core.fy_router import get_fy_prefix
 from core.manifest import ManifestDB
@@ -95,7 +101,7 @@ def _lock_path(pipeline: str) -> Path:
     return _lock_dir() / f".lock_{pipeline}"
 
 
-def _is_running(pipeline: str) -> bool:
+async def _is_running(pipeline: str) -> bool:
     """Check if a backup pipeline is executing.
 
     First checks the short-lived lock file (prevents double-clicks on trigger).
@@ -104,7 +110,7 @@ def _is_running(pipeline: str) -> bool:
     """
     if _lock_active(pipeline):
         return True
-    return _prefect_has_active_run(pipeline)
+    return await _prefect_has_active_run(pipeline)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -143,34 +149,29 @@ def _lock_active(pipeline: str) -> bool:
     return False
 
 
-def _prefect_has_active_run(pipeline: str) -> bool:
-    """Check Prefect API for an active flow run of the given pipeline."""
+async def _prefect_has_active_run(pipeline: str) -> bool:
+    """Check Prefect API for an active flow run of the given pipeline using the Python SDK."""
     try:
-        deployment = f"backup-{pipeline}"
-        result = subprocess.run(
-            [
-                "prefect", "flow-run", "ls",
-                "--state", "RUNNING",
-                "--limit", "20",
-                "--output", "json",
-            ],
-            capture_output=True, text=True, timeout=10,
-            cwd=str(Path(__file__).resolve().parent),
-        )
-        if result.returncode != 0 or not result.stdout.strip():
+        async with get_client() as client:
+            runs = await client.read_flow_runs(
+                flow_run_filter=FlowRunFilter(
+                    state={"type": {"any_": [StateType.RUNNING]}}
+                ),
+                limit=20,
+            )
+            for run in runs:
+                tags = run.tags or []
+                parameters = run.parameters or {}
+                if pipeline in tags or parameters.get("mode") == pipeline:
+                    return True
             return False
-        runs = json.loads(result.stdout)
-        for run in runs:
-            name = run.get("deployment_name", "") or run.get("name", "")
-            if deployment in name:
-                return True
-        return False
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to query Prefect API: {e}")
         return False
 
 
-def _acquire_lock(pipeline: str, run_id: str) -> bool:
-    if _is_running(pipeline):
+async def _acquire_lock(pipeline: str, run_id: str) -> bool:
+    if await _is_running(pipeline):
         return False
     _lock_path(pipeline).write_text(
         json.dumps({
@@ -189,33 +190,24 @@ def _release_lock(pipeline: str):
 # ── Trigger pipeline (via Prefect deployment API) ────────────
 
 
-def _trigger_deployment(pipeline: str) -> str:
-    """Fire a Prefect deployment run via CLI subprocess.
-
-    Runs completely external to the Python process — no Prefect
-    context conflict with the scheduler's serve() call.
-    """
-    result = subprocess.run(
-        ["prefect", "deployment", "run", f"aam-backup/backup-{pipeline}"],
-        capture_output=True, text=True, timeout=30,
+async def _trigger_deployment(pipeline: str) -> str:
+    """Fire a Prefect deployment run asynchronously via the direct Python SDK."""
+    flow_run = await run_deployment(
+        name=f"aam-backup/backup-{pipeline}"
     )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Prefect deployment run failed: {result.stderr.strip()[:200]}"
-        )
-    return result.stdout
+    return str(flow_run.id)
 
 
-def _run_in_background(pipeline: str, config_path: str):
-    """Trigger pipeline via Prefect scheduler. Lock prevents duplicate clicks."""
+async def _run_in_background(pipeline: str, config_path: str):
+    """Trigger pipeline asynchronously via Prefect SDK. Lock prevents duplicate clicks."""
     run_id = str(uuid.uuid4())[:8]
-    if not _acquire_lock(pipeline, run_id):
+    if not await _acquire_lock(pipeline, run_id):
         logger.warning(f"{pipeline} already running — skipping trigger")
         return
 
     try:
         logger.info(f"Manual trigger: {pipeline} (run={run_id})")
-        _trigger_deployment(pipeline)
+        await _trigger_deployment(pipeline)
     except Exception as e:
         logger.error(f"Manual {pipeline} trigger failed: {e}")
     finally:
@@ -289,13 +281,13 @@ def _require_auth(request: Request):
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, status: str = ""):
+async def dashboard(request: Request, status: str = ""):
     _require_auth(request)
-    return HTMLResponse(_render_dashboard(status))
+    return HTMLResponse(await _render_dashboard(status))
 
 
 @app.get("/status")
-def status(request: Request):
+async def status(request: Request):
     _require_auth(request)
     cfg = _cfg()
     if not Path(cfg.paths.database_path).exists():
@@ -307,11 +299,11 @@ def status(request: Request):
             "firm": "AAM",
             "fy_prefix": get_fy_prefix(),
             "cloud": {
-                "running": _is_running("cloud"),
+                "running": await _is_running("cloud"),
                 "last_run": _last_run_summary(db, "cloud"),
             },
             "lan": {
-                "running": _is_running("lan"),
+                "running": await _is_running("lan"),
                 "last_run": _last_run_summary(db, "lan"),
             },
             "manifest": {
@@ -340,20 +332,20 @@ def health():
 
 
 @app.post("/trigger/cloud")
-def trigger_cloud(request: Request, config_path: str = "config.yaml"):
+async def trigger_cloud(request: Request, background_tasks: BackgroundTasks, config_path: str = "config.yaml"):
     _require_auth(request)
-    if _is_running("cloud"):
+    if await _is_running("cloud"):
         return RedirectResponse("/?status=already_running_cloud", status_code=303)
-    threading.Thread(target=_run_in_background, args=("cloud", config_path), daemon=True).start()
+    background_tasks.add_task(_run_in_background, "cloud", config_path)
     return RedirectResponse("/?status=triggered_cloud", status_code=303)
 
 
 @app.post("/trigger/lan")
-def trigger_lan(request: Request, config_path: str = "config.yaml"):
+async def trigger_lan(request: Request, background_tasks: BackgroundTasks, config_path: str = "config.yaml"):
     _require_auth(request)
-    if _is_running("lan"):
+    if await _is_running("lan"):
         return RedirectResponse("/?status=already_running_lan", status_code=303)
-    threading.Thread(target=_run_in_background, args=("lan", config_path), daemon=True).start()
+    background_tasks.add_task(_run_in_background, "lan", config_path)
     return RedirectResponse("/?status=triggered_lan", status_code=303)
 
 
@@ -429,7 +421,7 @@ tr:hover { background: #1f2937; }
 </style>"""
 
 
-def _render_dashboard(flash: str = "") -> str:
+async def _render_dashboard(flash: str = "") -> str:
     cfg = _cfg()
     db_path = Path(cfg.paths.database_path)
     db = ManifestDB(db_path) if db_path.exists() else None
@@ -446,8 +438,8 @@ def _render_dashboard(flash: str = "") -> str:
 
     if db:
         try:
-            cloud_running = "Running" if _is_running("cloud") else "Idle"
-            lan_running = "Running" if _is_running("lan") else "Idle"
+            cloud_running = "Running" if await _is_running("cloud") else "Idle"
+            lan_running = "Running" if await _is_running("lan") else "Idle"
             cr = _last_run_summary(db, "cloud")
             lr = _last_run_summary(db, "lan")
             if cr:
@@ -463,14 +455,14 @@ def _render_dashboard(flash: str = "") -> str:
             cloud_files = db.file_count("cloud_status")
             lan_files = db.file_count("lan_status")
 
-            cloud_class = "running" if _is_running("cloud") else (
+            cloud_class = "running" if await _is_running("cloud") else (
                 "success" if cr and "COMPLETE" in cr["status"] else "failed"
             )
-            lan_class = "running" if _is_running("lan") else (
+            lan_class = "running" if await _is_running("lan") else (
                 "success" if lr and "COMPLETE" in lr["status"] else "failed"
             )
-            cloud_btn = "disabled" if _is_running("cloud") else ""
-            lan_btn = "disabled" if _is_running("lan") else ""
+            cloud_btn = "disabled" if await _is_running("cloud") else ""
+            lan_btn = "disabled" if await _is_running("lan") else ""
 
             h = _get_health()
             if "error" not in h:

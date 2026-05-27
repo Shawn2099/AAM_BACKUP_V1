@@ -50,13 +50,13 @@ def wait_for_server(
     """
     start_time = time.time()
     while time.time() - start_time < wake_timeout:
-        time.sleep(ping_interval)
         if _smb_port_open(server_ip):
             logger.info(f"Backup server {server_ip} SMB accessible after WoL")
             if stability_wait > 0:
                 logger.debug(f"Waiting {stability_wait}s for server stability")
                 time.sleep(stability_wait)
             return
+        time.sleep(ping_interval)
 
     raise WolTimeout(
         f"Backup server {server_ip} SMB not accessible within {wake_timeout}s after WoL"

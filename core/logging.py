@@ -38,3 +38,29 @@ def configure(log_dir: str | Path) -> None:
         format=LOG_FORMAT,
         enqueue=True,
     )
+
+
+def configure_prefect_bridge():
+    """Forward Loguru messages to the active Prefect run logger if running under Prefect."""
+    from prefect.context import FlowRunContext, TaskRunContext
+
+    def prefect_sink(message):
+        if FlowRunContext.get() or TaskRunContext.get():
+            try:
+                from prefect import get_run_logger
+                prefect_logger = get_run_logger()
+                level = message.record["level"].name
+                if level == "INFO":
+                    prefect_logger.info(message)
+                elif level == "WARNING":
+                    prefect_logger.warning(message)
+                elif level == "ERROR":
+                    prefect_logger.error(message)
+                elif level == "CRITICAL":
+                    prefect_logger.critical(message)
+                else:
+                    prefect_logger.debug(message)
+            except Exception:
+                pass
+
+    logger.add(prefect_sink, level="INFO")
