@@ -3,39 +3,12 @@
 Reference: AAM_BACKUP_V2/core/rclone.py — proven classification and temp config pattern.
 """
 
-import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 from loguru import logger
 
-
-def write_temp_rclone_config(
-    gcs_key_path: str,
-    location: str = "asia-south1",
-    project_number: str = "920173882190",
-) -> str:
-    """Write temporary rclone config file for GCS access.
-
-    Uses mkstemp + close to avoid Windows file handle lock.
-    Returns path to temp file. Caller cleans up in finally.
-    """
-    key_abs = str(Path(gcs_key_path).resolve()).replace("\\", "/")
-    content = f"""[aam_gcs]
-type = google cloud storage
-service_account_file = {key_abs}
-project_number = {project_number}
-object_acl =
-bucket_acl =
-bucket_policy_only = true
-location = {location}
-storage_class = COLDLINE
-"""
-    fd, cfg_path = tempfile.mkstemp(suffix=".conf", prefix="rclone_")
-    os.close(fd)
-    Path(cfg_path).write_text(content, encoding="utf-8")
-    return cfg_path
+from core.rclone_config import write_temp_config
 
 
 def classify_rclone_exit(code: int) -> str:
@@ -76,6 +49,9 @@ def build_rclone_sync_command(
     config_path: str,
     bwlimit: str = "10M",
     retries: int = 3,
+    storage_class: str = "COLDLINE",
+    transfers: int = 4,
+    checkers: int = 16,
 ) -> list[str]:
     """Build rclone sync command with GCS-optimized flags."""
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
@@ -86,11 +62,11 @@ def build_rclone_sync_command(
         "--config", config_path,
         "--fast-list",
         "--gcs-no-check-bucket",
-        "--gcs-storage-class", "COLDLINE",
+        "--gcs-storage-class", storage_class,
         "--modify-window", "1s",
         "--bwlimit", bwlimit,
-        "--transfers", "4",
-        "--checkers", "16",
+        "--transfers", str(transfers),
+        "--checkers", str(checkers),
         "--retries", str(retries),
         "--retries-sleep", "30s",
         "--track-renames",
@@ -110,6 +86,9 @@ def run_cloud_sync(
     project_number: str = "920173882190",
     bwlimit: str = "10M",
     retries: int = 3,
+    storage_class: str = "COLDLINE",
+    transfers: int = 4,
+    checkers: int = 16,
     timeout: int = 21600,
 ) -> dict:
     """Execute rclone sync to mirror source → GCS.
@@ -122,8 +101,8 @@ def run_cloud_sync(
     config_path = None
 
     try:
-        config_path = write_temp_rclone_config(gcs_key_path, location, project_number)
-        cmd = build_rclone_sync_command(source, bucket, fy_prefix, config_path, bwlimit, retries)
+        config_path = write_temp_config(gcs_key_path, location, project_number, storage_class)
+        cmd = build_rclone_sync_command(source, bucket, fy_prefix, config_path, bwlimit, retries, storage_class, transfers, checkers)
 
         logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")
 

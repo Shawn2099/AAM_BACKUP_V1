@@ -1,7 +1,7 @@
 # Windows Server 2016 — Deployment Findings
 
 **Date**: 2026-05-25 / 2026-05-26
-**Server**: innovizta-server-1 (10.10.186.231)
+**Server**: innovizta-server-1 (10.10.186.231),User name :Administrator
 **OS**: Windows Server 2016 Standard 1607 (build 14393)
 **Python**: 3.12.3 (installed via uv)
 

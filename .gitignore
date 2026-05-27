@@ -11,3 +11,8 @@ logs/
 .env
 .venv/
 .uv/
+config.yaml
+*.json
+.pytest_cache/
+graphify-out/
+.commandcode/

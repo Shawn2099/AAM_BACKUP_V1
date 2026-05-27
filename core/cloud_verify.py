@@ -10,6 +10,7 @@ def verify_cloud_integrity(
     bucket: str,
     fy_prefix: str,
     config_path: str,
+    timeout: int = 600,
 ) -> dict:
     """Run rclone check --one-way to verify source matches GCS.
 
@@ -22,6 +23,7 @@ def verify_cloud_integrity(
         bucket: GCS bucket name.
         fy_prefix: Fiscal year folder prefix.
         config_path: Path to rclone config file.
+        timeout: Max seconds for the check (default 600).
 
     Returns:
         {"verified": bool, "exit_code": int, "error": str | None}
@@ -44,7 +46,7 @@ def verify_cloud_integrity(
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=timeout,
         )
 
         verified = result.returncode == 0

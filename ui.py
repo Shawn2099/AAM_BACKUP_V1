@@ -1,21 +1,26 @@
 """AAM Backup Automation — Dashboard UI with manual triggers.
 
-FastAPI server on port 8080. Safety-first:
+FastAPI server bound to configurable host:port. Safety-first:
   - Lock file per pipeline prevents concurrent runs
   - Confirmation required for trigger
   - Buttons disabled while pipeline is running
+  - API key auth via session cookie or X-API-Key header
 """
 
+import hmac
 import json
 import os
+import secrets
 import shutil
 import subprocess
+import sys
 import threading
+import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from loguru import logger
 
@@ -23,6 +28,46 @@ from core.fy_router import get_fy_prefix
 from core.manifest import ManifestDB
 
 app = FastAPI(title="AAM Backup Dashboard")
+
+# ── In-memory session store ──────────────────────────
+
+_sessions: dict[str, dict] = {}
+_SESSION_TTL = timedelta(hours=24)
+
+
+def _create_session() -> str:
+    token = secrets.token_hex(32)
+    _sessions[token] = {"created_at": time.time()}
+    return token
+
+
+def _validate_session(token: str | None) -> bool:
+    if not token:
+        return False
+    session = _sessions.get(token)
+    if not session:
+        return False
+    if time.time() - session["created_at"] > _SESSION_TTL.total_seconds():
+        del _sessions[token]
+        return False
+    return True
+
+
+def _get_api_key() -> str:
+    cfg = _cfg()
+    return cfg.dashboard.api_key if cfg.dashboard.auth_enabled else ""
+
+
+def _auth_enabled() -> bool:
+    return _cfg().dashboard.auth_enabled
+
+
+def _check_api_key_header(request: Request) -> bool:
+    header_key = request.headers.get("X-API-Key", "")
+    configured_key = _get_api_key()
+    if not configured_key:
+        return True
+    return hmac.compare_digest(header_key, configured_key)
 
 # ── Lazy config (works on any OS, validates only on use) ─────
 
@@ -51,23 +96,76 @@ def _lock_path(pipeline: str) -> Path:
 
 
 def _is_running(pipeline: str) -> bool:
+    """Check if a backup pipeline is executing.
+
+    First checks the short-lived lock file (prevents double-clicks on trigger).
+    Then polls the Prefect API for active flow runs matching this deployment.
+    Only returns False if neither lock nor Prefect shows running state.
+    """
+    if _lock_active(pipeline):
+        return True
+    return _prefect_has_active_run(pipeline)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Check if a process is alive (cross-platform)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        pass
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return f"{pid}" in result.stdout
+        except Exception:
+            return False
+    return False
+
+
+def _lock_active(pipeline: str) -> bool:
+    """Check if lock file is still held (prevents duplicate trigger clicks)."""
     lp = _lock_path(pipeline)
     if not lp.exists():
         return False
     try:
         data = json.loads(lp.read_text())
-        pid_running = False
-        try:
-            os.kill(data["pid"], 0)
-            pid_running = True
-        except OSError:
-            pass
-        if not pid_running:
-            lp.unlink(missing_ok=True)
-            return False
-        return True
     except (json.JSONDecodeError, KeyError):
         lp.unlink(missing_ok=True)
+        return False
+
+    if _pid_alive(data["pid"]):
+        return True
+    lp.unlink(missing_ok=True)
+    return False
+
+
+def _prefect_has_active_run(pipeline: str) -> bool:
+    """Check Prefect API for an active flow run of the given pipeline."""
+    try:
+        deployment = f"backup-{pipeline}"
+        result = subprocess.run(
+            [
+                "prefect", "flow-run", "ls",
+                "--state", "RUNNING",
+                "--limit", "20",
+                "--output", "json",
+            ],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(Path(__file__).resolve().parent),
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+        runs = json.loads(result.stdout)
+        for run in runs:
+            name = run.get("deployment_name", "") or run.get("name", "")
+            if deployment in name:
+                return True
+        return False
+    except Exception:
         return False
 
 
@@ -78,7 +176,7 @@ def _acquire_lock(pipeline: str, run_id: str) -> bool:
         json.dumps({
             "pid": os.getpid(),
             "run_id": run_id,
-            "started_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": datetime.now(UTC).isoformat(),
         })
     )
     return True
@@ -127,13 +225,78 @@ def _run_in_background(pipeline: str, config_path: str):
 # ── API endpoints ────────────────────────────────────────────
 
 
+@app.get("/login", response_class=HTMLResponse)
+def login_page(error: str = ""):
+    error_html = f'<p style="color:#ef4444;margin-bottom:1rem">{error}</p>' if error else ""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>AAM Backup — Login</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
+.login {{ background: #1f2937; padding: 2rem; border-radius: 0.5rem; width: 320px; }}
+h1 {{ font-size: 1.25rem; margin-bottom: 1.5rem; text-align: center; }}
+label {{ display: block; font-size: 0.875rem; color: #9ca3af; margin-bottom: 0.25rem; }}
+input {{ width: 100%; padding: 0.5rem; border: 1px solid #374151; border-radius: 0.375rem; background: #111827; color: #e5e7eb; margin-bottom: 1rem; }}
+button {{ width: 100%; padding: 0.5rem; border: none; border-radius: 0.375rem; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }}
+button:hover {{ background: #1d4ed8; }}
+</style></head>
+<body>
+<div class="login">
+<h1>AAM Backup Dashboard</h1>
+{error_html}
+<form action="/login" method="post">
+<label for="api_key">API Key</label>
+<input type="password" name="api_key" id="api_key" required autofocus>
+<button type="submit">Sign In</button>
+</form>
+</div>
+</body>
+</html>"""
+
+
+@app.post("/login")
+def login_submit(request: Request, api_key: str = ""):
+    configured_key = _get_api_key()
+    if not configured_key or hmac.compare_digest(api_key, configured_key):
+        token = _create_session()
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie(
+            key="session", value=token,
+            httponly=True, samesite="lax",
+            max_age=int(_SESSION_TTL.total_seconds()),
+        )
+        return resp
+    return RedirectResponse("/login?error=Invalid+API+key", status_code=303)
+
+
+@app.get("/logout")
+def logout():
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie("session")
+    return resp
+
+
+def _require_auth(request: Request):
+    if not _auth_enabled():
+        return
+    session_token = request.cookies.get("session")
+    if _validate_session(session_token):
+        return
+    if _check_api_key_header(request):
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard(status: str = ""):
+def dashboard(request: Request, status: str = ""):
+    _require_auth(request)
     return HTMLResponse(_render_dashboard(status))
 
 
 @app.get("/status")
-def status():
+def status(request: Request):
+    _require_auth(request)
     cfg = _cfg()
     if not Path(cfg.paths.database_path).exists():
         return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
@@ -161,8 +324,24 @@ def status():
         db.close()
 
 
+@app.get("/health")
+def health():
+    """Unauthenticated health check for monitoring systems."""
+    try:
+        src = _cfg().paths.source_drive
+        source_ok = Path(src).exists()
+        return JSONResponse({
+            "status": "healthy",
+            "source_drive": str(src),
+            "source_accessible": source_ok,
+        })
+    except Exception:
+        return JSONResponse({"status": "healthy"}, status_code=200)
+
+
 @app.post("/trigger/cloud")
-def trigger_cloud(config_path: str = "config.yaml"):
+def trigger_cloud(request: Request, config_path: str = "config.yaml"):
+    _require_auth(request)
     if _is_running("cloud"):
         return RedirectResponse("/?status=already_running_cloud", status_code=303)
     threading.Thread(target=_run_in_background, args=("cloud", config_path), daemon=True).start()
@@ -170,7 +349,8 @@ def trigger_cloud(config_path: str = "config.yaml"):
 
 
 @app.post("/trigger/lan")
-def trigger_lan(config_path: str = "config.yaml"):
+def trigger_lan(request: Request, config_path: str = "config.yaml"):
+    _require_auth(request)
     if _is_running("lan"):
         return RedirectResponse("/?status=already_running_lan", status_code=303)
     threading.Thread(target=_run_in_background, args=("lan", config_path), daemon=True).start()
@@ -380,14 +560,18 @@ def _render_dashboard(flash: str = "") -> str:
 
 <div class="info">
     <p>{health_info}</p>
-    <p style="margin-top:0.25rem">AAM Backup Automation V1 — Auto-refreshes every 30s</p>
+    <p style="margin-top:0.25rem">
+        AAM Backup Automation V1 — Auto-refreshes every 30s
+        {' · <a href="/logout" style="color:#60a5fa">Logout</a>' if _auth_enabled() else ''}
+    </p>
 </div>
 </body>
 </html>"""
 
 
 def run():
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    cfg = _cfg()
+    uvicorn.run(app, host=cfg.dashboard.bind_address, port=cfg.dashboard.port)
 
 
 if __name__ == "__main__":

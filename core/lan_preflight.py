@@ -44,7 +44,9 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
         )
 
         code = result.returncode
-        ok = code < 16  # Bit 4 (16) = fatal error
+        # Bit 4 (16) = fatal error. Bit 3 (8) = copy errors — treat as preflight
+        # failure since source files can't be read. Bits 0-7 only = OK.
+        ok = code < 8
 
         if not ok:
             stderr_snippet = result.stderr[:200] if result.stderr else "no stderr"

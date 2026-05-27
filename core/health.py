@@ -1,8 +1,9 @@
 """Pre-backup health checks — source drive, binaries, disk space, clock, GCS key."""
 
+import http.client
 import shutil
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from loguru import logger
@@ -66,27 +67,35 @@ def check_gcs_key(key_path: str) -> tuple[bool, str]:
 
 
 def check_clock_skew(max_skew_seconds: int = 600) -> tuple[bool, str]:
-    """Verify system clock is within acceptable skew (default: 10 minutes).
+    """Verify system clock is within acceptable skew for GCS JWT auth.
 
-    Compares local UTC time against a rough local check.
+    Compares local UTC time against Google's HTTP Date header.
     GCS OAuth JWT tokens are rejected if clock skew >10 minutes.
     """
     try:
-        local_ts = datetime.now(timezone.utc).timestamp()
-        now_ts = time.time()
-        difference = abs(local_ts - now_ts)
+        conn = http.client.HTTPSConnection("www.googleapis.com", timeout=10)
+        conn.request("HEAD", "/")
+        resp = conn.getresponse()
+        google_date_str = resp.getheader("Date") or resp.getheader("date")
+        conn.close()
+
+        if not google_date_str:
+            return False, "Could not retrieve Date header from Google"
+
+        google_time = parsedate_to_datetime(google_date_str)
+        local_utc = datetime.now(UTC)
+        difference = abs((local_utc - google_time).total_seconds())
 
         if difference > max_skew_seconds:
             return False, (
-                f"System clock may be incorrect. "
-                f"Detected {difference:.0f}s difference between UTC and local time "
+                f"System clock skew detected: {difference:.0f}s difference from Google time "
                 f"(max allowed: {max_skew_seconds}s). Run 'w32tm /resync'."
             )
 
-        logger.debug(f"Clock OK: {difference:.1f}s skew (limit: {max_skew_seconds}s)")
+        logger.debug(f"Clock OK: {difference:.1f}s skew from Google (limit: {max_skew_seconds}s)")
         return True, ""
     except Exception as e:
-        logger.warning(f"Could not verify clock skew: {e} — skipping")
+        logger.warning(f"Could not verify clock skew (Google not reachable): {e} — skipping")
         return True, ""
 
 

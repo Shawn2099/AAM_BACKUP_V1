@@ -19,8 +19,9 @@ def compute_md5(file_path: str | Path) -> str:
 def verify_checksum(file_path: str | Path, expected: str) -> bool:
     """Verify file checksum matches expected value.
 
-    Returns True if checksum matches or expected is PENDING_CHECKSUM.
+    Returns True if checksum matches. Returns False for PENDING_CHECKSUM
+    (no false positives — callers must handle uncatalogued files explicitly).
     """
     if expected == PENDING_CHECKSUM:
-        return True
+        return False
     return compute_md5(file_path) == expected

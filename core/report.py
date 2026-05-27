@@ -4,9 +4,9 @@ Reads from ManifestDB run_history. Zero knowledge of backup internals.
 """
 
 import smtplib
+from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime, timezone
 
 from loguru import logger
 
@@ -34,6 +34,7 @@ def _send_email(
     msg["To"] = ", ".join(config.recipients)
     msg.attach(MIMEText(body_html, "html"))
 
+    server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
     try:
         if config.smtp_port == 465:
             server = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=30)
@@ -50,6 +51,11 @@ def _send_email(
 
     except Exception as e:
         logger.error(f"Failed to send email '{subject}': {e}")
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                pass
         return False
 
 
@@ -133,7 +139,7 @@ def send_summary_report(
         files = r["files_copied"] or 0
         rows += f"<tr><td>{start}</td><td>{mode}</td><td>{status}</td><td>{files}</td></tr>"
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     subject = f"Backup {period} Report — {firm_name}"
     body = f"""<html><body>
 <h2>{period} Backup Report — {firm_name}</h2>
@@ -177,8 +183,9 @@ def send_monthly_report(
 
 
 def _human_bytes(n: int) -> str:
+    val: float = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} PB"
+        if val < 1024:
+            return f"{val:.1f} {unit}"
+        val /= 1024
+    return f"{val:.1f} PB"

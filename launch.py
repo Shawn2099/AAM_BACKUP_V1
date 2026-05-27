@@ -26,6 +26,7 @@ def _run_dashboard():
     """Start dashboard UI on port 8080 — imports in-thread to avoid early config load."""
     print("[launch] Starting Dashboard UI on http://0.0.0.0:8080 ...")
     import uvicorn
+
     from ui import app
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
 
@@ -124,7 +125,8 @@ def main():
     print()
 
     from prefect import serve
-    from serve import cloud_deployment, lan_deployment, report_deployment, monthly_deployment
+
+    from serve import cloud_deployment, lan_deployment, monthly_deployment, report_deployment
 
     shutdown_clean = False
     try:

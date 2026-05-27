@@ -6,7 +6,7 @@ different times, no contention).
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -61,7 +61,7 @@ INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class ManifestDB:
@@ -94,9 +94,9 @@ class ManifestDB:
         file_size: int,
         mtime: float,
         *,
-        lan_status: str = None,
-        cloud_status: str = None,
-        md5_checksum: str = None,
+        lan_status: str | None = None,
+        cloud_status: str | None = None,
+        md5_checksum: str | None = None,
     ):
         with self._lock:
             conn = self._get_conn()
@@ -251,7 +251,7 @@ class ManifestDB:
             )
             conn.commit()
 
-    def get_runs_since(self, days: int, mode: str = None) -> list[dict]:
+    def get_runs_since(self, days: int, mode: str | None = None) -> list[dict]:
         conn = self._get_conn()
         if mode:
             rows = conn.execute(
@@ -270,7 +270,7 @@ class ManifestDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def last_run(self, mode: str = None) -> dict | None:
+    def last_run(self, mode: str | None = None) -> dict | None:
         conn = self._get_conn()
         if mode:
             row = conn.execute(

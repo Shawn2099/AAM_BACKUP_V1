@@ -5,7 +5,6 @@ Validated on load. No dead sections. Only what's actually used.
 
 import ipaddress
 import re
-from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -56,6 +55,9 @@ class LanConfig(BaseModel):
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
     shutdown_after_backup: bool = True
+    max_attempts: int = Field(default=2, ge=1, le=10, description="Flow-level retry attempts for LAN backup orchestration")
+    retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
+    mt_threads: int = Field(default=8, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
 
 
 class WolConfig(BaseModel):
@@ -92,6 +94,11 @@ class CloudConfig(BaseModel):
     bandwidth_limit: str = "10M"
     retry_count: int = Field(default=3, ge=1, le=10)
     subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
+    max_attempts: int = Field(default=3, ge=1, le=10, description="Flow-level retry attempts for cloud backup orchestration")
+    retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
+    verify_timeout_seconds: int = Field(default=600, ge=60, le=7200, description="Timeout for post-sync rclone check verify step")
+    transfers: int = Field(default=4, ge=1, le=64, description="rclone --transfers concurrent file transfers")
+    checkers: int = Field(default=16, ge=1, le=64, description="rclone --checkers concurrent file checkers")
 
     @field_validator("bucket")
     @classmethod
@@ -136,13 +143,43 @@ class NotificationConfig(BaseModel):
         return v
 
 
+class DashboardConfig(BaseModel):
+    auth_enabled: bool = True
+    api_key: str = Field(default="", description="API key for dashboard authentication")
+    bind_address: str = "127.0.0.1"
+    port: int = Field(default=8080, ge=1024, le=65535)
+
+    @model_validator(mode="after")
+    def api_key_required_when_auth_enabled(self) -> "DashboardConfig":
+        if self.auth_enabled and not self.api_key:
+            raise ValueError("api_key must be set when auth_enabled is True")
+        return self
+
+    def __repr__(self) -> str:
+        return f"DashboardConfig(auth_enabled={self.auth_enabled}, api_key='***', bind_address='{self.bind_address}', port={self.port})"
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
+
+class ScheduleConfig(BaseModel):
+    """Per-deployment cron schedule configuration."""
+    cloud_cron: str = Field(default="0 18 * * *", description="Cloud backup cron expression")
+    lan_cron: str = Field(default="0 1 * * *", description="LAN backup cron expression")
+    weekly_cron: str = Field(default="0 8 * * MON", description="Weekly report cron expression")
+    monthly_cron: str = Field(default="0 8 1 * *", description="Monthly report cron expression")
+    timezone: str = Field(default="Asia/Kolkata", description="IANA timezone for all schedules")
+
+
 class AppConfig(BaseModel):
     firm_name: str = "AAM Associates"
     paths: PathsConfig
     lan: LanConfig = Field(default_factory=LanConfig)
     wol: WolConfig = Field(default_factory=WolConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
 
     @model_validator(mode="after")
     def cross_field_validation(self) -> "AppConfig":

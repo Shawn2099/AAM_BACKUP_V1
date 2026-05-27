@@ -55,7 +55,7 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         "/MIR",
         "/Z",
         "/XJ",
-        "/MT:8",
+        f"/MT:{lan_config.mt_threads}",
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
         "/V", "/TS", "/FP",
