@@ -1,15 +1,15 @@
-"""AAM Backup Automation V1 — Single Launch Script.
+"""AAM Backup Automation V1 — Dashboard + Scheduler.
 
-Starts all three services in one process:
+Connects to an already-running Prefect API server on port 4200.
+The Prefect server runs as a separate process (start_server.bat).
 
     uv run python launch.py
 
-Services:
-  - Prefect API server (subprocess, port 4200)
-  - Dashboard UI (in-process, port 8080)
+Services managed by this script:
+  - Dashboard UI (in-process, configurable host:port)
   - Backup scheduler (in-process, 4 deployments)
 
-Ctrl+C stops all services cleanly. Shutdown order: scheduler → dashboard → Prefect API.
+Ctrl+C stops both cleanly. The Prefect server continues running independently.
 """
 import os
 import subprocess
@@ -18,10 +18,8 @@ import threading
 import time
 from pathlib import Path
 
-# Force Prefect to use a single, shared local server on port 4200 instead of
-# spawning multiple heavy, isolated ephemeral server processes on random ports.
+# Force Prefect to connect to the local server on port 4200.
 os.environ["PREFECT_API_URL"] = "http://127.0.0.1:4200/api"
-os.environ["PREFECT_SERVER_API_PORT"] = "4200"
 
 PROJECT_DIR = Path(__file__).resolve().parent
 
@@ -39,19 +37,17 @@ def _run_dashboard():
     uvicorn.run(app, host=bind, port=port, log_level="warning")
 
 
-def _wait_for_prefect_api(url="http://127.0.0.1:4200/api", timeout=60):
-    """Poll the Prefect health endpoint until the API is ready."""
+def _check_prefect_api(url="http://127.0.0.1:4200/api"):
+    """Verify Prefect API server is running. Raises if not reachable."""
     import httpx
-    for _ in range(timeout):
-        try:
-            if httpx.get(f"{url}/health", timeout=2).status_code == 200:
-                return True
-        except httpx.ConnectError:
-            pass
-        except Exception:
-            pass
-        time.sleep(1)
-    print("[launch] WARNING: Prefect API did not become ready within timeout")
+    try:
+        resp = httpx.get(f"{url}/health", timeout=5)
+        if resp.status_code == 200:
+            return True
+    except httpx.ConnectError:
+        pass
+    except Exception:
+        pass
     return False
 
 
@@ -78,10 +74,7 @@ def _ensure_concurrency_limit():
 
 
 def _cancel_orphaned_runs():
-    """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session.
-    PENDING/RUNNING runs that were never finished before the scheduler or server died
-    will never complete. Cancel them on launch to ensure a clean UI and lock state.
-    """
+    """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session."""
     try:
         for state in ["PENDING", "RUNNING"]:
             result = subprocess.run(
@@ -122,24 +115,18 @@ def main():
     print("  AAM Backup Automation V1 — Launch")
     print("=" * 50)
 
-    # Start Prefect API in a subprocess (needs its own process group)
-    prefect_proc = subprocess.Popen(
-        ["prefect", "server", "start"],
-        cwd=str(PROJECT_DIR),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
-    )
+    # Verify Prefect API server is running
+    print("[launch] Checking Prefect API server...")
+    if not _check_prefect_api():
+        print("[launch] ERROR: Prefect API server is not running on http://127.0.0.1:4200")
+        print("[launch] Start it first: start_server.bat")
+        print("[launch] Or run: uv run prefect server start")
+        sys.exit(1)
+    print("[launch] Prefect API server is running")
 
-    # Start dashboard in daemon thread — uvicorn has no critical state to clean up.
-    # Lock files are handled by main thread cleanup. Daemon ensures process
-    # exits cleanly even if the Python runtime struggles with thread joins on Win32.
+    # Start dashboard in daemon thread
     dash_thread = threading.Thread(target=_run_dashboard, daemon=True)
     dash_thread.start()
-
-    # Wait for Prefect API to be ready by polling the health endpoint
-    print("[launch] Waiting for Prefect API to be ready...")
-    _wait_for_prefect_api()
 
     # Create the global concurrency limit for backup serialization
     _ensure_concurrency_limit()
@@ -151,12 +138,12 @@ def main():
     # so it returns cleanly on Ctrl+C. With pause_on_shutdown=False,
     # deployment schedules stay active across restarts.
     print("[launch] Starting backup scheduler (main thread)...")
-    print("[launch] All services started")
     from models.config import CONFIG_PATH, load_config as _lc
     _cfg = _lc(CONFIG_PATH)
     print(f"[launch] Dashboard: http://{_cfg.dashboard.bind_address}:{_cfg.dashboard.port}")
     print("[launch] Prefect:   http://localhost:4200")
-    print("[launch] Press Ctrl+C to stop all services")
+    print("[launch] All services started")
+    print("[launch] Press Ctrl+C to stop dashboard + scheduler")
     print()
 
     from prefect import serve
@@ -178,23 +165,8 @@ def main():
         shutdown_clean = True
     finally:
         print(f"\n[launch] Shutting down{' (clean)' if shutdown_clean else ' (interrupted)'}...")
-
-        # 1) Terminate Prefect API — don't block on wait to avoid signal races
-        try:
-            prefect_proc.terminate()
-        except Exception:
-            pass
-        try:
-            prefect_proc.wait(timeout=5)
-        except (subprocess.TimeoutExpired, KeyboardInterrupt):
-            try:
-                prefect_proc.kill()
-                prefect_proc.wait(timeout=3)
-            except Exception:
-                pass
-
-        # 2) Cleanup
-        print("[launch] All services stopped")
+        print("[launch] Dashboard + scheduler stopped")
+        print("[launch] Prefect server is still running independently")
 
 
 if __name__ == "__main__":
