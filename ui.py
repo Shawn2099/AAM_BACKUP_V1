@@ -133,14 +133,15 @@ async def _is_running(pipeline: str) -> bool:
 async def _prefect_has_active_run(pipeline: str) -> bool:
     """Check Prefect API for an active flow run of the given pipeline.
 
-    Checks both RUNNING and PENDING/SCHEDULED states — a PENDING run means
+    Checks both RUNNING and PENDING states — a PENDING run means
     it's queued behind the concurrency limit and will execute when the slot opens.
+    Future SCHEDULED runs are ignored as they are not currently active.
     """
     try:
         async with get_client() as client:
             runs = await client.read_flow_runs(
                 flow_run_filter=FlowRunFilter(
-                    state={"type": {"any_": [StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]}}
+                    state={"type": {"any_": [StateType.RUNNING, StateType.PENDING]}}
                 ),
                 limit=20,
             )
