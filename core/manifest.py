@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS run_history (
 
 CREATE INDEX IF NOT EXISTS idx_run_history_started_at ON run_history(started_at);
 CREATE INDEX IF NOT EXISTS idx_run_history_mode ON run_history(mode);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_run_history_run_id ON run_history(run_id);
 
 CREATE TABLE IF NOT EXISTS db_meta (
     key     TEXT PRIMARY KEY,
@@ -79,6 +80,21 @@ class ManifestDB:
         if self._conn is None:
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            
+            # Clean up legacy duplicate run_id values before applying the UNIQUE index in DDL
+            try:
+                conn.execute("""
+                    DELETE FROM run_history
+                    WHERE id NOT IN (
+                        SELECT MIN(id)
+                        FROM run_history
+                        GROUP BY run_id
+                    )
+                """)
+                conn.commit()
+            except Exception:
+                pass
+
             conn.executescript(DDL)
             self._conn = conn
         return self._conn
