@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from loguru import logger
 
 from prefect.client.orchestration import get_client
@@ -34,6 +34,7 @@ _RATE_LOCK = threading.Lock()
 _RATE_WINDOW = 300  # 5 minutes
 _RATE_MAX_TRIGGER = 5  # 5 trigger attempts per window
 _RATE_MAX_LOGIN = 10   # 10 login attempts per window
+_RATE_MAX_REPORT = 10  # 10 report downloads per window
 
 
 def _check_rate_limit(client_ip: str, max_attempts: int) -> bool:
@@ -274,16 +275,22 @@ async def status(request: Request):
         lan_last_run = _last_run_summary(db, "lan")
 
         return JSONResponse({
-            "firm": "AAM",
+            "firm": cfg.firm_name,
             "fy_prefix": get_fy_prefix(),
+            "schedule": {
+                "cloud_cron": _cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
+                "lan_cron": _cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
+            },
             "cloud": {
                 "running": await _is_running("cloud"),
                 "last_run": cloud_last_run,
+                "last_success": _get_last_success(db, "cloud"),
                 "last_run_formatted": f"{cloud_last_run['status']} — {_format_datetime(cloud_last_run['started_at'])}" if cloud_last_run else "No data",
             },
             "lan": {
                 "running": await _is_running("lan"),
                 "last_run": lan_last_run,
+                "last_success": _get_last_success(db, "lan"),
                 "last_run_formatted": f"{lan_last_run['status']} — {_format_datetime(lan_last_run['started_at'])}" if lan_last_run else "No data",
             },
             "manifest": {
@@ -336,7 +343,88 @@ async def trigger_lan(request: Request, background_tasks: BackgroundTasks):
     return JSONResponse({"status": "triggered", "detail": "LAN backup triggered successfully!"})
 
 
+# ── Report endpoints ────────────────────────────────────────
+
+
+@app.get("/report/weekly")
+def report_weekly(request: Request):
+    """Generate and download a weekly HTML report."""
+    _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    return _serve_report(7, "Weekly")
+
+
+@app.get("/report/monthly")
+def report_monthly(request: Request):
+    """Generate and download a monthly HTML report."""
+    _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    return _serve_report(30, "Monthly")
+
+
+def _serve_report(days: int, period: str) -> Response:
+    """Generate an HTML report and serve it as a downloadable file."""
+    cfg = _cfg()
+    db_path = Path(cfg.paths.database_path)
+
+    if not db_path.exists():
+        return HTMLResponse("<p>No database found. Run a backup first.</p>", status_code=503)
+
+    db = ManifestDB(db_path)
+    try:
+        from core.report import generate_report_html
+        html_body = generate_report_html(db, cfg.firm_name, days, period)
+
+        if not html_body:
+            return HTMLResponse(
+                f"<p>No runs found in the last {days} days.</p>",
+                status_code=404,
+            )
+
+        # Wrap in a proper HTML document with basic styling
+        full_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{html.escape(cfg.firm_name)} — {period} Backup Report</title>
+<style>
+body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 1rem; color: #1f2937; }}
+h2 {{ color: #1e3a5f; }}
+h3 {{ color: #374151; margin-top: 1.5rem; }}
+table {{ border-collapse: collapse; width: 100%; margin: 0.5rem 0; }}
+td, th {{ padding: 0.4rem 0.75rem; text-align: left; border: 1px solid #d1d5db; }}
+th {{ background: #f3f4f6; font-size: 0.85rem; }}
+@media print {{ body {{ margin: 0; }} }}
+</style>
+</head>
+<body>
+{html_body}
+</body>
+</html>"""
+
+        filename = f"{cfg.firm_name}_{period}_Report_{datetime.now().strftime('%Y-%m-%d')}.html"
+        return Response(
+            content=full_html,
+            media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    finally:
+        db.close()
+
+
 # ── Helpers ──────────────────────────────────────────────────
+
+
+def _get_last_success(db: ManifestDB, mode: str) -> str | None:
+    """Return ended_at timestamp of the last successful run for this mode."""
+    run = db.last_run(mode)
+    if run and run.get("status", "").endswith("_COMPLETE"):
+        return run.get("ended_at")
+    return None
 
 
 def _format_datetime(dt_str: str | None) -> str:
@@ -377,7 +465,30 @@ def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
         "bytes": run.get("bytes_copied", 0),
         "duration": f"{run.get('duration_seconds', 0):.0f}s" if run.get("duration_seconds") else "?",
         "error": run.get("error_message"),
+        "ended_at": run.get("ended_at", ""),
     }
+
+
+def _cron_to_human(cron: str, tz: str) -> str:
+    """Convert a 5-field cron expression to a human-readable string."""
+    parts = cron.strip().split()
+    if len(parts) != 5:
+        return cron
+    minute, hour, dom, month, dow = parts
+
+    tz_short = tz.split("/")[-1] if "/" in tz else tz
+
+    if dow != "*":
+        days = {"MON": "Monday", "TUE": "Tuesday", "WED": "Wednesday",
+                 "THU": "Thursday", "FRI": "Friday", "SAT": "Saturday", "SUN": "Sunday"}
+        day_name = days.get(dow.upper(), dow)
+        return f"Every {day_name} at {int(hour):02d}:{int(minute):02d} {tz_short}"
+
+    if dom != "*":
+        suffix = "th" if 4 <= int(dom) <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(int(dom) % 10, "th")
+        return f"{int(dom)}{suffix} of month at {int(hour):02d}:{int(minute):02d} {tz_short}"
+
+    return f"Daily at {int(hour):02d}:{int(minute):02d} {tz_short}"
 
 
 def _get_health() -> dict:
@@ -431,6 +542,9 @@ async def _render_dashboard(flash: str = "") -> str:
             cloud_files = db.file_count("cloud_status")
             lan_files = db.file_count("lan_status")
 
+            cloud_last_success = _get_last_success(db, "cloud")
+            lan_last_success = _get_last_success(db, "lan")
+
             cloud_class = "running" if cloud_active else (
                 "success" if cr and "COMPLETE" in cr["status"] else "failed"
             )
@@ -443,6 +557,10 @@ async def _render_dashboard(flash: str = "") -> str:
             h = _get_health()
             if "error" not in h:
                 health_info = f"Source: {h['source_free_gb']} GB free | FY: {get_fy_prefix()}"
+
+            # Schedule info for template
+            cloud_schedule = _cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
+            lan_schedule = _cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
 
             # Run history table
             runs = db.get_recent_runs(10)
@@ -495,5 +613,9 @@ async def _render_dashboard(flash: str = "") -> str:
         flash_html=flash_html,
         history_rows=history_rows,
         auth_enabled=_auth_enabled(),
+        cloud_schedule=cloud_schedule,
+        lan_schedule=lan_schedule,
+        cloud_last_success=cloud_last_success if cr else None,
+        lan_last_success=lan_last_success if lr else None,
     )
 

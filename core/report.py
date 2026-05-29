@@ -1,6 +1,7 @@
-"""Reports — failure alerts, weekly/monthly summaries via email.
+"""Reports — failure alerts, weekly/monthly summaries via email and HTML.
 
 Reads from ManifestDB run_history. Zero knowledge of backup internals.
+generate_report_html() is shared between email delivery and UI download.
 """
 
 import html
@@ -97,30 +98,21 @@ def send_failure_alert(
     return _send_email(config, subject, body)
 
 
-def send_summary_report(
+def generate_report_html(
     db: ManifestDB,
-    config: NotificationConfig,
     firm_name: str,
     days: int,
     period: str,
-) -> bool:
-    """Send aggregated summary report for a time period.
+) -> str:
+    """Generate an HTML report string for the given time period.
 
-    Args:
-        db: ManifestDB instance.
-        config: Notification configuration.
-        firm_name: Firm name.
-        days: Number of days to aggregate.
-        period: Label like "Weekly" or "Monthly".
-
-    Returns:
-        True if email sent.
+    Returns "" if no runs found in the period.
+    Usable by both email delivery and UI download endpoints.
     """
     runs = db.get_runs_since(days)
 
     if not runs:
-        logger.info(f"No runs found in last {days} days — skipping {period} report")
-        return False
+        return ""
 
     total = len(runs)
     _success = {"LAN_COMPLETE", "CLOUD_COMPLETE"}
@@ -136,7 +128,7 @@ def send_summary_report(
     success_rate = (successes / total * 100) if total > 0 else 0
 
     rows = ""
-    for r in runs[:10]:  # Show latest 10
+    for r in runs[:10]:
         start = r["started_at"][:19] if r["started_at"] else "?"
         mode = r["mode"].upper()
         status = r["status"]
@@ -144,8 +136,8 @@ def send_summary_report(
         rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td></tr>"
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    subject = f"Backup {period} Report — {firm_name}"
-    body = f"""<html><body>
+
+    return f"""<html><body>
 <h2>{html.escape(period)} Backup Report — {html.escape(firm_name)}</h2>
 <p><strong>Period:</strong> Last {days} days (generated {now})</p>
 
@@ -167,6 +159,24 @@ def send_summary_report(
 </table>
 </body></html>"""
 
+
+def send_summary_report(
+    db: ManifestDB,
+    config: NotificationConfig,
+    firm_name: str,
+    days: int,
+    period: str,
+) -> bool:
+    """Send aggregated summary report via email.
+
+    Returns True if email sent, False if skipped or failed.
+    """
+    body = generate_report_html(db, firm_name, days, period)
+    if not body:
+        logger.info(f"No runs found in last {days} days — skipping {period} report")
+        return False
+
+    subject = f"Backup {period} Report — {firm_name}"
     return _send_email(config, subject, body)
 
 

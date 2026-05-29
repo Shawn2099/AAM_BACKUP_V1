@@ -207,6 +207,16 @@ def lan_snapshot_before_task(config):
     return before
 
 
+@task(name="lan-snapshot-after")
+def lan_snapshot_after_task(config):
+    """Snapshot LAN destination after sync for diff comparison."""
+    logger.info("Taking LAN snapshot (after sync)")
+    after_files = walk_lan_destination(config.paths.lan_destination)
+    after = snapshot_to_dict(after_files)
+    logger.info(f"LAN snapshot: {len(after)} files after sync")
+    return after
+
+
 @task(name="lan-sync")
 def lan_sync_task(config):
     """Run robocopy /MIR mirror sync."""
@@ -222,19 +232,18 @@ def lan_sync_task(config):
 
 
 @task(name="lan-record")
-def lan_record_task(db_path: str, sync_result: dict, before_dict: dict, config):
-    """Snapshot after sync, compute diff, record to ManifestDB."""
-    
-
-    lan_after_files = walk_lan_destination(config.paths.lan_destination)
-    after_dict = snapshot_to_dict(lan_after_files)
+def lan_record_task(db_path: str, sync_result: dict, before_dict: dict, after_dict: dict):
+    """Compute diff from before/after snapshots, record to ManifestDB."""
     diff = diff_snapshots(before_dict, after_dict)
 
     db = ManifestDB(db_path)
     try:
-        record_sync_results(db, "lan", lan_after_files, diff.get("removed"))
+        # snapshot_to_dict returns {path: (size, mtime)} tuples
+        files_list = [{"path": k, "size": v[0], "mtime": v[1]}
+                      for k, v in after_dict.items()]
+        record_sync_results(db, "lan", files_list, diff.get("removed"))
         logger.info(
-            f"LAN recorded: {len(lan_after_files)} files, "
+            f"LAN recorded: {len(after_dict)} files, "
             f"+{len(diff['added'])} -{len(diff['removed'])} "
             f"*{len(diff['modified'])} changed"
         )
@@ -327,7 +336,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         before_dict = lan_snapshot_before_task(config)
         sync_result = sync(config)
         status = sync_result["status"]
-        lan_record_task(db_path, sync_result, before_dict, config)
+        after_dict = lan_snapshot_after_task(config)
+        lan_record_task(db_path, sync_result, before_dict, after_dict)
 
         logger.info("LAN pipeline completed successfully")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}

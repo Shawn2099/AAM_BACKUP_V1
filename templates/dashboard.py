@@ -40,6 +40,10 @@ tr:hover { background: #1f2937; }
 .tag.success { background: #065f46; color: #6ee7b7; }
 .tag.partial { background: #78350f; color: #fcd34d; }
 .tag.failed { background: #7f1d1d; color: #fca5a5; }
+.success-ago { color: #6ee7b7; }
+.warn-ago { color: #fcd34d; }
+.critical-ago { color: #fca5a5; }
+.schedule-line { font-size: 0.75rem; color: #9ca3af; margin-top: 0.3rem; }
 .info { color: #9ca3af; font-size: 0.8rem; margin-top: 1.5rem; }
 </style>"""
 
@@ -87,6 +91,41 @@ async function updateStatus() {
         const response = await fetch('/status');
         if (!response.ok) return;
         const data = await response.json();
+
+        function timeAgo(utcStr) {
+            if (!utcStr) return null;
+            var then = new Date(utcStr + (utcStr.endsWith('Z') ? '' : 'Z'));
+            var now = new Date();
+            var diff = Math.floor((now - then) / 1000);
+            if (diff < 60) return 'just now';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+            if (diff < 172800) return '1d ago';
+            return Math.floor(diff / 86400) + 'd ago';
+        }
+
+        function agoClass(diffDays) {
+            if (diffDays < 1) return 'success-ago';
+            if (diffDays < 2) return 'warn-ago';
+            return 'critical-ago';
+        }
+
+        function showLastSuccess(mode, lastSuccess) {
+            var el = document.getElementById(mode + '-last-success');
+            if (!el) return;
+            if (!lastSuccess) {
+                el.innerHTML = '<span class="critical-ago">\u26A0\uFE0F No successful backup yet</span>';
+                return;
+            }
+            var ago = timeAgo(lastSuccess);
+            var then = new Date(lastSuccess + (lastSuccess.endsWith('Z') ? '' : 'Z'));
+            var now = new Date();
+            var diffDays = (now - then) / 86400000;
+            var cls = agoClass(diffDays);
+            var icon = diffDays < 1 ? '\u2705' : (diffDays < 2 ? '\u26A0\uFE0F' : '\u274C');
+            el.innerHTML = '<span class="' + cls + '">' + icon + ' Last success: ' + ago + '</span>';
+        }
+
         document.getElementById('stat-lan-files').innerText = Number(data.manifest.lan_files).toLocaleString();
         document.getElementById('stat-cloud-files').innerText = Number(data.manifest.cloud_files).toLocaleString();
         document.getElementById('stat-fy-prefix').innerText = data.fy_prefix;
@@ -104,6 +143,7 @@ async function updateStatus() {
             if (data.cloud.last_run) { let desc = data.cloud.last_run.status + ' (' + data.cloud.last_run.files + ' files)'; if (data.cloud.last_run.error) { desc += ' — ' + data.cloud.last_run.error.substring(0, 60); } descCloud.innerText = desc; lastCloud.innerText = 'Last: ' + data.cloud.last_run_formatted; }
             const cloudClass = isCloudRunning ? 'running' : ((data.cloud.last_run && data.cloud.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
+            showLastSuccess('cloud', data.cloud.last_success);
         }
         const cardLan = document.getElementById('card-lan');
         const badgeLan = document.getElementById('badge-lan');
@@ -118,6 +158,7 @@ async function updateStatus() {
             if (data.lan.last_run) { let desc = data.lan.last_run.status + ' (' + data.lan.last_run.files + ' files)'; if (data.lan.last_run.error) { desc += ' — ' + data.lan.last_run.error.substring(0, 60); } descLan.innerText = desc; lastLan.innerText = 'Last: ' + data.lan.last_run_formatted; }
             const lanClass = isLanRunning ? 'running' : ((data.lan.last_run && data.lan.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
+            showLastSuccess('lan', data.lan.last_success);
         }
         if (data.health && !data.health.error) { document.getElementById('health-info').innerText = 'Source: ' + data.health.source_free_gb + ' GB free | FY: ' + data.fy_prefix; }
         const tbody = document.getElementById('history-tbody');
@@ -136,6 +177,12 @@ async function updateStatus() {
 }
 setInterval(updateStatus, 2000);
 window.addEventListener('DOMContentLoaded', updateStatus);
+</script>"""
+
+REPORT_JS = """<script>
+function generateReport(period) {
+    window.location.href = '/report/' + period;
+}
 </script>"""
 
 
@@ -158,6 +205,10 @@ def render_dashboard(
     flash_html: str = "",
     history_rows: str = "",
     auth_enabled: bool = False,
+    cloud_schedule: str = "",
+    lan_schedule: str = "",
+    cloud_last_success: str | None = None,
+    lan_last_success: str | None = None,
 ) -> str:
     """Render the dashboard HTML. Pure function — no I/O, no imports."""
     logout_link = " · <a href='/logout' style='color:#60a5fa'>Logout</a>" if auth_enabled else ""
@@ -187,6 +238,8 @@ def render_dashboard(
         <h2>Cloud Backup <span class="status-badge {cloud_class}" id="badge-cloud">{cloud_running}</span></h2>
         <p id="desc-cloud">{cloud_run}</p>
         <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last: {cloud_last}</p>
+        <p class="schedule-line">Next: {cloud_schedule or 'Not configured'}</p>
+        <p style="font-size:0.75rem" id="cloud-last-success"></p>
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'cloud')">
             <button class="btn-trigger btn-cloud" id="btn-cloud" {cloud_btn}>Run Cloud Backup</button>
         </form>
@@ -195,10 +248,16 @@ def render_dashboard(
         <h2>LAN Backup <span class="status-badge {lan_class}" id="badge-lan">{lan_running}</span></h2>
         <p id="desc-lan">{lan_run}</p>
         <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last: {lan_last}</p>
+        <p class="schedule-line">Next: {lan_schedule or 'Not configured'}</p>
+        <p style="font-size:0.75rem" id="lan-last-success"></p>
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'lan')">
             <button class="btn-trigger btn-lan" id="btn-lan" {lan_btn}>Run LAN Backup</button>
         </form>
     </div>
+</div>
+<div style="margin-bottom:1rem;display:flex;gap:0.5rem">
+    <button class="btn-trigger" onclick="generateReport('weekly')">Download Weekly Report</button>
+    <button class="btn-trigger" onclick="generateReport('monthly')">Download Monthly Report</button>
 </div>
 <h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Run History</h2>
 <table>
@@ -211,5 +270,6 @@ def render_dashboard(
 </div>
 </div>
 {JS}
+{REPORT_JS}
 </body>
 </html>"""

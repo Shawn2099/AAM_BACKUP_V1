@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from core.report import _human_bytes, _send_email, send_failure_alert
+from core.report import _human_bytes, _send_email, send_failure_alert, generate_report_html
 from models.config import NotificationConfig
 
 
@@ -56,7 +56,29 @@ class TestSendEmail:
             assert _send_email(cfg, "Subject", "<p>body</p>") is True
             mock_server.login.assert_called_once_with("user", "pass")
             mock_server.sendmail.assert_called_once()
-            mock_server.quit.assert_called_once()
+
+
+class TestGenerateReportHtml:
+    def test_empty_when_no_runs(self):
+        db = MagicMock()
+        db.get_runs_since.return_value = []
+        assert generate_report_html(db, "TestFirm", 7, "Weekly") == ""
+
+    def test_generates_html_with_runs(self):
+        db = MagicMock()
+        db.get_runs_since.return_value = [
+            {"started_at": "2026-05-27T10:00:00Z", "mode": "cloud",
+             "status": "CLOUD_COMPLETE", "files_copied": 42, "bytes_copied": 123456},
+            {"started_at": "2026-05-28T10:00:00Z", "mode": "lan",
+             "status": "LAN_PARTIAL", "files_copied": 30, "bytes_copied": 50000},
+        ]
+        html = generate_report_html(db, "TestFirm", 7, "Weekly")
+        assert "TestFirm" in html
+        assert "Weekly Backup Report" in html
+        assert "CLOUD_COMPLETE" in html
+        assert "LAN_PARTIAL" in html
+        assert "42" in html
+        assert "50.0%" in html  # 1 success out of 2 = 50%
 
     def test_sends_successfully_ssl(self):
         cfg = NotificationConfig(

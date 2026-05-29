@@ -8,6 +8,7 @@ from flow import (
     health_check_task, cloud_preflight_task, cloud_sync_task,
     cloud_verify_and_report_task, cloud_record_task,
     wol_check_task, lan_preflight_task, lan_snapshot_before_task,
+    lan_snapshot_after_task,
     lan_sync_task, lan_record_task, lan_shutdown_task,
     _run_cloud_pipeline, _run_lan_pipeline, _record_run,
 )
@@ -168,6 +169,39 @@ class TestLanSyncTask:
         config = MagicMock()
         with pytest.raises(RuntimeError, match="fatal"):
             lan_sync_task.fn(config)
+
+
+class TestLanSnapshotTasks:
+    @patch("flow.walk_lan_destination", return_value=[])
+    @patch("flow.snapshot_to_dict", return_value={"a.txt": (100, 1.0)})
+    def test_snapshot_before_returns_dict(self, mock_snap, mock_walk):
+        config = MagicMock()
+        result = lan_snapshot_before_task.fn(config)
+        assert isinstance(result, dict)
+        assert "a.txt" in result
+
+    @patch("flow.walk_lan_destination", return_value=[])
+    @patch("flow.snapshot_to_dict", return_value={"b.txt": (200, 2.0)})
+    def test_snapshot_after_returns_dict(self, mock_snap, mock_walk):
+        config = MagicMock()
+        result = lan_snapshot_after_task.fn(config)
+        assert isinstance(result, dict)
+        assert "b.txt" in result
+
+
+class TestLanRecordTask:
+    @patch("flow.ManifestDB")
+    @patch("flow.record_sync_results")
+    @patch("flow.diff_snapshots", return_value={"added": {}, "removed": {}, "modified": {}})
+    def test_records_with_after_dict(self, mock_diff, mock_record, mock_db_cls):
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+        # snapshot_to_dict returns {path: (size, mtime)} tuples
+        before = {"old.txt": (100, 1.0)}
+        after = {"new.txt": (200, 2.0)}
+        lan_record_task.fn("/tmp/test.db", {"status": "LAN_COMPLETE"}, before, after)
+        mock_record.assert_called_once()
+        mock_db.close.assert_called_once()
 
 
 class TestLanShutdownTask:

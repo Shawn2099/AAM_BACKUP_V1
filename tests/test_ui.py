@@ -1,4 +1,4 @@
-"""Tests for dashboard UI — authentication, helpers, and rendering."""
+"""Tests for dashboard UI — authentication, helpers, rendering, and reports."""
 
 import time
 from unittest.mock import MagicMock, patch
@@ -11,8 +11,11 @@ from core.process import pid_alive
 from ui import (
     _check_api_key_header,
     _create_session,
+    _cron_to_human,
+    _get_last_success,
     _last_run_summary,
     _require_auth,
+    _serve_report,
     _validate_session,
 )
 
@@ -141,3 +144,79 @@ class TestPidAlive:
         ):
             mock_run.return_value = MagicMock(stdout="INFO: No tasks are running", returncode=0)
             assert pid_alive(99999) is False
+
+
+class TestReportEndpoints:
+    @patch("ui.Path.exists", return_value=True)
+    @patch("ui.ManifestDB")
+    @patch("ui._cfg")
+    def test_report_downloads_html(self, mock_cfg, mock_db_cls, mock_exists):
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+        mock_cfg.return_value = MagicMock(
+            paths=MagicMock(database_path="/tmp/test.db"),
+            firm_name="TestFirm",
+        )
+        with patch("core.report.generate_report_html",
+                   return_value="<html>Weekly Report</html>"):
+            response = _serve_report(7, "Weekly")
+            assert response.status_code == 200
+            assert response.media_type == "text/html"
+            assert "attachment" in response.headers["content-disposition"]
+
+    @patch("ui.Path.exists", return_value=False)
+    @patch("ui._cfg")
+    def test_report_returns_503_when_no_db(self, mock_cfg, mock_exists):
+        mock_cfg.return_value = MagicMock(
+            paths=MagicMock(database_path="/tmp/missing.db"),
+        )
+        response = _serve_report(7, "Weekly")
+        assert response.status_code == 503
+
+    @patch("ui.Path.exists", return_value=True)
+    @patch("ui.ManifestDB")
+    @patch("ui._cfg")
+    def test_report_returns_404_when_no_runs(self, mock_cfg, mock_db_cls, mock_exists):
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+        mock_cfg.return_value = MagicMock(
+            paths=MagicMock(database_path="/tmp/test.db"),
+            firm_name="TestFirm",
+        )
+        with patch("core.report.generate_report_html", return_value=""):
+            response = _serve_report(7, "Weekly")
+            assert response.status_code == 404
+
+
+class TestCronToHuman:
+    def test_daily(self):
+        assert _cron_to_human("0 18 * * *", "Asia/Kolkata") == "Daily at 18:00 Kolkata"
+
+    def test_weekly(self):
+        assert _cron_to_human("0 8 * * MON", "Asia/Kolkata") == "Every Monday at 08:00 Kolkata"
+
+    def test_monthly(self):
+        assert _cron_to_human("0 8 1 * *", "Asia/Kolkata") == "1st of month at 08:00 Kolkata"
+
+    def test_short_cron_returns_raw(self):
+        assert _cron_to_human("invalid", "UTC") == "invalid"
+
+    def test_tuesday(self):
+        assert "Tuesday" in _cron_to_human("0 9 * * TUE", "UTC")
+
+
+class TestGetLastSuccess:
+    def test_returns_none_when_no_status(self):
+        db = MagicMock()
+        db.last_run.return_value = {"status": "RUNNING"}
+        assert _get_last_success(db, "cloud") is None
+
+    def test_returns_ended_at_when_complete(self):
+        db = MagicMock()
+        db.last_run.return_value = {"status": "CLOUD_COMPLETE", "ended_at": "2026-01-01T00:00:00Z"}
+        assert _get_last_success(db, "cloud") == "2026-01-01T00:00:00Z"
+
+    def test_returns_none_when_failed(self):
+        db = MagicMock()
+        db.last_run.return_value = {"status": "CLOUD_FAILED", "ended_at": "2026-01-01T00:00:00Z"}
+        assert _get_last_success(db, "cloud") is None
