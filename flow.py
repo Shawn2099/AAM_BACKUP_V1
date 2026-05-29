@@ -1,12 +1,13 @@
 """AAM Backup Automation V1 — Prefect 3 flow orchestrator.
 
+Each backup pipeline is decomposed into granular @task functions.
+Each task is independently tracked by Prefect — state, timing, logs, retries.
+This provides full visibility into which step is running, which failed, and how long each took.
+
 Two deployments from one codebase:
   - backup-cloud: daily 6 PM IST, rclone sync → GCS
   - backup-lan:   daily 1 AM IST, robocopy /MIR → LAN (WoL + shutdown)
   - backup-all:   manual, runs both sequentially (cloud first)
-
-Each invocation is independent — opens ManifestDB, does its work, closes.
-Reports pull from run_history across both.
 """
 
 import time
@@ -17,7 +18,6 @@ from pathlib import Path
 from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
-from prefect.logging import get_run_logger
 
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
@@ -40,13 +40,7 @@ from models.config import CONFIG_PATH, load_config
 
 
 def _stable_run_id(mode: str) -> str:
-    """Generate a run_id stable across Prefect task retries.
-
-    Within a flow run, the flow_run.id is constant. Task retries create new
-    task runs but reuse the same flow run. Combining flow_run_id + mode
-    gives a key that's unique per backup mode per scheduled run, but stable
-    across retries — so ON CONFLICT in insert_run deduplicates correctly.
-    """
+    """Generate a run_id stable across Prefect task retries."""
     try:
         from prefect.context import FlowRunContext
         ctx = FlowRunContext.get()
@@ -61,229 +55,321 @@ def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _failure_alert_hook(config):
-    """Return an on_failure hook that sends a failure alert email."""
-    def _hook(task_or_flow, run, state):
-        try:
-            plogger = get_run_logger()
-            plogger.error(f"{run.name} failed: {state.message}")
-        except Exception:
-            pass
-        try:
-            send_failure_alert(
-                config.notifications,
-                config.firm_name,
-                str(state.message),
-                {"run_id": str(run.id)},
-            )
-        except Exception:
-            pass
-    return _hook
+# ═══════════════════════════════════════════════════════════════
+# Shared tasks
+# ═══════════════════════════════════════════════════════════════
+
+@task(name="health-check")
+def health_check_task(config, mode: str):
+    """Run pre-backup health checks. Fail fast — won't fix itself."""
+    logger.info(f"Running health checks (mode={mode})")
+    pre_backup_health(config.paths.source_drive, mode, config.paths.gcs_key_path)
 
 
 # ═══════════════════════════════════════════════════════════════
-# Cloud backup task
+# Cloud pipeline tasks
 # ═══════════════════════════════════════════════════════════════
 
-@task(name="cloud-backup")
-def cloud_backup_task(config):
-    """Cloud backup pipeline: preflight → sync → verify → report → DB.
+@task(name="cloud-preflight")
+def cloud_preflight_task(config, fy_prefix: str):
+    """Run rclone check --one-way dry-run before sync."""
+    logger.info(f"Cloud preflight: checking {config.paths.source_drive} ↔ {config.cloud.bucket}/{fy_prefix}")
+    result = run_cloud_dry_run(
+        source=config.paths.source_drive,
+        bucket=config.cloud.bucket,
+        fy_prefix=fy_prefix,
+        gcs_key_path=config.paths.gcs_key_path,
+        project_number=config.cloud.project_number,
+        storage_class=config.cloud.storage_class,
+        location=config.cloud.location,
+    )
+    if not result["ok"]:
+        raise RuntimeError(f"Cloud preflight failed: {result['error']}")
+    return result
 
-    Uses Prefect-native retries via with_options() from config values.
-    A global concurrency limit ensures only one backup runs at a time.
-    """
-    run_id = _stable_run_id("cloud")
-    started_at = _utcnow()
-    db = ManifestDB(config.paths.database_path)
+
+@task(name="cloud-sync")
+def cloud_sync_task(config, fy_prefix: str):
+    """Run rclone sync to mirror source → GCS."""
+    logger.info(f"Cloud sync: {config.paths.source_drive} → {config.cloud.bucket}/{fy_prefix}")
+    result = run_cloud_sync(
+        source=config.paths.source_drive,
+        bucket=config.cloud.bucket,
+        fy_prefix=fy_prefix,
+        gcs_key_path=config.paths.gcs_key_path,
+        location=config.cloud.location,
+        project_number=config.cloud.project_number,
+        bwlimit=config.cloud.bandwidth_limit,
+        retries=config.cloud.retry_count,
+        storage_class=config.cloud.storage_class,
+        transfers=config.cloud.transfers,
+        checkers=config.cloud.checkers,
+        timeout=config.cloud.subprocess_timeout_seconds,
+    )
+    if result["status"] == "CLOUD_FAILED":
+        raise RuntimeError(result.get("error", "Cloud sync failed"))
+    return result
+
+
+@task(name="cloud-verify-and-report")
+def cloud_verify_and_report_task(config, fy_prefix: str):
+    """Verify integrity + gather size/manifest/diff for reporting."""
+    rclone_cfg = write_temp_config(
+        config.paths.gcs_key_path,
+        config.cloud.location,
+        config.cloud.project_number,
+        config.cloud.storage_class,
+    )
+    try:
+        logger.info("Verifying cloud integrity")
+        verify_result = verify_cloud_integrity(
+            source=config.paths.source_drive,
+            bucket=config.cloud.bucket,
+            fy_prefix=fy_prefix,
+            config_path=rclone_cfg,
+            timeout=config.cloud.verify_timeout_seconds,
+        )
+
+        logger.info("Gathering cloud report data")
+        size = get_cloud_size(config.cloud.bucket, fy_prefix, rclone_cfg)
+        manifest = get_cloud_manifest(config.cloud.bucket, fy_prefix, rclone_cfg)
+        cloud_diff = get_cloud_diff(
+            config.paths.source_drive,
+            config.cloud.bucket,
+            fy_prefix,
+            rclone_cfg,
+        )
+
+        logger.info(
+            f"Cloud verify complete: {size['count']} files, "
+            f"{size['bytes']} bytes, verified={verify_result['verified']}"
+        )
+
+        return {
+            "verified": verify_result["verified"],
+            "size": size,
+            "manifest": manifest,
+            "diff": cloud_diff,
+        }
+    finally:
+        try:
+            Path(rclone_cfg).unlink()
+        except OSError:
+            pass
+
+
+@task(name="cloud-record")
+def cloud_record_task(db_path: str, verify_data: dict, sync_result: dict):
+    """Record cloud sync results to ManifestDB."""
+    db = ManifestDB(db_path)
+    try:
+        manifest = verify_data.get("manifest", [])
+        removed = verify_data.get("diff", {}).get("removed", [])
+        record_sync_results(db, "cloud", manifest, removed)
+        logger.info(f"Recorded {len(manifest)} cloud entries to database")
+    finally:
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# LAN pipeline tasks
+# ═══════════════════════════════════════════════════════════════
+
+@task(name="wol-check")
+def wol_check_task(config):
+    """Wake backup server if WoL is enabled."""
+    if not config.wol.enabled:
+        logger.info("WoL disabled, skipping")
+        return
+    logger.info(f"Waking backup server {config.wol.server_ip}")
+    ensure_server_online(config)
+
+
+@task(name="lan-preflight")
+def lan_preflight_task(config):
+    """Run robocopy /L dry-run before real sync."""
+    logger.info(f"LAN preflight: validating {config.paths.source_drive} → {config.paths.lan_destination}")
+    result = run_lan_dry_run(
+        source=config.paths.source_drive,
+        dest=config.paths.lan_destination,
+    )
+    if not result["ok"]:
+        raise RuntimeError(f"LAN preflight failed: {result['error']}")
+    return result
+
+
+@task(name="lan-snapshot-before")
+def lan_snapshot_before_task(config):
+    """Snapshot LAN destination before sync for diff comparison."""
+    logger.info("Taking LAN snapshot (before sync)")
+    before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
+    logger.info(f"LAN snapshot: {len(before)} files before sync")
+    return before
+
+
+@task(name="lan-sync")
+def lan_sync_task(config):
+    """Run robocopy /MIR mirror sync."""
+    logger.info(f"LAN sync: {config.paths.source_drive} → {config.paths.lan_destination}")
+    result = run_lan_sync(
+        source=config.paths.source_drive,
+        dest=config.paths.lan_destination,
+        lan_config=config.lan,
+    )
+    if result["status"] == "LAN_FAILED":
+        raise RuntimeError(result.get("error", "LAN sync failed"))
+    return result
+
+
+@task(name="lan-record")
+def lan_record_task(db_path: str, sync_result: dict, before_dict: dict, config):
+    """Snapshot after sync, compute diff, record to ManifestDB."""
+    
+
+    lan_after_files = walk_lan_destination(config.paths.lan_destination)
+    after_dict = snapshot_to_dict(lan_after_files)
+    diff = diff_snapshots(before_dict, after_dict)
+
+    db = ManifestDB(db_path)
+    try:
+        record_sync_results(db, "lan", lan_after_files, diff.get("removed"))
+        logger.info(
+            f"LAN recorded: {len(lan_after_files)} files, "
+            f"+{len(diff['added'])} -{len(diff['removed'])} "
+            f"*{len(diff['modified'])} changed"
+        )
+    finally:
+        db.close()
+
+
+@task(name="lan-shutdown")
+def lan_shutdown_task(config):
+    """Shut down backup server after successful LAN sync."""
+    if not config.lan.shutdown_after_backup or not config.wol.enabled:
+        logger.info("LAN shutdown disabled, skipping")
+        return
+    logger.info(f"Shutting down backup server {config.wol.server_ip}")
+    try:
+        shutdown_server(config.wol.server_ip)
+    except Exception as e:
+        logger.warning(f"Server shutdown failed (non-critical): {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Cloud pipeline orchestrator
+# ═══════════════════════════════════════════════════════════════
+
+def _run_cloud_pipeline(config, run_id: str, started_at: str):
+    """Execute cloud backup tasks sequentially. Each task is independently tracked."""
+    db_path = config.paths.database_path
+    fy_prefix = get_fy_prefix()
+
+    # Apply config-driven retries to tasks that benefit from retrying
+    preflight = cloud_preflight_task.with_options(
+        retries=1, retry_delay_seconds=30,
+    )
+    sync = cloud_sync_task.with_options(
+        retries=config.cloud.max_attempts - 1,
+        retry_delay_seconds=config.cloud.retry_delay_seconds,
+    )
+    verify_report = cloud_verify_and_report_task.with_options(
+        retries=1, retry_delay_seconds=60,
+    )
+
     status = "CLOUD_SKIPPED"
     sync_result = {"exit_code": -1}
     error_msg = None
 
-    with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
-        try:
-            plogger = get_run_logger()
-            plogger.info("Starting cloud backup pipeline")
+    try:
+        health_check_task(config, "cloud")
+        preflight(config, fy_prefix)
+        sync_result = sync(config, fy_prefix)
+        status = sync_result["status"]
+        verify_data = verify_report(config, fy_prefix)
+        cloud_record_task(db_path, verify_data, sync_result)
 
-            pre_backup_health(config.paths.source_drive, "cloud", config.paths.gcs_key_path)
+        logger.info("Cloud pipeline completed successfully")
+        return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
-            fy_prefix = get_fy_prefix()
-
-            dry_run = run_cloud_dry_run(
-                source=config.paths.source_drive,
-                bucket=config.cloud.bucket,
-                fy_prefix=fy_prefix,
-                gcs_key_path=config.paths.gcs_key_path,
-                project_number=config.cloud.project_number,
-                storage_class=config.cloud.storage_class,
-                location=config.cloud.location,
-            )
-            if not dry_run["ok"]:
-                raise RuntimeError(f"Cloud preflight failed: {dry_run['error']}")
-
-            sync_result = run_cloud_sync(
-                source=config.paths.source_drive,
-                bucket=config.cloud.bucket,
-                fy_prefix=fy_prefix,
-                gcs_key_path=config.paths.gcs_key_path,
-                location=config.cloud.location,
-                project_number=config.cloud.project_number,
-                bwlimit=config.cloud.bandwidth_limit,
-                retries=config.cloud.retry_count,
-                storage_class=config.cloud.storage_class,
-                transfers=config.cloud.transfers,
-                checkers=config.cloud.checkers,
-                timeout=config.cloud.subprocess_timeout_seconds,
-            )
-            status = sync_result["status"]
-
-            if status == "CLOUD_FAILED":
-                raise RuntimeError(sync_result.get("error", "Cloud sync failed"))
-
-            rclone_cfg = write_temp_config(
-                config.paths.gcs_key_path,
-                config.cloud.location,
-                config.cloud.project_number,
-                config.cloud.storage_class,
-            )
-            try:
-                verify_result = verify_cloud_integrity(
-                    source=config.paths.source_drive,
-                    bucket=config.cloud.bucket,
-                    fy_prefix=fy_prefix,
-                    config_path=rclone_cfg,
-                    timeout=config.cloud.verify_timeout_seconds,
-                )
-
-                size = get_cloud_size(config.cloud.bucket, fy_prefix, rclone_cfg)
-                manifest = get_cloud_manifest(config.cloud.bucket, fy_prefix, rclone_cfg)
-                cloud_diff = get_cloud_diff(
-                    config.paths.source_drive,
-                    config.cloud.bucket,
-                    fy_prefix,
-                    rclone_cfg,
-                )
-            finally:
-                try:
-                    Path(rclone_cfg).unlink()
-                except OSError:
-                    pass
-
-            record_sync_results(db, "cloud", manifest, cloud_diff.get("removed"))
-
-            plogger.info(
-                f"Cloud run complete: {size['count']} files, "
-                f"{size['bytes']} bytes, verified={verify_result['verified']}"
-            )
-
-            return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
-
-        except Exception as e:
-            error_msg = str(e)
-            raise
-        finally:
-            try:
-                ended_at = _utcnow()
-                duration = time.time() - datetime.fromisoformat(started_at).timestamp()
-                record_run_history(
-                    db,
-                    run_id=run_id, mode="cloud",
-                    started_at=started_at, ended_at=ended_at,
-                    status=status, exit_code=sync_result.get("exit_code", -1),
-                    duration_seconds=duration, error_message=error_msg,
-                )
-            finally:
-                db.close()
+    except Exception as e:
+        error_msg = str(e)
+        raise
+    finally:
+        _record_run(db_path, run_id, "cloud", started_at, status,
+                     sync_result.get("exit_code", -1), error_msg)
 
 
 # ═══════════════════════════════════════════════════════════════
-# LAN backup task
+# LAN pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
-@task(name="lan-backup")
-def lan_backup_task(config):
-    """LAN backup pipeline: WoL → preflight → sync → manifest → shutdown.
+def _run_lan_pipeline(config, run_id: str, started_at: str):
+    """Execute LAN backup tasks sequentially. Each task is independently tracked."""
+    db_path = config.paths.database_path
 
-    Uses Prefect-native retries via with_options() from config values.
-    A global concurrency limit ensures only one backup runs at a time.
-    """
-    run_id = _stable_run_id("lan")
-    started_at = _utcnow()
-    db = ManifestDB(config.paths.database_path)
+    # Apply config-driven retries to tasks that benefit from retrying
+    preflight = lan_preflight_task.with_options(
+        retries=1, retry_delay_seconds=30,
+    )
+    sync = lan_sync_task.with_options(
+        retries=config.lan.max_attempts - 1,
+        retry_delay_seconds=config.lan.retry_delay_seconds,
+    )
+
     status = "LAN_SKIPPED"
     sync_result = {"exit_code": -1}
     error_msg = None
 
-    with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
-        try:
-            plogger = get_run_logger()
-            plogger.info("Starting LAN backup pipeline")
+    try:
+        health_check_task(config, "lan")
+        wol_check_task(config)
+        preflight(config)
+        before_dict = lan_snapshot_before_task(config)
+        sync_result = sync(config)
+        status = sync_result["status"]
+        lan_record_task(db_path, sync_result, before_dict, config)
 
-            pre_backup_health(config.paths.source_drive, "lan")
+        logger.info("LAN pipeline completed successfully")
+        return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
-            if config.wol.enabled:
-                ensure_server_online(config)
+    except Exception as e:
+        error_msg = str(e)
+        raise
+    finally:
+        _record_run(db_path, run_id, "lan", started_at, status,
+                     sync_result.get("exit_code", -1), error_msg)
 
-            dry_run = run_lan_dry_run(
-                source=config.paths.source_drive,
-                dest=config.paths.lan_destination,
-            )
-            if not dry_run["ok"]:
-                raise RuntimeError(f"LAN preflight failed: {dry_run['error']}")
-
-            lan_before = snapshot_to_dict(
-                walk_lan_destination(config.paths.lan_destination)
-            )
-
-            sync_result = run_lan_sync(
-                source=config.paths.source_drive,
-                dest=config.paths.lan_destination,
-                lan_config=config.lan,
-            )
-            status = sync_result["status"]
-
-            if status == "LAN_FAILED":
-                raise RuntimeError(sync_result.get("error", "LAN sync failed"))
-
-            lan_after_files = walk_lan_destination(config.paths.lan_destination)
-            after_dict = snapshot_to_dict(lan_after_files)
-
-            diff = diff_snapshots(lan_before, after_dict)
-            record_sync_results(db, "lan", lan_after_files, diff.get("removed"))
-
-            plogger.info(
-                f"LAN run complete: {len(lan_after_files)} files on destination, "
-                f"+{len(diff['added'])} -{len(diff['removed'])} "
-                f"*{len(diff['modified'])} changed"
-            )
-
-            return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
-
-        except Exception as e:
-            error_msg = str(e)
-            raise
-        finally:
-            try:
-                ended_at = _utcnow()
-                duration = time.time() - datetime.fromisoformat(started_at).timestamp()
-                record_run_history(
-                    db,
-                    run_id=run_id, mode="lan",
-                    started_at=started_at, ended_at=ended_at,
-                    status=status, exit_code=sync_result.get("exit_code", -1),
-                    duration_seconds=duration, error_message=error_msg,
-                )
-            finally:
-                db.close()
-
-            if error_msg is None and config.lan.shutdown_after_backup and config.wol.enabled:
-                try:
-                    shutdown_server(config.wol.server_ip)
-                except Exception as e:
-                    logger.warning(f"Server shutdown failed (non-critical): {e}")
+        if error_msg is None:
+            lan_shutdown_task(config)
 
 
 # ═══════════════════════════════════════════════════════════════
-# Weekly report flow
+# Helpers
+# ═══════════════════════════════════════════════════════════════
+
+def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
+                status: str, exit_code: int, error_msg: str | None):
+    """Record run history to ManifestDB."""
+    try:
+        ended_at = _utcnow()
+        duration = time.time() - datetime.fromisoformat(started_at).timestamp()
+        db = ManifestDB(db_path)
+        try:
+            record_run_history(
+                db,
+                run_id=run_id, mode=mode,
+                started_at=started_at, ended_at=ended_at,
+                status=status, exit_code=exit_code,
+                duration_seconds=duration, error_message=error_msg,
+            )
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Failed to record run history: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Report flows
 # ═══════════════════════════════════════════════════════════════
 
 @flow(name="weekly-report", log_prints=True)
@@ -320,6 +406,9 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
 def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     """AAM Backup Automation — nightly backup orchestrator.
 
+    Each pipeline step is a separate Prefect task — visible in the Prefect UI
+    with individual state, timing, logs, and retries.
+
     Modes:
         cloud — Run only cloud backup (rclone sync → GCS)
         lan   — Run only LAN backup (robocopy /MIR, includes WoL + shutdown)
@@ -339,39 +428,38 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
 
     logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
 
-    # Apply config-driven retry settings via Prefect-native with_options
-    cloud_task = cloud_backup_task.with_options(
-        retries=config.cloud.max_attempts - 1,
-        retry_delay_seconds=config.cloud.retry_delay_seconds,
-        on_failure=[_failure_alert_hook(config)],
-    )
-    lan_task = lan_backup_task.with_options(
-        retries=config.lan.max_attempts - 1,
-        retry_delay_seconds=config.lan.retry_delay_seconds,
-        on_failure=[_failure_alert_hook(config)],
-    )
-
     excs = []
 
-    # ── Cloud ──
-    if mode in ("cloud", "all") and config.cloud.enabled:
-        logger.info("Starting cloud backup")
-        try:
-            cloud_task(config)
-        except Exception as e:
-            excs.append(e)
+    with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
+        # ── Cloud ──
+        if mode in ("cloud", "all") and config.cloud.enabled:
+            logger.info("Starting cloud backup pipeline")
+            try:
+                _run_cloud_pipeline(config, _stable_run_id("cloud"), _utcnow())
+            except Exception as e:
+                excs.append(e)
 
-    # ── LAN ──
-    if mode in ("lan", "all") and config.lan.enabled:
-        logger.info("Starting LAN backup")
-        try:
-            lan_task(config)
-        except Exception as e:
-            excs.append(e)
+        # ── LAN ──
+        if mode in ("lan", "all") and config.lan.enabled:
+            logger.info("Starting LAN backup pipeline")
+            try:
+                _run_lan_pipeline(config, _stable_run_id("lan"), _utcnow())
+            except Exception as e:
+                excs.append(e)
 
     # ── Summary ──
     if excs:
-        logger.error(f"Backup completed with {len(excs)} error(s): {'; '.join(str(e) for e in excs)}")
+        error_summary = '; '.join(str(e) for e in excs)
+        logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
+        try:
+            send_failure_alert(
+                config.notifications,
+                config.firm_name,
+                error_summary,
+                {"mode": mode},
+            )
+        except Exception:
+            pass
         raise ExceptionGroup("Backup completed with errors", excs)
 
     # ── Maintenance ──
