@@ -11,8 +11,8 @@ from pathlib import Path
 def write_temp_config(
     gcs_key_path: str,
     location: str,
-    project_number: str = "920173882190",
-    storage_class: str = "COLDLINE",
+    project_number: str,
+    storage_class: str,
 ) -> str:
     """Write temporary rclone config file for GCS access.
 

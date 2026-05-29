@@ -52,6 +52,7 @@ class TestBuildRcloneSyncCommand:
             bucket="my-bucket",
             fy_prefix="FY26-27",
             config_path="/tmp/rclone.conf",
+            storage_class="COLDLINE",
         )
         assert cmd[0] == "rclone"
         assert cmd[1] == "sync"
@@ -62,6 +63,7 @@ class TestBuildRcloneSyncCommand:
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/myconfig.conf",
+            storage_class="COLDLINE",
         )
         assert "--config" in cmd
         cfg_idx = cmd.index("--config")
@@ -70,7 +72,7 @@ class TestBuildRcloneSyncCommand:
     def test_custom_transfers(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", transfers=8,
+            config_path="/tmp/c.conf", storage_class="COLDLINE", transfers=8,
         )
         assert "--transfers" in cmd
         t_idx = cmd.index("--transfers")
@@ -79,7 +81,7 @@ class TestBuildRcloneSyncCommand:
     def test_custom_checkers(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", checkers=32,
+            config_path="/tmp/c.conf", storage_class="COLDLINE", checkers=32,
         )
         assert "--checkers" in cmd
         c_idx = cmd.index("--checkers")
@@ -93,18 +95,10 @@ class TestBuildRcloneSyncCommand:
         sc_idx = cmd.index("--gcs-storage-class")
         assert cmd[sc_idx + 1] == "ARCHIVE"
 
-    def test_default_storage_class_is_coldline(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf",
-        )
-        sc_idx = cmd.index("--gcs-storage-class")
-        assert cmd[sc_idx + 1] == "COLDLINE"
-
     def test_custom_bandwidth(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", bwlimit="50M",
+            config_path="/tmp/c.conf", storage_class="COLDLINE", bwlimit="50M",
         )
         assert "--bwlimit" in cmd
         b_idx = cmd.index("--bwlimit")
@@ -113,7 +107,7 @@ class TestBuildRcloneSyncCommand:
     def test_retry_count(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", retries=5,
+            config_path="/tmp/c.conf", storage_class="COLDLINE", retries=5,
         )
         r_idx = cmd.index("--retries")
         assert cmd[r_idx + 1] == "5"
@@ -122,6 +116,7 @@ class TestBuildRcloneSyncCommand:
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf",
+            storage_class="COLDLINE",
         )
         assert "--gcs-no-check-bucket" in cmd
 
@@ -129,5 +124,6 @@ class TestBuildRcloneSyncCommand:
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf",
+            storage_class="COLDLINE",
         )
         assert "--fast-list" in cmd

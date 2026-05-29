@@ -17,6 +17,8 @@ def run_cloud_dry_run(
     bucket: str,
     fy_prefix: str,
     gcs_key_path: str,
+    project_number: str,
+    storage_class: str,
     location: str = "asia-south1",
 ) -> dict:
     """Run rclone check --one-way as dry-run validation.
@@ -37,7 +39,7 @@ def run_cloud_dry_run(
     """
     config_path = None
     try:
-        config_path = _write_temp_config(gcs_key_path, location)
+        config_path = _write_temp_config(gcs_key_path, location, project_number, storage_class)
         dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
         cmd = [

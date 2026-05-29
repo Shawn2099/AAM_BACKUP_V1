@@ -9,6 +9,8 @@ import re
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+CONFIG_PATH = "config.yaml"
+
 
 class PathsConfig(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
@@ -142,6 +144,17 @@ class NotificationConfig(BaseModel):
             raise ValueError(f"Invalid SMTP port: {v}")
         return v
 
+    def __repr__(self) -> str:
+        return (
+            f"NotificationConfig(smtp_host='{self.smtp_host}', smtp_port={self.smtp_port}, "
+            f"smtp_username='{self.smtp_username}', smtp_password='***', "
+            f"sender='{self.sender}', recipients={self.recipients}, "
+            f"send_on_failure={self.send_on_failure}, send_on_success={self.send_on_success})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
 
 class DashboardConfig(BaseModel):
     auth_enabled: bool = True
@@ -198,6 +211,6 @@ class AppConfig(BaseModel):
         return cls(**data)
 
 
-def load_config(config_path: str) -> AppConfig:
+def load_config(config_path: str = CONFIG_PATH) -> AppConfig:
     """Load and validate configuration from a YAML file."""
     return AppConfig.from_yaml(config_path)

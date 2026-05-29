@@ -25,7 +25,7 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
         return False, f"Source drive not accessible: {source}"
 
     try:
-        has_files = any(_.is_file() for _ in source.rglob("*"))
+        has_files = any(source.iterdir())
     except PermissionError:
         return False, f"Source drive permission denied: {source}"
     except OSError as e:
@@ -94,17 +94,22 @@ def check_clock_skew(max_skew_seconds: int = 600) -> tuple[bool, str]:
 
         logger.debug(f"Clock OK: {difference:.1f}s skew from Google (limit: {max_skew_seconds}s)")
         return True, ""
-    except Exception as e:
+    except OSError as e:
         logger.warning(f"Could not verify clock skew (Google not reachable): {e} — skipping")
+        return True, ""
+    except ValueError as e:
+        logger.warning(f"Could not parse Google Date header: {e} — skipping")
         return True, ""
 
 
-def pre_backup_health(source_path: str, mode: str) -> None:
+def pre_backup_health(source_path: str, mode: str, gcs_key_path: str | None = None) -> None:
     """Run all pre-backup health checks. Raises HealthError on failure.
 
     Args:
         source_path: Source drive root path.
         mode: "cloud", "lan", or "all"
+        gcs_key_path: Path to GCS service account key. If provided, validates
+            existence; logs warning on failure without blocking backup.
 
     Raises:
         HealthError: If any check fails.
@@ -116,6 +121,13 @@ def pre_backup_health(source_path: str, mode: str) -> None:
     if mode in ("cloud", "all"):
         if not check_binary_exists("rclone"):
             raise HealthError("rclone not found in PATH")
+        if gcs_key_path:
+            key_ok, key_reason = check_gcs_key(gcs_key_path)
+            if not key_ok:
+                logger.warning(f"GCS key check: {key_reason}")
+        clock_ok, clock_reason = check_clock_skew()
+        if not clock_ok:
+            logger.warning(f"Clock skew: {clock_reason}")
 
     if mode in ("lan", "all"):
         if not check_binary_exists("robocopy"):

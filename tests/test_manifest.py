@@ -151,3 +151,49 @@ class TestManifestDB:
         db = ManifestDB(temp_db_path)
         db.update_checksums({})
         db.close()
+
+    def test_bulk_upsert_synced_cloud(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        entries = [
+            {"path": "a.txt", "size": 100, "mtime": 1.0},
+            {"path": "b.txt", "size": 200, "mtime": 2.0},
+            {"path": "c.txt", "size": 300, "mtime": 3.0},
+        ]
+        db.bulk_upsert_synced(entries, "cloud")
+        assert db.file_count("cloud_status") == 3
+        assert db.get_entry("a.txt")["cloud_status"] == "synced"
+        assert db.get_entry("b.txt")["file_size"] == 200
+        db.close()
+
+    def test_bulk_upsert_synced_lan(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        entries = [
+            {"path": "x.txt", "size": 50, "mtime": 10.0},
+            {"path": "y.txt", "size": 60, "mtime": 20.0},
+        ]
+        db.bulk_upsert_synced(entries, "lan")
+        assert db.file_count("lan_status") == 2
+        assert db.get_entry("x.txt")["lan_status"] == "synced"
+        db.close()
+
+    def test_bulk_upsert_synced_updates_existing(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        db.upsert_file_entry("old.txt", 100, 1.0, cloud_status="unknown")
+        db.bulk_upsert_synced([{"path": "old.txt", "size": 999, "mtime": 99.0}], "cloud")
+        entry = db.get_entry("old.txt")
+        assert entry["file_size"] == 999
+        assert entry["cloud_status"] == "synced"
+        db.close()
+
+    def test_bulk_upsert_synced_empty_noop(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        db.bulk_upsert_synced([], "cloud")
+        assert db.file_count("cloud_status") == 0
+        db.close()
+
+    def test_bulk_upsert_synced_with_md5(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        entries = [{"path": "f.txt", "size": 10, "mtime": 1.0, "md5_checksum": "abc123"}]
+        db.bulk_upsert_synced(entries, "cloud")
+        assert db.get_entry("f.txt")["md5_checksum"] == "abc123"
+        db.close()

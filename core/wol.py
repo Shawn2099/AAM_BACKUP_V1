@@ -19,21 +19,20 @@ class WolTimeout(RuntimeError):
 def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 5.0) -> bool:
     """TCP connect to SMB port. More reliable than ping."""
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((server_ip, port))
-        sock.close()
-        return result == 0
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            result = sock.connect_ex((server_ip, port))
+            return result == 0
     except OSError:
         return False
 
 
-def send_magic_packet(mac_address: str) -> None:
+def _send_magic_packet(mac_address: str) -> None:
     """Send WoL magic packet to global broadcast 255.255.255.255:9."""
     try:
         wol_send(mac_address, ip_address="255.255.255.255", port=9)
         logger.info(f"WoL magic packet sent to {mac_address}")
-    except Exception as e:
+    except OSError as e:
         raise OSError(f"Failed to send WoL packet: {e}")
 
 
@@ -80,7 +79,7 @@ def ensure_server_online(config: AppConfig) -> bool:
         return True
 
     logger.info(f"Backup server {server_ip} offline, sending WoL")
-    send_magic_packet(config.wol.mac_address)
+    _send_magic_packet(config.wol.mac_address)
     wait_for_server(
         server_ip,
         config.wol.wake_timeout_seconds,

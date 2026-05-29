@@ -3,7 +3,9 @@
 Reference: AAM_BACKUP_V2/core/rclone.py — proven classification and temp config pattern.
 """
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from loguru import logger
@@ -47,9 +49,9 @@ def build_rclone_sync_command(
     bucket: str,
     fy_prefix: str,
     config_path: str,
+    storage_class: str,
     bwlimit: str = "10M",
     retries: int = 3,
-    storage_class: str = "COLDLINE",
     transfers: int = 4,
     checkers: int = 16,
 ) -> list[str]:
@@ -82,11 +84,11 @@ def run_cloud_sync(
     bucket: str,
     fy_prefix: str,
     gcs_key_path: str,
+    project_number: str,
+    storage_class: str,
     location: str = "asia-south1",
-    project_number: str = "920173882190",
     bwlimit: str = "10M",
     retries: int = 3,
-    storage_class: str = "COLDLINE",
     transfers: int = 4,
     checkers: int = 16,
     timeout: int = 21600,
@@ -99,41 +101,66 @@ def run_cloud_sync(
         {"status": str, "exit_code": int, "error": str | None}
     """
     config_path = None
+    stderr_path = None
 
     try:
-        config_path = write_temp_config(gcs_key_path, location, project_number, storage_class)
-        cmd = build_rclone_sync_command(source, bucket, fy_prefix, config_path, bwlimit, retries, storage_class, transfers, checkers)
+        config_path = write_temp_config(
+            gcs_key_path=gcs_key_path,
+            location=location,
+            project_number=project_number,
+            storage_class=storage_class,
+        )
+        cmd = build_rclone_sync_command(source, bucket, fy_prefix, config_path, storage_class, bwlimit, retries, transfers, checkers)
 
         logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        stderr_fd, stderr_path = tempfile.mkstemp(suffix=".log", prefix="cloud_sync_stderr_")
+        os.close(stderr_fd)
+
+        with open(stderr_path, "w", encoding="utf-8") as stderr_file:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                text=True,
+                timeout=timeout,
+            )
 
         status = classify_rclone_exit(result.returncode)
         logger.info(f"Cloud sync exit {result.returncode} → {status}")
 
+        error_msg = None
+        if result.returncode != 0:
+            try:
+                stderr_text = Path(stderr_path).read_text(encoding="utf-8")
+                error_msg = stderr_text[:2000] if len(stderr_text) > 2000 else stderr_text
+                logger.error(f"rclone error: {error_msg}")
+            except OSError:
+                error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
+
         return {
             "status": status,
             "exit_code": result.returncode,
-            "error": None,
+            "error": error_msg,
         }
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         logger.error(f"Cloud sync timed out after {timeout}s")
-        return {"status": "CLOUD_FAILED", "exit_code": -1, "error": "Timeout"}
-    except FileNotFoundError:
+        return {"status": "CLOUD_FAILED", "exit_code": -1, "error": f"Timeout after {timeout}s"}
+    except FileNotFoundError as e:
         logger.error("rclone not found")
-        return {"status": "CLOUD_FAILED", "exit_code": -1, "error": "rclone not found"}
+        return {"status": "CLOUD_FAILED", "exit_code": -1, "error": f"rclone not found: {e}"}
     except OSError as e:
-        logger.error(f"Cloud sync error: {e}")
+        logger.error(f"Cloud sync OS error: {e}")
         return {"status": "CLOUD_FAILED", "exit_code": -1, "error": str(e)}
     finally:
         if config_path:
             try:
                 Path(config_path).unlink()
+            except OSError:
+                pass
+        if stderr_path:
+            try:
+                Path(stderr_path).unlink()
             except OSError:
                 pass

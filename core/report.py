@@ -3,6 +3,7 @@
 Reads from ManifestDB run_history. Zero knowledge of backup internals.
 """
 
+import html
 import smtplib
 from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
@@ -80,16 +81,16 @@ def send_failure_alert(
         logger.info("send_on_failure disabled — skipping alert")
         return False
 
-    mode = run_data.get("mode", "unknown").upper()
-    run_id = run_data.get("run_id", "unknown")
+    mode = (run_data.get("mode") or "unknown").upper()
+    run_id = str(run_data.get("run_id") or "unknown")
 
     subject = f"Backup FAILED — {firm_name} ({mode})"
     body = f"""<html><body>
-<h2 style="color: red;">Backup Failure — {firm_name}</h2>
+<h2 style="color: red;">Backup Failure — {html.escape(firm_name)}</h2>
 <table>
-  <tr><td><strong>Mode:</strong></td><td>{mode}</td></tr>
-  <tr><td><strong>Run ID:</strong></td><td>{run_id}</td></tr>
-  <tr><td><strong>Error:</strong></td><td>{error_message}</td></tr>
+  <tr><td><strong>Mode:</strong></td><td>{html.escape(mode)}</td></tr>
+  <tr><td><strong>Run ID:</strong></td><td>{html.escape(run_id)}</td></tr>
+  <tr><td><strong>Error:</strong></td><td>{html.escape(error_message)}</td></tr>
 </table>
 </body></html>"""
 
@@ -122,9 +123,12 @@ def send_summary_report(
         return False
 
     total = len(runs)
-    successes = sum(1 for r in runs if r["status"] in ("LAN_COMPLETE", "CLOUD_COMPLETE"))
-    failures = sum(1 for r in runs if r["status"] in ("LAN_FAILED", "CLOUD_FAILED"))
-    partials = total - successes - failures
+    _success = {"LAN_COMPLETE", "CLOUD_COMPLETE"}
+    _failure = {"LAN_FAILED", "CLOUD_FAILED"}
+    _partial = {"LAN_PARTIAL", "CLOUD_PARTIAL"}
+    successes = sum(1 for r in runs if r["status"] in _success)
+    failures = sum(1 for r in runs if r["status"] in _failure)
+    partials = sum(1 for r in runs if r["status"] in _partial)
 
     total_files = sum(r["files_copied"] or 0 for r in runs)
     total_bytes = sum(r["bytes_copied"] or 0 for r in runs)
@@ -137,12 +141,12 @@ def send_summary_report(
         mode = r["mode"].upper()
         status = r["status"]
         files = r["files_copied"] or 0
-        rows += f"<tr><td>{start}</td><td>{mode}</td><td>{status}</td><td>{files}</td></tr>"
+        rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td></tr>"
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     subject = f"Backup {period} Report — {firm_name}"
     body = f"""<html><body>
-<h2>{period} Backup Report — {firm_name}</h2>
+<h2>{html.escape(period)} Backup Report — {html.escape(firm_name)}</h2>
 <p><strong>Period:</strong> Last {days} days (generated {now})</p>
 
 <h3>Summary</h3>

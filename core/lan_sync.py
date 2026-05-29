@@ -16,8 +16,6 @@ from models.config import LanConfig
 # Flag validation — /NC is FORBIDDEN
 # Source: ConvertFrom-RobocopLog §Notes
 # ═══════════════════════════════════════════════════════════════
-_FORBIDDEN_FLAGS = ["/NC"]
-
 
 def _validate_required_flags(flags: list[str]) -> None:
     for f in flags:
@@ -48,12 +46,13 @@ def classify_exit_code(code: int) -> str:
 def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> list[str]:
     """Build robocopy /MIR command with production-verified flags.
 
-    /V /TS /FP /BYTES — verbose per-file logging with full paths and timestamps.
+    /V /TS /FP — verbose per-file logging with full paths and timestamps.
     /NJH /NJS /NDL /NP — suppress headers, summaries, directory lists, and progress.
     """
     flags = [
         "/MIR",
         "/Z",
+        "/ZB",
         "/XJ",
         f"/MT:{lan_config.mt_threads}",
         f"/R:{lan_config.retry_count}",
@@ -102,22 +101,29 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
         status = classify_exit_code(result.returncode)
         logger.info(f"LAN sync exit {result.returncode} → {status}")
 
+        error_msg = None
+        if status == "LAN_FAILED":
+            try:
+                log_text = log_path.read_text(encoding="utf-8", errors="replace")
+                error_msg = log_text[-500:] if len(log_text) > 500 else log_text
+            except OSError:
+                error_msg = f"robocopy exit {result.returncode} (log unreadable)"
+
         return {
             "status": status,
             "exit_code": result.returncode,
-            "log_path": str(log_path),
-            "error": None,
+            "error": error_msg,
         }
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         logger.error(f"LAN sync timed out after {lan_config.subprocess_timeout_seconds}s")
-        return {"status": "LAN_FAILED", "exit_code": -1, "log_path": None, "error": "Timeout"}
-    except FileNotFoundError:
+        return {"status": "LAN_FAILED", "exit_code": -1, "error": f"Timeout after {lan_config.subprocess_timeout_seconds}s"}
+    except FileNotFoundError as e:
         logger.error("robocopy.exe not found")
-        return {"status": "LAN_FAILED", "exit_code": -1, "log_path": None, "error": "robocopy.exe not found"}
+        return {"status": "LAN_FAILED", "exit_code": -1, "error": f"robocopy.exe not found: {e}"}
     except OSError as e:
         logger.error(f"LAN sync OS error: {e}")
-        return {"status": "LAN_FAILED", "exit_code": -1, "log_path": None, "error": str(e)}
+        return {"status": "LAN_FAILED", "exit_code": -1, "error": str(e)}
     finally:
         if log_path and log_path.exists():
             try:

@@ -10,79 +10,109 @@ Services:
   - Backup scheduler (in-process, 4 deployments)
 
 Ctrl+C stops all services cleanly. Shutdown order: scheduler → dashboard → Prefect API.
-Lock files (.lock_cloud, .lock_lan) are cleaned up on exit.
 """
-
+import os
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
+# Force Prefect to use a single, shared local server on port 4200 instead of
+# spawning multiple heavy, isolated ephemeral server processes on random ports.
+os.environ["PREFECT_API_URL"] = "http://127.0.0.1:4200/api"
+os.environ["PREFECT_SERVER_API_PORT"] = "4200"
+
 PROJECT_DIR = Path(__file__).resolve().parent
 
 
 def _run_dashboard():
-    """Start dashboard UI on port 8080 — imports in-thread to avoid early config load."""
-    print("[launch] Starting Dashboard UI on http://0.0.0.0:8080 ...")
+    """Start dashboard UI — imports in-thread to avoid early config load."""
+    from models.config import CONFIG_PATH, load_config
+    cfg = load_config(CONFIG_PATH)
+    bind = cfg.dashboard.bind_address
+    port = cfg.dashboard.port
+    print(f"[launch] Starting Dashboard UI on http://{bind}:{port} ...")
     import uvicorn
 
     from ui import app
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="warning")
+    uvicorn.run(app, host=bind, port=port, log_level="warning")
 
 
-def _cleanup_lock_files():
-    """Remove stale lock files from temp directory on exit."""
-    try:
-        from models.config import load_config
-        cfg = load_config("config.yaml")
-        temp_dir = Path(cfg.paths.temp_directory)
-        for lock in temp_dir.glob(".lock_*"):
-            try:
-                lock.unlink()
-            except OSError:
-                pass
-    except Exception:
-        pass
+def _wait_for_prefect_api(url="http://127.0.0.1:4200/api", timeout=60):
+    """Poll the Prefect health endpoint until the API is ready."""
+    import httpx
+    for _ in range(timeout):
+        try:
+            if httpx.get(f"{url}/health", timeout=2).status_code == 200:
+                return True
+        except httpx.ConnectError:
+            pass
+        except Exception:
+            pass
+        time.sleep(1)
+    print("[launch] WARNING: Prefect API did not become ready within timeout")
+    return False
+
+
+def _ensure_concurrency_limit():
+    """Create the global concurrency limit for backup serialization if it doesn't exist."""
+    import asyncio
+
+    async def _create():
+        from prefect.client.orchestration import get_client
+        try:
+            async with get_client() as client:
+                await client.create_global_concurrency_limit(
+                    name="aam-backup",
+                    limit=1,
+                    active=False,
+                    slot_decay_per_second=0.0,
+                )
+                print("[launch] Created global concurrency limit 'aam-backup' (limit=1)")
+        except Exception:
+            # Limit already exists — this is expected on subsequent runs
+            pass
+
+    asyncio.run(_create())
 
 
 def _cancel_orphaned_runs():
-    """Cancel any PENDING flow runs left over from a previous crashed session.
-
-    PENDING runs from `prefect deployment run` that were never picked up
-    by the old serve() loop before it died will never execute. Cancel them
-    so they don't clutter the UI and incorrectly show as "running."
+    """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session.
+    PENDING/RUNNING runs that were never finished before the scheduler or server died
+    will never complete. Cancel them on launch to ensure a clean UI and lock state.
     """
     try:
-        result = subprocess.run(
-            [
-                "prefect", "flow-run", "ls",
-                "--state", "PENDING",
-                "--limit", "50",
-                "--output", "json",
-            ],
-            capture_output=True, text=True, timeout=15,
-            cwd=str(PROJECT_DIR),
-        )
-        if result.returncode != 0:
-            return
+        for state in ["PENDING", "RUNNING"]:
+            result = subprocess.run(
+                [
+                    "prefect", "flow-run", "ls",
+                    "--state", state,
+                    "--limit", "50",
+                    "--output", "json",
+                ],
+                capture_output=True, text=True, timeout=15,
+                cwd=str(PROJECT_DIR),
+            )
+            if result.returncode != 0:
+                continue
 
-        import json as _json
-        runs = _json.loads(result.stdout) if result.stdout.strip() else []
-        cancelled = 0
-        for run in runs:
-            run_id = run.get("id", "")
-            run_name = run.get("name", "")
-            if run_id:
-                subprocess.run(
-                    ["prefect", "flow-run", "cancel", run_id],
-                    capture_output=True, timeout=10,
-                    cwd=str(PROJECT_DIR),
-                )
-                print(f"[launch] Cancelled orphaned run: {run_name} ({run_id[:8]}...)")
-                cancelled += 1
-        if cancelled:
-            print(f"[launch] Cleaned up {cancelled} orphaned flow run(s)")
+            import json as _json
+            runs = _json.loads(result.stdout) if result.stdout.strip() else []
+            cancelled = 0
+            for run in runs:
+                run_id = run.get("id", "")
+                run_name = run.get("name", "")
+                if run_id:
+                    subprocess.run(
+                        ["prefect", "flow-run", "cancel", run_id],
+                        capture_output=True, timeout=10,
+                        cwd=str(PROJECT_DIR),
+                    )
+                    print(f"[launch] Cancelled orphaned {state} run: {run_name} ({run_id[:8]}...)")
+                    cancelled += 1
+            if cancelled:
+                print(f"[launch] Cleaned up {cancelled} orphaned {state} flow run(s)")
     except Exception:
         pass
 
@@ -107,9 +137,12 @@ def main():
     dash_thread = threading.Thread(target=_run_dashboard, daemon=True)
     dash_thread.start()
 
-    # Wait for Prefect API to be ready
-    print("[launch] Waiting 30s for Prefect API to be ready...")
-    time.sleep(30)
+    # Wait for Prefect API to be ready by polling the health endpoint
+    print("[launch] Waiting for Prefect API to be ready...")
+    _wait_for_prefect_api()
+
+    # Create the global concurrency limit for backup serialization
+    _ensure_concurrency_limit()
 
     # Cancel orphaned flow runs from previous crashed/shutdown sessions
     _cancel_orphaned_runs()
@@ -119,14 +152,17 @@ def main():
     # deployment schedules stay active across restarts.
     print("[launch] Starting backup scheduler (main thread)...")
     print("[launch] All services started")
-    print("[launch] Dashboard: http://localhost:8080")
+    from models.config import CONFIG_PATH, load_config as _lc
+    _cfg = _lc(CONFIG_PATH)
+    print(f"[launch] Dashboard: http://{_cfg.dashboard.bind_address}:{_cfg.dashboard.port}")
     print("[launch] Prefect:   http://localhost:4200")
     print("[launch] Press Ctrl+C to stop all services")
     print()
 
     from prefect import serve
 
-    from serve import cloud_deployment, lan_deployment, monthly_deployment, report_deployment
+    from serve import deployments
+    cloud_deployment, lan_deployment, report_deployment, monthly_deployment = deployments()
 
     shutdown_clean = False
     try:
@@ -157,9 +193,7 @@ def main():
             except Exception:
                 pass
 
-        # 2) Cleanup lock files
-        _cleanup_lock_files()
-
+        # 2) Cleanup
         print("[launch] All services stopped")
 
 

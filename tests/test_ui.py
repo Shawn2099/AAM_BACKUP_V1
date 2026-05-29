@@ -7,11 +7,11 @@ import pytest
 
 import ui
 from core.manifest import ManifestDB
+from core.process import pid_alive
 from ui import (
     _check_api_key_header,
     _create_session,
     _last_run_summary,
-    _pid_alive,
     _require_auth,
     _validate_session,
 )
@@ -115,29 +115,29 @@ class TestLastRunSummary:
 class TestPidAlive:
     def test_pid_alive_via_kill(self):
         with patch("os.kill", return_value=None):
-            assert _pid_alive(12345) is True
+            assert pid_alive(12345) is True
 
     def test_pid_dead_no_tasklist(self):
         with (
             patch("os.kill", side_effect=OSError),
-            patch("sys.platform", "linux"),
+            patch("core.process.sys.platform", "linux"),
         ):
-            assert _pid_alive(99999) is False
+            assert pid_alive(99999) is False
 
     def test_pid_alive_via_tasklist_win32(self):
         with (
             patch("os.kill", side_effect=OSError),
-            patch("sys.platform", "win32"),
-            patch("subprocess.run") as mock_run,
+            patch("core.process.sys.platform", "win32"),
+            patch("core.process.subprocess.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(stdout="99999 some-process.exe", returncode=0)
-            assert _pid_alive(99999) is True
+            assert pid_alive(99999) is True
 
     def test_pid_dead_via_tasklist_win32(self):
         with (
             patch("os.kill", side_effect=OSError),
-            patch("sys.platform", "win32"),
-            patch("subprocess.run") as mock_run,
+            patch("core.process.sys.platform", "win32"),
+            patch("core.process.subprocess.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(stdout="INFO: No tasks are running", returncode=0)
-            assert _pid_alive(99999) is False
+            assert pid_alive(99999) is False

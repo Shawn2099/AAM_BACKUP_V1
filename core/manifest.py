@@ -6,8 +6,10 @@ different times, no contention).
 
 import sqlite3
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from loguru import logger
 
 SCHEMA_VERSION = 1
 
@@ -17,7 +19,7 @@ PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS file_entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    relative_path   TEXT NOT NULL UNIQUE,
+    relative_path   TEXT NOT NULL UNIQUE COLLATE NOCASE,
     file_size       INTEGER NOT NULL DEFAULT 0,
     mtime           REAL NOT NULL DEFAULT 0,
     md5_checksum    TEXT DEFAULT 'pending',
@@ -35,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_file_entries_relative_path ON file_entries(relati
 
 CREATE TABLE IF NOT EXISTS run_history (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id          TEXT NOT NULL,
+    run_id          TEXT NOT NULL UNIQUE,
     mode            TEXT NOT NULL,
     started_at      TEXT NOT NULL,
     ended_at        TEXT,
@@ -119,8 +121,16 @@ class ManifestDB:
                        md5_checksum = COALESCE(excluded.md5_checksum, file_entries.md5_checksum),
                        lan_status = COALESCE(excluded.lan_status, file_entries.lan_status),
                        cloud_status = COALESCE(excluded.cloud_status, file_entries.cloud_status),
-                       lan_last_synced_at = COALESCE(excluded.lan_last_synced_at, file_entries.lan_last_synced_at),
-                       cloud_last_synced_at = COALESCE(excluded.cloud_last_synced_at, file_entries.cloud_last_synced_at),
+                       lan_last_synced_at = CASE
+                           WHEN excluded.lan_status = 'synced' AND file_entries.lan_status != 'synced'
+                           THEN excluded.lan_last_synced_at
+                           ELSE file_entries.lan_last_synced_at
+                       END,
+                       cloud_last_synced_at = CASE
+                           WHEN excluded.cloud_status = 'synced' AND file_entries.cloud_status != 'synced'
+                           THEN excluded.cloud_last_synced_at
+                           ELSE file_entries.cloud_last_synced_at
+                       END,
                        updated_at = excluded.updated_at""",
                 (
                     relative_path,
@@ -134,6 +144,67 @@ class ManifestDB:
                     now,
                     now,
                 ),
+            )
+            conn.commit()
+
+    def bulk_upsert_synced(
+        self,
+        entries: list[dict],
+        mode: str,
+    ) -> None:
+        """Bulk upsert file entries and mark as synced in one transaction.
+
+        Replaces per-file upsert_file_entry() + mark_*_synced() with a single
+        executemany() call. 10-100x faster for large inventories (10K+ files).
+
+        Args:
+            entries: List of dicts, each with 'path', 'size', 'mtime'.
+                     Optional: 'md5_checksum'.
+            mode: 'cloud' or 'lan' — determines which status/timestamp to set.
+        """
+        if not entries:
+            return
+
+        if mode not in ("cloud", "lan"):
+            raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
+
+        status_field = f"{mode}_status"
+        ts_field = f"{mode}_last_synced_at"
+
+        with self._lock:
+            conn = self._get_conn()
+            now = _utcnow()
+            conn.executemany(
+                f"""INSERT INTO file_entries
+                    (relative_path, file_size, mtime, md5_checksum,
+                     {status_field}, {ts_field},
+                     created_at, updated_at)
+                    VALUES (?, ?, ?, ?,
+                            'synced', ?,
+                            ?, ?)
+                    ON CONFLICT(relative_path) DO UPDATE SET
+                        file_size = excluded.file_size,
+                        mtime = excluded.mtime,
+                        md5_checksum = COALESCE(excluded.md5_checksum, file_entries.md5_checksum),
+                        {status_field} = 'synced',
+                        {ts_field} = CASE
+                            WHEN file_entries.{status_field} != 'synced'
+                            THEN excluded.{ts_field}
+                            ELSE file_entries.{ts_field}
+                        END,
+                        updated_at = excluded.updated_at""",
+                [
+                    (
+                        e["path"],
+                        e.get("size", 0),
+                        e.get("mtime", 0),
+                        e.get("md5_checksum"),
+                        now,
+                        now,
+                        now,
+                    )
+                    for e in entries
+                ],
             )
             conn.commit()
 
@@ -225,6 +296,9 @@ class ManifestDB:
             return [dict(r) for r in rows]
 
     def file_count(self, status_field: str = "lan_status") -> int:
+        _ALLOWED = {"lan_status", "cloud_status"}
+        if status_field not in _ALLOWED:
+            raise ValueError(f"status_field must be one of {_ALLOWED}, got {status_field!r}")
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
@@ -245,7 +319,16 @@ class ManifestDB:
                 """INSERT INTO run_history
                    (run_id, mode, started_at, ended_at, status, exit_code,
                     files_copied, bytes_copied, files_failed, duration_seconds, error_message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                       ended_at = excluded.ended_at,
+                       status = excluded.status,
+                       exit_code = excluded.exit_code,
+                       files_copied = excluded.files_copied,
+                       bytes_copied = excluded.bytes_copied,
+                       files_failed = excluded.files_failed,
+                       duration_seconds = excluded.duration_seconds,
+                       error_message = excluded.error_message""",
                 (
                     data["run_id"],
                     data["mode"],
@@ -263,22 +346,23 @@ class ManifestDB:
             conn.commit()
 
     def get_runs_since(self, days: int, mode: str | None = None) -> list[dict]:
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         with self._lock:
             conn = self._get_conn()
             if mode:
                 rows = conn.execute(
                     """SELECT * FROM run_history
-                       WHERE started_at >= datetime('now', ?)
+                       WHERE started_at >= ?
                        AND mode = ?
                        ORDER BY started_at DESC""",
-                    (f"-{days} days", mode),
+                    (cutoff, mode),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     """SELECT * FROM run_history
-                       WHERE started_at >= datetime('now', ?)
+                       WHERE started_at >= ?
                        ORDER BY started_at DESC""",
-                    (f"-{days} days",),
+                    (cutoff,),
                 ).fetchall()
             return [dict(r) for r in rows]
 
@@ -318,12 +402,28 @@ class ManifestDB:
 
         Keeps file_entries intact — only purges the run log to prevent
         unbounded DB growth over years of daily runs.
+
+        Conditionally VACUUMs when the freelist exceeds 1000 pages (~4 MB),
+        per SQLite best practices: VACUUM is expensive and should only run
+        when the space savings justify the cost.
         """
         with self._lock:
             conn = self._get_conn()
+            cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
             conn.execute(
-                "DELETE FROM run_history WHERE started_at < datetime('now', ?)",
-                (f"-{retention_days} days",),
+                "DELETE FROM run_history WHERE started_at < ?",
+                (cutoff,),
             )
             conn.execute("PRAGMA optimize")
-            conn.commit()
+            conn.execute("ANALYZE")
+            freelist = conn.execute("PRAGMA freelist_count").fetchone()
+            if freelist and freelist[0] > 1000:
+                page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+                conn.commit()
+                conn.execute("VACUUM")
+                logger.debug(
+                    f"VACUUM triggered — freelist={freelist[0]} pages "
+                    f"(~{freelist[0] * page_size // 1024} KB)"
+                )
+            else:
+                conn.commit()

@@ -12,6 +12,7 @@ version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "loguru" },
     { name = "prefect" },
     { name = "pydantic" },
@@ -23,6 +24,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "prefect", specifier = ">=3.4.0" },
     { name = "pydantic", specifier = ">=2.0" },

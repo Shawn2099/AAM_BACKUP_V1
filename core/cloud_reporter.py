@@ -32,7 +32,7 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str) -> dict:
         return data
     except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Cloud size query failed: {e}")
-        return {"count": 0, "bytes": 0, "sizeless": "0"}
+        return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
 
 
 def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str) -> list[dict]:

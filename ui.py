@@ -8,19 +8,15 @@ FastAPI server bound to configurable host:port. Safety-first:
 """
 
 import hmac
-import json
+import html
 import os
 import secrets
 import shutil
-import subprocess
-import sys
 import threading
 import time
-import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from loguru import logger
@@ -30,8 +26,36 @@ from prefect.client.schemas.filters import FlowRunFilter
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import run_deployment
 
+
+# In-memory rate limiter for trigger and auth endpoints.
+# Tracks attempts per IP per window. Cleans up expired entries on access.
+_RATE_LIMITS: dict[str, list[float]] = {}
+_RATE_LOCK = threading.Lock()
+_RATE_WINDOW = 300  # 5 minutes
+_RATE_MAX_TRIGGER = 5  # 5 trigger attempts per window
+_RATE_MAX_LOGIN = 10   # 10 login attempts per window
+
+
+def _check_rate_limit(client_ip: str, max_attempts: int) -> bool:
+    """Return True if request is allowed, False if rate limited."""
+    with _RATE_LOCK:
+        now = time.time()
+        window = _RATE_WINDOW
+        entries = _RATE_LIMITS.get(client_ip, [])
+        entries = [t for t in entries if now - t < window]
+        if not entries:
+            _RATE_LIMITS.pop(client_ip, None)
+        else:
+            _RATE_LIMITS[client_ip] = entries
+        if len(entries) >= max_attempts:
+            return False
+        entries.append(now)
+        _RATE_LIMITS[client_ip] = entries
+        return True
+
 from core.fy_router import get_fy_prefix
 from core.manifest import ManifestDB
+from templates.dashboard import render_dashboard
 
 app = FastAPI(title="AAM Backup Dashboard")
 
@@ -44,7 +68,17 @@ _SESSION_TTL = timedelta(hours=24)
 def _create_session() -> str:
     token = secrets.token_hex(32)
     _sessions[token] = {"created_at": time.time()}
+    _cleanup_expired_sessions()
     return token
+
+
+def _cleanup_expired_sessions() -> None:
+    """Remove expired sessions. Called on each new session creation."""
+    now = time.time()
+    ttl = _SESSION_TTL.total_seconds()
+    expired = [t for t, s in _sessions.items() if now - s["created_at"] > ttl]
+    for t in expired:
+        del _sessions[t]
 
 
 def _validate_session(token: str | None) -> bool:
@@ -83,79 +117,30 @@ _config = None
 def _cfg():
     global _config
     if _config is None:
-        from models.config import load_config
-        _config = load_config("config.yaml")
+        from models.config import CONFIG_PATH, load_config
+        _config = load_config(CONFIG_PATH)
     return _config
 
 
-# ── Lock management ──────────────────────────────────────────
-
-
-def _lock_dir() -> Path:
-    p = Path(_cfg().paths.temp_directory)
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def _lock_path(pipeline: str) -> Path:
-    return _lock_dir() / f".lock_{pipeline}"
+# ── Pipeline status ──────────────────────────────────────────
 
 
 async def _is_running(pipeline: str) -> bool:
-    """Check if a backup pipeline is executing.
-
-    First checks the short-lived lock file (prevents double-clicks on trigger).
-    Then polls the Prefect API for active flow runs matching this deployment.
-    Only returns False if neither lock nor Prefect shows running state.
-    """
-    if _lock_active(pipeline):
-        return True
+    """Check if a backup pipeline is active (running, pending, or scheduled)."""
     return await _prefect_has_active_run(pipeline)
 
 
-def _pid_alive(pid: int) -> bool:
-    """Check if a process is alive (cross-platform)."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        pass
-    if sys.platform == "win32":
-        try:
-            result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                capture_output=True, text=True, timeout=5,
-            )
-            return f"{pid}" in result.stdout
-        except Exception:
-            return False
-    return False
-
-
-def _lock_active(pipeline: str) -> bool:
-    """Check if lock file is still held (prevents duplicate trigger clicks)."""
-    lp = _lock_path(pipeline)
-    if not lp.exists():
-        return False
-    try:
-        data = json.loads(lp.read_text())
-    except (json.JSONDecodeError, KeyError):
-        lp.unlink(missing_ok=True)
-        return False
-
-    if _pid_alive(data["pid"]):
-        return True
-    lp.unlink(missing_ok=True)
-    return False
-
-
 async def _prefect_has_active_run(pipeline: str) -> bool:
-    """Check Prefect API for an active flow run of the given pipeline using the Python SDK."""
+    """Check Prefect API for an active flow run of the given pipeline.
+
+    Checks both RUNNING and PENDING/SCHEDULED states — a PENDING run means
+    it's queued behind the concurrency limit and will execute when the slot opens.
+    """
     try:
         async with get_client() as client:
             runs = await client.read_flow_runs(
                 flow_run_filter=FlowRunFilter(
-                    state={"type": {"any_": [StateType.RUNNING]}}
+                    state={"type": {"any_": [StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]}}
                 ),
                 limit=20,
             )
@@ -170,48 +155,25 @@ async def _prefect_has_active_run(pipeline: str) -> bool:
         return False
 
 
-async def _acquire_lock(pipeline: str, run_id: str) -> bool:
-    if await _is_running(pipeline):
-        return False
-    _lock_path(pipeline).write_text(
-        json.dumps({
-            "pid": os.getpid(),
-            "run_id": run_id,
-            "started_at": datetime.now(UTC).isoformat(),
-        })
-    )
-    return True
-
-
-def _release_lock(pipeline: str):
-    _lock_path(pipeline).unlink(missing_ok=True)
-
-
 # ── Trigger pipeline (via Prefect deployment API) ────────────
 
 
-async def _trigger_deployment(pipeline: str) -> str:
-    """Fire a Prefect deployment run asynchronously via the direct Python SDK."""
-    flow_run = await run_deployment(
-        name=f"aam-backup/backup-{pipeline}"
-    )
-    return str(flow_run.id)
+async def _run_in_background(pipeline: str):
+    """Trigger pipeline asynchronously via Prefect SDK.
 
-
-async def _run_in_background(pipeline: str, config_path: str):
-    """Trigger pipeline asynchronously via Prefect SDK. Lock prevents duplicate clicks."""
-    run_id = str(uuid.uuid4())[:8]
-    if not await _acquire_lock(pipeline, run_id):
-        logger.warning(f"{pipeline} already running — skipping trigger")
+    Checks Prefect API for active runs before triggering.
+    Duplicate prevention is handled by the Prefect concurrency limit.
+    """
+    if await _prefect_has_active_run(pipeline):
+        logger.warning(f"{pipeline} already running or queued — skipping trigger")
         return
 
     try:
-        logger.info(f"Manual trigger: {pipeline} (run={run_id})")
-        await _trigger_deployment(pipeline)
+        logger.info(f"Manual trigger: {pipeline}")
+        flow_run = await run_deployment(name=f"aam-backup/backup-{pipeline}")
+        logger.info(f"Triggered {pipeline} — run ID: {flow_run.id}")
     except Exception as e:
         logger.error(f"Manual {pipeline} trigger failed: {e}")
-    finally:
-        _release_lock(pipeline)
 
 
 # ── API endpoints ────────────────────────────────────────────
@@ -295,22 +257,40 @@ async def status(request: Request):
 
     db = ManifestDB(cfg.paths.database_path)
     try:
+        runs = db.get_recent_runs(10)
+        recent_runs = []
+        for r in runs:
+            recent_runs.append({
+                "mode": r.get("mode", "?"),
+                "status": r.get("status", "?"),
+                "started_at": _format_datetime(r.get("started_at", "")),
+                "files": r.get("files_copied", 0),
+                "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
+                "error": r.get("error_message", "")
+            })
+
+        cloud_last_run = _last_run_summary(db, "cloud")
+        lan_last_run = _last_run_summary(db, "lan")
+
         return JSONResponse({
             "firm": "AAM",
             "fy_prefix": get_fy_prefix(),
             "cloud": {
                 "running": await _is_running("cloud"),
-                "last_run": _last_run_summary(db, "cloud"),
+                "last_run": cloud_last_run,
+                "last_run_formatted": f"{cloud_last_run['status']} — {_format_datetime(cloud_last_run['started_at'])}" if cloud_last_run else "No data",
             },
             "lan": {
                 "running": await _is_running("lan"),
-                "last_run": _last_run_summary(db, "lan"),
+                "last_run": lan_last_run,
+                "last_run_formatted": f"{lan_last_run['status']} — {_format_datetime(lan_last_run['started_at'])}" if lan_last_run else "No data",
             },
             "manifest": {
                 "lan_files": db.file_count("lan_status"),
                 "cloud_files": db.file_count("cloud_status"),
             },
             "health": _get_health(),
+            "recent_runs": recent_runs
         })
     finally:
         db.close()
@@ -332,24 +312,57 @@ def health():
 
 
 @app.post("/trigger/cloud")
-async def trigger_cloud(request: Request, background_tasks: BackgroundTasks, config_path: str = "config.yaml"):
+async def trigger_cloud(request: Request, background_tasks: BackgroundTasks):
     _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if await _is_running("cloud"):
-        return RedirectResponse("/?status=already_running_cloud", status_code=303)
-    background_tasks.add_task(_run_in_background, "cloud", config_path)
-    return RedirectResponse("/?status=triggered_cloud", status_code=303)
+        return JSONResponse({"status": "already_running", "detail": "Cloud backup is already in progress."}, status_code=400)
+    background_tasks.add_task(_run_in_background, "cloud")
+    return JSONResponse({"status": "triggered", "detail": "Cloud backup triggered successfully!"})
 
 
 @app.post("/trigger/lan")
-async def trigger_lan(request: Request, background_tasks: BackgroundTasks, config_path: str = "config.yaml"):
+async def trigger_lan(request: Request, background_tasks: BackgroundTasks):
     _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if await _is_running("lan"):
-        return RedirectResponse("/?status=already_running_lan", status_code=303)
-    background_tasks.add_task(_run_in_background, "lan", config_path)
-    return RedirectResponse("/?status=triggered_lan", status_code=303)
+        return JSONResponse({"status": "already_running", "detail": "LAN backup is already in progress."}, status_code=400)
+    background_tasks.add_task(_run_in_background, "lan")
+    return JSONResponse({"status": "triggered", "detail": "LAN backup triggered successfully!"})
 
 
 # ── Helpers ──────────────────────────────────────────────────
+
+
+def _format_datetime(dt_str: str | None) -> str:
+    if not dt_str:
+        return "-"
+    dt_str = str(dt_str).strip()
+    if not dt_str:
+        return "-"
+    
+    dt = None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(dt_str, fmt)
+            break
+        except ValueError:
+            continue
+            
+    if dt is None:
+        return dt_str[:19].replace("T", " ")
+        
+    try:
+        import datetime as dt_mod
+        utc_dt = dt.replace(tzinfo=dt_mod.timezone.utc)
+        local_dt = utc_dt.astimezone()
+        return local_dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
@@ -380,47 +393,6 @@ def _get_health() -> dict:
 
 # ── Dashboard HTML ───────────────────────────────────────────
 
-_CSS = """<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; padding: 2rem; }
-h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #f9fafb; }
-.flash { padding: 0.75rem 1rem; border-radius: 0.375rem; margin-bottom: 1rem; font-weight: 600; }
-.flash.success { background: #065f46; color: #6ee7b7; }
-.flash.warning { background: #78350f; color: #fcd34d; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-.card { background: #1f2937; border-radius: 0.5rem; padding: 1.25rem; border-left: 4px solid; }
-.card.success { border-color: #10b981; }
-.card.running { border-color: #f59e0b; }
-.card.failed { border-color: #ef4444; }
-.card.unknown { border-color: #6b7280; }
-.card h2 { font-size: 1rem; margin-bottom: 0.75rem; }
-.status-badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
-.status-badge.running { background: #f59e0b; color: #000; }
-.status-badge.success { background: #10b981; color: #000; }
-.status-badge.failed { background: #ef4444; color: #fff; }
-.status-badge.unknown { background: #6b7280; color: #fff; }
-.stats { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
-.stat { background: #1f2937; border-radius: 0.5rem; padding: 1rem; flex: 1; min-width: 120px; text-align: center; }
-.stat .num { font-size: 2rem; font-weight: 700; color: #60a5fa; }
-.stat .label { font-size: 0.75rem; color: #9ca3af; margin-top: 0.25rem; }
-button { padding: 0.5rem 1rem; border: none; border-radius: 0.375rem; font-weight: 600; cursor: pointer; margin-right: 0.5rem; }
-.btn-trigger { background: #2563eb; color: #fff; }
-.btn-trigger:hover:not(:disabled) { background: #1d4ed8; }
-.btn-trigger:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 1.5rem; }
-th { text-align: left; color: #9ca3af; padding: 0.5rem 0.75rem; border-bottom: 1px solid #374151; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; }
-td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #1f2937; }
-tr:hover { background: #1f2937; }
-.tag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 999px; font-size: 0.65rem; font-weight: 600; }
-.tag.cloud { background: #1e3a5f; color: #93c5fd; }
-.tag.lan { background: #14532d; color: #86efac; }
-.tag.success { background: #065f46; color: #6ee7b7; }
-.tag.partial { background: #78350f; color: #fcd34d; }
-.tag.failed { background: #7f1d1d; color: #fca5a5; }
-.info { color: #9ca3af; font-size: 0.8rem; margin-top: 1.5rem; }
-</style>"""
-
-
 async def _render_dashboard(flash: str = "") -> str:
     cfg = _cfg()
     db_path = Path(cfg.paths.database_path)
@@ -438,31 +410,34 @@ async def _render_dashboard(flash: str = "") -> str:
 
     if db:
         try:
-            cloud_running = "Running" if await _is_running("cloud") else "Idle"
-            lan_running = "Running" if await _is_running("lan") else "Idle"
+            cloud_active = await _is_running("cloud")
+            lan_active = await _is_running("lan")
+
+            cloud_running = "Running" if cloud_active else "Idle"
+            lan_running = "Running" if lan_active else "Idle"
             cr = _last_run_summary(db, "cloud")
             lr = _last_run_summary(db, "lan")
             if cr:
-                cloud_last = f"{cr['status']} — {cr['started_at'][:16]}"
+                cloud_last = f"{cr['status']} — {_format_datetime(cr['started_at'])}"
                 cloud_run = f"{cr['status']} ({cr['files']} files)"
                 if cr.get("error"):
-                    cloud_run += f" — {cr['error'][:60]}"
+                    cloud_run += f" — {html.escape(cr['error'][:60])}"
             if lr:
-                lan_last = f"{lr['status']} — {lr['started_at'][:16]}"
+                lan_last = f"{lr['status']} — {_format_datetime(lr['started_at'])}"
                 lan_run = f"{lr['status']} ({lr['files']} files)"
                 if lr.get("error"):
-                    lan_run += f" — {lr['error'][:60]}"
+                    lan_run += f" — {html.escape(lr['error'][:60])}"
             cloud_files = db.file_count("cloud_status")
             lan_files = db.file_count("lan_status")
 
-            cloud_class = "running" if await _is_running("cloud") else (
+            cloud_class = "running" if cloud_active else (
                 "success" if cr and "COMPLETE" in cr["status"] else "failed"
             )
-            lan_class = "running" if await _is_running("lan") else (
+            lan_class = "running" if lan_active else (
                 "success" if lr and "COMPLETE" in lr["status"] else "failed"
             )
-            cloud_btn = "disabled" if await _is_running("cloud") else ""
-            lan_btn = "disabled" if await _is_running("lan") else ""
+            cloud_btn = "disabled" if cloud_active else ""
+            lan_btn = "disabled" if lan_active else ""
 
             h = _get_health()
             if "error" not in h:
@@ -481,7 +456,7 @@ async def _render_dashboard(flash: str = "") -> str:
                     s_tag = '<span class="tag failed">FAILED</span>'
                 else:
                     s_tag = f'<span class="tag">{s[:10]}</span>'
-                ts = r.get("started_at", "")[:19]
+                ts = _format_datetime(r.get("started_at", ""))
                 files = r.get("files_copied", 0)
                 err = r.get("error_message", "")
                 dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
@@ -501,70 +476,23 @@ async def _render_dashboard(flash: str = "") -> str:
         msg, cls = flash_map[flash]
         flash_html = f'<div class="flash {cls}">{msg}</div>'
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="30">
-<title>AAM Backup Dashboard</title>
-{_CSS}
-</head>
-<body>
-<h1>AAM Backup Dashboard</h1>
-{flash_html}
+    return render_dashboard(
+        lan_files=lan_files,
+        cloud_files=cloud_files,
+        fy_prefix=get_fy_prefix(),
+        cloud_class=cloud_class,
+        cloud_running=cloud_running,
+        cloud_run=cloud_run,
+        cloud_last=cloud_last,
+        cloud_btn=cloud_btn,
+        lan_class=lan_class,
+        lan_running=lan_running,
+        lan_run=lan_run,
+        lan_last=lan_last,
+        lan_btn=lan_btn,
+        health_info=health_info,
+        flash_html=flash_html,
+        history_rows=history_rows,
+        auth_enabled=_auth_enabled(),
+    )
 
-<div class="stats">
-    <div class="stat"><div class="num">{lan_files:,}</div><div class="label">LAN Files</div></div>
-    <div class="stat"><div class="num">{cloud_files:,}</div><div class="label">Cloud Files</div></div>
-    <div class="stat"><div class="num">{get_fy_prefix()}</div><div class="label">FY Prefix</div></div>
-</div>
-
-<div class="grid">
-    <div class="card {cloud_class}">
-        <h2>Cloud Backup <span class="status-badge {cloud_class}">{cloud_running}</span></h2>
-        <p>{cloud_run}</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem">Last: {cloud_last}</p>
-        <form style="margin-top:1rem" onsubmit="return confirm('Start cloud backup now?')">
-            <button class="btn-trigger" {cloud_btn} formaction="/trigger/cloud" formmethod="post">
-                Run Cloud Backup
-            </button>
-        </form>
-    </div>
-
-    <div class="card {lan_class}">
-        <h2>LAN Backup <span class="status-badge {lan_class}">{lan_running}</span></h2>
-        <p>{lan_run}</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem">Last: {lan_last}</p>
-        <form style="margin-top:1rem" onsubmit="return confirm('Start LAN backup now? Includes WoL + shutdown.')">
-            <button class="btn-trigger" {lan_btn} formaction="/trigger/lan" formmethod="post">
-                Run LAN Backup
-            </button>
-        </form>
-    </div>
-</div>
-
-<h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Run History</h2>
-<table>
-<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
-<tbody>{history_rows or '<tr><td colspan="6" style="color:#6b7280">No runs recorded yet</td></tr>'}</tbody>
-</table>
-
-<div class="info">
-    <p>{health_info}</p>
-    <p style="margin-top:0.25rem">
-        AAM Backup Automation V1 — Auto-refreshes every 30s
-        {' · <a href="/logout" style="color:#60a5fa">Logout</a>' if _auth_enabled() else ''}
-    </p>
-</div>
-</body>
-</html>"""
-
-
-def run():
-    cfg = _cfg()
-    uvicorn.run(app, host=cfg.dashboard.bind_address, port=cfg.dashboard.port)
-
-
-if __name__ == "__main__":
-    run()
