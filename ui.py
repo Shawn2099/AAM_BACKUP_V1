@@ -272,7 +272,8 @@ async def status(request: Request):
                 "started_at": parse_iso_to_local(r.get("started_at", "")),
                 "files": r.get("files_copied", 0),
                 "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
-                "error": r.get("error_message", "")
+                "error": r.get("error_message", ""),
+                "extended_metrics": r.get("extended_metrics", "")
             })
 
         cloud_last_run = _last_run_summary(db, "cloud")

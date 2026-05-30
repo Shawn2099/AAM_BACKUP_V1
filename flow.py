@@ -10,6 +10,7 @@ Two deployments from one codebase:
   - backup-all:   manual, runs both sequentially (cloud first)
 """
 
+import json
 import time
 import uuid
 
@@ -256,6 +257,76 @@ def lan_shutdown_task(config):
         logger.warning(f"Server shutdown failed (non-critical): {e}")
 
 
+@task(name="cloud-publish-artifact")
+def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copied: int, bytes_copied: int):
+    """Publish a beautiful Markdown summary of the Cloud Backup to the Prefect Console."""
+    try:
+        from prefect.artifacts import create_markdown_artifact
+        status = sync_result.get("status", "UNKNOWN")
+        exit_code = sync_result.get("exit_code", -1)
+        size_mb = bytes_copied / (1024 * 1024)
+        total_files = verify_data.get('size', {}).get('count', 0)
+        total_space_gb = verify_data.get('size', {}).get('bytes', 0) / (1024 * 1024 * 1024)
+        verified_str = "✅ Passed" if verify_data.get("verified") else "❌ Failed/Skipped"
+        
+        markdown_content = (
+            f"# ☁️ AAM Cloud Backup Run Summary\n\n"
+            f"## 📊 Performance & Execution Metrics\n"
+            f"* **Status:** `{status}` (Exit Code: `{exit_code}`)\n"
+            f"* **Files Transferred:** `{files_copied}` files\n"
+            f"* **Volume Transferred:** `{size_mb:.2f} MB` (`{bytes_copied}` bytes)\n\n"
+            f"## 📁 Storage Metrics (GCS Bucket)\n"
+            f"* **Total Tracked Files:** `{total_files}` files\n"
+            f"* **Total Space Consumed:** `{total_space_gb:.3f} GB`\n\n"
+            f"## 🔒 Integrity Verification\n"
+            f"* **Cryptographic Checks:** {verified_str}\n"
+        )
+        create_markdown_artifact(
+            markdown=markdown_content,
+            key="cloud-backup-summary"
+        )
+        logger.info("Published Cloud Backup Markdown Artifact to Prefect Console UI")
+    except Exception as e:
+        logger.warning(f"Could not publish cloud backup artifact: {e}")
+
+
+@task(name="lan-publish-artifact")
+def lan_publish_artifact_task(sync_result: dict, before_dict: dict, after_dict: dict, files_copied: int, bytes_copied: int):
+    """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
+    try:
+        from prefect.artifacts import create_markdown_artifact
+        from core.lan_manifest import diff_snapshots
+        status = sync_result.get("status", "UNKNOWN")
+        exit_code = sync_result.get("exit_code", -1)
+        
+        diff = diff_snapshots(before_dict, after_dict)
+        added = len(diff.get("added", []))
+        modified = len(diff.get("modified", []))
+        removed = len(diff.get("removed", []))
+        size_mb = bytes_copied / (1024 * 1024)
+        
+        markdown_content = (
+            f"# 🖥️ AAM LAN Backup Run Summary\n\n"
+            f"## 📊 Robocopy Differential Metrics\n"
+            f"* **Status:** `{status}` (Exit Code: `{exit_code}`)\n"
+            f"* **Total Differential Changes:** `{files_copied}` files\n"
+            f"* **Volume Transferred:** `{size_mb:.2f} MB` (`{bytes_copied}` bytes)\n\n"
+            f"## 📁 File Alterations Detail\n"
+            f"* **➕ Files Added:** `{added}` files\n"
+            f"* **✏️ Files Modified:** `{modified}` files\n"
+            f"* **🗑️ Files Pruned (Mirror):** `{removed}` files\n\n"
+            f"## 📦 Destination Volume Inventory\n"
+            f"* **Active Files:** `{len(after_dict)}` files\n"
+        )
+        create_markdown_artifact(
+            markdown=markdown_content,
+            key="lan-backup-summary"
+        )
+        logger.info("Published LAN Backup Markdown Artifact to Prefect Console UI")
+    except Exception as e:
+        logger.warning(f"Could not publish lan backup artifact: {e}")
+
+
 # ═══════════════════════════════════════════════════════════════
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
@@ -298,6 +369,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
     error_msg = None
     files_copied = 0
     bytes_copied = 0
+    extended_metrics = None
 
     try:
         health_check_task(config, "cloud")
@@ -335,6 +407,16 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         files_copied = len(copied_files_list)
         bytes_copied = sum(int(size) for _, size in copied_files_list)
 
+        extended_metrics = json.dumps({
+            "verified": verify_data.get("verified", False),
+            "total_files": verify_data.get("size", {}).get("count", 0),
+            "total_size_gb": verify_data.get("size", {}).get("bytes", 0) / (1024 * 1024 * 1024)
+        })
+        try:
+            cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
+        except Exception:
+            pass
+
         logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
@@ -344,7 +426,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
     finally:
         _record_run(db_path, run_id, "cloud", started_at, status,
                      sync_result.get("exit_code", -1), error_msg,
-                     files_copied, bytes_copied)
+                     files_copied, bytes_copied, extended_metrics)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -369,6 +451,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
     error_msg = None
     files_copied = 0
     bytes_copied = 0
+    extended_metrics = None
 
     try:
         health_check_task(config, "lan")
@@ -386,6 +469,17 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         files_copied = len(copied_paths)
         bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
 
+        extended_metrics = json.dumps({
+            "added": len(diff.get("added", [])),
+            "modified": len(diff.get("modified", [])),
+            "removed": len(diff.get("removed", [])),
+            "total_files": len(after_dict)
+        })
+        try:
+            lan_publish_artifact_task(sync_result, before_dict, after_dict, files_copied, bytes_copied)
+        except Exception:
+            pass
+
         logger.info("LAN pipeline completed successfully")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
@@ -395,7 +489,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
     finally:
         _record_run(db_path, run_id, "lan", started_at, status,
                      sync_result.get("exit_code", -1), error_msg,
-                     files_copied, bytes_copied)
+                     files_copied, bytes_copied, extended_metrics)
 
         if error_msg is None:
             lan_shutdown_task(config)
@@ -407,7 +501,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
 
 def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
                 status: str, exit_code: int, error_msg: str | None,
-                files_copied: int = 0, bytes_copied: int = 0):
+                files_copied: int = 0, bytes_copied: int = 0,
+                extended_metrics: str | None = None):
     """Record run history to ManifestDB."""
     try:
         ended_at = utcnow_iso()
@@ -421,6 +516,7 @@ def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
                 status=status, exit_code=exit_code,
                 duration_seconds=duration, error_message=error_msg,
                 files_copied=files_copied, bytes_copied=bytes_copied,
+                extended_metrics=extended_metrics,
             )
         finally:
             db.close()

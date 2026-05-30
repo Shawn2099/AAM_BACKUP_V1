@@ -45,6 +45,18 @@ tr:hover { background: #1f2937; }
 .critical-ago { color: #fca5a5; }
 .schedule-line { font-size: 0.75rem; color: #9ca3af; margin-top: 0.3rem; }
 .info { color: #9ca3af; font-size: 0.8rem; margin-top: 1.5rem; }
+.metrics-row { background-color: #1f2937; }
+.metrics-row td { padding: 0; border-bottom: none; }
+.metrics-container { padding: 0; max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out, padding 0.3s ease-out; }
+.metrics-container.open { padding: 1rem; max-height: 200px; border-bottom: 1px solid #374151; }
+.metrics-badge { display: inline-block; padding: 0.25rem 0.75rem; background-color: #374151; color: #e5e7eb; border-radius: 9999px; font-size: 0.75rem; margin-right: 0.5rem; margin-bottom: 0.5rem; border: 1px solid #4b5563; }
+.metrics-badge.added { color: #34d399; }
+.metrics-badge.modified { color: #60a5fa; }
+.metrics-badge.removed { color: #f87171; }
+.metrics-badge.verified { color: #34d399; }
+.metrics-badge.size { color: #a78bfa; }
+tr.expandable { cursor: pointer; transition: background 0.2s; }
+tr.expandable:hover { background: #374151; }
 </style>"""
 
 JS = """<script>
@@ -173,12 +185,35 @@ async function updateStatus() {
         const tbody = document.getElementById('history-tbody');
         if (tbody && data.recent_runs && data.recent_runs.length > 0) {
             let rowsHtml = '';
-            data.recent_runs.forEach(r => {
+            data.recent_runs.forEach((r, idx) => {
                 const escapeHtml = function(text) { return (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
                 const modeTag = '<span class="tag ' + r.mode + '">' + escapeHtml(r.mode.toUpperCase()) + '</span>';
                 let sTag = ''; if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">OK</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">PARTIAL</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">FAILED</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
                 const errCell = r.error ? '<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.error.substring(0, 60)) + '</td>' : '<td>-</td>';
-                rowsHtml += '<tr><td>' + escapeHtml(r.started_at) + '</td><td>' + modeTag + '</td><td>' + sTag + '</td><td>' + escapeHtml(String(r.files)) + '</td><td>' + escapeHtml(String(r.duration)) + '</td>' + errCell + '</tr>\\n';
+                
+                let expandableClass = '';
+                let extraRowHtml = '';
+                if (r.extended_metrics) {
+                    try {
+                        const metrics = JSON.parse(r.extended_metrics);
+                        expandableClass = ' class="expandable" onclick="document.getElementById(\\'metrics-container-' + idx + '\\').classList.toggle(\\'open\\')"';
+                        let badges = '';
+                        if (r.mode === 'lan') {
+                            badges += '<span class="metrics-badge added">➕ Added: ' + (metrics.added || 0) + '</span>';
+                            badges += '<span class="metrics-badge modified">✏️ Modified: ' + (metrics.modified || 0) + '</span>';
+                            badges += '<span class="metrics-badge removed">🗑️ Pruned: ' + (metrics.removed || 0) + '</span>';
+                            badges += '<span class="metrics-badge">📦 Active Destination Files: ' + (metrics.total_files || 0) + '</span>';
+                        } else if (r.mode === 'cloud') {
+                            badges += '<span class="metrics-badge verified">' + (metrics.verified ? '✅ Verification Passed' : '❌ Verification Failed') + '</span>';
+                            badges += '<span class="metrics-badge">☁️ Total Tracked Files: ' + (metrics.total_files || 0) + '</span>';
+                            badges += '<span class="metrics-badge size">💾 Space Consumed: ' + (metrics.total_size_gb || 0).toFixed(3) + ' GB</span>';
+                        }
+                        extraRowHtml = '<tr class="metrics-row"><td colspan="6"><div id="metrics-container-' + idx + '" class="metrics-container">' + badges + '</div></td></tr>';
+                    } catch(e) { }
+                }
+
+                rowsHtml += '<tr' + expandableClass + '><td>' + escapeHtml(r.started_at) + '</td><td>' + modeTag + '</td><td>' + sTag + '</td><td>' + escapeHtml(String(r.files)) + '</td><td>' + escapeHtml(String(r.duration)) + '</td>' + errCell + '</tr>\\n';
+                rowsHtml += extraRowHtml;
             });
             tbody.innerHTML = rowsHtml;
         }

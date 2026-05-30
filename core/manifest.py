@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS run_history (
     bytes_copied    INTEGER DEFAULT 0,
     files_failed    INTEGER DEFAULT 0,
     duration_seconds REAL,
-    error_message   TEXT
+    error_message   TEXT,
+    extended_metrics TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_history_started_at ON run_history(started_at);
@@ -93,6 +94,16 @@ class ManifestDB:
                 pass
 
             conn.executescript(DDL)
+            
+            # Safe schema migration for extended_metrics
+            try:
+                columns = [row['name'] for row in conn.execute("PRAGMA table_info(run_history)").fetchall()]
+                if 'extended_metrics' not in columns:
+                    conn.execute("ALTER TABLE run_history ADD COLUMN extended_metrics TEXT")
+                    conn.commit()
+            except Exception as e:
+                logger.error(f"Migration failed: {e}")
+                
             self._conn = conn
         return self._conn
 
@@ -320,8 +331,8 @@ class ManifestDB:
             conn.execute(
                 """INSERT INTO run_history
                    (run_id, mode, started_at, ended_at, status, exit_code,
-                    files_copied, bytes_copied, files_failed, duration_seconds, error_message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    files_copied, bytes_copied, files_failed, duration_seconds, error_message, extended_metrics)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(run_id) DO UPDATE SET
                        ended_at = excluded.ended_at,
                        status = excluded.status,
@@ -330,7 +341,8 @@ class ManifestDB:
                        bytes_copied = excluded.bytes_copied,
                        files_failed = excluded.files_failed,
                        duration_seconds = excluded.duration_seconds,
-                       error_message = excluded.error_message""",
+                       error_message = excluded.error_message,
+                       extended_metrics = COALESCE(excluded.extended_metrics, run_history.extended_metrics)""",
                 (
                     data["run_id"],
                     data["mode"],
@@ -343,6 +355,7 @@ class ManifestDB:
                     data.get("files_failed", 0),
                     data.get("duration_seconds"),
                     data.get("error_message"),
+                    data.get("extended_metrics"),
                 ),
             )
             conn.commit()
