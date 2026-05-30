@@ -434,24 +434,23 @@ def _format_datetime(dt_str: str | None) -> str:
     if not dt_str:
         return "-"
     
-    dt = None
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            dt = datetime.strptime(dt_str, fmt)
-            break
-        except ValueError:
-            continue
-            
-    if dt is None:
-        return dt_str[:19].replace("T", " ")
-        
     try:
-        import datetime as dt_mod
-        utc_dt = dt.replace(tzinfo=dt_mod.timezone.utc)
-        local_dt = utc_dt.astimezone()
+        # Standard ISO 8601 parsing handles timezone offsets natively
+        # Standardize Z UTC suffix to +00:00 offset format
+        clean_str = dt_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        
+        # If timezone naive, treat as UTC
+        if dt.tzinfo is None:
+            from zoneinfo import ZoneInfo
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+            
+        # Dynamically translate to the server's local timezone
+        local_dt = dt.astimezone()
         return local_dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        # Fallback to safe string truncation if parsing fails
+        return dt_str[:19].replace("T", " ")
 
 
 def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
