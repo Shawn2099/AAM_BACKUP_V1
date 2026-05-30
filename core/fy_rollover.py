@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import tempfile
 from pathlib import Path
 
@@ -144,52 +143,8 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str) -> dict[
     return created
 
 
-def lock_old_fy_folders(source_root: str, old_fy: str) -> bool:
-    """Apply read-only lock to the old FY source folder.
-
-    On Windows: uses icacls to set NTFS read-only ACLs.
-    On POSIX: uses chmod a-w to remove write bits.
-
-    Returns True on success, False on non-fatal failure (lock is defense-in-depth).
-    """
-    old_path = Path(_child_path(source_root, old_fy))
-    if not old_path.exists():
-        logger.warning(f"FY rollover: old FY folder not found for lock: {old_path}")
-        return False
-
-    try:
-        if sys.platform == "win32":
-            import subprocess
-            path_str = str(old_path)
-            subprocess.run(
-                ["icacls", path_str, "/inheritance:r", "/grant", "Everyone:(R)"],
-                check=True, capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["icacls", f"{path_str}\\*", "/reset", "/T", "/C", "/Q"],
-                check=True, capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["icacls", f"{path_str}\\*", "/inheritance:r", "/grant", "Everyone:(R)",
-                 "/T", "/C"],
-                check=True, capture_output=True, text=True,
-            )
-            logger.info(f"FY rollover: locked {old_path} read-only (NTFS ACLs)")
-        else:
-            import stat
-            old_path.chmod(
-                stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP |
-                stat.S_IROTH | stat.S_IXOTH
-            )
-            logger.info(f"FY rollover: locked {old_path} read-only (POSIX chmod)")
-        return True
-    except Exception as e:
-        logger.warning(f"FY rollover: failed to lock old FY folder {old_path}: {e}")
-        return False
-
-
 def update_config_yaml(config_path: str, source_root: str, lan_root: str,
-                       new_fy: str, old_fy: str) -> None:
+                       new_fy: str) -> None:
     """Atomically update source_drive and lan_destination in config.yaml.
 
     Uses ruamel.yaml round-trip mode to preserve comments and formatting.
@@ -279,9 +234,7 @@ def rollover(config_path: str = "config.yaml") -> bool:
 
     create_new_fy_folders(src_root, lan_root, new_fy)
 
-    lock_old_fy_folders(src_root, old_fy)
-
-    update_config_yaml(config_path, src_root, lan_root, new_fy, old_fy)
+    update_config_yaml(config_path, src_root, lan_root, new_fy)
 
     logger.info(f"FY rollover complete: {old_fy} → {new_fy}")
     return True

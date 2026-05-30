@@ -15,7 +15,6 @@ from core.fy_rollover import (
     _parent_path,
     create_new_fy_folders,
     detect_rollover,
-    lock_old_fy_folders,
     rollover,
     update_config_yaml,
 )
@@ -115,42 +114,6 @@ class TestCreateNewFyFolders:
         assert created["source"].exists()
 
 
-class TestLockOldFyFolders:
-    def test_returns_true_on_posix(self, tmp_path):
-        src_root = str(tmp_path)
-        old_fy = "FY26-27"
-        (tmp_path / old_fy).mkdir()
-
-        with patch("sys.platform", "linux"):
-            result = lock_old_fy_folders(src_root, old_fy)
-            assert result is True
-
-    def test_returns_false_when_path_missing(self, tmp_path):
-        result = lock_old_fy_folders(str(tmp_path), "FY99-00")
-        assert result is False
-
-    @patch("subprocess.run")
-    def test_windows_lock_success(self, mock_run, tmp_path):
-        src_root = str(tmp_path)
-        old_fy = "FY26-27"
-        (tmp_path / old_fy).mkdir()
-
-        with patch("sys.platform", "win32"):
-            result = lock_old_fy_folders(src_root, old_fy)
-            assert result is True
-            assert mock_run.call_count >= 1
-
-    @patch("subprocess.run", side_effect=Exception("Access denied"))
-    def test_windows_lock_failure(self, mock_run, tmp_path):
-        src_root = str(tmp_path)
-        old_fy = "FY26-27"
-        (tmp_path / old_fy).mkdir()
-
-        with patch("sys.platform", "win32"):
-            result = lock_old_fy_folders(src_root, old_fy)
-            assert result is False
-
-
 class TestUpdateConfigYaml:
     def test_atomic_write_preserves_other_fields(self, tmp_path):
         config_path = tmp_path / "config.yaml"
@@ -169,7 +132,6 @@ class TestUpdateConfigYaml:
             source_root=r"E:\SOURCE",
             lan_root=r"\\server\lan_backup",
             new_fy="FY27-28",
-            old_fy="FY26-27",
         )
 
         written = config_path.read_text()
@@ -188,7 +150,6 @@ class TestUpdateConfigYaml:
                 source_root=r"E:\SOURCE",
                 lan_root=r"\\server\lan_backup",
                 new_fy="FY27-28",
-                old_fy="FY26-27",
             )
 
     def test_old_config_untouched_on_write_failure(self, tmp_path):
@@ -207,7 +168,6 @@ class TestUpdateConfigYaml:
                     source_root=r"E:\SOURCE",
                     lan_root=r"\\server\lan_backup",
                     new_fy="FY27-28",
-                    old_fy="FY26-27",
                 )
 
         assert config_path.read_text() == original
