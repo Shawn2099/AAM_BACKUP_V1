@@ -145,7 +145,7 @@ class NotificationConfig(BaseModel):
             f"NotificationConfig(smtp_host='{self.smtp_host}', smtp_port={self.smtp_port}, "
             f"smtp_username='{self.smtp_username}', smtp_password='***', "
             f"sender='{self.sender}', recipients={self.recipients}, "
-            f"send_on_failure={self.send_on_failure}, send_on_success={self.send_on_success})"
+            f"send_on_failure={self.send_on_failure})"
         )
 
     def __str__(self) -> str:

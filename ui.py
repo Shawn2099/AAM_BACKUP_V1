@@ -271,51 +271,48 @@ async def status(request: Request):
         return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
 
     db = get_db()
-    try:
-        runs = db.get_recent_runs(10)
-        recent_runs = []
-        for r in runs:
-            recent_runs.append({
-                "mode": r.get("mode", "?"),
-                "status": r.get("status", "?"),
-                "started_at": parse_iso_to_local(r.get("started_at", "")),
-                "files": r.get("files_copied", 0),
-                "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
-                "error": r.get("error_message", ""),
-                "extended_metrics": r.get("extended_metrics", "")
-            })
-
-        cloud_last_run = _last_run_summary(db, "cloud")
-        lan_last_run = _last_run_summary(db, "lan")
-
-        return JSONResponse({
-            "firm": cfg.firm_name,
-            "fy_prefix": get_fy_prefix(),
-            "schedule": {
-                "cloud_cron": cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
-                "lan_cron": cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
-            },
-            "cloud": {
-                "running": await _is_running("cloud"),
-                "last_run": cloud_last_run,
-                "last_success": format_iso_for_js(_get_last_success(db, "cloud")),
-                "last_run_formatted": f"{cloud_last_run['status']} — {parse_iso_to_local(cloud_last_run['started_at'])}" if cloud_last_run else "No data",
-            },
-            "lan": {
-                "running": await _is_running("lan"),
-                "last_run": lan_last_run,
-                "last_success": format_iso_for_js(_get_last_success(db, "lan")),
-                "last_run_formatted": f"{lan_last_run['status']} — {parse_iso_to_local(lan_last_run['started_at'])}" if lan_last_run else "No data",
-            },
-            "manifest": {
-                "lan_files": db.file_count("lan_status"),
-                "cloud_files": db.file_count("cloud_status"),
-            },
-            "health": _get_health(),
-            "recent_runs": recent_runs
+    runs = db.get_recent_runs(10)
+    recent_runs = []
+    for r in runs:
+        recent_runs.append({
+            "mode": r.get("mode", "?"),
+            "status": r.get("status", "?"),
+            "started_at": parse_iso_to_local(r.get("started_at", "")),
+            "files": r.get("files_copied", 0),
+            "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
+            "error": r.get("error_message", ""),
+            "extended_metrics": r.get("extended_metrics", "")
         })
-    finally:
-        db.close()
+
+    cloud_last_run = _last_run_summary(db, "cloud")
+    lan_last_run = _last_run_summary(db, "lan")
+
+    return JSONResponse({
+        "firm": cfg.firm_name,
+        "fy_prefix": get_fy_prefix(),
+        "schedule": {
+            "cloud_cron": cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
+            "lan_cron": cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
+        },
+        "cloud": {
+            "running": await _is_running("cloud"),
+            "last_run": cloud_last_run,
+            "last_success": format_iso_for_js(_get_last_success(db, "cloud")),
+            "last_run_formatted": f"{cloud_last_run['status']} — {parse_iso_to_local(cloud_last_run['started_at'])}" if cloud_last_run else "No data",
+        },
+        "lan": {
+            "running": await _is_running("lan"),
+            "last_run": lan_last_run,
+            "last_success": format_iso_for_js(_get_last_success(db, "lan")),
+            "last_run_formatted": f"{lan_last_run['status']} — {parse_iso_to_local(lan_last_run['started_at'])}" if lan_last_run else "No data",
+        },
+        "manifest": {
+            "lan_files": db.file_count("lan_status"),
+            "cloud_files": db.file_count("cloud_status"),
+        },
+        "health": _get_health(),
+        "recent_runs": recent_runs
+    })
 
 
 @app.get("/health")
@@ -389,18 +386,17 @@ def _serve_report(days: int, period: str) -> Response:
         return HTMLResponse("<p>No database found. Run a backup first.</p>", status_code=503)
 
     db = get_db()
-    try:
-        from core.report import generate_report_html
-        html_body = generate_report_html(db, cfg.firm_name, days, period)
+    from core.report import generate_report_html
+    html_body = generate_report_html(db, cfg.firm_name, days, period)
 
-        if not html_body:
-            return HTMLResponse(
-                f"<p>No runs found in the last {days} days.</p>",
-                status_code=404,
-            )
+    if not html_body:
+        return HTMLResponse(
+            f"<p>No runs found in the last {days} days.</p>",
+            status_code=404,
+        )
 
-        # Wrap in a proper HTML document with basic styling
-        full_html = f"""<!DOCTYPE html>
+    # Wrap in a proper HTML document with basic styling
+    full_html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -420,14 +416,12 @@ th {{ background: #f3f4f6; font-size: 0.85rem; }}
 </body>
 </html>"""
 
-        filename = f"{cfg.firm_name}_{period}_Report_{pendulum.now().format('YYYY-MM-DD')}.html"
-        return Response(
-            content=full_html,
-            media_type="text/html",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-    finally:
-        db.close()
+    filename = f"{cfg.firm_name}_{period}_Report_{pendulum.now().format('YYYY-MM-DD')}.html"
+    return Response(
+        content=full_html,
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -550,7 +544,7 @@ async def _render_dashboard(flash: str = "") -> str:
                 err_cell = f'<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">{err[:60]}</td>' if err else "<td>-</td>"
                 history_rows += f"<tr><td>{ts}</td><td>{mode_tag}</td><td>{s_tag}</td><td>{files}</td><td>{dur}</td>{err_cell}</tr>\n"
         finally:
-            db.close()
+            pass  # singleton — do not close
 
     # Flash messages
     flash_map = {

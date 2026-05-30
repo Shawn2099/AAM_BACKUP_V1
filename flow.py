@@ -395,7 +395,6 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
                     copied_files_list.append((path, size))
                 else:
                     try:
-                        import pendulum
                         t1 = pendulum.parse(str(mtime)).timestamp()
                         t2 = pendulum.parse(str(old_mtime)).timestamp()
                         if abs(t1 - t2) > 1.1:
@@ -486,13 +485,14 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
     except Exception as e:
         error_msg = str(e)
         raise
+    else:
+        # Only runs on success — intentionally placed before finally so
+        # _record_run in finally always executes regardless.
+        lan_shutdown_task(config)
     finally:
         _record_run(db_path, run_id, "lan", started_at, status,
                      sync_result.get("exit_code", -1), error_msg,
                      files_copied, bytes_copied, extended_metrics)
-
-        if error_msg is None:
-            lan_shutdown_task(config)
 
 
 # ═══════════════════════════════════════════════════════════════
