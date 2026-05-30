@@ -184,6 +184,11 @@ async function updateStatus() {
         if (data.health && !data.health.error) { document.getElementById('health-info').innerText = 'Source: ' + data.health.source_free_gb + ' GB free | FY: ' + data.fy_prefix; }
         const tbody = document.getElementById('history-tbody');
         if (tbody && data.recent_runs && data.recent_runs.length > 0) {
+            const openRows = new Set();
+            for (let i = 0; i < data.recent_runs.length; i++) {
+                const el = document.getElementById('metrics-container-' + i);
+                if (el && el.classList.contains('open')) openRows.add(i);
+            }
             let rowsHtml = '';
             data.recent_runs.forEach((r, idx) => {
                 const escapeHtml = function(text) { return (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
@@ -208,7 +213,8 @@ async function updateStatus() {
                             badges += '<span class="metrics-badge">☁️ Total Tracked Files: ' + (metrics.total_files || 0) + '</span>';
                             badges += '<span class="metrics-badge size">💾 Space Consumed: ' + (metrics.total_size_gb || 0).toFixed(3) + ' GB</span>';
                         }
-                        extraRowHtml = '<tr class="metrics-row"><td colspan="6"><div id="metrics-container-' + idx + '" class="metrics-container">' + badges + '</div></td></tr>';
+                        const isOpen = openRows.has(idx) ? ' open' : '';
+                        extraRowHtml = '<tr class="metrics-row"><td colspan="6"><div id="metrics-container-' + idx + '" class="metrics-container' + isOpen + '">' + badges + '</div></td></tr>';
                     } catch(e) { }
                 }
 
