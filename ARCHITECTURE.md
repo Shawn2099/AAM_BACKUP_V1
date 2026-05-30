@@ -69,7 +69,7 @@ Lifetime: Persistent (Task Scheduler restarts on failure)
 2. _check_prefect_api() — HTTP GET /health, exits if unreachable
 3. _run_dashboard() — starts uvicorn in daemon thread
 4. _ensure_concurrency_limit() — creates global + tag-based limits via Prefect client
-5. _cancel_orphaned_runs() — cancels PENDING/RUNNING runs from previous crash
+5. _cancel_orphaned_runs() — cancels orphaned runs via Prefect SDK async client (no subprocess shell-out)
 6. serve(deployments) — blocks on Prefect scheduler (main thread)
 ```
 
@@ -98,6 +98,10 @@ cloud_record_task        → bulk_upsert_synced() to ManifestDB
 | 1, 2, 3, 7, 8, other | CLOUD_FAILED | Fatal (auth, bucket, config) |
 
 **Retry behavior:** `max_attempts` from config drives flow-level retries. Each retry uses the same stable `run_id`, so `INSERT OR REPLACE` deduplicates run_history. Task-level retries use Prefect's `.with_options(retries=N)`.
+
+**Differential transferred metrics:** Before the cloud sync task runs, a pre-sync snapshot of all `cloud_status='synced'` entries is captured from the database. After sync completes, a post-sync snapshot is taken. The difference (new + modified files count/bytes) is computed and passed to `record_run_history()` as `files_copied` and `bytes_copied`. This provides accurate per-run transfer statistics rather than total-destination counts.
+
+**Self-healing stale entries:** After `bulk_upsert_synced()` updates the database with current destination state, `record_sync_results()` identifies file entries marked `synced` in the database that no longer exist on the destination. These stale entries are pruned — their status is set to NULL and if both `lan_status` and `cloud_status` become NULL, the row is deleted entirely. This differential approach prevents phantom files from persisting in the database after they're deleted from the destination.
 
 ### LAN Pipeline (`_run_lan_pipeline`)
 ```
@@ -164,7 +168,7 @@ aam_backup_automation_V1/
 ├── templates/
 │   └── dashboard.py       # Dashboard HTML renderer — pure function, no imports
 │
-├── tests/                 # 361 tests across 25 files
+├── tests/                 # 356 tests across 25 files
 │   ├── test_cloud_sync.py     # rclone exit codes, command builder, subprocess orchestration
 │   ├── test_lan_sync.py       # robocopy exit codes, command builder, subprocess orchestration
 │   ├── test_flow_orchestration.py  # Tasks, pipelines, failure alert path
@@ -278,7 +282,7 @@ CREATE TABLE file_entries (
 
 **Indexes:** `idx_file_entries_lan_status`, `idx_file_entries_cloud_status`, `idx_file_entries_relative_path`
 
-**Upsert behavior:** `ON CONFLICT(relative_path) DO UPDATE` — size, mtime, and checksums update; status/timestamps change only on first sync (`!= 'synced'` check).
+**Upsert behavior:** `ON CONFLICT(relative_path) DO UPDATE` — size, mtime, and checksums update; status/timestamps change only on first sync (`!= 'synced'` check). All paths are normalized with `replace("\\", "/")` at the database boundary, ensuring consistent forward-slash paths regardless of platform. File discovery on Windows (with backslashes) is transparently normalized before any write.
 
 ### Table: run_history
 ```sql
@@ -360,7 +364,7 @@ Reports are also downloadable from the dashboard UI (`/report/weekly`, `/report/
 - Gracefully degrades — missing credentials → warning log, no crash
 
 ### Report HTML
-`generate_report_html()` queries `run_history` for the time window, computes success rate and aggregate stats, and renders an HTML table. Shared between email delivery and dashboard download.
+`generate_report_html()` queries `run_history` for the time window, classifies runs by suffix matching (`_COMPLETE`, `_PARTIAL`, remainder = `_FAILED`) rather than explicit status sets — future-proof against new status values. Aggregates `files_copied`, `bytes_copied` from run_history. Renders an HTML table with localized timestamps. Shared between email delivery and dashboard download.
 
 ---
 
@@ -379,7 +383,7 @@ Both calls are idempotent — they succeed silently if limits already exist.
 ### Pipeline Guards
 - `trigger_cloud` / `trigger_lan` check `_is_running()` before spawning — returns 400 if already active
 - Prefect concurrency limit provides server-side enforcement for race conditions
-- `_cancel_orphaned_runs()` cleans up PENDING/RUNNING runs from crashed sessions on every boot
+- `_cancel_orphaned_runs()` cleans up PENDING/RUNNING runs from crashed sessions on every boot, using Prefect's async SDK (`client.set_flow_run_state(force=True)`) instead of subprocess shell commands
 
 ### Rate Limiting
 In-memory, per-IP sliding window protects trigger endpoints and login from abuse. Expired entries are evicted on each access.
@@ -453,7 +457,7 @@ See `WINDOWS_LEARNINGS.md` for the complete reference. Key items:
 
 ## Test Strategy
 
-361 tests across 25 files. Test categories:
+356 tests across 25 files. Test categories:
 
 | Category | Files | Coverage |
 |----------|-------|----------|
