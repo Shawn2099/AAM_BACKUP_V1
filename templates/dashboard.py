@@ -94,9 +94,17 @@ async function updateStatus() {
 
         function timeAgo(utcStr) {
             if (!utcStr) return null;
-            var then = new Date(utcStr + (utcStr.endsWith('Z') ? '' : 'Z'));
+            var cleanStr = utcStr.trim().replace(' ', 'T');
+            // If it doesn't specify any timezone offset, append 'Z' to treat as UTC
+            if (!cleanStr.endsWith('Z') && !cleanStr.includes('+') && !/-\\d{2}:\\d{2}$/.test(cleanStr)) {
+                cleanStr += 'Z';
+            }
+            var then = new Date(cleanStr);
+            if (isNaN(then.getTime())) return null;
+            
             var now = new Date();
             var diff = Math.floor((now - then) / 1000);
+            if (diff < 0) diff = 0;
             if (diff < 60) return 'just now';
             if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
             if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
