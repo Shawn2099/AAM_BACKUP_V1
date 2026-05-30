@@ -2,10 +2,10 @@
 
 import http.client
 import shutil
-from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
+import pendulum
 from loguru import logger
 
 
@@ -83,7 +83,7 @@ def check_clock_skew(max_skew_seconds: int = 600) -> tuple[bool, str]:
             return False, "Could not retrieve Date header from Google"
 
         google_time = parsedate_to_datetime(google_date_str)
-        local_utc = datetime.now(UTC)
+        local_utc = pendulum.now("UTC")
         difference = abs((local_utc - google_time).total_seconds())
 
         if difference > max_skew_seconds:

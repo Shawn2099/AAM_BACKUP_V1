@@ -2,28 +2,29 @@
 
 from unittest.mock import MagicMock, patch
 
-from core.report import _human_bytes, _send_email, send_failure_alert, generate_report_html
+import humanize
+from core.report import _send_email, send_failure_alert, generate_report_html
 from models.config import NotificationConfig
 
 
 class TestHumanBytes:
     def test_bytes(self):
-        assert _human_bytes(500) == "500.0 B"
+        assert humanize.naturalsize(500, binary=True) == "500 Bytes"
 
     def test_kb(self):
-        assert _human_bytes(2048) == "2.0 KB"
+        assert humanize.naturalsize(2048, binary=True) == "2.0 KiB"
 
     def test_mb(self):
-        assert _human_bytes(5 * 1024 * 1024) == "5.0 MB"
+        assert humanize.naturalsize(5 * 1024 * 1024, binary=True) == "5.0 MiB"
 
     def test_gb(self):
-        assert _human_bytes(3 * 1024**3) == "3.0 GB"
+        assert humanize.naturalsize(3 * 1024**3, binary=True) == "3.0 GiB"
 
     def test_tb(self):
-        assert _human_bytes(2 * 1024**4) == "2.0 TB"
+        assert humanize.naturalsize(2 * 1024**4, binary=True) == "2.0 TiB"
 
     def test_zero(self):
-        assert _human_bytes(0) == "0.0 B"
+        assert humanize.naturalsize(0, binary=True) == "0 Bytes"
 
 
 class TestSendEmail:

@@ -5,6 +5,7 @@ Used by cloud_preflight, cloud_sync, and cloud_verify/reporter callers.
 
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -34,3 +35,16 @@ storage_class = {storage_class}
     os.close(fd)
     Path(cfg_path).write_text(content, encoding="utf-8")
     return cfg_path
+
+
+@contextmanager
+def temp_rclone_config(*args, **kwargs):
+    """Context manager: write temp config, yield path, auto-cleanup."""
+    path = write_temp_config(*args, **kwargs)
+    try:
+        yield path
+    finally:
+        try:
+            Path(path).unlink()
+        except OSError:
+            pass

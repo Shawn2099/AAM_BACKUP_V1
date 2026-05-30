@@ -2,7 +2,7 @@
 
 import uuid
 
-from flow import _stable_run_id, _utcnow
+from flow import _stable_run_id, utcnow_iso
 
 
 class TestStableRunId:
@@ -34,9 +34,9 @@ class TestStableRunId:
 
 class TestUtcnow:
     def test_returns_iso_format(self):
-        result = _utcnow()
+        result = utcnow_iso()
         assert "T" in result
         assert "+" in result or "Z" in result
 
     def test_returns_string(self):
-        assert isinstance(_utcnow(), str)
+        assert isinstance(utcnow_iso(), str)

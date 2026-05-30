@@ -8,10 +8,10 @@ import pytest
 import ui
 from core.manifest import ManifestDB
 from core.process import pid_alive
+from core.time_utils import cron_to_human
 from ui import (
     _check_api_key_header,
     _create_session,
-    _cron_to_human,
     _get_last_success,
     _last_run_summary,
     _require_auth,
@@ -116,33 +116,12 @@ class TestLastRunSummary:
 
 
 class TestPidAlive:
-    def test_pid_alive_via_kill(self):
-        with patch("os.kill", return_value=None):
+    def test_pid_alive(self):
+        with patch("psutil.pid_exists", return_value=True):
             assert pid_alive(12345) is True
 
-    def test_pid_dead_no_tasklist(self):
-        with (
-            patch("os.kill", side_effect=OSError),
-            patch("core.process.sys.platform", "linux"),
-        ):
-            assert pid_alive(99999) is False
-
-    def test_pid_alive_via_tasklist_win32(self):
-        with (
-            patch("os.kill", side_effect=OSError),
-            patch("core.process.sys.platform", "win32"),
-            patch("core.process.subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = MagicMock(stdout="99999 some-process.exe", returncode=0)
-            assert pid_alive(99999) is True
-
-    def test_pid_dead_via_tasklist_win32(self):
-        with (
-            patch("os.kill", side_effect=OSError),
-            patch("core.process.sys.platform", "win32"),
-            patch("core.process.subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = MagicMock(stdout="INFO: No tasks are running", returncode=0)
+    def test_pid_dead(self):
+        with patch("psutil.pid_exists", return_value=False):
             assert pid_alive(99999) is False
 
 
@@ -190,19 +169,19 @@ class TestReportEndpoints:
 
 class TestCronToHuman:
     def test_daily(self):
-        assert _cron_to_human("0 18 * * *", "Asia/Kolkata") == "Daily at 18:00 Kolkata"
+        assert cron_to_human("0 18 * * *", "Asia/Kolkata") == "Daily at 18:00 Kolkata"
 
     def test_weekly(self):
-        assert _cron_to_human("0 8 * * MON", "Asia/Kolkata") == "Every Monday at 08:00 Kolkata"
+        assert cron_to_human("0 8 * * MON", "Asia/Kolkata") == "Every Monday at 08:00 Kolkata"
 
     def test_monthly(self):
-        assert _cron_to_human("0 8 1 * *", "Asia/Kolkata") == "1st of month at 08:00 Kolkata"
+        assert cron_to_human("0 8 1 * *", "Asia/Kolkata") == "1st of month at 08:00 Kolkata"
 
     def test_short_cron_returns_raw(self):
-        assert _cron_to_human("invalid", "UTC") == "invalid"
+        assert cron_to_human("invalid", "UTC") == "invalid"
 
     def test_tuesday(self):
-        assert "Tuesday" in _cron_to_human("0 9 * * TUE", "UTC")
+        assert "Tuesday" in cron_to_human("0 9 * * TUE", "UTC")
 
 
 class TestGetLastSuccess:

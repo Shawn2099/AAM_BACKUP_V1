@@ -92,18 +92,11 @@ async function updateStatus() {
         if (!response.ok) return;
         const data = await response.json();
 
-        function timeAgo(utcStr) {
-            if (!utcStr) return null;
-            var cleanStr = utcStr.trim().replace(' ', 'T');
-            // If it doesn't specify any timezone offset, append 'Z' to treat as UTC
-            if (!cleanStr.endsWith('Z') && !cleanStr.includes('+') && !/-\\d{2}:\\d{2}$/.test(cleanStr)) {
-                cleanStr += 'Z';
-            }
-            var then = new Date(cleanStr);
+        function timeAgo(isoStr) {
+            if (!isoStr) return null;
+            var then = new Date(isoStr);
             if (isNaN(then.getTime())) return null;
-            
-            var now = new Date();
-            var diff = Math.floor((now - then) / 1000);
+            var diff = Math.floor((Date.now() - then) / 1000);
             if (diff < 0) diff = 0;
             if (diff < 60) return 'just now';
             if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
@@ -130,11 +123,7 @@ async function updateStatus() {
                 el.innerHTML = '<span class="critical-ago">\u26A0\uFE0F No successful backup yet</span>';
                 return;
             }
-            var cleanStr = lastSuccess.trim().replace(' ', 'T');
-            if (!cleanStr.endsWith('Z') && !cleanStr.includes('+') && !/-\\d{2}:\\d{2}$/.test(cleanStr)) {
-                cleanStr += 'Z';
-            }
-            var then = new Date(cleanStr);
+            var then = new Date(lastSuccess);
             var now = new Date();
             var diffDays = (now - then) / 86400000;
             if (isNaN(diffDays)) {

@@ -12,8 +12,8 @@ Two deployments from one codebase:
 
 import time
 import uuid
-from datetime import UTC, datetime
-from pathlib import Path
+
+import pendulum
 
 from loguru import logger
 from prefect import flow, task
@@ -32,9 +32,10 @@ from core.lan_sync import run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
-from core.rclone_config import write_temp_config
+from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
 from core.shutdown import shutdown_server
+from core.time_utils import utcnow_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
 
@@ -49,10 +50,6 @@ def _stable_run_id(mode: str) -> str:
     except Exception:
         pass
     return f"{uuid.uuid4()}-{mode}"
-
-
-def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -114,13 +111,12 @@ def cloud_sync_task(config, fy_prefix: str):
 @task(name="cloud-verify-and-report")
 def cloud_verify_and_report_task(config, fy_prefix: str):
     """Verify integrity + gather size/manifest/diff for reporting."""
-    rclone_cfg = write_temp_config(
+    with temp_rclone_config(
         config.paths.gcs_key_path,
         config.cloud.location,
         config.cloud.project_number,
         config.cloud.storage_class,
-    )
-    try:
+    ) as rclone_cfg:
         logger.info("Verifying cloud integrity")
         verify_result = verify_cloud_integrity(
             source=config.paths.source_drive,
@@ -151,11 +147,6 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             "manifest": manifest,
             "diff": cloud_diff,
         }
-    finally:
-        try:
-            Path(rclone_cfg).unlink()
-        except OSError:
-            pass
 
 
 @task(name="cloud-record")
@@ -361,8 +352,8 @@ def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
                 status: str, exit_code: int, error_msg: str | None):
     """Record run history to ManifestDB."""
     try:
-        ended_at = _utcnow()
-        duration = time.time() - datetime.fromisoformat(started_at).timestamp()
+        ended_at = utcnow_iso()
+        duration = time.time() - pendulum.parse(started_at).timestamp()
         db = ManifestDB(db_path)
         try:
             record_run_history(
@@ -445,7 +436,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         if mode in ("cloud", "all") and config.cloud.enabled:
             logger.info("Starting cloud backup pipeline")
             try:
-                _run_cloud_pipeline(config, _stable_run_id("cloud"), _utcnow())
+                _run_cloud_pipeline(config, _stable_run_id("cloud"), utcnow_iso())
             except Exception as e:
                 excs.append(e)
 
@@ -453,7 +444,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         if mode in ("lan", "all") and config.lan.enabled:
             logger.info("Starting LAN backup pipeline")
             try:
-                _run_lan_pipeline(config, _stable_run_id("lan"), _utcnow())
+                _run_lan_pipeline(config, _stable_run_id("lan"), utcnow_iso())
             except Exception as e:
                 excs.append(e)
 

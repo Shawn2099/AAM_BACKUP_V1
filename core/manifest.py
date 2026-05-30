@@ -6,10 +6,11 @@ different times, no contention).
 
 import sqlite3
 import threading
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
+
+from core.time_utils import cutoff_iso, utcnow_iso
 
 SCHEMA_VERSION = 1
 
@@ -61,10 +62,6 @@ CREATE TABLE IF NOT EXISTS db_meta (
 
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
-
-
-def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 class ManifestDB:
@@ -122,7 +119,7 @@ class ManifestDB:
     ):
         with self._lock:
             conn = self._get_conn()
-            now = _utcnow()
+            now = utcnow_iso()
             conn.execute(
                 """INSERT INTO file_entries
                    (relative_path, file_size, mtime, md5_checksum,
@@ -189,7 +186,7 @@ class ManifestDB:
 
         with self._lock:
             conn = self._get_conn()
-            now = _utcnow()
+            now = utcnow_iso()
             conn.executemany(
                 f"""INSERT INTO file_entries
                     (relative_path, file_size, mtime, md5_checksum,
@@ -230,7 +227,7 @@ class ManifestDB:
             return
         with self._lock:
             conn = self._get_conn()
-            now = _utcnow()
+            now = utcnow_iso()
             conn.executemany(
                 """UPDATE file_entries
                    SET lan_status = 'synced',
@@ -247,7 +244,7 @@ class ManifestDB:
             return
         with self._lock:
             conn = self._get_conn()
-            now = _utcnow()
+            now = utcnow_iso()
             conn.executemany(
                 """UPDATE file_entries
                    SET cloud_status = 'synced',
@@ -279,7 +276,7 @@ class ManifestDB:
             return
         with self._lock:
             conn = self._get_conn()
-            now = _utcnow()
+            now = utcnow_iso()
             conn.executemany(
                 """UPDATE file_entries SET md5_checksum = ?, updated_at = ?
                    WHERE relative_path = ?""",
@@ -362,7 +359,7 @@ class ManifestDB:
             conn.commit()
 
     def get_runs_since(self, days: int, mode: str | None = None) -> list[dict]:
-        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        cutoff = cutoff_iso(days)
         with self._lock:
             conn = self._get_conn()
             if mode:
@@ -425,7 +422,7 @@ class ManifestDB:
         """
         with self._lock:
             conn = self._get_conn()
-            cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
+            cutoff = cutoff_iso(retention_days)
             conn.execute(
                 "DELETE FROM run_history WHERE started_at < ?",
                 (cutoff,),

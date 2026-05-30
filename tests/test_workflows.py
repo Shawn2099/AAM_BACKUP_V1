@@ -6,10 +6,10 @@ Verifies that components connect correctly and data flows through the system.
 
 import json
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
+import pendulum
 import pytest
 
 from core.manifest import ManifestDB
@@ -255,7 +255,7 @@ class TestMaintenanceWorkflow:
         # Insert recent run
         db.insert_run({
             "run_id": "recent-run", "mode": "cloud",
-            "started_at": datetime.now(UTC).isoformat(), "status": "CLOUD_COMPLETE",
+            "started_at": pendulum.now("UTC").isoformat(), "status": "CLOUD_COMPLETE",
         })
 
         assert len(db.get_recent_runs(10)) == 2

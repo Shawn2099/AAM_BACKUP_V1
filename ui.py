@@ -9,14 +9,14 @@ FastAPI server bound to configurable host:port. Safety-first:
 
 import hmac
 import html
-import os
 import secrets
 import shutil
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
+import pendulum
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from loguru import logger
@@ -25,6 +25,10 @@ from prefect.client.orchestration import get_client
 from prefect.client.schemas.filters import FlowRunFilter
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import run_deployment
+
+
+from core.time_utils import cron_to_human, format_iso_for_js, get_fy_prefix, parse_iso_to_local
+from core.manifest import ManifestDB
 
 
 # In-memory rate limiter for trigger and auth endpoints.
@@ -54,8 +58,6 @@ def _check_rate_limit(client_ip: str, max_attempts: int) -> bool:
         _RATE_LIMITS[client_ip] = entries
         return True
 
-from core.fy_router import get_fy_prefix
-from core.manifest import ManifestDB
 from templates.dashboard import render_dashboard
 
 app = FastAPI(title="AAM Backup Dashboard")
@@ -265,7 +267,7 @@ async def status(request: Request):
             recent_runs.append({
                 "mode": r.get("mode", "?"),
                 "status": r.get("status", "?"),
-                "started_at": _format_datetime(r.get("started_at", "")),
+                "started_at": format_iso_for_js(r.get("started_at", "")),
                 "files": r.get("files_copied", 0),
                 "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
                 "error": r.get("error_message", "")
@@ -278,20 +280,20 @@ async def status(request: Request):
             "firm": cfg.firm_name,
             "fy_prefix": get_fy_prefix(),
             "schedule": {
-                "cloud_cron": _cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
-                "lan_cron": _cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
+                "cloud_cron": cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
+                "lan_cron": cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
             },
             "cloud": {
                 "running": await _is_running("cloud"),
                 "last_run": cloud_last_run,
-                "last_success": _get_last_success(db, "cloud"),
-                "last_run_formatted": f"{cloud_last_run['status']} — {_format_datetime(cloud_last_run['started_at'])}" if cloud_last_run else "No data",
+                "last_success": format_iso_for_js(_get_last_success(db, "cloud")),
+                "last_run_formatted": f"{cloud_last_run['status']} — {parse_iso_to_local(cloud_last_run['started_at'])}" if cloud_last_run else "No data",
             },
             "lan": {
                 "running": await _is_running("lan"),
                 "last_run": lan_last_run,
-                "last_success": _get_last_success(db, "lan"),
-                "last_run_formatted": f"{lan_last_run['status']} — {_format_datetime(lan_last_run['started_at'])}" if lan_last_run else "No data",
+                "last_success": format_iso_for_js(_get_last_success(db, "lan")),
+                "last_run_formatted": f"{lan_last_run['status']} — {parse_iso_to_local(lan_last_run['started_at'])}" if lan_last_run else "No data",
             },
             "manifest": {
                 "lan_files": db.file_count("lan_status"),
@@ -406,7 +408,7 @@ th {{ background: #f3f4f6; font-size: 0.85rem; }}
 </body>
 </html>"""
 
-        filename = f"{cfg.firm_name}_{period}_Report_{datetime.now().strftime('%Y-%m-%d')}.html"
+        filename = f"{cfg.firm_name}_{period}_Report_{pendulum.now().format('YYYY-MM-DD')}.html"
         return Response(
             content=full_html,
             media_type="text/html",
@@ -427,32 +429,6 @@ def _get_last_success(db: ManifestDB, mode: str) -> str | None:
     return None
 
 
-def _format_datetime(dt_str: str | None) -> str:
-    if not dt_str:
-        return "-"
-    dt_str = str(dt_str).strip()
-    if not dt_str:
-        return "-"
-    
-    try:
-        # Standard ISO 8601 parsing handles timezone offsets natively
-        # Standardize Z UTC suffix to +00:00 offset format
-        clean_str = dt_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean_str)
-        
-        # If timezone naive, treat as UTC
-        if dt.tzinfo is None:
-            from zoneinfo import ZoneInfo
-            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-            
-        # Dynamically translate to the server's local timezone
-        local_dt = dt.astimezone()
-        return local_dt.strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        # Fallback to safe string truncation if parsing fails
-        return dt_str[:19].replace("T", " ")
-
-
 def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
     run = db.last_run(mode)
     if not run:
@@ -466,28 +442,6 @@ def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
         "error": run.get("error_message"),
         "ended_at": run.get("ended_at", ""),
     }
-
-
-def _cron_to_human(cron: str, tz: str) -> str:
-    """Convert a 5-field cron expression to a human-readable string."""
-    parts = cron.strip().split()
-    if len(parts) != 5:
-        return cron
-    minute, hour, dom, month, dow = parts
-
-    tz_short = tz.split("/")[-1] if "/" in tz else tz
-
-    if dow != "*":
-        days = {"MON": "Monday", "TUE": "Tuesday", "WED": "Wednesday",
-                 "THU": "Thursday", "FRI": "Friday", "SAT": "Saturday", "SUN": "Sunday"}
-        day_name = days.get(dow.upper(), dow)
-        return f"Every {day_name} at {int(hour):02d}:{int(minute):02d} {tz_short}"
-
-    if dom != "*":
-        suffix = "th" if 4 <= int(dom) <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(int(dom) % 10, "th")
-        return f"{int(dom)}{suffix} of month at {int(hour):02d}:{int(minute):02d} {tz_short}"
-
-    return f"Daily at {int(hour):02d}:{int(minute):02d} {tz_short}"
 
 
 def _get_health() -> dict:
@@ -529,12 +483,12 @@ async def _render_dashboard(flash: str = "") -> str:
             cr = _last_run_summary(db, "cloud")
             lr = _last_run_summary(db, "lan")
             if cr:
-                cloud_last = f"{cr['status']} — {_format_datetime(cr['started_at'])}"
+                cloud_last = f"{cr['status']} — {parse_iso_to_local(cr['started_at'])}"
                 cloud_run = f"{cr['status']} ({cr['files']} files)"
                 if cr.get("error"):
                     cloud_run += f" — {html.escape(cr['error'][:60])}"
             if lr:
-                lan_last = f"{lr['status']} — {_format_datetime(lr['started_at'])}"
+                lan_last = f"{lr['status']} — {parse_iso_to_local(lr['started_at'])}"
                 lan_run = f"{lr['status']} ({lr['files']} files)"
                 if lr.get("error"):
                     lan_run += f" — {html.escape(lr['error'][:60])}"
@@ -558,8 +512,8 @@ async def _render_dashboard(flash: str = "") -> str:
                 health_info = f"Source: {h['source_free_gb']} GB free | FY: {get_fy_prefix()}"
 
             # Schedule info for template
-            cloud_schedule = _cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
-            lan_schedule = _cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
+            cloud_schedule = cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
+            lan_schedule = cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
 
             # Run history table
             runs = db.get_recent_runs(10)
@@ -574,7 +528,7 @@ async def _render_dashboard(flash: str = "") -> str:
                     s_tag = '<span class="tag failed">FAILED</span>'
                 else:
                     s_tag = f'<span class="tag">{s[:10]}</span>'
-                ts = _format_datetime(r.get("started_at", ""))
+                ts = parse_iso_to_local(r.get("started_at", ""))
                 files = r.get("files_copied", 0)
                 err = r.get("error_message", "")
                 dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"

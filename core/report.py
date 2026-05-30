@@ -6,13 +6,14 @@ generate_report_html() is shared between email delivery and UI download.
 
 import html
 import smtplib
-from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from loguru import logger
 
+import humanize
 from core.manifest import ManifestDB
+from core.time_utils import utcnow_formatted
 from models.config import NotificationConfig
 
 
@@ -135,7 +136,7 @@ def generate_report_html(
         files = r["files_copied"] or 0
         rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td></tr>"
 
-    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    now = utcnow_formatted("YYYY-MM-DD HH:mm z")
 
     return f"""<html><body>
 <h2>{html.escape(period)} Backup Report — {html.escape(firm_name)}</h2>
@@ -149,7 +150,7 @@ def generate_report_html(
   <tr><td>Failed</td><td>{failures}</td></tr>
   <tr><td>Success rate</td><td>{success_rate:.1f}%</td></tr>
   <tr><td>Files copied</td><td>{total_files:,}</td></tr>
-  <tr><td>Bytes copied</td><td>{total_bytes:,} ({_human_bytes(total_bytes)})</td></tr>
+  <tr><td>Bytes copied</td><td>{total_bytes:,} ({humanize.naturalsize(total_bytes, binary=True)})</td></tr>
 </table>
 
 <h3>Recent Runs</h3>
@@ -194,12 +195,3 @@ def send_monthly_report(
     firm_name: str,
 ) -> bool:
     return send_summary_report(db, config, firm_name, 30, "Monthly")
-
-
-def _human_bytes(n: int) -> str:
-    val: float = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if val < 1024:
-            return f"{val:.1f} {unit}"
-        val /= 1024
-    return f"{val:.1f} PB"

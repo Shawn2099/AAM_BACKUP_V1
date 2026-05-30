@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from core.rclone_config import write_temp_config
+from core.rclone_config import temp_rclone_config
 
 
 def classify_rclone_exit(code: int) -> str:
@@ -100,67 +100,57 @@ def run_cloud_sync(
     Returns:
         {"status": str, "exit_code": int, "error": str | None}
     """
-    config_path = None
     stderr_path = None
 
-    try:
-        config_path = write_temp_config(
-            gcs_key_path=gcs_key_path,
-            location=location,
-            project_number=project_number,
-            storage_class=storage_class,
-        )
+    with temp_rclone_config(
+        gcs_key_path, location, project_number, storage_class
+    ) as config_path:
         cmd = build_rclone_sync_command(source, bucket, fy_prefix, config_path, storage_class, bwlimit, retries, transfers, checkers)
 
         logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")
 
         stderr_fd, stderr_path = tempfile.mkstemp(suffix=".log", prefix="cloud_sync_stderr_")
         os.close(stderr_fd)
+        try:
+            with open(stderr_path, "w", encoding="utf-8") as stderr_file:
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
+                    text=True,
+                    timeout=timeout,
+                )
 
-        with open(stderr_path, "w", encoding="utf-8") as stderr_file:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
-                text=True,
-                timeout=timeout,
-            )
+            status = classify_rclone_exit(result.returncode)
+            logger.info(f"Cloud sync exit {result.returncode} → {status}")
 
-        status = classify_rclone_exit(result.returncode)
-        logger.info(f"Cloud sync exit {result.returncode} → {status}")
+            error_msg = None
+            if result.returncode != 0:
+                try:
+                    stderr_text = Path(stderr_path).read_text(encoding="utf-8")
+                    error_msg = stderr_text[:2000] if len(stderr_text) > 2000 else stderr_text
+                    logger.error(f"rclone error: {error_msg}")
+                except OSError:
+                    error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
 
-        error_msg = None
-        if result.returncode != 0:
-            try:
-                stderr_text = Path(stderr_path).read_text(encoding="utf-8")
-                error_msg = stderr_text[:2000] if len(stderr_text) > 2000 else stderr_text
-                logger.error(f"rclone error: {error_msg}")
-            except OSError:
-                error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
+            return {
+                "status": status,
+                "exit_code": result.returncode,
+                "error": error_msg,
+            }
 
-        return {
-            "status": status,
-            "exit_code": result.returncode,
-            "error": error_msg,
-        }
-
-    except subprocess.TimeoutExpired as e:
-        logger.error(f"Cloud sync timed out after {timeout}s")
-        return {"status": "CLOUD_FAILED", "exit_code": -1, "error": f"Timeout after {timeout}s"}
-    except FileNotFoundError as e:
-        logger.error("rclone not found")
-        return {"status": "CLOUD_FAILED", "exit_code": -1, "error": f"rclone not found: {e}"}
-    except OSError as e:
-        logger.error(f"Cloud sync OS error: {e}")
-        return {"status": "CLOUD_FAILED", "exit_code": -1, "error": str(e)}
-    finally:
-        if config_path:
-            try:
-                Path(config_path).unlink()
-            except OSError:
-                pass
-        if stderr_path:
-            try:
-                Path(stderr_path).unlink()
-            except OSError:
-                pass
+        except subprocess.TimeoutExpired:
+            logger.error(f"Cloud sync timed out after {timeout}s")
+            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": f"Timeout after {timeout}s"}
+        except FileNotFoundError:
+            logger.error("rclone not found")
+            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": "rclone not found"}
+        except OSError as e:
+            logger.error(f"Cloud sync OS error: {e}")
+            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": str(e)}
+        finally:
+            if stderr_path:
+                try:
+                    Path(stderr_path).unlink()
+                except OSError:
+                    pass
