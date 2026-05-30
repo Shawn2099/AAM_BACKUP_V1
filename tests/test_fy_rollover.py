@@ -253,6 +253,135 @@ class TestRolloverOrchestrator:
             result = rollover(str(config_path))
             assert result is False
 
+    def test_rollover_cloud_only_lan_disabled(self, tmp_path):
+        """When LAN is disabled, rollover works with cloud-only final backup."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "paths:\n"
+            "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+            "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY25-26\"\n"
+            "  database_path: \"manifest.db\"\n"
+            "  gcs_key_path: \"key.json\"\n"
+            "lan:\n"
+            "  enabled: false\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 14400\n"
+            "  max_attempts: 2\n"
+            "  retry_delay_seconds: 600\n"
+            "  mt_threads: 8\n"
+            "wol:\n"
+            "  enabled: false\n"
+            "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+            "  server_ip: \"192.168.1.1\"\n"
+            "cloud:\n"
+            "  enabled: true\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 21600\n"
+            "  verify_timeout_seconds: 600\n"
+            "  storage_class: COLDLINE\n"
+            "  max_attempts: 3\n"
+            "  retry_delay_seconds: 300\n"
+            "  location: asia-south1\n"
+            "  project_number: \"123\"\n"
+            "schedule:\n"
+            "  timezone: Asia/Kolkata\n"
+            "dashboard:\n"
+            "  auth_enabled: false\n"
+        )
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 0}):
+                    result = rollover(str(config_path))
+                    assert result is True
+                    assert "FY27-28" in config_path.read_text()
+
+    def test_rollover_lan_only_cloud_disabled(self, tmp_path):
+        """When cloud is disabled, rollover works with LAN-only final backup."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "paths:\n"
+            "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+            "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY25-26\"\n"
+            "  database_path: \"manifest.db\"\n"
+            "  gcs_key_path: \"key.json\"\n"
+            "lan:\n"
+            "  enabled: true\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 14400\n"
+            "  max_attempts: 2\n"
+            "  retry_delay_seconds: 600\n"
+            "  mt_threads: 8\n"
+            "wol:\n"
+            "  enabled: false\n"
+            "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+            "  server_ip: \"192.168.1.1\"\n"
+            "cloud:\n"
+            "  enabled: false\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 21600\n"
+            "  verify_timeout_seconds: 600\n"
+            "  storage_class: COLDLINE\n"
+            "  max_attempts: 3\n"
+            "  retry_delay_seconds: 300\n"
+            "schedule:\n"
+            "  timezone: Asia/Kolkata\n"
+            "dashboard:\n"
+            "  auth_enabled: false\n"
+        )
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_lan_sync", return_value={"exit_code": 3}):
+                    result = rollover(str(config_path))
+                    assert result is True
+                    assert "FY27-28" in config_path.read_text()
+
+    def test_rollover_blocks_when_enabled_destination_fails(self, tmp_path):
+        """If cloud is enabled but fails, rollover raises RolloverError."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "paths:\n"
+            "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+            "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY25-26\"\n"
+            "  database_path: \"manifest.db\"\n"
+            "  gcs_key_path: \"key.json\"\n"
+            "lan:\n"
+            "  enabled: false\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 14400\n"
+            "  max_attempts: 2\n"
+            "  retry_delay_seconds: 600\n"
+            "  mt_threads: 8\n"
+            "wol:\n"
+            "  enabled: false\n"
+            "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+            "  server_ip: \"192.168.1.1\"\n"
+            "cloud:\n"
+            "  enabled: true\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 21600\n"
+            "  verify_timeout_seconds: 600\n"
+            "  storage_class: COLDLINE\n"
+            "  max_attempts: 3\n"
+            "  retry_delay_seconds: 300\n"
+            "  location: asia-south1\n"
+            "  project_number: \"123\"\n"
+            "schedule:\n"
+            "  timezone: Asia/Kolkata\n"
+            "dashboard:\n"
+            "  auth_enabled: false\n"
+        )
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 1}):
+                    with pytest.raises(RolloverError, match="cloud"):
+                        rollover(str(config_path))
+
     def test_rollover_with_both_disabled_still_creates_folders(self, tmp_path):
         """When both destinations disabled, rollover skips backups but still
         creates folders and updates config (no backup needed since nothing backs up)."""
