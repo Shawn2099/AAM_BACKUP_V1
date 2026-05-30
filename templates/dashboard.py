@@ -126,9 +126,21 @@ async function updateStatus() {
                 return;
             }
             var ago = timeAgo(lastSuccess);
-            var then = new Date(lastSuccess + (lastSuccess.endsWith('Z') ? '' : 'Z'));
+            if (!ago) {
+                el.innerHTML = '<span class="critical-ago">\u26A0\uFE0F No successful backup yet</span>';
+                return;
+            }
+            var cleanStr = lastSuccess.trim().replace(' ', 'T');
+            if (!cleanStr.endsWith('Z') && !cleanStr.includes('+') && !/-\\d{2}:\\d{2}$/.test(cleanStr)) {
+                cleanStr += 'Z';
+            }
+            var then = new Date(cleanStr);
             var now = new Date();
             var diffDays = (now - then) / 86400000;
+            if (isNaN(diffDays)) {
+                el.innerHTML = '<span class="critical-ago">\u26A0\uFE0F No successful backup yet</span>';
+                return;
+            }
             var cls = agoClass(diffDays);
             var icon = diffDays < 1 ? '\u2705' : (diffDays < 2 ? '\u26A0\uFE0F' : '\u274C');
             el.innerHTML = '<span class="' + cls + '">' + icon + ' Last success: ' + ago + '</span>';
