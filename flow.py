@@ -277,6 +277,22 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         retries=1, retry_delay_seconds=60,
     )
 
+    # Fetch database state before sync to calculate differential transfers
+    db = ManifestDB(db_path)
+    before_dict = {}
+    try:
+        with db._lock:
+            conn = db._get_conn()
+            rows = conn.execute(
+                "SELECT relative_path, file_size, mtime FROM file_entries WHERE cloud_status = 'synced'"
+            ).fetchall()
+            for r in rows:
+                before_dict[r["relative_path"]] = (r["file_size"], r["mtime"])
+    except Exception as e:
+        logger.warning(f"Could not fetch database state before cloud sync: {e}")
+    finally:
+        db.close()
+
     status = "CLOUD_SKIPPED"
     sync_result = {"exit_code": -1}
     error_msg = None
@@ -291,18 +307,35 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         verify_data = verify_report(config, fy_prefix)
         cloud_record_task(db_path, verify_data, sync_result)
 
-        # Calculate files and bytes copied
-        added_paths = verify_data.get("diff", {}).get("added", [])
-        modified_paths = verify_data.get("diff", {}).get("modified", [])
-        copied_paths = set(added_paths + modified_paths)
-        files_copied = len(copied_paths)
-        bytes_copied = sum(
-            item.get("Size", 0)
-            for item in verify_data.get("manifest", [])
-            if item.get("Path") in copied_paths
-        )
+        # Calculate files and bytes copied by comparing old database state with new live GCS manifest
+        manifest = verify_data.get("manifest", [])
+        copied_files_list = []
+        for item in manifest:
+            path = item.get("Path") or item.get("path", "")
+            size = item.get("Size") or item.get("size", 0)
+            mtime = item.get("ModTime") or item.get("mtime", 0)
+            
+            if path not in before_dict:
+                copied_files_list.append((path, size))
+            else:
+                old_size, old_mtime = before_dict[path]
+                if abs(float(size) - float(old_size)) > 0.01:
+                    copied_files_list.append((path, size))
+                else:
+                    try:
+                        import pendulum
+                        t1 = pendulum.parse(str(mtime)).timestamp()
+                        t2 = pendulum.parse(str(old_mtime)).timestamp()
+                        if abs(t1 - t2) > 1.1:
+                            copied_files_list.append((path, size))
+                    except Exception:
+                        if str(mtime) != str(old_mtime):
+                            copied_files_list.append((path, size))
 
-        logger.info("Cloud pipeline completed successfully")
+        files_copied = len(copied_files_list)
+        bytes_copied = sum(int(size) for _, size in copied_files_list)
+
+        logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
     except Exception as e:
