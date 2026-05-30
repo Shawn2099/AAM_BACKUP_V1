@@ -69,7 +69,7 @@ def detect_rollover(source_drive: str, lan_destination: str) -> bool:
 
 def run_final_backup(source_drive: str, lan_destination: str,
                      lan_config, cloud_config, paths_config,
-                     old_fy: str) -> tuple[bool, bool]:
+                     config, old_fy: str) -> tuple[bool, bool]:
     """Run one final backup of the closing FY to both destinations.
 
     Returns (cloud_ok, lan_ok). Only the cloud pipeline uses old_fy
@@ -108,6 +108,12 @@ def run_final_backup(source_drive: str, lan_destination: str,
 
     if lan_config.enabled:
         try:
+            from core.wol import ensure_server_online
+
+            if config.wol.enabled:
+                logger.info("FY rollover: waking LAN server before final backup")
+                ensure_server_online(config)
+
             logger.info(f"FY rollover: running final LAN backup to {lan_destination}")
             result = run_lan_sync(
                 source=source_drive,
@@ -120,6 +126,15 @@ def run_final_backup(source_drive: str, lan_destination: str,
                 logger.info(f"FY rollover: final LAN backup OK (exit {exit_code})")
             else:
                 logger.error(f"FY rollover: final LAN backup failed (exit {exit_code})")
+
+            if config.wol.enabled and config.lan.shutdown_after_backup:
+                try:
+                    from core.shutdown import shutdown_server
+
+                    logger.info(f"FY rollover: shutting down backup server {config.wol.server_ip}")
+                    shutdown_server(config.wol.server_ip)
+                except Exception as e:
+                    logger.warning(f"FY rollover: server shutdown failed (non-critical): {e}")
         except Exception as e:
             logger.error(f"FY rollover: final LAN backup error: {e}")
 
@@ -218,6 +233,7 @@ def rollover(config_path: str = "config.yaml") -> bool:
         lan_config=config.lan,
         cloud_config=config.cloud,
         paths_config=config.paths,
+        config=config,
         old_fy=old_fy,
     )
 
