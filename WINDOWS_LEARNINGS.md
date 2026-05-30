@@ -92,3 +92,49 @@ When running Python scripts via the Windows Task Scheduler (e.g., `start.bat` at
 1. **User context:** Task Scheduler often runs under `SYSTEM` or a special service account. These accounts do not inherit standard user environment paths.
 2. **Current Directory:** Always change the working directory explicitly to the script's own folder inside the batch script (`cd /d "%~dp0"`) to avoid executing inside `C:\Windows\System32`.
 3. **PATH configuration:** Explicitly prefix paths to standard tools if they are not in the global SYSTEM Path.
+
+---
+
+## 7. Prefect 3.x Concurrency Limit Mismatches
+When implementing serialization locking mechanisms inside Prefect 3.x flows, a critical architectural distinction exists between **Global Concurrency Limits** and **Tag-based Concurrency Limits**. Failing to configure the correct limit type on the Prefect server will lead to task acquisition skipping and warning logs.
+
+### The Problem:
+If a flow coordinates backup serialization using Prefect's native `concurrency` context manager:
+```python
+from prefect import concurrency
+
+with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
+    # Enforces active serialization
+    ...
+```
+This context manager dynamically queries the server for a **Global Concurrency Limit** named `"aam-backup"`. If your initialization script only registers a **Tag-based Concurrency Limit** (e.g. `client.create_concurrency_limit(tag="aam-backup")`), the acquisition will fail and output this warning:
+`Concurrency limits ['aam-backup'] do not exist - skipping acquisition.`
+
+### The Idempotent Solution:
+To completely prevent race conditions and resolve acquisition warnings, configure **both** types of limits during preflight checks using Prefect's asynchronous orchestration client:
+1. **Global Concurrency Limit:** Enforce this programmatically and idempotently with `upsert_global_concurrency_limit_by_name`.
+2. **Tag-based Concurrency Limit:** Register task-level tag enforcement using `create_concurrency_limit` with standard exception handling.
+
+```python
+async def ensure_limits():
+    from prefect.client.orchestration import get_client
+    async with get_client() as client:
+        # 1. Register/Upsert Global Concurrency Limit
+        try:
+            await client.upsert_global_concurrency_limit_by_name(
+                name="aam-backup",
+                limit=1,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to upsert global limit: {e}")
+
+        # 2. Register Tag-based Concurrency Limit
+        try:
+            await client.create_concurrency_limit(
+                tag="aam-backup",
+                concurrency_limit=1,
+            )
+        except Exception:
+            # Expected on subsequent restarts when limit is already present
+            pass
+```
