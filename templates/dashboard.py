@@ -161,7 +161,7 @@ async function updateStatus() {
             badgeCloud.innerText = isCloudRunning ? 'Running' : 'Idle';
             if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
             else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
-            if (data.cloud.last_run) { let desc = data.cloud.last_run.status + ' (' + data.cloud.last_run.files + ' files)'; if (data.cloud.last_run.error) { desc += ' — ' + data.cloud.last_run.error.substring(0, 60); } descCloud.innerText = desc; lastCloud.innerText = 'Last: ' + data.cloud.last_run_formatted; }
+            if (data.cloud.last_run) { let desc = data.cloud.last_run.status + ' (' + data.cloud.last_run.files + ' changed)'; if (data.cloud.last_run.error) { desc += ' — ' + data.cloud.last_run.error.substring(0, 60); } descCloud.innerText = desc; lastCloud.innerText = 'Last: ' + data.cloud.last_run_formatted; }
             const cloudClass = isCloudRunning ? 'running' : ((data.cloud.last_run && data.cloud.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
             showLastSuccess('cloud', data.cloud.last_success);
@@ -176,7 +176,7 @@ async function updateStatus() {
             badgeLan.innerText = isLanRunning ? 'Running' : 'Idle';
             if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
             else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
-            if (data.lan.last_run) { let desc = data.lan.last_run.status + ' (' + data.lan.last_run.files + ' files)'; if (data.lan.last_run.error) { desc += ' — ' + data.lan.last_run.error.substring(0, 60); } descLan.innerText = desc; lastLan.innerText = 'Last: ' + data.lan.last_run_formatted; }
+            if (data.lan.last_run) { let desc = data.lan.last_run.status + ' (' + data.lan.last_run.files + ' changed)'; if (data.lan.last_run.error) { desc += ' — ' + data.lan.last_run.error.substring(0, 60); } descLan.innerText = desc; lastLan.innerText = 'Last: ' + data.lan.last_run_formatted; }
             const lanClass = isLanRunning ? 'running' : ((data.lan.last_run && data.lan.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
             showLastSuccess('lan', data.lan.last_success);
@@ -311,7 +311,7 @@ def render_dashboard(
 </div>
 <h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Run History</h2>
 <table>
-<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
+<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Changed</th><th>Duration</th><th>Error</th></tr></thead>
 <tbody id="history-tbody">{history_rows or no_runs_row}</tbody>
 </table>
 <div class="info">

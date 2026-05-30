@@ -37,7 +37,7 @@ def utcnow_formatted(fmt: str = "YYYY-MM-DD HH:mm z") -> str:
 # ISO 8601 parsing → local display
 # ═══════════════════════════════════════════════════════════════
 
-def parse_iso_to_local(iso_str: str | None) -> str:
+def parse_iso_to_local(iso_str: str | None, tz: str = "Asia/Kolkata") -> str:
     """Parse any ISO 8601 string and format for local-timezone display.
 
     Handles Z suffix, ±HH:MM offsets, naive datetimes (treated as UTC).
@@ -51,7 +51,7 @@ def parse_iso_to_local(iso_str: str | None) -> str:
         dt = pendulum.parse(str(iso_str).strip())
         if dt is None:
             return "-"
-        return dt.in_timezone(pendulum.local_timezone()).format("YYYY-MM-DD HH:mm:ss")
+        return dt.in_timezone(tz).format("YYYY-MM-DD HH:mm:ss")
     except (ValueError, pendulum.parsing.exceptions.ParserError):
         s = str(iso_str).strip()
         return s[:19].replace("T", " ") if s else "-"

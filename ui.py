@@ -490,12 +490,12 @@ async def _render_dashboard(flash: str = "") -> str:
             lr = _last_run_summary(db, "lan")
             if cr:
                 cloud_last = f"{cr['status']} — {parse_iso_to_local(cr['started_at'])}"
-                cloud_run = f"{cr['status']} ({cr['files']} files)"
+                cloud_run = f"{cr['status']} ({cr['files']} changed)"
                 if cr.get("error"):
                     cloud_run += f" — {html.escape(cr['error'][:60])}"
             if lr:
                 lan_last = f"{lr['status']} — {parse_iso_to_local(lr['started_at'])}"
-                lan_run = f"{lr['status']} ({lr['files']} files)"
+                lan_run = f"{lr['status']} ({lr['files']} changed)"
                 if lr.get("error"):
                     lan_run += f" — {html.escape(lr['error'][:60])}"
             cloud_files = db.file_count("cloud_status")
