@@ -504,24 +504,21 @@ def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
                 files_copied: int = 0, bytes_copied: int = 0,
                 extended_metrics: str | None = None):
     """Record run history to ManifestDB."""
+    ended_at = utcnow_iso()
+    duration = time.time() - pendulum.parse(started_at).timestamp()
+    db = ManifestDB(db_path)
     try:
-        ended_at = utcnow_iso()
-        duration = time.time() - pendulum.parse(started_at).timestamp()
-        db = ManifestDB(db_path)
-        try:
-            record_run_history(
-                db,
-                run_id=run_id, mode=mode,
-                started_at=started_at, ended_at=ended_at,
-                status=status, exit_code=exit_code,
-                duration_seconds=duration, error_message=error_msg,
-                files_copied=files_copied, bytes_copied=bytes_copied,
-                extended_metrics=extended_metrics,
-            )
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"Failed to record run history: {e}")
+        record_run_history(
+            db,
+            run_id=run_id, mode=mode,
+            started_at=started_at, ended_at=ended_at,
+            status=status, exit_code=exit_code,
+            duration_seconds=duration, error_message=error_msg,
+            files_copied=files_copied, bytes_copied=bytes_copied,
+            extended_metrics=extended_metrics,
+        )
+    finally:
+        db.close()
 
 
 # ═══════════════════════════════════════════════════════════════

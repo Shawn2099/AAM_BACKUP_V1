@@ -261,7 +261,7 @@ class TestEndpointStatus:
         with patch("ui._require_auth"), \
              patch("ui._cfg") as mock_cfg, \
              patch("ui.Path.exists", return_value=True), \
-             patch("ui.ManifestDB") as mock_db_cls, \
+             patch("ui.get_db") as mock_get_db, \
              patch("ui._is_running", return_value=False), \
              patch("ui._last_run_summary", return_value=None), \
              patch("ui._get_last_success", return_value=None), \
@@ -274,7 +274,7 @@ class TestEndpointStatus:
             mock_db = MagicMock()
             mock_db.get_recent_runs.return_value = []
             mock_db.file_count.return_value = 0
-            mock_db_cls.return_value = mock_db
+            mock_get_db.return_value = mock_db
 
             response = client.get("/status")
             assert response.status_code == 200
@@ -367,7 +367,7 @@ class TestDashboardRendering:
     def test_render_with_db_and_runs(self):
         with patch("ui._cfg") as mock_cfg, \
              patch("ui.Path.exists", return_value=True), \
-             patch("ui.ManifestDB") as mock_db_cls, \
+             patch("ui.get_db") as mock_get_db, \
              patch("ui._is_running", return_value=False), \
              patch("ui._get_health", return_value={"source_free_gb": "500.0", "source_exists": True}):
             mock_cfg.return_value = MagicMock(
@@ -379,8 +379,7 @@ class TestDashboardRendering:
             mock_db.file_count.return_value = 42
             mock_db.get_recent_runs.return_value = []
             mock_db.last_run.return_value = None
-            mock_db_cls.return_value = mock_db
+            mock_get_db.return_value = mock_db
 
             html = asyncio.run(_render_dashboard())
             assert "Test Firm" in html or "42" in html
-            mock_db.close.assert_called_once()

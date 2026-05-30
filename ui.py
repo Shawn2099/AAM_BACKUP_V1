@@ -125,6 +125,15 @@ def _cfg():
     return _config
 
 
+_DB_INSTANCE = None
+
+def get_db():
+    global _DB_INSTANCE
+    if _DB_INSTANCE is None:
+        _DB_INSTANCE = ManifestDB(_cfg().paths.database_path)
+    return _DB_INSTANCE
+
+
 # ── Pipeline status ──────────────────────────────────────────
 
 
@@ -261,7 +270,7 @@ async def status(request: Request):
     if not Path(cfg.paths.database_path).exists():
         return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
 
-    db = ManifestDB(cfg.paths.database_path)
+    db = get_db()
     try:
         runs = db.get_recent_runs(10)
         recent_runs = []
@@ -379,7 +388,7 @@ def _serve_report(days: int, period: str) -> Response:
     if not db_path.exists():
         return HTMLResponse("<p>No database found. Run a backup first.</p>", status_code=503)
 
-    db = ManifestDB(db_path)
+    db = get_db()
     try:
         from core.report import generate_report_html
         html_body = generate_report_html(db, cfg.firm_name, days, period)
@@ -464,7 +473,7 @@ def _get_health() -> dict:
 async def _render_dashboard(flash: str = "") -> str:
     cfg = _cfg()
     db_path = Path(cfg.paths.database_path)
-    db = ManifestDB(db_path) if db_path.exists() else None
+    db = get_db() if db_path.exists() else None
 
     cloud_run = cloud_running = "Unknown"
     lan_run = lan_running = "Unknown"

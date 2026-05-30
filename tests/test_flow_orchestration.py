@@ -249,9 +249,10 @@ class TestRecordRun:
     def test_handles_db_error(self, mock_record, mock_db_cls):
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
-        # Should not raise — error is logged
-        _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
-                     "CLOUD_COMPLETE", 0, None)
+        # Should raise — error is no longer silently swallowed
+        with pytest.raises(Exception, match="db error"):
+            _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
+                         "CLOUD_COMPLETE", 0, None)
 
 
 # ═══════════════════════════════════════════════════════════════
