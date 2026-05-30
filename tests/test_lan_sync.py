@@ -1,8 +1,11 @@
-"""Tests for lan_sync — robocopy command building and exit code classification."""
+"""Tests for lan_sync — robocopy command building, exit classification, and orchestration."""
+
+import subprocess
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.lan_sync import _validate_required_flags, build_robocopy_command, classify_exit_code
+from core.lan_sync import _validate_required_flags, build_robocopy_command, classify_exit_code, run_lan_sync
 from models.config import LanConfig
 
 
@@ -96,3 +99,129 @@ class TestBuildRobocopyCommand:
         cmd = build_robocopy_command("D:\\", "\\\\server\\share", cfg)
         xd_idx = cmd.index("/XD")
         assert cmd[xd_idx + 1] == "System Volume Information"
+
+
+class TestRunLanSync:
+    """Unit tests for the run_lan_sync subprocess orchestration."""
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_success_exit_0(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig(subprocess_timeout_seconds=3600)
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_path.return_value.exists.return_value = True
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_COMPLETE"
+        assert result["exit_code"] == 0
+        assert result["error"] is None
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_exit_1_files_copied(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_run.return_value = MagicMock(returncode=1)
+        mock_path.return_value.exists.return_value = True
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_COMPLETE"
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_partial_with_errors(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_run.return_value = MagicMock(returncode=9)
+        mock_path.return_value.exists.return_value = True
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_PARTIAL"
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_fatal_with_log_tail(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_run.return_value = MagicMock(returncode=16)
+        mock_path.return_value.exists.return_value = True
+        mock_path.return_value.read_text.return_value = "ERROR: Access denied (0x00000005)"
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_FAILED"
+        assert "Access denied" in result["error"]
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_log_tail_truncation(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_run.return_value = MagicMock(returncode=16)
+        mock_path.return_value.exists.return_value = True
+        long_log = "x" * 1000
+        mock_path.return_value.read_text.return_value = long_log
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert len(result["error"]) == 500
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_log_unreadable(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_run.return_value = MagicMock(returncode=16)
+        mock_path.return_value.exists.return_value = True
+        mock_path.return_value.read_text.side_effect = OSError("bad file")
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert "log unreadable" in result["error"]
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_timeout_expired(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig(subprocess_timeout_seconds=3600)
+        mock_path.return_value.exists.return_value = True
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="robocopy", timeout=3600)
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_FAILED"
+        assert result["exit_code"] == -1
+        assert "Timeout after 3600s" in result["error"]
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_robocopy_not_found(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_path.return_value.exists.return_value = True
+        mock_run.side_effect = FileNotFoundError("robocopy.exe missing")
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_FAILED"
+        assert "robocopy.exe not found" in result["error"]
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_os_error(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_path.return_value.exists.return_value = True
+        mock_run.side_effect = OSError("network unreachable")
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_FAILED"
+        assert result["error"] == "network unreachable"
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_log_cleaned_up_on_success(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        cfg = LanConfig()
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_path.return_value.exists.return_value = True
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_COMPLETE"
+        mock_path.return_value.unlink.assert_called_once()
