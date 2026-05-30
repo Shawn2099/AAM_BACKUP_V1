@@ -5,7 +5,6 @@ The filesystem IS the truth.
 """
 
 import os
-from collections.abc import Iterator
 from pathlib import Path
 
 from loguru import logger
@@ -42,37 +41,6 @@ def walk_lan_destination(unc_path: str) -> list[dict]:
 
     logger.info(f"LAN manifest: {len(files)} files at {unc_path}")
     return files
-
-
-def iter_lan_destination(unc_path: str) -> Iterator[dict]:
-    """Generator version of walk_lan_destination — yields files one at a time.
-
-    Use when memory is constrained (500K+ files on LAN share) and the caller
-    only needs to stream entries into a dict or database without materializing
-    the full list first.
-
-    Args:
-        unc_path: UNC path to walk (e.g. "\\\\192.168.10.10\\share$").
-
-    Yields:
-        {"path": "rel\\path\\file.txt", "size": 2048, "mtime": 1717200000.0}
-    """
-    base = str(Path(unc_path).resolve())
-
-    for root, _, filenames in os.walk(unc_path):
-        for name in filenames:
-            full = os.path.join(root, name)
-            try:
-                stat = os.stat(full)
-            except OSError:
-                continue
-
-            rel = os.path.relpath(full, base)
-            yield {
-                "path": rel,
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-            }
 
 
 def snapshot_to_dict(files: list[dict]) -> dict[str, tuple[int, float]]:

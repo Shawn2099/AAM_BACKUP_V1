@@ -19,7 +19,6 @@ class PathsConfig(BaseModel):
     lan_destination: str = Field(..., description="LAN UNC path, e.g. \\\\192.168.10.10\\share$")
     database_path: str = Field(..., description="Path to SQLite manifest database")
     log_directory: str = Field(default="C:\\BackupAgent\\logs")
-    temp_directory: str = Field(default="C:\\BackupAgent\\rclone_temp")
     gcs_key_path: str = Field(..., description="Path to GCS service account JSON key file")
 
     @field_validator("source_drive")
@@ -133,9 +132,6 @@ class NotificationConfig(BaseModel):
     sender: str = ""
     recipients: list[str] = Field(default_factory=list)
     send_on_failure: bool = True
-    send_on_success: bool = False
-    weekly_summary_day: str = "monday"
-    weekly_summary_time: str = "08:00"
 
     @field_validator("smtp_port")
     @classmethod

@@ -292,22 +292,6 @@ class ManifestDB:
             ).fetchone()
             return dict(row) if row else None
 
-    def get_all_lan_entries(self) -> list[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            rows = conn.execute(
-                "SELECT relative_path, file_size, mtime FROM file_entries WHERE lan_status = 'synced'"
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def get_all_cloud_entries(self) -> list[dict]:
-        with self._lock:
-            conn = self._get_conn()
-            rows = conn.execute(
-                "SELECT relative_path, file_size, mtime FROM file_entries WHERE cloud_status = 'synced'"
-            ).fetchall()
-            return [dict(r) for r in rows]
-
     def file_count(self, status_field: str = "lan_status") -> int:
         _ALLOWED = {"lan_status", "cloud_status"}
         if status_field not in _ALLOWED:

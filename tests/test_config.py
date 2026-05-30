@@ -70,7 +70,6 @@ class TestPathsConfig:
             gcs_key_path="C:\\keys\\key.json",
         )
         assert cfg.log_directory == "C:\\BackupAgent\\logs"
-        assert cfg.temp_directory == "C:\\BackupAgent\\rclone_temp"
 
 
 class TestLanConfig:
@@ -176,7 +175,6 @@ class TestNotificationConfig:
         cfg = NotificationConfig()
         assert cfg.smtp_port == 587
         assert cfg.send_on_failure is True
-        assert cfg.send_on_success is False
         assert cfg.recipients == []
 
     def test_invalid_port_raises(self):
