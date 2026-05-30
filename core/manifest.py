@@ -117,6 +117,7 @@ class ManifestDB:
         cloud_status: str | None = None,
         md5_checksum: str | None = None,
     ):
+        relative_path = relative_path.replace("\\", "/")
         with self._lock:
             conn = self._get_conn()
             now = utcnow_iso()
@@ -208,7 +209,7 @@ class ManifestDB:
                         updated_at = excluded.updated_at""",
                 [
                     (
-                        e["path"],
+                        e["path"].replace("\\", "/"),
                         e.get("size", 0),
                         e.get("mtime", 0),
                         e.get("md5_checksum"),
@@ -225,6 +226,7 @@ class ManifestDB:
         """Bulk update: set lan_status='synced' on all given paths."""
         if not paths:
             return
+        normalized = [p.replace("\\", "/") for p in paths]
         with self._lock:
             conn = self._get_conn()
             now = utcnow_iso()
@@ -234,7 +236,7 @@ class ManifestDB:
                        lan_last_synced_at = ?,
                        updated_at = ?
                    WHERE relative_path = ?""",
-                [(now, now, p) for p in paths],
+                [(now, now, p) for p in normalized],
             )
             conn.commit()
 
@@ -242,6 +244,7 @@ class ManifestDB:
         """Bulk update: set cloud_status='synced' on all given paths."""
         if not paths:
             return
+        normalized = [p.replace("\\", "/") for p in paths]
         with self._lock:
             conn = self._get_conn()
             now = utcnow_iso()
@@ -251,7 +254,7 @@ class ManifestDB:
                        cloud_last_synced_at = ?,
                        updated_at = ?
                    WHERE relative_path = ?""",
-                [(now, now, p) for p in paths],
+                [(now, now, p) for p in normalized],
             )
             conn.commit()
 
@@ -259,10 +262,11 @@ class ManifestDB:
         """Delete entries for files no longer on destination. Chunk to avoid SQLite variable limit."""
         if not paths:
             return
+        normalized = [p.replace("\\", "/") for p in paths]
         with self._lock:
             conn = self._get_conn()
-            for i in range(0, len(paths), 500):
-                chunk = paths[i : i + 500]
+            for i in range(0, len(normalized), 500):
+                chunk = normalized[i : i + 500]
                 placeholders = ",".join("?" for _ in chunk)
                 conn.execute(
                     f"DELETE FROM file_entries WHERE relative_path IN ({placeholders})",
@@ -280,11 +284,12 @@ class ManifestDB:
             conn.executemany(
                 """UPDATE file_entries SET md5_checksum = ?, updated_at = ?
                    WHERE relative_path = ?""",
-                [(md5, now, path) for path, md5 in updates.items()],
+                [(md5, now, path.replace("\\", "/")) for path, md5 in updates.items()],
             )
             conn.commit()
 
     def get_entry(self, relative_path: str) -> dict | None:
+        relative_path = relative_path.replace("\\", "/")
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(

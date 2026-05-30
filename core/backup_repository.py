@@ -15,7 +15,7 @@ def record_sync_results(
     entries: list[dict],
     removed: list[str] | None = None,
 ) -> None:
-    """Record sync results to ManifestDB using bulk operations.
+    """Record sync results to ManifestDB using bulk operations and prune stale entries.
 
     Normalizes entry dict keys from both rclone (Path/Size/ModTime)
     and os.walk (path/size/mtime) formats.
@@ -36,6 +36,30 @@ def record_sync_results(
             for e in entries
         ]
         db.bulk_upsert_synced(normalized, mode)
+
+        # Self-healing: prune stale entries that are marked synced in DB but no longer exist
+        active_paths = {item["path"] for item in normalized}
+        with db._lock:
+            conn = db._get_conn()
+            status_field = "cloud_status" if mode == "cloud" else "lan_status"
+            db_paths = [
+                row["relative_path"]
+                for row in conn.execute(
+                    f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced'"
+                ).fetchall()
+            ]
+            stale_paths = [p for p in db_paths if p not in active_paths]
+            if stale_paths:
+                for path in stale_paths:
+                    conn.execute(
+                        f"UPDATE file_entries SET {status_field} = NULL, "
+                        f"{mode}_last_synced_at = NULL WHERE relative_path = ?",
+                        (path,),
+                    )
+                conn.execute(
+                    "DELETE FROM file_entries WHERE lan_status IS NULL AND cloud_status IS NULL"
+                )
+                conn.commit()
 
     if removed:
         db.delete_entries(removed)
