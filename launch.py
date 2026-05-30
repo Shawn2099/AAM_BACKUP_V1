@@ -52,35 +52,27 @@ def _check_prefect_api(url="http://127.0.0.1:4200/api"):
 
 
 def _ensure_concurrency_limit():
-    """Create the global and tag-based concurrency limits for backup serialization."""
+    """Create the tag-based concurrency limit for backup serialization.
+
+    Uses the Prefect Python client API (not the CLI) so it connects to the
+    already-running server on PREFECT_API_URL, not a temporary ephemeral server.
+    """
     import asyncio
 
     async def _create():
         from prefect.client.orchestration import get_client
         try:
             async with get_client() as client:
-                await client.create_global_concurrency_limit(
-                    name="aam-backup",
-                    limit=1,
-                    active=False,
-                    slot_decay_per_second=0.0,
+                await client.create_concurrency_limit(
+                    tag="aam-backup",
+                    concurrency_limit=1,
                 )
-                print("[launch] Created global concurrency limit 'aam-backup' (limit=1)")
+                print("[launch] Created tag-based concurrency limit 'aam-backup' (limit=1)")
         except Exception:
+            # Limit already exists — this is expected on subsequent runs
             pass
 
     asyncio.run(_create())
-
-    # Tag-based concurrency limit — used by flow.py's `concurrency("aam-backup", ...)`
-    try:
-        subprocess.run(
-            ["prefect", "concurrency-limit", "create", "aam-backup", "1"],
-            check=False, capture_output=True, timeout=10,
-            cwd=str(PROJECT_DIR),
-        )
-        print("[launch] Created tag-based concurrency limit 'aam-backup' (limit=1)")
-    except Exception:
-        pass
 
 
 def _cancel_orphaned_runs():
