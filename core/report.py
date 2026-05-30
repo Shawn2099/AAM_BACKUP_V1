@@ -116,21 +116,20 @@ def generate_report_html(
         return ""
 
     total = len(runs)
-    _success = {"LAN_COMPLETE", "CLOUD_COMPLETE"}
-    _failure = {"LAN_FAILED", "CLOUD_FAILED"}
-    _partial = {"LAN_PARTIAL", "CLOUD_PARTIAL"}
-    successes = sum(1 for r in runs if r["status"] in _success)
-    failures = sum(1 for r in runs if r["status"] in _failure)
-    partials = sum(1 for r in runs if r["status"] in _partial)
+    successes = sum(1 for r in runs if str(r.get("status", "")).endswith("_COMPLETE"))
+    partials = sum(1 for r in runs if str(r.get("status", "")).endswith("_PARTIAL"))
+    failures = total - successes - partials
 
     total_files = sum(r["files_copied"] or 0 for r in runs)
     total_bytes = sum(r["bytes_copied"] or 0 for r in runs)
 
     success_rate = (successes / total * 100) if total > 0 else 0
 
+    from core.time_utils import parse_iso_to_local
+
     rows = ""
     for r in runs[:10]:
-        start = r["started_at"][:19] if r["started_at"] else "?"
+        start = parse_iso_to_local(r.get("started_at"))
         mode = r["mode"].upper()
         status = r["status"]
         files = r["files_copied"] or 0

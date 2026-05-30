@@ -280,6 +280,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
     status = "CLOUD_SKIPPED"
     sync_result = {"exit_code": -1}
     error_msg = None
+    files_copied = 0
+    bytes_copied = 0
 
     try:
         health_check_task(config, "cloud")
@@ -289,6 +291,17 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         verify_data = verify_report(config, fy_prefix)
         cloud_record_task(db_path, verify_data, sync_result)
 
+        # Calculate files and bytes copied
+        added_paths = verify_data.get("diff", {}).get("added", [])
+        modified_paths = verify_data.get("diff", {}).get("modified", [])
+        copied_paths = set(added_paths + modified_paths)
+        files_copied = len(copied_paths)
+        bytes_copied = sum(
+            item.get("Size", 0)
+            for item in verify_data.get("manifest", [])
+            if item.get("Path") in copied_paths
+        )
+
         logger.info("Cloud pipeline completed successfully")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
@@ -297,7 +310,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         raise
     finally:
         _record_run(db_path, run_id, "cloud", started_at, status,
-                     sync_result.get("exit_code", -1), error_msg)
+                     sync_result.get("exit_code", -1), error_msg,
+                     files_copied, bytes_copied)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -320,6 +334,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
     status = "LAN_SKIPPED"
     sync_result = {"exit_code": -1}
     error_msg = None
+    files_copied = 0
+    bytes_copied = 0
 
     try:
         health_check_task(config, "lan")
@@ -331,6 +347,12 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         after_dict = lan_snapshot_after_task(config)
         lan_record_task(db_path, sync_result, before_dict, after_dict)
 
+        # Calculate files and bytes copied
+        diff = diff_snapshots(before_dict, after_dict)
+        copied_paths = diff.get("added", []) + diff.get("modified", [])
+        files_copied = len(copied_paths)
+        bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
+
         logger.info("LAN pipeline completed successfully")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
@@ -339,7 +361,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         raise
     finally:
         _record_run(db_path, run_id, "lan", started_at, status,
-                     sync_result.get("exit_code", -1), error_msg)
+                     sync_result.get("exit_code", -1), error_msg,
+                     files_copied, bytes_copied)
 
         if error_msg is None:
             lan_shutdown_task(config)
@@ -350,7 +373,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
 # ═══════════════════════════════════════════════════════════════
 
 def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
-                status: str, exit_code: int, error_msg: str | None):
+                status: str, exit_code: int, error_msg: str | None,
+                files_copied: int = 0, bytes_copied: int = 0):
     """Record run history to ManifestDB."""
     try:
         ended_at = utcnow_iso()
@@ -363,6 +387,7 @@ def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
                 started_at=started_at, ended_at=ended_at,
                 status=status, exit_code=exit_code,
                 duration_seconds=duration, error_message=error_msg,
+                files_copied=files_copied, bytes_copied=bytes_copied,
             )
         finally:
             db.close()

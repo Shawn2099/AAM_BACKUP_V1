@@ -52,6 +52,8 @@ def record_run_history(
     exit_code: int,
     duration_seconds: float,
     error_message: str | None = None,
+    files_copied: int = 0,
+    bytes_copied: int = 0,
 ) -> None:
     """Record a backup run to run_history and checkpoint WAL."""
     try:
@@ -64,6 +66,8 @@ def record_run_history(
             "exit_code": exit_code,
             "duration_seconds": duration_seconds,
             "error_message": error_message,
+            "files_copied": files_copied,
+            "bytes_copied": bytes_copied,
         })
         db.wal_checkpoint()
     except Exception as e:
