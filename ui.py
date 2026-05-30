@@ -214,9 +214,11 @@ button:hover {{ background: #1d4ed8; }}
 
 
 @app.post("/login")
-def login_submit(request: Request, api_key: str = ""):
+async def login_submit(request: Request):
+    form = await request.form()
+    api_key = form.get("api_key", "")
     configured_key = _get_api_key()
-    if not configured_key or hmac.compare_digest(api_key, configured_key):
+    if not configured_key or hmac.compare_digest(str(api_key), configured_key):
         token = _create_session()
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(
