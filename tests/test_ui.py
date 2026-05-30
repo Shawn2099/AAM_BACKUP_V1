@@ -199,3 +199,86 @@ class TestGetLastSuccess:
         db = MagicMock()
         db.last_run.return_value = {"status": "CLOUD_FAILED", "ended_at": "2026-01-01T00:00:00Z"}
         assert _get_last_success(db, "cloud") is None
+
+
+# ── FastAPI endpoint integration tests ──────────────────────
+
+from fastapi.testclient import TestClient
+
+
+class TestEndpointHealth:
+    def test_health_returns_200(self):
+        with patch("ui.Path.exists", return_value=True):
+            with patch("ui._cfg") as mock_cfg:
+                mock_cfg.return_value = MagicMock(
+                    paths=MagicMock(source_drive="/tmp"),
+                )
+                client = TestClient(ui.app)
+                response = client.get("/health")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["status"] == "healthy"
+
+    def test_health_source_accessible_false(self):
+        with patch("ui.Path.exists", return_value=False):
+            with patch("ui._cfg") as mock_cfg:
+                mock_cfg.return_value = MagicMock(
+                    paths=MagicMock(source_drive="/nonexistent"),
+                )
+                client = TestClient(ui.app)
+                response = client.get("/health")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["source_accessible"] is False
+
+
+class TestEndpointLogin:
+    def test_login_page_renders(self):
+        client = TestClient(ui.app)
+        response = client.get("/login")
+        assert response.status_code == 200
+        assert "AAM Backup" in response.text
+
+
+class TestEndpointStatus:
+    def test_status_returns_503_when_no_db(self):
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._cfg") as mock_cfg, \
+             patch("ui.Path.exists", return_value=False):
+            mock_cfg.return_value = MagicMock(
+                paths=MagicMock(database_path="/tmp/missing.db"),
+            )
+            response = client.get("/status")
+            assert response.status_code == 503
+            data = response.json()
+            assert "ManifestDB not found" in data["error"]
+
+    def test_status_returns_data_when_db_exists(self):
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._cfg") as mock_cfg, \
+             patch("ui.Path.exists", return_value=True), \
+             patch("ui.ManifestDB") as mock_db_cls, \
+             patch("ui._is_running", return_value=False), \
+             patch("ui._last_run_summary", return_value=None), \
+             patch("ui._get_last_success", return_value=None), \
+             patch("ui._get_health", return_value={"source_free_gb": "100.0", "source_exists": True}):
+            mock_cfg.return_value = MagicMock(
+                firm_name="Test Firm",
+                paths=MagicMock(database_path="/tmp/test.db"),
+                schedule=MagicMock(cloud_cron="0 18 * * *", lan_cron="0 1 * * *", timezone="Asia/Kolkata"),
+            )
+            mock_db = MagicMock()
+            mock_db.get_recent_runs.return_value = []
+            mock_db.file_count.return_value = 0
+            mock_db_cls.return_value = mock_db
+
+            response = client.get("/status")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["firm"] == "Test Firm"
+            assert "fy_prefix" in data
+            assert data["cloud"]["running"] is False
+            assert data["lan"]["running"] is False
+            assert data["recent_runs"] == []
