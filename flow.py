@@ -15,6 +15,7 @@ import uuid
 
 import pendulum
 
+from exceptiongroup import ExceptionGroup
 from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
