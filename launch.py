@@ -88,39 +88,42 @@ def _ensure_concurrency_limit():
 
 def _cancel_orphaned_runs():
     """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session."""
-    try:
-        for state in ["PENDING", "RUNNING"]:
-            result = subprocess.run(
-                [
-                    "prefect", "flow-run", "ls",
-                    "--state", state,
-                    "--limit", "50",
-                    "--output", "json",
-                ],
-                capture_output=True, text=True, timeout=15,
-                cwd=str(PROJECT_DIR),
-            )
-            if result.returncode != 0:
-                continue
+    import asyncio
 
-            import json as _json
-            runs = _json.loads(result.stdout) if result.stdout.strip() else []
-            cancelled = 0
-            for run in runs:
-                run_id = run.get("id", "")
-                run_name = run.get("name", "")
-                if run_id:
-                    subprocess.run(
-                        ["prefect", "flow-run", "cancel", run_id],
-                        capture_output=True, timeout=10,
-                        cwd=str(PROJECT_DIR),
+    async def _cancel():
+        from prefect.client.orchestration import get_client
+        from prefect.client.schemas.filters import FlowRunFilter, FlowRunFilterState, FlowRunFilterStateType
+        from prefect.client.schemas.objects import StateType
+        from prefect.states import Cancelled
+
+        try:
+            async with get_client() as client:
+                for state_type in [StateType.PENDING, StateType.RUNNING]:
+                    runs = await client.read_flow_runs(
+                        flow_run_filter=FlowRunFilter(
+                            state=FlowRunFilterState(
+                                type=FlowRunFilterStateType(any_=[state_type])
+                            )
+                        )
                     )
-                    print(f"[launch] Cancelled orphaned {state} run: {run_name} ({run_id[:8]}...)")
-                    cancelled += 1
-            if cancelled:
-                print(f"[launch] Cleaned up {cancelled} orphaned {state} flow run(s)")
-    except Exception:
-        pass
+                    cancelled = 0
+                    for r in runs:
+                        try:
+                            await client.set_flow_run_state(
+                                flow_run_id=r.id,
+                                state=Cancelled(message="Cancelled orphaned run on service startup"),
+                                force=True,
+                            )
+                            print(f"[launch] Cancelled orphaned {state_type.value} run: {r.name} ({str(r.id)[:8]}...)")
+                            cancelled += 1
+                        except Exception as e:
+                            print(f"[launch] Warning: failed to cancel run {r.id}: {e}")
+                    if cancelled:
+                        print(f"[launch] Cleaned up {cancelled} orphaned {state_type.value} flow run(s)")
+        except Exception as e:
+            print(f"[launch] Warning: failed to clean up orphaned runs: {e}")
+
+    asyncio.run(_cancel())
 
 
 def main():

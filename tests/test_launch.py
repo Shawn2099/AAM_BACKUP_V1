@@ -1,9 +1,6 @@
 """Tests for launch.py — startup helpers and health checks."""
 
-import json
-import subprocess
-from unittest.mock import MagicMock, patch
-
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from launch import _cancel_orphaned_runs, _check_prefect_api
@@ -42,78 +39,62 @@ class TestCheckPrefectApi:
 
 
 class TestCancelOrphanedRuns:
-    @patch("launch.subprocess.run")
-    def test_no_orphaned_runs(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="[]")
+    @patch("prefect.client.orchestration.get_client")
+    def test_no_orphaned_runs(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_client.read_flow_runs.return_value = []
+        
+        # Async context manager mock
+        mock_get_client.return_value.__aenter__.return_value = mock_client
+        
         _cancel_orphaned_runs()
-        assert mock_run.call_count == 2
+        
+        assert mock_client.read_flow_runs.call_count == 2
+        mock_client.set_flow_run_state.assert_not_called()
 
-    @patch("launch.subprocess.run")
-    def test_cancels_pending_run(self, mock_run):
-        run = [{"id": "abc-123", "name": "noble-rook"}]
-        responses = [
-            MagicMock(returncode=0, stdout=json.dumps(run)),
-            MagicMock(returncode=0, stdout="[]"),
-            MagicMock(returncode=0),
+    @patch("prefect.client.orchestration.get_client")
+    def test_cancels_pending_and_running_runs(self, mock_get_client):
+        mock_client = AsyncMock()
+        
+        mock_run_pending = MagicMock(id="p-123", name="noble-rook")
+        mock_run_running = MagicMock(id="r-456", name="amethyst-condor")
+        
+        # Return pending runs first, then running runs
+        mock_client.read_flow_runs.side_effect = [
+            [mock_run_pending],
+            [mock_run_running],
         ]
-        mock_run.side_effect = responses
+        
+        mock_get_client.return_value.__aenter__.return_value = mock_client
+        
         _cancel_orphaned_runs()
+        
+        assert mock_client.read_flow_runs.call_count == 2
+        assert mock_client.set_flow_run_state.call_count == 2
+        
+        # Verify set_flow_run_state was called with the correct IDs
+        calls = mock_client.set_flow_run_state.call_args_list
+        assert calls[0][1]["flow_run_id"] == "p-123"
+        assert calls[1][1]["flow_run_id"] == "r-456"
 
-    @patch("launch.subprocess.run")
-    def test_cancels_running_run(self, mock_run):
-        run = [{"id": "xyz-789", "name": "amethyst-condor"}]
-        responses = [
-            MagicMock(returncode=0, stdout="[]"),
-            MagicMock(returncode=0, stdout=json.dumps(run)),
-            MagicMock(returncode=0),
-        ]
-        mock_run.side_effect = responses
+    @patch("prefect.client.orchestration.get_client")
+    def test_handles_cancel_exceptions(self, mock_get_client):
+        mock_client = AsyncMock()
+        mock_run = MagicMock(id="fail-123", name="crashed-run")
+        mock_client.read_flow_runs.return_value = [mock_run]
+        
+        # Force set_flow_run_state to raise an exception
+        mock_client.set_flow_run_state.side_effect = Exception("API Error")
+        
+        mock_get_client.return_value.__aenter__.return_value = mock_client
+        
+        # Should not crash, should handle exception gracefully
         _cancel_orphaned_runs()
+        
+        assert mock_client.read_flow_runs.call_count == 2
+        assert mock_client.set_flow_run_state.call_count == 2
 
-    @patch("launch.subprocess.run")
-    def test_cli_non_zero_exit_skipped(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="error")
+    @patch("prefect.client.orchestration.get_client", side_effect=Exception("Connection Failed"))
+    def test_handles_client_connection_failure(self, mock_get_client):
+        # Should handle connection exception gracefully without throwing
         _cancel_orphaned_runs()
-
-    @patch("launch.subprocess.run")
-    def test_invalid_json_handled(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="{invalid json")
-        _cancel_orphaned_runs()
-
-    @patch("launch.subprocess.run")
-    def test_run_without_id_field_skipped(self, mock_run):
-        run = [{"name": "no-id-run"}]
-        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(run))
-        _cancel_orphaned_runs()
-
-    @patch("launch.subprocess.run")
-    def test_cancel_command_raises_timeout(self, mock_run):
-        run = [{"id": "timeout-run", "name": "slow-condor"}]
-        responses = [
-            MagicMock(returncode=0, stdout=json.dumps(run)),
-            MagicMock(returncode=0, stdout="[]"),
-            subprocess.TimeoutExpired(cmd=["prefect", "flow-run", "cancel", "timeout-run"], timeout=10),
-        ]
-        mock_run.side_effect = responses
-        _cancel_orphaned_runs()
-
-    @patch("launch.subprocess.run")
-    def test_empty_stdout_treated_as_no_runs(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-        _cancel_orphaned_runs()
-
-    @patch("launch.subprocess.run")
-    def test_multiple_runs_across_states_canceled(self, mock_run):
-        pending_runs = [{"id": "r1", "name": "run-1"}, {"id": "r2", "name": "run-2"}]
-        running_runs = [{"id": "r3", "name": "run-3"}]
-        responses = [
-            MagicMock(returncode=0, stdout=json.dumps(pending_runs)),
-            MagicMock(returncode=0),
-            MagicMock(returncode=0),
-            MagicMock(returncode=0, stdout=json.dumps(running_runs)),
-            MagicMock(returncode=0),
-        ]
-        mock_run.side_effect = responses
-        _cancel_orphaned_runs()
-        # 2 ls calls + 3 cancel calls = 5 total, all used
-        assert mock_run.call_count == 5
