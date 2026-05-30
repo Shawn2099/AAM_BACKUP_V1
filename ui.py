@@ -474,6 +474,9 @@ async def _render_dashboard(flash: str = "") -> str:
     health_info = "Unavailable"
     flash_html = ""
     history_rows = ""
+    cloud_schedule = lan_schedule = ""
+    cloud_last_success = lan_last_success = None
+    cr = lr = None
 
     if db:
         try:

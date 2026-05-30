@@ -1,5 +1,6 @@
 """Tests for dashboard UI — authentication, helpers, rendering, and reports."""
 
+import asyncio
 import time
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,7 @@ from ui import (
     _create_session,
     _get_last_success,
     _last_run_summary,
+    _render_dashboard,
     _require_auth,
     _serve_report,
     _validate_session,
@@ -282,3 +284,103 @@ class TestEndpointStatus:
             assert data["cloud"]["running"] is False
             assert data["lan"]["running"] is False
             assert data["recent_runs"] == []
+
+
+class TestRateLimiter:
+    def setup_method(self):
+        ui._RATE_LIMITS.clear()
+
+    def test_allows_within_limit(self):
+        for _ in range(5):
+            assert ui._check_rate_limit("192.168.1.1", 5) is True
+
+    def test_blocks_when_limit_exceeded(self):
+        for _ in range(5):
+            ui._check_rate_limit("192.168.1.2", 5)
+        assert ui._check_rate_limit("192.168.1.2", 5) is False
+
+    def test_different_ips_independent(self):
+        for _ in range(5):
+            ui._check_rate_limit("10.0.0.1", 5)
+        assert ui._check_rate_limit("10.0.0.2", 5) is True
+
+    def test_expired_entries_removed(self):
+        for _ in range(5):
+            ui._check_rate_limit("172.16.0.1", 5)
+        assert ui._check_rate_limit("172.16.0.1", 5) is False
+        with patch.object(ui, "_RATE_WINDOW", 0):
+            assert ui._check_rate_limit("172.16.0.1", 5) is True
+
+
+class TestTriggerEndpoints:
+    def test_trigger_cloud_not_running(self):
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._check_rate_limit", return_value=True), \
+             patch("ui._is_running", return_value=False), \
+             patch("ui._run_in_background") as mock_run:
+            response = client.post("/trigger/cloud")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "triggered"
+
+    def test_trigger_cloud_already_running(self):
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._check_rate_limit", return_value=True), \
+             patch("ui._is_running", return_value=True):
+            response = client.post("/trigger/cloud")
+            assert response.status_code == 400
+            data = response.json()
+            assert data["status"] == "already_running"
+
+    def test_trigger_cloud_rate_limited(self):
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._check_rate_limit", return_value=False):
+            response = client.post("/trigger/cloud")
+            assert response.status_code == 429
+
+    def test_trigger_lan_not_running(self):
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._check_rate_limit", return_value=True), \
+             patch("ui._is_running", return_value=False), \
+             patch("ui._run_in_background") as mock_run:
+            response = client.post("/trigger/lan")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "triggered"
+
+
+class TestDashboardRendering:
+    def test_render_without_db_returns_no_data(self):
+        with patch("ui._cfg") as mock_cfg, \
+             patch("ui.Path.exists", return_value=False):
+            mock_cfg.return_value = MagicMock(
+                paths=MagicMock(database_path="/tmp/missing.db"),
+            )
+            html = asyncio.run(_render_dashboard())
+            assert "Unknown" in html
+            assert "Unavailable" in html
+
+    def test_render_with_db_and_runs(self):
+        with patch("ui._cfg") as mock_cfg, \
+             patch("ui.Path.exists", return_value=True), \
+             patch("ui.ManifestDB") as mock_db_cls, \
+             patch("ui._is_running", return_value=False), \
+             patch("ui._get_health", return_value={"source_free_gb": "500.0", "source_exists": True}):
+            mock_cfg.return_value = MagicMock(
+                paths=MagicMock(database_path="/tmp/test.db"),
+                schedule=MagicMock(cloud_cron="0 18 * * *", lan_cron="0 1 * * *", timezone="Asia/Kolkata"),
+                firm_name="Test Firm",
+            )
+            mock_db = MagicMock()
+            mock_db.file_count.return_value = 42
+            mock_db.get_recent_runs.return_value = []
+            mock_db.last_run.return_value = None
+            mock_db_cls.return_value = mock_db
+
+            html = asyncio.run(_render_dashboard())
+            assert "Test Firm" in html or "42" in html
+            mock_db.close.assert_called_once()
