@@ -269,7 +269,7 @@ async def status(request: Request):
             recent_runs.append({
                 "mode": r.get("mode", "?"),
                 "status": r.get("status", "?"),
-                "started_at": format_iso_for_js(r.get("started_at", "")),
+                "started_at": parse_iso_to_local(r.get("started_at", "")),
                 "files": r.get("files_copied", 0),
                 "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
                 "error": r.get("error_message", "")
