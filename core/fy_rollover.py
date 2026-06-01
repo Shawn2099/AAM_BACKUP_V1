@@ -244,25 +244,29 @@ def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
         if not gcloud_exe:
             raise FileNotFoundError("gcloud")
 
-        # Explicitly authenticate the service account. `gcloud storage` does not
-        # consistently inherit `GOOGLE_APPLICATION_CREDENTIALS` on Windows.
-        auth_cmd = [
-            gcloud_exe, "auth", "activate-service-account",
-            f"--key-file={gcs_key_path}"
-        ]
-        auth_result = subprocess.run(
-            auth_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=30,
-        )
-        if auth_result.returncode != 0:
-            logger.warning(
-                f"FY rollover: gcloud authentication failed (exit {auth_result.returncode}). "
-                f"Stderr: {(auth_result.stderr or '').strip()[:1000]}"
+        # Explicitly authenticate the service account if a key file is provided.
+        # If no key file exists (e.g. using Windows Credential Manager or
+        # persistent ambient authentication), skip this and rely on active session.
+        if Path(gcs_key_path).is_file():
+            auth_cmd = [
+                gcloud_exe, "auth", "activate-service-account",
+                f"--key-file={gcs_key_path}"
+            ]
+            auth_result = subprocess.run(
+                auth_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
             )
-            return False
+            if auth_result.returncode != 0:
+                logger.warning(
+                    f"FY rollover: gcloud authentication failed (exit {auth_result.returncode}). "
+                    f"Stderr: {(auth_result.stderr or '').strip()[:1000]}"
+                )
+                return False
+        else:
+            logger.info("FY rollover: No GCS key file found, assuming ambient/Windows authentication for gcloud.")
 
         # Use --recursive on the bare prefix — no ** glob — to avoid shell
         # wildcard expansion on Windows PowerShell / cmd.exe environments.

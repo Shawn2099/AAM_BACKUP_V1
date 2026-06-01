@@ -470,6 +470,12 @@ class TestRunArchiveTransition:
         with patch("shutil.which", return_value=self.MOCK_GCLOUD):
             yield
 
+    @pytest.fixture(autouse=True)
+    def mock_path_is_file(self):
+        """Mock Path.is_file so the key file is always detected as present in tests."""
+        with patch("pathlib.Path.is_file", return_value=True):
+            yield
+
     # ── helpers ─────────────────────────────────────────────────────────────
 
     def _make_completed(self, returncode: int = 0, stderr: str = "") -> MagicMock:
