@@ -196,8 +196,9 @@ To configure network share permissions:
 2. If your network share requires active authentication, you must change the log-on account for **AAM Backup Agent**:
    - Right-click **AamBackupAgent** -> Select **Properties**.
    - Select the **Log On** tab.
-   - Choose **This account** and fill in the active Administrator username and password (e.g. `DOMAIN\Administrator` or `.\LocalBackupUser`) that has full read/write permissions on the target network share.
+   - Choose **This account** and fill in the active Administrator username and password (e.g. `DOMAIN\Administrator`, `.\Administrator`, or `.\LocalBackupUser`) that has full read/write permissions on the target network share.
    - Click **Apply** and restart the service.
+   - *Note: If the service hangs or gets stuck in a `STOP_PENDING` transition state during this restart, refer to the **Stuck Services (STOP_PENDING)** section in the Troubleshooting guide below to clear the process cleanly.*
 
 ---
 
@@ -306,3 +307,25 @@ If the database gets corrupted during a server power outage, reset the Prefect d
 cd C:\AAM_BACKUP_V1
 uv run prefect server database reset -y
 ```
+
+### 🛑 Stuck Services (STOP_PENDING)
+When changing logon credentials, restarting the server, or stopping the services, a service (typically **AamBackupAgent**) might occasionally get stuck in a `STOP_PENDING` state. This happens if the underlying Python worker or subprocesses take too long to close active connections or exit cleanly.
+
+To resolve this and force a clean restart:
+1. **Identify the Stuck Service Process PID:**
+   Open PowerShell or Command Prompt as Administrator and query the extended status of the backup agent:
+   ```powershell
+   sc queryex AamBackupAgent
+   ```
+   Find and note the `PID` value in the printed output.
+2. **Terminate the Stuck Wrapper Process:**
+   Forcefully terminate the stuck NSSM process using its PID (e.g., if the PID is `1320`):
+   ```powershell
+   taskkill /F /PID 1320
+   ```
+3. **Verify and Restart:**
+   Verify that the service has transitioned to `STOPPED` and then start it normally:
+   ```powershell
+   sc query AamBackupAgent
+   net start AamBackupAgent
+   ```
