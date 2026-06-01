@@ -1,6 +1,7 @@
 """Tests for FY rollover — detection, final backup, folder creation, locking, config update."""
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,6 +17,7 @@ from core.fy_rollover import (
     create_new_fy_folders,
     detect_rollover,
     rollover,
+    run_archive_transition,
     update_config_yaml,
 )
 from core.time_utils import IST, get_fy_prefix
@@ -430,3 +432,276 @@ class TestRolloverOrchestrator:
         with patch("models.config.load_config", return_value=load_config(str(config_path))):
             result = rollover(str(config_path))
             assert result is False
+
+
+class TestRunArchiveTransition:
+    """Exhaustive unit tests for run_archive_transition().
+
+    All subprocess calls are mocked so no real gcloud binary is needed.
+    Tests follow the Arrange / Act / Assert pattern and cover:
+      - Happy path (exit 0)
+      - Non-zero exit with stderr content
+      - Non-zero exit with empty stderr
+      - Large stderr is truncated to 2000 chars before logging
+      - FileNotFoundError (gcloud not installed)
+      - TimeoutExpired
+      - Unexpected generic exception
+      - Correct command list structure (no ** wildcard, --recursive present)
+      - GOOGLE_APPLICATION_CREDENTIALS injected into env
+    """
+
+    BUCKET = "aam-backup-bucket"
+    OLD_FY = "FY25-26"
+    KEY_PATH = "/path/to/gcs-key.json"
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+
+    def _make_completed(self, returncode: int = 0, stderr: str = "") -> MagicMock:
+        """Return a fake CompletedProcess-like mock."""
+        m = MagicMock()
+        m.returncode = returncode
+        m.stderr = stderr
+        return m
+
+    # ── happy path ──────────────────────────────────────────────────────────
+
+    def test_returns_true_on_exit_zero(self):
+        """gcloud exits 0 → function returns True."""
+        with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
+            result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        assert result is True
+        mock_run.assert_called_once()
+
+    # ── command structure ───────────────────────────────────────────────────
+
+    def test_command_uses_recursive_flag_not_glob(self):
+        """Command must use --recursive on bare prefix, NOT a ** glob wildcard.
+
+        Wildcards are expanded by the Windows shell before reaching gcloud.
+        """
+        with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
+            run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        cmd = mock_run.call_args.args[0]
+        assert "--recursive" in cmd
+        # Ensure no ** glob is present in any argument
+        assert not any("**" in arg for arg in cmd)
+
+    def test_command_targets_correct_gcs_path(self):
+        """GCS URL in command must be gs://bucket/old_fy/ with trailing slash."""
+        with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
+            run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        cmd = mock_run.call_args.args[0]
+        assert f"gs://{self.BUCKET}/{self.OLD_FY}/" in cmd
+
+    def test_command_sets_archive_storage_class(self):
+        """Command must include --storage-class=ARCHIVE."""
+        with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
+            run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        cmd = mock_run.call_args.args[0]
+        assert "--storage-class=ARCHIVE" in cmd
+
+    def test_credentials_injected_into_env(self):
+        """GOOGLE_APPLICATION_CREDENTIALS must be set to gcs_key_path in subprocess env."""
+        with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
+            run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        env_passed = mock_run.call_args.kwargs["env"]
+        assert env_passed["GOOGLE_APPLICATION_CREDENTIALS"] == self.KEY_PATH
+
+    def test_timeout_set_to_600_seconds(self):
+        """Timeout must be 600 s (10 min) — metadata-only operation."""
+        with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
+            run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        assert mock_run.call_args.kwargs["timeout"] == 600
+
+    # ── failure paths ────────────────────────────────────────────────────────
+
+    def test_returns_false_on_nonzero_exit(self):
+        """gcloud exits non-zero → function returns False without raising."""
+        with patch("subprocess.run", return_value=self._make_completed(1, "some error")):
+            result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        assert result is False
+
+    def test_returns_false_on_nonzero_exit_with_empty_stderr(self):
+        """Non-zero exit with empty stderr must still return False gracefully."""
+        with patch("subprocess.run", return_value=self._make_completed(2, "")):
+            result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        assert result is False
+
+    def test_large_stderr_is_truncated(self):
+        """stderr exceeding 2000 chars must be truncated before logging.
+
+        Verifies memory safety on large bucket failures.
+        """
+        huge_stderr = "E" * 10_000
+        captured_logs: list[str] = []
+
+        with patch("subprocess.run", return_value=self._make_completed(1, huge_stderr)):
+            with patch("core.fy_rollover.logger") as mock_logger:
+                run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+                # Collect all warning messages emitted
+                for call in mock_logger.warning.call_args_list:
+                    captured_logs.append(str(call))
+
+        # Full 10 000-char string must not appear in any log call
+        assert not any(len(s) > 3000 for s in captured_logs)
+
+    def test_returns_false_when_gcloud_not_installed(self):
+        """FileNotFoundError (gcloud missing from PATH) → returns False, no raise."""
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        assert result is False
+
+    def test_returns_false_on_timeout(self):
+        """TimeoutExpired → returns False, does not propagate exception."""
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="gcloud", timeout=600),
+        ):
+            result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        assert result is False
+
+    def test_returns_false_on_unexpected_exception(self):
+        """Any unexpected OSError or RuntimeError → returns False, no raise."""
+        with patch("subprocess.run", side_effect=OSError("disk full")):
+            result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
+
+        assert result is False
+
+
+class TestRolloverArchiveIntegration:
+    """Integration-level tests verifying rollover() calls run_archive_transition
+    correctly and that the rollover always completes regardless of archive outcome.
+    """
+
+    _BASE_CONFIG = (
+        "paths:\n"
+        "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+        "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY25-26\"\n"
+        "  database_path: \"manifest.db\"\n"
+        "  gcs_key_path: \"key.json\"\n"
+        "lan:\n"
+        "  enabled: false\n"
+        "  retry_count: 3\n"
+        "  subprocess_timeout_seconds: 14400\n"
+        "  max_attempts: 2\n"
+        "  retry_delay_seconds: 600\n"
+        "  mt_threads: 8\n"
+        "wol:\n"
+        "  enabled: false\n"
+        "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+        "  server_ip: \"192.168.1.1\"\n"
+        "cloud:\n"
+        "  enabled: true\n"
+        "  bucket: \"aam-backup-bucket\"\n"
+        "  retry_count: 3\n"
+        "  subprocess_timeout_seconds: 21600\n"
+        "  verify_timeout_seconds: 600\n"
+        "  storage_class: COLDLINE\n"
+        "  max_attempts: 3\n"
+        "  retry_delay_seconds: 300\n"
+        "  location: asia-south1\n"
+        "  project_number: \"123\"\n"
+        "schedule:\n"
+        "  timezone: Asia/Kolkata\n"
+        "dashboard:\n"
+        "  auth_enabled: false\n"
+    )
+
+    def _write_config(self, tmp_path: Path) -> Path:
+        p = tmp_path / "config.yaml"
+        p.write_text(self._BASE_CONFIG)
+        return p
+
+    def test_archive_called_with_correct_args_on_success(self, tmp_path):
+        """rollover() must pass bucket, old_fy, and gcs_key_path to run_archive_transition."""
+        config_path = self._write_config(tmp_path)
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 0}):
+                    with patch("core.fy_rollover.create_new_fy_folders"):
+                        with patch("core.fy_rollover.run_archive_transition", return_value=True) as mock_archive:
+                            rollover(str(config_path))
+
+        mock_archive.assert_called_once_with(
+            bucket="aam-backup-bucket",
+            old_fy="FY25-26",
+            gcs_key_path="key.json",
+        )
+
+    def test_rollover_succeeds_even_when_archive_fails(self, tmp_path):
+        """If run_archive_transition returns False, rollover() must still return True.
+
+        Archive failures are non-blocking by design.
+        """
+        config_path = self._write_config(tmp_path)
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 0}):
+                    with patch("core.fy_rollover.create_new_fy_folders"):
+                        with patch("core.fy_rollover.run_archive_transition", return_value=False):
+                            result = rollover(str(config_path))
+
+        assert result is True
+
+    def test_archive_not_called_when_cloud_disabled(self, tmp_path):
+        """run_archive_transition must NOT be called when cloud is disabled."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            self._BASE_CONFIG.replace("  enabled: true\n", "  enabled: false\n", 1)
+            .replace("  enabled: true\n", "  enabled: false\n")  # also lan if present
+        )
+        # Rewrite with cloud explicitly disabled
+        config_path.write_text(
+            "paths:\n"
+            "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+            "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY25-26\"\n"
+            "  database_path: \"manifest.db\"\n"
+            "  gcs_key_path: \"key.json\"\n"
+            "lan:\n"
+            "  enabled: true\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 14400\n"
+            "  max_attempts: 2\n"
+            "  retry_delay_seconds: 600\n"
+            "  mt_threads: 8\n"
+            "wol:\n"
+            "  enabled: false\n"
+            "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+            "  server_ip: \"192.168.1.1\"\n"
+            "cloud:\n"
+            "  enabled: false\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 21600\n"
+            "  verify_timeout_seconds: 600\n"
+            "  storage_class: COLDLINE\n"
+            "  max_attempts: 3\n"
+            "  retry_delay_seconds: 300\n"
+            "schedule:\n"
+            "  timezone: Asia/Kolkata\n"
+            "dashboard:\n"
+            "  auth_enabled: false\n"
+        )
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_lan_sync", return_value={"exit_code": 0}):
+                    with patch("core.fy_rollover.create_new_fy_folders"):
+                        with patch("core.fy_rollover.run_archive_transition") as mock_archive:
+                            rollover(str(config_path))
+
+        mock_archive.assert_not_called()

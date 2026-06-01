@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -195,6 +196,89 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
         raise
 
 
+def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
+    """Transition all GCS objects under old_fy/ to ARCHIVE storage class.
+
+    Executes the official ``gcloud storage objects update --recursive`` command
+    using stateless service-account authentication injected via the
+    GOOGLE_APPLICATION_CREDENTIALS environment variable.  No data is
+    downloaded or re-uploaded; only object metadata is rewritten server-side.
+
+    This function is intentionally **non-blocking**: any failure is logged as
+    a WARNING so the FY rollover can complete regardless.  The IT admin can
+    retry the transition manually from the Google Cloud Console if needed.
+
+    Args:
+        bucket:       GCS bucket name (e.g. ``"aam-backup-bucket"``).
+        old_fy:       Closing FY prefix (e.g. ``"FY25-26"``).
+        gcs_key_path: Absolute path to the service account JSON key file.
+
+    Returns:
+        ``True`` on success, ``False`` on any failure.
+    """
+    logger.info(
+        f"FY rollover: transitioning GCS objects under gs://{bucket}/{old_fy}/ "
+        "to ARCHIVE storage class"
+    )
+
+    # Use --recursive on the bare prefix — no ** glob — to avoid shell
+    # wildcard expansion on Windows PowerShell / cmd.exe environments.
+    cmd: list[str] = [
+        "gcloud", "storage", "objects", "update",
+        f"gs://{bucket}/{old_fy}/",
+        "--storage-class=ARCHIVE",
+        "--recursive",
+    ]
+
+    # Stateless auth: inject the service-account key path into the subprocess
+    # environment.  gcloud honours this variable on every invocation, so no
+    # persistent ``gcloud auth`` login is required on the server.
+    env = os.environ.copy()
+    env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcs_key_path)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            timeout=600,   # 10 min — metadata-only rewrite; no data transfer
+        )
+        if result.returncode == 0:
+            logger.info(
+                f"FY rollover: archive transition succeeded for gs://{bucket}/{old_fy}/"
+            )
+            return True
+
+        # Truncate stderr to avoid multi-megabyte log entries on large buckets.
+        stderr_snippet = (result.stderr or "").strip()[:2000]
+        logger.warning(
+            f"FY rollover: archive transition failed "
+            f"(exit {result.returncode}) for gs://{bucket}/{old_fy}/. "
+            f"Stderr: {stderr_snippet}"
+        )
+        return False
+
+    except FileNotFoundError:
+        logger.warning(
+            "FY rollover: 'gcloud' CLI not found — archive transition skipped. "
+            "Install the Google Cloud SDK and ensure 'gcloud' is on the system PATH."
+        )
+        return False
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            f"FY rollover: archive transition timed out after 600 s "
+            f"for gs://{bucket}/{old_fy}/"
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"FY rollover: unexpected error during archive transition: {exc}"
+        )
+        return False
+
+
 def rollover(config_path: str = "config.yaml") -> bool:
     """Detect FY boundary and execute rollover if needed.
 
@@ -243,9 +327,21 @@ def rollover(config_path: str = "config.yaml") -> bool:
         logger.error(msg)
         raise RolloverError(msg)
 
+    # Attempt to move the entire closing-year GCS folder to Archive tier.
+    # Non-blocking: rollover proceeds even if this step fails.
+    archive_ok = False
+    if config.cloud.enabled:
+        archive_ok = run_archive_transition(
+            bucket=config.cloud.bucket,
+            old_fy=old_fy,
+            gcs_key_path=config.paths.gcs_key_path,
+        )
+
     create_new_fy_folders(src_root, lan_root, new_fy)
 
     update_config_yaml(config_path, src_root, lan_root, new_fy)
 
-    logger.info(f"FY rollover complete: {old_fy} → {new_fy}")
+    logger.info(
+        f"FY rollover complete: {old_fy} → {new_fy} | archive_ok={archive_ok}"
+    )
     return True
