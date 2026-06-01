@@ -289,7 +289,7 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copi
         )
         logger.info("Published Cloud Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
-        logger.warning(f"Could not publish cloud backup artifact: {e}")
+        logger.warning(f"Could not publish cloud backup artifact: {e}", exc_info=True)
 
 
 @task(name="lan-publish-artifact")
@@ -326,7 +326,7 @@ def lan_publish_artifact_task(sync_result: dict, before_dict: dict, after_dict: 
         )
         logger.info("Published LAN Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
-        logger.warning(f"Could not publish lan backup artifact: {e}")
+        logger.warning(f"Could not publish lan backup artifact: {e}", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -354,13 +354,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
     db = ManifestDB(db_path)
     before_dict = {}
     try:
-        with db._lock:
-            conn = db._get_conn()
-            rows = conn.execute(
-                "SELECT relative_path, file_size, mtime FROM file_entries WHERE cloud_status = 'synced'"
-            ).fetchall()
-            for r in rows:
-                before_dict[r["relative_path"]] = (r["file_size"], r["mtime"])
+        before_dict = db.get_cloud_synced_entries()
     except Exception as e:
         logger.warning(f"Could not fetch database state before cloud sync: {e}")
     finally:
@@ -393,12 +387,19 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
                 copied_files_list.append((path, size))
             else:
                 old_size, old_mtime = before_dict[path]
+                # 0.01-byte threshold: guards against float representation noise
+                # in rclone's size reporting. Accurate for all real file sizes
+                # since actual byte counts are always whole numbers.
                 if abs(float(size) - float(old_size)) > 0.01:
                     copied_files_list.append((path, size))
                 else:
                     try:
-                        t1 = pendulum.parse(str(mtime)).timestamp()
-                        t2 = pendulum.parse(str(old_mtime)).timestamp()
+                        if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
+                            # Numeric Unix timestamps — compare directly
+                            t1, t2 = float(mtime), float(old_mtime)
+                        else:
+                            t1 = pendulum.parse(str(mtime)).timestamp()
+                            t2 = pendulum.parse(str(old_mtime)).timestamp()
                         if abs(t1 - t2) > 1.1:
                             copied_files_list.append((path, size))
                     except Exception:
@@ -406,7 +407,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
                             copied_files_list.append((path, size))
 
         files_copied = len(copied_files_list)
-        bytes_copied = sum(int(size) for _, size in copied_files_list)
+        bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
 
         extended_metrics = json.dumps({
             "verified": verify_data.get("verified", False),
@@ -482,15 +483,16 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
             pass
 
         logger.info("LAN pipeline completed successfully")
+        # Shut down the backup server after a successful sync.
+        # NOTE: this is intentionally inside the try block, not in an else clause.
+        # Python's try/else does NOT execute if try exits via return — so lan_shutdown
+        # was previously dead code. Placing it here before the return is correct.
+        lan_shutdown_task(config)
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
     except Exception as e:
         error_msg = str(e)
         raise
-    else:
-        # Only runs on success — intentionally placed before finally so
-        # _record_run in finally always executes regardless.
-        lan_shutdown_task(config)
     finally:
         _record_run(db_path, run_id, "lan", started_at, status,
                      sync_result.get("exit_code", -1), error_msg,
@@ -578,8 +580,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     configure_logging(config.paths.log_directory)
     try:
         configure_prefect_bridge()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"configure_prefect_bridge skipped: {e} — Prefect UI may not show loguru logs")
 
     logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
 

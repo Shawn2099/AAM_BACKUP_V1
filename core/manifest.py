@@ -319,6 +319,72 @@ class ManifestDB:
             ).fetchone()
             return row["cnt"] if row else 0
 
+    def get_cloud_synced_entries(self) -> dict[str, tuple[int, float]]:
+        """Return all cloud-synced entries as {relative_path: (file_size, mtime)}.
+
+        Used by _run_cloud_pipeline to compute differential transfer metrics
+        without accessing private DB internals.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT relative_path, file_size, mtime "
+                "FROM file_entries WHERE cloud_status = 'synced'"
+            ).fetchall()
+        return {r["relative_path"]: (r["file_size"], r["mtime"]) for r in rows}
+
+    def get_synced_paths(self, mode: str) -> list[str]:
+        """Return all relative_paths where the given mode status is 'synced'.
+
+        Used by backup_repository for self-healing stale-entry detection.
+        """
+        if mode not in ("cloud", "lan"):
+            raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
+        status_field = f"{mode}_status"
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced'"
+            ).fetchall()
+        return [r["relative_path"] for r in rows]
+
+    def prune_stale_synced(self, mode: str, active_paths: set[str]) -> int:
+        """Null-out sync status for entries no longer present on destination.
+
+        Self-healing: entries marked 'synced' but absent from the live manifest
+        are reset so they are re-evaluated on the next run. Entries with both
+        lan_status and cloud_status NULL are fully deleted.
+
+        Args:
+            mode: 'cloud' or 'lan'.
+            active_paths: Set of relative paths currently on destination.
+
+        Returns:
+            Number of stale entries pruned.
+        """
+        if mode not in ("cloud", "lan"):
+            raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
+        status_field = f"{mode}_status"
+        ts_field = f"{mode}_last_synced_at"
+        db_paths = self.get_synced_paths(mode)  # acquires + releases lock
+        stale_paths = [p for p in db_paths if p not in active_paths]
+        if not stale_paths:
+            return 0
+        with self._lock:
+            conn = self._get_conn()
+            for path in stale_paths:
+                conn.execute(
+                    f"UPDATE file_entries SET {status_field} = NULL, "
+                    f"{ts_field} = NULL WHERE relative_path = ?",
+                    (path,),
+                )
+            conn.execute(
+                "DELETE FROM file_entries "
+                "WHERE lan_status IS NULL AND cloud_status IS NULL"
+            )
+            conn.commit()
+        return len(stale_paths)
+
     # ── Run History ──────────────────────────────────────────
 
     def insert_run(self, data: dict):

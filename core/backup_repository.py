@@ -39,27 +39,9 @@ def record_sync_results(
 
         # Self-healing: prune stale entries that are marked synced in DB but no longer exist
         active_paths = {item["path"] for item in normalized}
-        with db._lock:
-            conn = db._get_conn()
-            status_field = "cloud_status" if mode == "cloud" else "lan_status"
-            db_paths = [
-                row["relative_path"]
-                for row in conn.execute(
-                    f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced'"
-                ).fetchall()
-            ]
-            stale_paths = [p for p in db_paths if p not in active_paths]
-            if stale_paths:
-                for path in stale_paths:
-                    conn.execute(
-                        f"UPDATE file_entries SET {status_field} = NULL, "
-                        f"{mode}_last_synced_at = NULL WHERE relative_path = ?",
-                        (path,),
-                    )
-                conn.execute(
-                    "DELETE FROM file_entries WHERE lan_status IS NULL AND cloud_status IS NULL"
-                )
-                conn.commit()
+        pruned = db.prune_stale_synced(mode, active_paths)
+        if pruned:
+            logger.info(f"Pruned {pruned} stale {mode} entries from manifest")
 
     if removed:
         db.delete_entries(removed)
