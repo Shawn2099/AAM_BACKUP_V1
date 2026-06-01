@@ -297,7 +297,6 @@ def lan_publish_artifact_task(sync_result: dict, before_dict: dict, after_dict: 
     """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
-        from core.lan_manifest import diff_snapshots
         status = sync_result.get("status", "UNKNOWN")
         exit_code = sync_result.get("exit_code", -1)
         
@@ -379,9 +378,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         manifest = verify_data.get("manifest", [])
         copied_files_list = []
         for item in manifest:
-            path = item.get("Path") or item.get("path", "")
-            size = item.get("Size") or item.get("size", 0)
-            mtime = item.get("ModTime") or item.get("mtime", 0)
+            path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
+            size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
+            mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
             
             if path not in before_dict:
                 copied_files_list.append((path, size))

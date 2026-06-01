@@ -29,9 +29,9 @@ def record_sync_results(
     if entries:
         normalized = [
             {
-                "path": e.get("Path") or e.get("path", ""),
-                "size": e.get("Size") or e.get("size", 0),
-                "mtime": e.get("ModTime") or e.get("mtime", 0),
+                "path": e.get("Path") if e.get("Path") is not None else e.get("path", ""),
+                "size": e.get("Size") if e.get("Size") is not None else e.get("size", 0),
+                "mtime": e.get("ModTime") if e.get("ModTime") is not None else e.get("mtime", 0),
             }
             for e in entries
         ]
