@@ -21,11 +21,12 @@ HOW IT WORKS
 
 BACKUP LOCK PROTOCOL
 ─────────────────────
-flow.py writes C:\\BackupAgent\\backup.lock containing the PID of the backup
-process at the START of every backup flow, and deletes it in a finally block
-on completion (normal or exception). The watchdog validates the PID is still
-alive before honouring the lock, so stale locks from a previous crash do not
-prevent restarts indefinitely.
+flow.py writes a PID-stamped backup.lock file (derived from config.yaml
+database_path.parent) at the START of every backup flow, and deletes it
+in a finally block on completion (normal or exception). The watchdog reads
+the same path from config.yaml at startup via _resolve_paths(). It validates
+the PID is still alive before honouring the lock, so stale locks from a
+previous crash do not prevent restarts indefinitely.
 
 Zero new dependencies: httpx and loguru are already project requirements.
 """
@@ -47,9 +48,26 @@ MAX_DEFERRALS          = 15     # force restart after this many consecutive defe
 RESTART_COOLDOWN       = 120    # wait after triggering a restart before resuming
 WATCHED_SERVICE        = "AamPrefectServer"
 
-# Must match: Path(config.paths.database_path).parent / "backup.lock" in flow.py
-BACKUP_LOCK_PATH       = Path(r"C:\BackupAgent\backup.lock")
-LOG_DIR                = Path(r"C:\BackupAgent\logs")
+# Defaults — overwritten by _resolve_paths() at startup from config.yaml.
+# Kept as fallback so the service can still start if config is missing.
+BACKUP_LOCK_PATH: Path = Path(r"C:\BackupAgent\backup.lock")
+LOG_DIR: Path          = Path(r"C:\BackupAgent\logs")
+
+
+def _resolve_paths() -> None:
+    """Derive BACKUP_LOCK_PATH and LOG_DIR from config.yaml.
+
+    Falls back to the hardcoded defaults if config is missing or invalid.
+    Called once at the start of main() — before _configure_logging().
+    """
+    global BACKUP_LOCK_PATH, LOG_DIR
+    try:
+        from models.config import CONFIG_PATH, load_config
+        cfg = load_config(CONFIG_PATH)
+        BACKUP_LOCK_PATH = Path(cfg.paths.database_path).parent / "backup.lock"
+        LOG_DIR = Path(cfg.paths.log_directory)
+    except Exception:
+        pass  # defaults already set at module level
 
 
 def _configure_logging() -> None:
@@ -179,6 +197,8 @@ def _check_health() -> bool:
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global BACKUP_LOCK_PATH, LOG_DIR
+    _resolve_paths()
     _configure_logging()
     logger.info("=" * 60)
     logger.info("AAM Backup Watchdog starting")
