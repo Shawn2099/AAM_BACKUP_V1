@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -191,51 +190,9 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
             f"  source:  {old_source} → {new_source}\n"
             f"  LAN:     {old_lan} → {new_lan}"
         )
-
     except Exception:
         os.unlink(tmp_path)
         raise
-
-
-def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
-    """Transition all objects inside the old FY directory to ARCHIVE storage class.
-
-    Uses `gcloud storage objects update` recursively with stateless authentication.
-    """
-    logger.info(f"FY rollover: Transitioning GCS objects under {old_fy}/ to ARCHIVE tier")
-    cmd = [
-        "gcloud", "storage", "objects", "update",
-        f"gs://{bucket}/{old_fy}/**",
-        "--storage-class=ARCHIVE",
-        "--recursive"
-    ]
-
-    custom_env = os.environ.copy()
-    custom_env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcs_key_path)
-
-    try:
-        # Run gcloud storage update recursively with a 1-hour timeout
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=custom_env,
-            timeout=3600
-        )
-        if result.returncode == 0:
-            logger.info(f"FY rollover: successfully archived all objects under {old_fy}/")
-            return True
-        else:
-            logger.error(f"FY rollover: failed to archive objects under {old_fy}/ (exit {result.returncode})")
-            logger.error(f"gcloud error: {result.stderr}")
-            return False
-    except subprocess.TimeoutExpired:
-        logger.error(f"FY rollover: archiving timed out for {old_fy}/")
-        return False
-    except Exception as e:
-        logger.error(f"FY rollover: error running gcloud storage: {e}")
-        return False
 
 
 def rollover(config_path: str = "config.yaml") -> bool:
@@ -285,14 +242,6 @@ def rollover(config_path: str = "config.yaml") -> bool:
         msg = f"FY rollover blocked: final backup failed for {', '.join(required)}"
         logger.error(msg)
         raise RolloverError(msg)
-
-    # Automatically transition old FY objects in GCS to ARCHIVE storage class (if cloud enabled)
-    if config.cloud.enabled:
-        run_archive_transition(
-            bucket=config.cloud.bucket,
-            old_fy=old_fy,
-            gcs_key_path=config.paths.gcs_key_path
-        )
 
     create_new_fy_folders(src_root, lan_root, new_fy)
 
