@@ -194,7 +194,7 @@ async def _run_in_background(pipeline: str):
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(error: str = ""):
-    error_html = f'<p style="color:#ef4444;margin-bottom:1rem">{error}</p>' if error else ""
+    error_html = f'<p style="color:#ef4444;margin-bottom:1rem">{html.escape(error)}</p>' if error else ""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>AAM Backup — Login</title>
