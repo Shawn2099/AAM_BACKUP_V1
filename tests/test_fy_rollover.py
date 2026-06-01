@@ -92,6 +92,15 @@ class TestDetectRollover:
     def test_no_fy_suffix_returns_false(self):
         assert detect_rollover(r"E:\SOURCE", r"\\server\share") is False
 
+    def test_no_fy_suffix_logs_warning(self):
+        """Operators must see a warning when rollover is permanently skipped
+        due to missing FY suffix — silent False is not acceptable."""
+        with patch("core.fy_rollover.logger") as mock_logger:
+            detect_rollover(r"E:\SOURCE", r"\\server\share")
+        mock_logger.warning.assert_called_once()
+        msg = mock_logger.warning.call_args.args[0]
+        assert "no FY suffix" in msg
+
     @patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28")
     def test_explicit_boundary(self, mock_fy):
         assert detect_rollover(r"E:\SOURCE\FY26-27", r"\\server\share\FY26-27") is True
@@ -705,3 +714,171 @@ class TestRolloverArchiveIntegration:
                             rollover(str(config_path))
 
         mock_archive.assert_not_called()
+
+
+class TestHardeningFixes:
+    """Tests covering the 3 targeted hardening fixes:
+      1. detect_rollover warns when no FY suffix found.
+      2. Config errors (AttributeError) propagate instead of being swallowed.
+      3. rollover() warns when source/LAN FY labels disagree.
+    """
+
+    # ── Fix 1: bare-except narrowing ───────────────────────────────────────
+
+    def test_config_attribute_error_propagates_from_cloud_backup(self, tmp_path):
+        """An AttributeError caused by a bad config object must NOT be silently
+        swallowed. It should propagate so the operator sees it immediately."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "paths:\n"
+            "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+            "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY25-26\"\n"
+            "  database_path: \"manifest.db\"\n"
+            "  gcs_key_path: \"key.json\"\n"
+            "lan:\n"
+            "  enabled: false\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 14400\n"
+            "  max_attempts: 2\n"
+            "  retry_delay_seconds: 600\n"
+            "  mt_threads: 8\n"
+            "wol:\n"
+            "  enabled: false\n"
+            "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+            "  server_ip: \"192.168.1.1\"\n"
+            "cloud:\n"
+            "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 21600\n"
+            "  verify_timeout_seconds: 600\n"
+            "  storage_class: COLDLINE\n"
+            "  max_attempts: 3\n"
+            "  retry_delay_seconds: 300\n"
+            "  location: asia-south1\n"
+            "  project_number: \"123\"\n"
+            "schedule:\n"
+            "  timezone: Asia/Kolkata\n"
+            "dashboard:\n"
+            "  auth_enabled: false\n"
+        )
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                # Simulate a config typo by making run_cloud_sync raise AttributeError
+                with patch(
+                    "core.fy_rollover.run_cloud_sync",
+                    side_effect=AttributeError("'NoneType' has no attribute 'bucket'"),
+                ):
+                    # AttributeError is NOT in the catch list, so it must propagate
+                    with pytest.raises(AttributeError):
+                        rollover(str(config_path))
+
+    # ── Fix 3: FY label disagreement warning ───────────────────────────────
+
+    def test_fy_label_disagreement_logs_warning(self, tmp_path):
+        """When source and LAN paths carry different FY suffixes, rollover must
+        emit a warning and use the source FY as canonical."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "paths:\n"
+            "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+            # LAN path deliberately has a different FY label
+            "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY24-25\"\n"
+            "  database_path: \"manifest.db\"\n"
+            "  gcs_key_path: \"key.json\"\n"
+            "lan:\n"
+            "  enabled: false\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 14400\n"
+            "  max_attempts: 2\n"
+            "  retry_delay_seconds: 600\n"
+            "  mt_threads: 8\n"
+            "wol:\n"
+            "  enabled: false\n"
+            "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+            "  server_ip: \"192.168.1.1\"\n"
+            "cloud:\n"
+            "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 21600\n"
+            "  verify_timeout_seconds: 600\n"
+            "  storage_class: COLDLINE\n"
+            "  max_attempts: 3\n"
+            "  retry_delay_seconds: 300\n"
+            "  location: asia-south1\n"
+            "  project_number: \"123\"\n"
+            "schedule:\n"
+            "  timezone: Asia/Kolkata\n"
+            "dashboard:\n"
+            "  auth_enabled: false\n"
+        )
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 0}):
+                    with patch("core.fy_rollover.create_new_fy_folders"):
+                        with patch("core.fy_rollover.run_archive_transition", return_value=True):
+                            with patch("core.fy_rollover.logger") as mock_logger:
+                                rollover(str(config_path))
+
+        warning_messages = [str(c) for c in mock_logger.warning.call_args_list]
+        assert any("disagree" in msg for msg in warning_messages), (
+            "Expected a warning about FY label disagreement, but none was logged."
+        )
+
+    def test_fy_label_disagreement_uses_source_as_canonical(self, tmp_path):
+        """When source and LAN FY labels disagree, rollover must use the
+        source FY (not LAN) as the canonical old_fy value passed to archive."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "paths:\n"
+            "  source_drive: \"E:\\\\SOURCE\\\\FY25-26\"\n"
+            "  lan_destination: \"\\\\\\\\server\\\\lan_backup\\\\FY24-25\"\n"
+            "  database_path: \"manifest.db\"\n"
+            "  gcs_key_path: \"key.json\"\n"
+            "lan:\n"
+            "  enabled: false\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 14400\n"
+            "  max_attempts: 2\n"
+            "  retry_delay_seconds: 600\n"
+            "  mt_threads: 8\n"
+            "wol:\n"
+            "  enabled: false\n"
+            "  mac_address: \"AA:BB:CC:DD:EE:FF\"\n"
+            "  server_ip: \"192.168.1.1\"\n"
+            "cloud:\n"
+            "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
+            "  retry_count: 3\n"
+            "  subprocess_timeout_seconds: 21600\n"
+            "  verify_timeout_seconds: 600\n"
+            "  storage_class: COLDLINE\n"
+            "  max_attempts: 3\n"
+            "  retry_delay_seconds: 300\n"
+            "  location: asia-south1\n"
+            "  project_number: \"123\"\n"
+            "schedule:\n"
+            "  timezone: Asia/Kolkata\n"
+            "dashboard:\n"
+            "  auth_enabled: false\n"
+        )
+
+        from models.config import load_config
+        with patch("models.config.load_config", return_value=load_config(str(config_path))):
+            with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
+                with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 0}):
+                    with patch("core.fy_rollover.create_new_fy_folders"):
+                        with patch("core.fy_rollover.run_archive_transition", return_value=True) as mock_archive:
+                            rollover(str(config_path))
+
+        # Source FY (FY25-26) must be used, not LAN FY (FY24-25)
+        mock_archive.assert_called_once_with(
+            bucket="aam-backup-bucket",
+            old_fy="FY25-26",
+            gcs_key_path="key.json",
+        )

@@ -62,6 +62,12 @@ def detect_rollover(source_drive: str, lan_destination: str) -> bool:
     """Return True if the configured FY suffix doesn't match the computed FY prefix."""
     current_fy = _fy_name(source_drive) or _fy_name(lan_destination)
     if current_fy is None:
+        # Warn operators so they know rollover is permanently skipped for this config.
+        logger.warning(
+            "FY rollover: no FY suffix found in source_drive or lan_destination — "
+            "rollover detection is permanently disabled. "
+            f"source_drive={source_drive!r}, lan_destination={lan_destination!r}"
+        )
         return False
     computed = get_fy_prefix()
     return current_fy != computed
@@ -99,7 +105,9 @@ def run_final_backup(source_drive: str, lan_destination: str,
                 logger.info(f"FY rollover: final cloud backup OK (exit {exit_code})")
             else:
                 logger.error(f"FY rollover: final cloud backup failed (exit {exit_code})")
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+            # Narrow to runtime/IO errors only.  Config typos (AttributeError,
+            # TypeError) should propagate loudly so operators fix them.
             logger.error(f"FY rollover: final cloud backup error: {e}")
 
     if lan_config.enabled:
@@ -129,9 +137,11 @@ def run_final_backup(source_drive: str, lan_destination: str,
 
                     logger.info(f"FY rollover: shutting down backup server {config.wol.server_ip}")
                     shutdown_server(config.wol.server_ip)
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.warning(f"FY rollover: server shutdown failed (non-critical): {e}")
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
+            # Narrow to runtime/IO errors only.  Config typos (AttributeError,
+            # TypeError) should propagate loudly so operators fix them.
             logger.error(f"FY rollover: final LAN backup error: {e}")
 
     return cloud_ok, lan_ok
@@ -294,7 +304,19 @@ def rollover(config_path: str = "config.yaml") -> bool:
     if not detect_rollover(source_drive, lan_destination):
         return False
 
-    old_fy = _fy_name(source_drive) or _fy_name(lan_destination)
+    src_fy = _fy_name(source_drive)
+    lan_fy = _fy_name(lan_destination)
+
+    # Warn if both paths carry an FY suffix but they disagree.  This indicates
+    # a manually edited config.yaml and could cause the wrong year to be archived.
+    if src_fy and lan_fy and src_fy != lan_fy:
+        logger.warning(
+            f"FY rollover: source and LAN FY labels disagree — "
+            f"source={src_fy!r}, lan={lan_fy!r}. "
+            "Using source FY as the canonical closing year."
+        )
+
+    old_fy = src_fy or lan_fy
     if old_fy is None:
         return False
 
