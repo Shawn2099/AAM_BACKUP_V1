@@ -86,5 +86,14 @@ notifications:
   sender: ""
   recipients: []
   send_on_failure: false
-  send_on_success: false
 """
+
+
+@pytest.fixture(scope="session", autouse=True)
+def prefect_harness():
+    """Start an ephemeral Prefect in-memory database and API for the duration of tests."""
+    from prefect.testing.utilities import prefect_test_harness
+    with prefect_test_harness():
+        yield
+
+

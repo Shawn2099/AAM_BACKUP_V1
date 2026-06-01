@@ -253,9 +253,11 @@ class TestRolloverOrchestrator:
         with patch("models.config.load_config", return_value=load_config(str(config_path))):
             with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
                 with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 0}):
-                    result = rollover(str(config_path))
-                    assert result is True
-                    assert "FY27-28" in config_path.read_text()
+                    with patch("core.fy_rollover.create_new_fy_folders") as mock_create:
+                        result = rollover(str(config_path))
+                        assert result is True
+                        assert "FY27-28" in config_path.read_text()
+                        mock_create.assert_called_once()
 
     def test_rollover_lan_only_cloud_disabled(self, tmp_path):
         """When cloud is disabled, rollover works with LAN-only final backup."""
@@ -295,9 +297,11 @@ class TestRolloverOrchestrator:
         with patch("models.config.load_config", return_value=load_config(str(config_path))):
             with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
                 with patch("core.fy_rollover.run_lan_sync", return_value={"exit_code": 3}):
-                    result = rollover(str(config_path))
-                    assert result is True
-                    assert "FY27-28" in config_path.read_text()
+                    with patch("core.fy_rollover.create_new_fy_folders") as mock_create:
+                        result = rollover(str(config_path))
+                        assert result is True
+                        assert "FY27-28" in config_path.read_text()
+                        mock_create.assert_called_once()
 
     def test_rollover_blocks_when_enabled_destination_fails(self, tmp_path):
         """If cloud is enabled but fails, rollover raises RolloverError."""
@@ -382,10 +386,12 @@ class TestRolloverOrchestrator:
             with patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28"):
                 with patch("core.fy_rollover.run_cloud_sync", return_value={"exit_code": 0}):
                     with patch("core.fy_rollover.run_lan_sync", return_value={"exit_code": 0}):
-                        result = rollover(str(config_path))
-                        assert result is True
-                        written = config_path.read_text()
-                        assert "FY27-28" in written
+                        with patch("core.fy_rollover.create_new_fy_folders") as mock_create:
+                            result = rollover(str(config_path))
+                            assert result is True
+                            written = config_path.read_text()
+                            assert "FY27-28" in written
+                            mock_create.assert_called_once()
 
     def test_flat_config_no_fy_returns_false(self, tmp_path):
         config_path = tmp_path / "config.yaml"

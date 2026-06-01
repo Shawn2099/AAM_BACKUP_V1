@@ -132,6 +132,8 @@ class NotificationConfig(BaseModel):
     sender: str = ""
     recipients: list[str] = Field(default_factory=list)
     send_on_failure: bool = True
+    weekly_enabled: bool = True
+    monthly_enabled: bool = True
 
     @field_validator("smtp_port")
     @classmethod

@@ -533,6 +533,9 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     """Send weekly backup summary report."""
     config = load_config(config_path)
     configure_logging(config.paths.log_directory)
+    if not config.notifications.weekly_enabled:
+        logger.info("Weekly backup report email is disabled in configuration — skipping")
+        return
     db = ManifestDB(config.paths.database_path)
     try:
         from core.report import send_weekly_report
@@ -546,6 +549,9 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     """Send monthly backup summary report."""
     config = load_config(config_path)
     configure_logging(config.paths.log_directory)
+    if not config.notifications.monthly_enabled:
+        logger.info("Monthly backup report email is disabled in configuration — skipping")
+        return
     db = ManifestDB(config.paths.database_path)
     try:
         from core.report import send_monthly_report
