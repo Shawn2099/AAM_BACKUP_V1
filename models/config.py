@@ -132,6 +132,7 @@ class NotificationConfig(BaseModel):
     sender: str = ""
     recipients: list[str] = Field(default_factory=list)
     send_on_failure: bool = True
+    send_on_success: bool = False
     weekly_enabled: bool = True
     monthly_enabled: bool = True
 
@@ -152,6 +153,16 @@ class NotificationConfig(BaseModel):
 
     def __str__(self) -> str:
         return self.__repr__()
+
+
+class MaintenanceConfig(BaseModel):
+    """Operational housekeeping settings."""
+    db_retention_days: int = Field(
+        default=90,
+        ge=7,
+        le=3650,
+        description="Days of run history to keep in ManifestDB (7–3650)",
+    )
 
 
 class DashboardConfig(BaseModel):
@@ -191,6 +202,7 @@ class AppConfig(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
     @model_validator(mode="after")
     def cross_field_validation(self) -> "AppConfig":

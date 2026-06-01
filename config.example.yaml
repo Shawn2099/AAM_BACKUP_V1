@@ -82,12 +82,24 @@ dashboard:
 # ═══════════════════════════════════════════════════
 notifications:
   smtp_host: ""
-  smtp_port: 587
+  smtp_port: 587          # 587 for STARTTLS, 465 for SSL
   smtp_username: ""
   smtp_password: ""
   sender: ""
-  recipients: []
-  send_on_failure: false
-  send_on_success: false
+  recipients:             # Supports multiple — add as many as needed
+    - "admin@example.com"
+    # - "manager@example.com"
+  send_on_failure: true   # Immediate alert email when backup fails
+  send_on_success: false  # Email on every successful backup (usually noisy)
+  weekly_enabled: true    # Send weekly summary report email (every Monday)
+  monthly_enabled: true   # Send monthly summary report email (1st of month)
   weekly_summary_day: "monday"
   weekly_summary_time: "08:00"
+
+# ═══════════════════════════════════════════════════
+# MAINTENANCE
+# ═══════════════════════════════════════════════════
+maintenance:
+  db_retention_days: 90   # Days of run history to keep in the database (7–3650)
+                          # Purged automatically on every successful backup run.
+                          # For compliance-heavy clients: 365 or higher.

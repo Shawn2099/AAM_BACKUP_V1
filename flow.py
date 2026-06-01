@@ -640,7 +640,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         # ── Maintenance ──
         try:
             db = ManifestDB(config.paths.database_path)
-            db.purge_old_runs(retention_days=90)
+            db.purge_old_runs(retention_days=config.maintenance.db_retention_days)
             db.close()
         except Exception as e:
             logger.warning(f"DB maintenance failed (non-critical): {e}")

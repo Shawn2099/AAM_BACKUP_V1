@@ -233,6 +233,28 @@ REPORT_JS = """<script>
 function generateReport(period) {
     window.location.href = '/report/' + period;
 }
+
+async function emailReport(period) {
+    const label = period === 'weekly' ? 'Weekly' : 'Monthly';
+    if (!confirm('Send the ' + label + ' Backup Report now via email to all configured recipients?')) return;
+    const btn = document.getElementById('btn-email-' + period);
+    if (btn) { btn.style.pointerEvents = 'none'; btn.style.opacity = '0.5'; btn.innerText = 'Sending...'; }
+    try {
+        const response = await fetch('/trigger/report/' + period + '/email', { method: 'POST' });
+        const data = await response.json();
+        if (response.ok) {
+            showToast(data.detail || 'Report emailed successfully!', 'success');
+        } else if (response.status === 404) {
+            showToast(data.detail || 'No runs found for this period.', 'info');
+        } else {
+            showToast(data.detail || 'Failed to send email.', 'error');
+        }
+    } catch (err) {
+        showToast('Network error: ' + err.message, 'error');
+    } finally {
+        if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = '\u2709\ufe0f Email ' + label + ' Report'; }
+    }
+}
 </script>"""
 
 
@@ -305,9 +327,11 @@ def render_dashboard(
         </form>
     </div>
 </div>
-<div style="margin-bottom:1rem;display:flex;gap:0.5rem">
-    <button class="btn-trigger" onclick="generateReport('weekly')">Download Weekly Report</button>
-    <button class="btn-trigger" onclick="generateReport('monthly')">Download Monthly Report</button>
+<div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+    <button class="btn-trigger" onclick="generateReport('weekly')">&#8203;&#128196; Download Weekly Report</button>
+    <button class="btn-trigger" onclick="generateReport('monthly')">&#8203;&#128196; Download Monthly Report</button>
+    <button class="btn-trigger" id="btn-email-weekly" onclick="emailReport('weekly')" style="background:#0e7490">&#9993;&#65039; Email Weekly Report</button>
+    <button class="btn-trigger" id="btn-email-monthly" onclick="emailReport('monthly')" style="background:#0e7490">&#9993;&#65039; Email Monthly Report</button>
 </div>
 <h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Run History</h2>
 <table>

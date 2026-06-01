@@ -377,6 +377,68 @@ def report_monthly(request: Request):
     return _serve_report(30, "Monthly")
 
 
+# ── Email-report endpoints ────────────────────────────────────────
+
+@app.post("/trigger/report/weekly/email")
+def trigger_weekly_email(request: Request):
+    """Immediately generate and email the weekly report to configured recipients.
+
+    Acts as both a "Send Test Email" and an on-demand report delivery button.
+    Returns 200 on success, 500 if SMTP fails, 404 if no runs found.
+    """
+    _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    cfg = _cfg()
+    db = get_db()
+    from core.report import send_weekly_report, generate_report_html
+    html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly")
+    if not html_body:
+        return JSONResponse(
+            {"status": "no_data", "detail": "No backup runs in the last 7 days — nothing to send."},
+            status_code=404,
+        )
+    ok = send_weekly_report(db, cfg.notifications, cfg.firm_name)
+    if ok:
+        recipients = ", ".join(cfg.notifications.recipients)
+        return JSONResponse({"status": "sent", "detail": f"Weekly report emailed to: {recipients}"})
+    return JSONResponse(
+        {"status": "failed", "detail": "Failed to send email. Check SMTP settings in config.yaml and server logs."},
+        status_code=500,
+    )
+
+
+@app.post("/trigger/report/monthly/email")
+def trigger_monthly_email(request: Request):
+    """Immediately generate and email the monthly report to configured recipients.
+
+    Acts as both a "Send Test Email" and an on-demand report delivery button.
+    Returns 200 on success, 500 if SMTP fails, 404 if no runs found.
+    """
+    _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    cfg = _cfg()
+    db = get_db()
+    from core.report import send_monthly_report, generate_report_html
+    html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly")
+    if not html_body:
+        return JSONResponse(
+            {"status": "no_data", "detail": "No backup runs in the last 30 days — nothing to send."},
+            status_code=404,
+        )
+    ok = send_monthly_report(db, cfg.notifications, cfg.firm_name)
+    if ok:
+        recipients = ", ".join(cfg.notifications.recipients)
+        return JSONResponse({"status": "sent", "detail": f"Monthly report emailed to: {recipients}"})
+    return JSONResponse(
+        {"status": "failed", "detail": "Failed to send email. Check SMTP settings in config.yaml and server logs."},
+        status_code=500,
+    )
+
+
 def _serve_report(days: int, period: str) -> Response:
     """Generate an HTML report and serve it as a downloadable file."""
     cfg = _cfg()
