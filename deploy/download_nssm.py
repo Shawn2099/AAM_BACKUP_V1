@@ -9,7 +9,6 @@ chocolatey_url = "https://community.chocolatey.org/api/v2/package/nssm"
 tools_dir = r"C:\BackupAgent\tools"
 nupkg_path = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_choco.nupkg")
 extract_dir = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_choco_extract")
-inner_zip_path = os.path.join(extract_dir, "tools", "nssm-2.24-101-g897c7ad.zip")
 inner_extract_dir = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_inner_extract")
 nssm_dest = os.path.join(tools_dir, "nssm.exe")
 
@@ -49,9 +48,12 @@ except Exception as e:
 
 # ── Extract Inner NSSM zip ──
 print("[nssm] Extracting inner service wrapper zip...")
-if not os.path.exists(inner_zip_path):
-    print(f"[nssm] ERROR: Could not find inner ZIP at {inner_zip_path}")
+import glob
+inner_zips = glob.glob(os.path.join(extract_dir, "tools", "*.zip"))
+if not inner_zips:
+    print("[nssm] ERROR: Could not find any inner ZIP inside tools/ folder")
     sys.exit(1)
+inner_zip_path = inner_zips[0]
 
 if os.path.exists(inner_extract_dir):
     shutil.rmtree(inner_extract_dir, ignore_errors=True)
@@ -64,15 +66,11 @@ except Exception as e:
     sys.exit(1)
 
 # ── Copy win64 binary ──
-# Note: Inner zip has folder named 'nssm-2.24-101-g897c7ad'
-nssm_src = os.path.join(inner_extract_dir, "nssm-2.24-101-g897c7ad", "win64", "nssm.exe")
-if not os.path.exists(nssm_src):
-    # Try alternate location without version name
-    nssm_src = os.path.join(inner_extract_dir, "win64", "nssm.exe")
-
-if not os.path.exists(nssm_src):
-    print(f"[nssm] ERROR: Could not find win64 binary inside inner zip extraction")
+nssm_src_candidates = glob.glob(os.path.join(inner_extract_dir, "**", "win64", "nssm.exe"), recursive=True)
+if not nssm_src_candidates:
+    print(f"[nssm] ERROR: Could not find win64/nssm.exe anywhere inside inner zip extraction")
     sys.exit(1)
+nssm_src = nssm_src_candidates[0]
 
 try:
     shutil.copy2(nssm_src, nssm_dest)

@@ -233,36 +233,27 @@ For 24/7 reliability, automated self-healing, and service restart on boot, the a
 2. **AamBackupAgent:** Dashboard UI and cron schedules.
 3. **AamWatchdog:** Self-healing service sentinel that monitors API health.
 
-### 1. Download NSSM
-From your Administrator PowerShell window, run:
+> [!NOTE]
+> **No external download required:** NSSM (v2.24-101) is pre-bundled inside the codebase under `deploy/bin/nssm.exe` so the installation can be completed 100% offline.
 
-```powershell
-cd C:\AAM_BACKUP_V1
-# Set permission to execute scripts temporarily
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-powershell -File .\deploy\download_nssm.ps1
-```
+### 1. Configure Project Path (Optional)
+Open `C:\AAM_BACKUP_V1\deploy\install_services.bat` in a text editor. Ensure that the `PROJECT_DIR` variable accurately matches your path:
+- `PROJECT_DIR`: Path to the cloned project folder (default: `C:\AAM_BACKUP_V1` or `C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1`)
 
-### 2. Configure Service Installer Paths
-Open `C:\AAM_BACKUP_V1\deploy\install_services.bat` in a text editor. Ensure that these variables accurately reflect your setup paths:
-- `NSSM`: Location of nssm.exe (default: `C:\BackupAgent\tools\nssm.exe`)
-- `UV_EXE`: Path to `uv.exe` (default: `C:\Program Files\Python312\Scripts\uv.exe`)
-- `PROJECT_DIR`: Path to the cloned project folder (default: `C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1`)
-
-### 3. Run the Service Installer
-Execute the installation batch file as Administrator:
+### 2. Run the Service Installer
+Execute the installation batch file from an elevated **Administrator PowerShell** window:
 
 ```powershell
 cd C:\AAM_BACKUP_V1
 .\deploy\install_services.bat
 ```
 
-This script will automatically:
-- Create the system directories.
+This installer script will automatically:
+- Create the system directories and redirect log outputs.
 - Register all 3 services in the Windows Service Control Manager (SCM).
 - Configure stdout/stderr log redirection with 10MB auto-rotation.
-- Set up automatic crash recovery (restarts automatically).
-- Start all three services in the correct sequence.
+- Set up automatic crash recovery (services auto-restart on crash).
+- Start all three services in the correct sequence automatically.
 
 ---
 

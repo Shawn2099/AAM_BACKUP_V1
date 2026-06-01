@@ -17,9 +17,9 @@
 setlocal EnableDelayedExpansion
 
 :: ── Configuration ────────────────────────────────────────────────────
-set NSSM=C:\BackupAgent\tools\nssm.exe
-set UV_EXE=C:\Program Files\Python312\Scripts\uv.exe
 set PROJECT_DIR=C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1
+set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
+set UV_EXE=C:\Program Files\Python312\Scripts\uv.exe
 set BACKUP_ROOT=C:\BackupAgent
 set LOG_DIR=%BACKUP_ROOT%\logs
 set PREFECT_HOME=%BACKUP_ROOT%\.prefect
@@ -38,12 +38,11 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: ── Guard: NSSM must be downloaded first ────────────────────────────
+:: ── Guard: NSSM must exist in bundle ────────────────────────────────
 if not exist "%NSSM%" (
     echo.
-    echo  ERROR: NSSM not found at %NSSM%
-    echo  Run this first ^(as Administrator^):
-    echo    powershell -ExecutionPolicy Bypass -File "%PROJECT_DIR%\deploy\download_nssm.ps1"
+    echo  ERROR: Bundled NSSM not found at %NSSM%
+    echo  Please ensure deploy\bin\nssm.exe exists in the repository.
     echo.
     exit /b 1
 )

@@ -166,12 +166,13 @@ def send_summary_report(
     firm_name: str,
     days: int,
     period: str,
+    body_html: str = None,
 ) -> bool:
     """Send aggregated summary report via email.
 
     Returns True if email sent, False if skipped or failed.
     """
-    body = generate_report_html(db, firm_name, days, period)
+    body = body_html or generate_report_html(db, firm_name, days, period)
     if not body:
         logger.info(f"No runs found in last {days} days — skipping {period} report")
         return False
@@ -184,13 +185,15 @@ def send_weekly_report(
     db: ManifestDB,
     config: NotificationConfig,
     firm_name: str,
+    body_html: str = None,
 ) -> bool:
-    return send_summary_report(db, config, firm_name, 7, "Weekly")
+    return send_summary_report(db, config, firm_name, 7, "Weekly", body_html=body_html)
 
 
 def send_monthly_report(
     db: ManifestDB,
     config: NotificationConfig,
     firm_name: str,
+    body_html: str = None,
 ) -> bool:
-    return send_summary_report(db, config, firm_name, 30, "Monthly")
+    return send_summary_report(db, config, firm_name, 30, "Monthly", body_html=body_html)

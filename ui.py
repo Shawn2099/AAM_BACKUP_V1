@@ -399,7 +399,14 @@ def trigger_weekly_email(request: Request):
             {"status": "no_data", "detail": "No backup runs in the last 7 days — nothing to send."},
             status_code=404,
         )
-    ok = send_weekly_report(db, cfg.notifications, cfg.firm_name)
+    try:
+        ok = send_weekly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body)
+    except Exception as e:
+        logger.exception("Failed to send weekly email report manual trigger")
+        return JSONResponse(
+            {"status": "failed", "detail": f"SMTP / Network Error: {str(e)}"},
+            status_code=500,
+        )
     if ok:
         recipients = ", ".join(cfg.notifications.recipients)
         return JSONResponse({"status": "sent", "detail": f"Weekly report emailed to: {recipients}"})
@@ -429,7 +436,14 @@ def trigger_monthly_email(request: Request):
             {"status": "no_data", "detail": "No backup runs in the last 30 days — nothing to send."},
             status_code=404,
         )
-    ok = send_monthly_report(db, cfg.notifications, cfg.firm_name)
+    try:
+        ok = send_monthly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body)
+    except Exception as e:
+        logger.exception("Failed to send monthly email report manual trigger")
+        return JSONResponse(
+            {"status": "failed", "detail": f"SMTP / Network Error: {str(e)}"},
+            status_code=500,
+        )
     if ok:
         recipients = ", ".join(cfg.notifications.recipients)
         return JSONResponse({"status": "sent", "detail": f"Monthly report emailed to: {recipients}"})
