@@ -462,6 +462,13 @@ class TestRunArchiveTransition:
     BUCKET = "aam-backup-bucket"
     OLD_FY = "FY25-26"
     KEY_PATH = "/path/to/gcs-key.json"
+    MOCK_GCLOUD = "/mock/path/to/gcloud"
+
+    @pytest.fixture(autouse=True)
+    def mock_shutil_which(self):
+        """Mock shutil.which to always find gcloud, making tests deterministic."""
+        with patch("shutil.which", return_value=self.MOCK_GCLOUD):
+            yield
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -563,8 +570,8 @@ class TestRunArchiveTransition:
         assert not any(len(s) > 3000 for s in captured_logs)
 
     def test_returns_false_when_gcloud_not_installed(self):
-        """FileNotFoundError (gcloud missing from PATH) → returns False, no raise."""
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        """gcloud missing from PATH (shutil.which returns None) → returns False, no raise."""
+        with patch("shutil.which", return_value=None):
             result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
 
         assert result is False

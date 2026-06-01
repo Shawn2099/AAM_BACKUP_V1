@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -231,15 +232,6 @@ def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
         "to ARCHIVE storage class"
     )
 
-    # Use --recursive on the bare prefix — no ** glob — to avoid shell
-    # wildcard expansion on Windows PowerShell / cmd.exe environments.
-    cmd: list[str] = [
-        "gcloud", "storage", "objects", "update",
-        f"gs://{bucket}/{old_fy}/",
-        "--storage-class=ARCHIVE",
-        "--recursive",
-    ]
-
     # Stateless auth: inject the service-account key path into the subprocess
     # environment.  gcloud honours this variable on every invocation, so no
     # persistent ``gcloud auth`` login is required on the server.
@@ -247,6 +239,20 @@ def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
     env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcs_key_path)
 
     try:
+        # Resolve gcloud dynamically (essential for Windows to pick up gcloud.cmd)
+        gcloud_exe = shutil.which("gcloud")
+        if not gcloud_exe:
+            raise FileNotFoundError("gcloud")
+
+        # Use --recursive on the bare prefix — no ** glob — to avoid shell
+        # wildcard expansion on Windows PowerShell / cmd.exe environments.
+        cmd: list[str] = [
+            gcloud_exe, "storage", "objects", "update",
+            f"gs://{bucket}/{old_fy}/",
+            "--storage-class=ARCHIVE",
+            "--recursive",
+        ]
+
         result = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
