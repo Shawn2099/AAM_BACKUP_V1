@@ -156,62 +156,57 @@ Open http://localhost:4200 — Prefect UI should load.
 
 Test a manual backup trigger from the dashboard.
 
-## Step 13: Set Up Task Scheduler (Production)
+## Step 13: Install Production Services via NSSM
 
-Two scheduled tasks for automatic startup:
+For 24/7 reliability, automated crash recovery, and running in the background before anyone logs on, the application is deployed as three Windows Services managed via NSSM (Non-Sucking Service Manager):
 
-### Task 1: Prefect Server
+1. **AamPrefectServer:** Prefect server backend (API + DB).
+2. **AamBackupAgent:** Dashboard UI and cron schedules.
+3. **AamWatchdog:** Self-healing service sentinel that monitors API health.
 
-1. Open **Task Scheduler** (taskschd.msc)
-2. Click **Create Task** (not "Create Basic Task")
-3. **General tab:**
-   - Name: `AAM Prefect Server`
-   - Select: `Run whether user is logged on or not`
-   - Check: `Run with highest privileges`
-4. **Triggers tab:**
-   - New → `At system startup`
-   - Delay task for: `10 seconds`
-5. **Actions tab:**
-   - New → `Start a program`
-   - Program: `C:\AAM_BACKUP_V1\start_server.bat`
-   - Start in: `C:\AAM_BACKUP_V1`
-6. **Settings tab:**
-   - Uncheck: `Stop the task if it runs longer than`
-   - Check: `If the task fails, restart every: 1 minute`
-   - Attempt restart up to: `3 times`
-7. Click **OK** → Enter Administrator password
+### 1. Download NSSM
+Open a PowerShell terminal as **Administrator** and run:
 
-### Task 2: Backup App
+```powershell
+cd C:\AAM_BACKUP_V1
+powershell -ExecutionPolicy Bypass -File .\deploy\download_nssm.ps1
+```
 
-1. Click **Create Task** again
-2. **General tab:**
-   - Name: `AAM Backup App`
-   - Select: `Run whether user is logged on or not`
-   - Check: `Run with highest privileges`
-3. **Triggers tab:**
-   - New → `At system startup`
-   - Delay task for: `60 seconds` (after Prefect server is ready)
-4. **Actions tab:**
-   - New → `Start a program`
-   - Program: `C:\AAM_BACKUP_V1\start.bat`
-   - Start in: `C:\AAM_BACKUP_V1`
-5. **Settings tab:**
-   - Uncheck: `Stop the task if it runs longer than`
-   - Check: `If the task fails, restart every: 1 minute`
-   - Attempt restart up to: `3 times`
-6. Click **OK** → Enter Administrator password
+### 2. Configure Service Installer Paths
+Before running the installer, ensure that the path variables in `C:\AAM_BACKUP_V1\deploy\install_services.bat` accurately reflect your environment:
+- `NSSM`: Location of nssm.exe (default: `C:\BackupAgent\tools\nssm.exe`)
+- `UV_EXE`: Path to `uv.exe` (default: `C:\Program Files\Python312\Scripts\uv.exe`)
+- `PROJECT_DIR`: Path to the cloned project folder (default: `C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1`)
+
+### 3. Install and Start Services
+From your Administrator PowerShell terminal, execute:
+
+```powershell
+.\deploy\install_services.bat
+```
+
+This script will automatically:
+- Create the system directories (`C:\BackupAgent\logs` and `.prefect` database root).
+- Register all 3 services in the Windows Service Control Manager (SCM).
+- Configure stdout/stderr log redirection with 10MB auto-rotation.
+- Set up automatic crash recovery (restarts automatically).
+- Start all three services in the correct sequence.
+
+---
 
 ## Step 14: Reboot and Verify
 
-```powershell
-# Reboot the server
-shutdown /r /t 60
+1. **Reboot the server** to test automatic boot startup:
+   ```powershell
+   shutdown /r /t 0
+   ```
+2. **Verify Services Status:**
+   - Press `Win + R`, type `services.msc`, and press Enter.
+   - Verify that **AAM Prefect Server**, **AAM Backup Agent**, and **AAM Backup Watchdog** are all listed and showing **Running** as status.
+3. **Verify Web Dashboards:**
+   - Open your browser and navigate to the dashboard: `http://localhost:8080` (or the configured bind address and port).
+   - Verify the Prefect orchestration UI: `http://localhost:4200`
 
-# After reboot, check both services are running:
-# 1. Open http://localhost:4200 — Prefect UI
-# 2. Open http://localhost:8080 — Dashboard
-# 3. Check Task Scheduler → Task Status → Active Tasks
-```
 
 ---
 
