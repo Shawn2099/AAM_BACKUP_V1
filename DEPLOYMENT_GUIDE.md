@@ -16,6 +16,31 @@ Before starting, open a PowerShell terminal and verify system specifications:
 
 ---
 
+## ⚙️ Core Network, OS, & Directory Format Requirements
+
+To ensure automated operations function reliably (including Wake-on-LAN, remote shutdowns, GCS syncing, and Financial Year rollovers), verify that the local IT administrator has configured the following environment requirements:
+
+### 1. 🔌 Wake-on-LAN (WoL) Subnet Boundary
+*   **Requirement:** The backup runner server and the LAN backup server (`10.10.186.231`) **MUST reside inside the exact same physical network and Layer 2 broadcast subnet**.
+*   **Rationale:** Wake-on-LAN broadcasts standard Magic Packets containing the target's MAC address (`6C-4B-90-25-70-5F`). Standard office routers, firewalls, and Layer 3 switches block network broadcasts. If the servers are separated by routers or are on different VLANs, the target server will fail to wake up automatically.
+
+### 2. 🖥️ Windows Server RPC & Remote Shutdown Permissions
+*   **Requirement:** Both servers must run Windows Server. The local IT administrator must configure and allow **Remote RPC administration and shutdown privileges** between the primary server and the target backup server.
+*   **Setup Actions:** 
+    *   Enable remote administration via the local policy or Group Policy Object (GPO) on the target backup server.
+    *   Allow TCP Port **135** (RPC Endpoint Mapper) and the dynamic RPC port range in the Windows Firewall on the target server to accept remote requests from the runner's IP.
+    *   The service account running `AamBackupAgent` must be registered with administrative privileges on the target server to execute `shutdown.exe /s /m \\10.10.186.231 /t 300` successfully.
+
+### 3. 📂 Financial Year Folder Format (`FYXX-YY`)
+*   **Requirement:** The backup system enforces a strict directory naming format: **`FYXX-YY`** (e.g. `FY25-26`, `FY26-27`). The source drive path and LAN destination path in `config.yaml` must point directly to folders matching this format.
+*   **Rationale:** The backup runner isolates operations strictly to the active fiscal year directory. On **April 1st**, the auto-rollover orchestrator triggers automatically, executes a final sync of the closing year, creates the fresh directories for the new year, and atomically rewrites `config.yaml` to point to the new year. Using any other folder format will disable auto-rollover.
+
+### 4. 🔑 Google Cloud IAM Permissions
+*   **Requirement:** The credentials in the Service Account JSON key (`gcs-key.json`) must carry the **`Storage Object Admin`** IAM role on the GCS bucket (`aam-backup-demo-innovizta`).
+*   **Rationale:** Rclone runs in active mirroring (`sync`) mode. It must have full rights to list the bucket objects, create new files, overwrite modified files, and **delete** files that were pruned locally to prevent cloud storage pollution. Less privileged roles (like creator/viewer) will block sync runs.
+
+---
+
 ## Step 1: Install Python 3.12 (64-bit)
 
 1. Download the **Windows installer (64-bit)** for Python 3.12 from the official downloads page:
