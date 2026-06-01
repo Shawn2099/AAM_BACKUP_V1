@@ -15,7 +15,6 @@ from loguru import logger
 
 from core.cloud_sync import run_cloud_sync
 from core.lan_sync import run_lan_sync
-from core.rclone_config import temp_rclone_config
 from core.time_utils import get_fy_prefix
 
 FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$")
@@ -79,24 +78,20 @@ def run_final_backup(source_drive: str, lan_destination: str,
     if cloud_config.enabled:
         try:
             logger.info(f"FY rollover: running final cloud backup to GCS FY {old_fy}")
-            with temp_rclone_config(
-                paths_config.gcs_key_path,
-                cloud_config.location,
-                cloud_config.project_number,
-                cloud_config.storage_class,
-            ) as cfg:
-                result = run_cloud_sync(
-                    source=source_drive,
-                    bucket=cloud_config.bucket,
-                    fy_prefix=old_fy,
-                    config_path=cfg,
-                    storage_class=cloud_config.storage_class,
-                    bwlimit=cloud_config.bandwidth_limit,
-                    retries=cloud_config.retry_count,
-                    transfers=cloud_config.transfers,
-                    checkers=cloud_config.checkers,
-                    timeout=cloud_config.subprocess_timeout_seconds,
-                )
+            result = run_cloud_sync(
+                source=source_drive,
+                bucket=cloud_config.bucket,
+                fy_prefix=old_fy,
+                gcs_key_path=paths_config.gcs_key_path,
+                project_number=cloud_config.project_number,
+                storage_class=cloud_config.storage_class,
+                location=cloud_config.location,
+                bwlimit=cloud_config.bandwidth_limit,
+                retries=cloud_config.retry_count,
+                transfers=cloud_config.transfers,
+                checkers=cloud_config.checkers,
+                timeout=cloud_config.subprocess_timeout_seconds,
+            )
             exit_code = result.get("exit_code", -1)
             if exit_code in (0, 9):
                 cloud_ok = True

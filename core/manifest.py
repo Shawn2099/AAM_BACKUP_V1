@@ -17,6 +17,7 @@ SCHEMA_VERSION = 1
 DDL = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
+PRAGMA busy_timeout=30000;
 
 CREATE TABLE IF NOT EXISTS file_entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,7 +35,6 @@ CREATE TABLE IF NOT EXISTS file_entries (
 
 CREATE INDEX IF NOT EXISTS idx_file_entries_lan_status ON file_entries(lan_status);
 CREATE INDEX IF NOT EXISTS idx_file_entries_cloud_status ON file_entries(cloud_status);
-CREATE INDEX IF NOT EXISTS idx_file_entries_relative_path ON file_entries(relative_path);
 
 CREATE TABLE IF NOT EXISTS run_history (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,38 +199,42 @@ class ManifestDB:
         with self._lock:
             conn = self._get_conn()
             now = utcnow_iso()
-            conn.executemany(
-                f"""INSERT INTO file_entries
-                    (relative_path, file_size, mtime, md5_checksum,
-                     {status_field}, {ts_field},
-                     created_at, updated_at)
-                    VALUES (?, ?, ?, ?,
-                            'synced', ?,
-                            ?, ?)
-                    ON CONFLICT(relative_path) DO UPDATE SET
-                        file_size = excluded.file_size,
-                        mtime = excluded.mtime,
-                        md5_checksum = COALESCE(excluded.md5_checksum, file_entries.md5_checksum),
-                        {status_field} = 'synced',
-                        {ts_field} = CASE
-                            WHEN file_entries.{status_field} != 'synced'
-                            THEN excluded.{ts_field}
-                            ELSE file_entries.{ts_field}
-                        END,
-                        updated_at = excluded.updated_at""",
-                [
-                    (
-                        e["path"].replace("\\", "/"),
-                        e.get("size", 0),
-                        e.get("mtime", 0),
-                        e.get("md5_checksum"),
-                        now,
-                        now,
-                        now,
-                    )
-                    for e in entries
-                ],
-            )
+            # Chunk at 100 rows (700 params) to stay under SQLite's variable limit
+            # on older builds (SQLITE_MAX_VARIABLE_NUMBER=999).
+            for i in range(0, len(entries), 100):
+                chunk = entries[i : i + 100]
+                conn.executemany(
+                    f"""INSERT INTO file_entries
+                        (relative_path, file_size, mtime, md5_checksum,
+                         {status_field}, {ts_field},
+                         created_at, updated_at)
+                        VALUES (?, ?, ?, ?,
+                                'synced', ?,
+                                ?, ?)
+                        ON CONFLICT(relative_path) DO UPDATE SET
+                            file_size = excluded.file_size,
+                            mtime = excluded.mtime,
+                            md5_checksum = COALESCE(excluded.md5_checksum, file_entries.md5_checksum),
+                            {status_field} = 'synced',
+                            {ts_field} = CASE
+                                WHEN file_entries.{status_field} != 'synced'
+                                THEN excluded.{ts_field}
+                                ELSE file_entries.{ts_field}
+                            END,
+                            updated_at = excluded.updated_at""",
+                    [
+                        (
+                            e["path"].replace("\\", "/"),
+                            e.get("size", 0),
+                            e.get("mtime", 0),
+                            e.get("md5_checksum"),
+                            now,
+                            now,
+                            now,
+                        )
+                        for e in chunk
+                    ],
+                )
             conn.commit()
 
     def mark_lan_synced(self, paths: list[str]):
@@ -372,12 +376,11 @@ class ManifestDB:
             return 0
         with self._lock:
             conn = self._get_conn()
-            for path in stale_paths:
-                conn.execute(
-                    f"UPDATE file_entries SET {status_field} = NULL, "
-                    f"{ts_field} = NULL WHERE relative_path = ?",
-                    (path,),
-                )
+            conn.executemany(
+                f"UPDATE file_entries SET {status_field} = NULL, "
+                f"{ts_field} = NULL WHERE relative_path = ?",
+                [(path,) for path in stale_paths],
+            )
             conn.execute(
                 "DELETE FROM file_entries "
                 "WHERE lan_status IS NULL AND cloud_status IS NULL"

@@ -7,7 +7,8 @@
 
 setlocal
 
-set NSSM=C:\BackupAgent\tools\nssm.exe
+set PROJECT_DIR=C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1
+set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
 set SVC_SERVER=AamPrefectServer
 set SVC_AGENT=AamBackupAgent
 set SVC_WATCHDOG=AamWatchdog

@@ -21,7 +21,7 @@ HOW IT WORKS
 
 BACKUP LOCK PROTOCOL
 ─────────────────────
-flow.py writes C:\BackupAgent\backup.lock containing the PID of the backup
+flow.py writes C:\\BackupAgent\\backup.lock containing the PID of the backup
 process at the START of every backup flow, and deletes it in a finally block
 on completion (normal or exception). The watchdog validates the PID is still
 alive before honouring the lock, so stale locks from a previous crash do not
@@ -43,6 +43,7 @@ CHECK_INTERVAL_SECONDS = 60     # normal poll interval
 FAILURE_THRESHOLD      = 5      # consecutive failures before considering action
 REQUEST_TIMEOUT        = 10     # HTTP timeout per health check (seconds)
 BACKUP_WAIT_INTERVAL   = 120    # re-check interval while a backup is running
+MAX_DEFERRALS          = 15     # force restart after this many consecutive deferrals (~30 min)
 RESTART_COOLDOWN       = 120    # wait after triggering a restart before resuming
 WATCHED_SERVICE        = "AamPrefectServer"
 
@@ -188,6 +189,7 @@ def main() -> None:
     logger.info("=" * 60)
 
     failures = 0
+    deferrals = 0
 
     while True:
         healthy = _check_health()
@@ -196,6 +198,7 @@ def main() -> None:
             if failures > 0:
                 logger.info(f"Prefect API healthy (recovered after {failures} failure(s))")
             failures = 0
+            deferrals = 0
             time.sleep(CHECK_INTERVAL_SECONDS)
             continue
 
@@ -211,15 +214,29 @@ def main() -> None:
 
         # ── Threshold reached — check for active backup before acting ────────
         if _is_backup_running():
-            logger.warning(
-                f"Prefect API has been unhealthy for {failures} checks but a backup "
-                f"is currently in progress. Deferring restart to avoid interrupting "
-                f"backup. Will re-check in {BACKUP_WAIT_INTERVAL}s."
-            )
-            # Do NOT reset failures — we remain aware the API is unhealthy.
-            # Loop back to the health check immediately after the wait, not to sleep.
-            time.sleep(BACKUP_WAIT_INTERVAL)
-            continue
+            deferrals += 1
+            if deferrals >= MAX_DEFERRALS:
+                logger.error(
+                    f"Prefect API has been unhealthy for {failures} checks and backup "
+                    f"lock has persisted for {deferrals} deferrals (~{deferrals * BACKUP_WAIT_INTERVAL // 60} min). "
+                    f"Possible stale lock from PID reuse. Forcing restart."
+                )
+                # Force-remove the lock and proceed with restart
+                try:
+                    BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                deferrals = 0
+                # Fall through to restart logic below
+            else:
+                logger.warning(
+                    f"Prefect API has been unhealthy for {failures} checks but a backup "
+                    f"is currently in progress. Deferring restart to avoid interrupting "
+                    f"backup. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
+                    f"(deferral {deferrals}/{MAX_DEFERRALS})"
+                )
+                time.sleep(BACKUP_WAIT_INTERVAL)
+                continue
 
         # ── No backup running — safe to restart ──────────────────────────────
         if not _service_is_running(WATCHED_SERVICE):
