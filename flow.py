@@ -293,14 +293,13 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copi
 
 
 @task(name="lan-publish-artifact")
-def lan_publish_artifact_task(sync_result: dict, before_dict: dict, after_dict: dict, files_copied: int, bytes_copied: int):
+def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, bytes_copied: int, total_files: int):
     """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
         status = sync_result.get("status", "UNKNOWN")
         exit_code = sync_result.get("exit_code", -1)
         
-        diff = diff_snapshots(before_dict, after_dict)
         added = len(diff.get("added", []))
         modified = len(diff.get("modified", []))
         removed = len(diff.get("removed", []))
@@ -317,7 +316,7 @@ def lan_publish_artifact_task(sync_result: dict, before_dict: dict, after_dict: 
             f"* **✏️ Files Modified:** `{modified}` files\n"
             f"* **🗑️ Files Pruned (Mirror):** `{removed}` files\n\n"
             f"## 📦 Destination Volume Inventory\n"
-            f"* **Active Files:** `{len(after_dict)}` files\n"
+            f"* **Active Files:** `{total_files}` files\n"
         )
         create_markdown_artifact(
             markdown=markdown_content,
@@ -477,7 +476,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
             "total_files": len(after_dict)
         })
         try:
-            lan_publish_artifact_task(sync_result, before_dict, after_dict, files_copied, bytes_copied)
+            lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
         except Exception:
             pass
 
@@ -533,6 +532,10 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     """Send weekly backup summary report."""
     config = load_config(config_path)
     configure_logging(config.paths.log_directory)
+    try:
+        configure_prefect_bridge()
+    except Exception:
+        pass
     if not config.notifications.weekly_enabled:
         logger.info("Weekly backup report email is disabled in configuration — skipping")
         return
@@ -549,6 +552,10 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     """Send monthly backup summary report."""
     config = load_config(config_path)
     configure_logging(config.paths.log_directory)
+    try:
+        configure_prefect_bridge()
+    except Exception:
+        pass
     if not config.notifications.monthly_enabled:
         logger.info("Monthly backup report email is disabled in configuration — skipping")
         return
@@ -597,6 +604,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     _lock_path = Path(config.paths.database_path).parent / "backup.lock"
     try:
         _lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Non-atomic on Windows — if the process crashes mid-write, the file may
+        # contain partial data. The watchdog handles this gracefully via ValueError
+        # catch when parsing the PID, falling through to the process-existence check.
         _lock_path.write_text(str(os.getpid()))
         logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
     except OSError as e:

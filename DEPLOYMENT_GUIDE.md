@@ -129,6 +129,13 @@ cloud:
   project_number: "123456789012"                      # GCP Project Number
   storage_class: "COLDLINE"                          # Standard, COLDLINE, ARCHIVE, etc.
 
+schedule:
+  cloud_cron: "0 18 * * *"                           # Cloud backup daily at 6 PM IST
+  lan_cron: "0 1 * * *"                              # LAN backup daily at 1 AM IST
+  weekly_cron: "0 8 * * MON"                         # Weekly report every Monday 8 AM
+  monthly_cron: "0 8 1 * *"                          # Monthly report on 1st of month 8 AM
+  timezone: "Asia/Kolkata"                           # IANA timezone for all schedules
+
 notifications:
   smtp_host: "smtp.gmail.com"
   smtp_port: 587
@@ -144,6 +151,10 @@ notifications:
   monthly_enabled: true                              # Enable/disable monthly report emails
   weekly_summary_day: "monday"
   weekly_summary_time: "08:00"
+
+dashboard:
+  auth_enabled: true                                # Requires API key to access dashboard
+  api_key: "choose-a-strong-password-here"           # !! CHANGE THIS to anything you want
 
 maintenance:
   db_retention_days: 90                              # Retain 90 days of run logs in db

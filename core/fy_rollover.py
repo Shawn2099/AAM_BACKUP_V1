@@ -1,5 +1,5 @@
 """Fiscal year rollover — detects FY boundary, runs final backup of closing FY,
-creates new FY folders, locks old FY read-only, and atomically updates config.yaml.
+creates new FY folders, and atomically updates config.yaml.
 
 Called by launch.py at startup before normal backup processing.
 """

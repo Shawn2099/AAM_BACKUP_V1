@@ -254,6 +254,11 @@ def _require_auth(request: Request):
         return
     if _check_api_key_header(request):
         return
+    # Browser requests (Accept: text/html) get redirected to login page.
+    # API requests get JSON 401.
+    accept = request.headers.get("Accept", "")
+    if "text/html" in accept:
+        raise HTTPException(status_code=303, headers={"Location": "/login"})
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 

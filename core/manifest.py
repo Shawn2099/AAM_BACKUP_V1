@@ -79,19 +79,24 @@ class ManifestDB:
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             
-            # Clean up legacy duplicate run_id values before applying the UNIQUE index in DDL
+            # Clean up legacy duplicate run_id values before applying the UNIQUE index in DDL.
+            # Guarded by table existence check — avoids error on fresh databases.
             try:
-                conn.execute("""
-                    DELETE FROM run_history
-                    WHERE id NOT IN (
-                        SELECT MIN(id)
-                        FROM run_history
-                        GROUP BY run_id
-                    )
-                """)
-                conn.commit()
-            except Exception:
-                pass
+                tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()}
+                if "run_history" in tables:
+                    conn.execute("""
+                        DELETE FROM run_history
+                        WHERE id NOT IN (
+                            SELECT MIN(id)
+                            FROM run_history
+                            GROUP BY run_id
+                        )
+                    """)
+                    conn.commit()
+            except Exception as e:
+                logger.debug(f"Pre-migration dedup skipped: {e}")
 
             conn.executescript(DDL)
             

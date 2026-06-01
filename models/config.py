@@ -192,6 +192,14 @@ class ScheduleConfig(BaseModel):
     monthly_cron: str = Field(default="0 8 1 * *", description="Monthly report cron expression")
     timezone: str = Field(default="Asia/Kolkata", description="IANA timezone for all schedules")
 
+    @field_validator("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron")
+    @classmethod
+    def valid_cron(cls, v: str) -> str:
+        parts = v.strip().split()
+        if len(parts) != 5:
+            raise ValueError(f"Invalid cron expression '{v}': expected 5 fields (min hour dom month dow)")
+        return v
+
 
 class AppConfig(BaseModel):
     firm_name: str = "AAM Associates"
