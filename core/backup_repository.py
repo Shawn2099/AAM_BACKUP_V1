@@ -61,8 +61,12 @@ def record_run_history(
     files_copied: int = 0,
     bytes_copied: int = 0,
     extended_metrics: str | None = None,
-) -> None:
-    """Record a backup run to run_history and checkpoint WAL."""
+) -> bool:
+    """Record a backup run to run_history and checkpoint WAL.
+
+    Returns True on success, False if recording failed.
+    Never raises — safe to call from finally blocks.
+    """
     try:
         db.insert_run({
             "run_id": run_id,
@@ -78,5 +82,7 @@ def record_run_history(
             "extended_metrics": extended_metrics,
         })
         db.wal_checkpoint()
+        return True
     except Exception as e:
         logger.error(f"Failed to record run history: {e}")
+        return False

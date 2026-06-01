@@ -224,6 +224,9 @@ button:hover {{ background: #1d4ed8; }}
 
 @app.post("/login")
 async def login_submit(request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"login:{client_ip}", _RATE_MAX_LOGIN):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
     form = await request.form()
     api_key = form.get("api_key", "")
     configured_key = _get_api_key()
@@ -272,11 +275,13 @@ async def dashboard(request: Request, status: str = ""):
 async def status(request: Request):
     _require_auth(request)
     cfg = _cfg()
-    if not Path(cfg.paths.database_path).exists():
-        return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
 
     db = get_db()
-    runs = db.get_recent_runs(10)
+    try:
+        runs = db.get_recent_runs(10)
+    except Exception:
+        return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
+
     recent_runs = []
     for r in runs:
         recent_runs.append({
@@ -608,7 +613,9 @@ async def _render_dashboard(flash: str = "") -> str:
             # Run history table
             runs = db.get_recent_runs(10)
             for r in runs:
-                mode_tag = f'<span class="tag {r["mode"]}">{r["mode"].upper()}</span>'
+                mode = r.get("mode", "")
+                mode_escaped = html.escape(mode) if mode in ("cloud", "lan") else "unknown"
+                mode_tag = f'<span class="tag {mode_escaped}">{mode_escaped.upper()}</span>'
                 s = r.get("status", "?")
                 if "COMPLETE" in s or s == "CLOUD_COMPLETE" or s == "LAN_COMPLETE":
                     s_tag = '<span class="tag success">OK</span>'
@@ -617,12 +624,12 @@ async def _render_dashboard(flash: str = "") -> str:
                 elif "FAILED" in s:
                     s_tag = '<span class="tag failed">FAILED</span>'
                 else:
-                    s_tag = f'<span class="tag">{s[:10]}</span>'
+                    s_tag = f'<span class="tag">{html.escape(s[:10])}</span>'
                 ts = parse_iso_to_local(r.get("started_at", ""))
                 files = r.get("files_copied", 0)
                 err = r.get("error_message", "")
                 dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
-                err_cell = f'<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">{err[:60]}</td>' if err else "<td>-</td>"
+                err_cell = f'<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">{html.escape(err[:60])}</td>' if err else "<td>-</td>"
                 history_rows += f"<tr><td>{ts}</td><td>{mode_tag}</td><td>{s_tag}</td><td>{files}</td><td>{dur}</td>{err_cell}</tr>\n"
         finally:
             pass  # singleton — do not close

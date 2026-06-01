@@ -247,10 +247,11 @@ class TestEndpointStatus:
         client = TestClient(ui.app)
         with patch("ui._require_auth"), \
              patch("ui._cfg") as mock_cfg, \
-             patch("ui.Path.exists", return_value=False):
+             patch("ui.get_db") as mock_get_db:
             mock_cfg.return_value = MagicMock(
                 paths=MagicMock(database_path="/tmp/missing.db"),
             )
+            mock_get_db.return_value.get_recent_runs.side_effect = Exception("no such table")
             response = client.get("/status")
             assert response.status_code == 503
             data = response.json()
@@ -260,7 +261,6 @@ class TestEndpointStatus:
         client = TestClient(ui.app)
         with patch("ui._require_auth"), \
              patch("ui._cfg") as mock_cfg, \
-             patch("ui.Path.exists", return_value=True), \
              patch("ui.get_db") as mock_get_db, \
              patch("ui._is_running", return_value=False), \
              patch("ui._last_run_summary", return_value=None), \

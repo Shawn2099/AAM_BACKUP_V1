@@ -12,6 +12,7 @@ Two deployments from one codebase:
 
 import json
 import os
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -510,7 +511,7 @@ def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
     duration = time.time() - pendulum.parse(started_at).timestamp()
     db = ManifestDB(db_path)
     try:
-        record_run_history(
+        if not record_run_history(
             db,
             run_id=run_id, mode=mode,
             started_at=started_at, ended_at=ended_at,
@@ -518,7 +519,8 @@ def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
             duration_seconds=duration, error_message=error_msg,
             files_copied=files_copied, bytes_copied=bytes_copied,
             extended_metrics=extended_metrics,
-        )
+        ):
+            logger.warning(f"Run {run_id} ({mode}) was not recorded to database — check logs above for details")
     finally:
         db.close()
 
@@ -604,10 +606,21 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     _lock_path = Path(config.paths.database_path).parent / "backup.lock"
     try:
         _lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # Non-atomic on Windows — if the process crashes mid-write, the file may
-        # contain partial data. The watchdog handles this gracefully via ValueError
-        # catch when parsing the PID, falling through to the process-existence check.
-        _lock_path.write_text(str(os.getpid()))
+        # Atomic write: write PID to a temp file, then os.replace() so the
+        # watchdog never reads a partially-written PID.
+        fd, tmp = tempfile.mkstemp(
+            dir=str(_lock_path.parent), prefix=".backup.lock.", suffix=".tmp"
+        )
+        try:
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            fd = -1
+            os.replace(tmp, str(_lock_path))
+        except BaseException:
+            if fd >= 0:
+                os.close(fd)
+            Path(tmp).unlink(missing_ok=True)
+            raise
         logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
     except OSError as e:
         logger.warning(f"Could not write backup lock file: {e}")

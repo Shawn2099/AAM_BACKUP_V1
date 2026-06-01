@@ -104,7 +104,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
         logger.info(f"LAN sync exit {result.returncode} → {status}")
 
         error_msg = None
-        if status == "LAN_FAILED":
+        if status in ("LAN_FAILED", "LAN_PARTIAL"):
             try:
                 log_text = log_path.read_text(encoding="utf-8", errors="replace")
                 error_msg = log_text[-500:] if len(log_text) > 500 else log_text

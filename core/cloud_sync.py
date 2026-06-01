@@ -17,8 +17,8 @@ def classify_rclone_exit(code: int) -> str:
     """Classify rclone exit code per official documentation.
 
     0  → CLOUD_COMPLETE  (all files synced)
-    1  → CLOUD_FAILED     (uncategorised error)
-    2  → CLOUD_FAILED     (syntax/usage)
+    1  → CLOUD_FAILED     (syntax/usage)
+    2  → CLOUD_FAILED     (error not otherwise categorised)
     3  → CLOUD_FAILED     (directory not found)
     4  → CLOUD_PARTIAL    (file not found — transient)
     5  → CLOUD_PARTIAL    (temporary — network, retryable)

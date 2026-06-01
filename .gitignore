@@ -18,3 +18,4 @@ graphify-out/
 .commandcode/
 <MagicMock*
 prefect_logs/.~lock*
+.gitnexus

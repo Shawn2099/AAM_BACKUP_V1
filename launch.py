@@ -87,8 +87,37 @@ def _ensure_concurrency_limit():
 
 
 def _cancel_orphaned_runs():
-    """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session."""
+    """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session.
+
+    Respects the backup lock file — if a backup is actively running (lock held
+    by a live PID), RUNNING flows are left untouched. Only PENDING flows are
+    always cancelled (they haven't started work yet).
+    """
     import asyncio
+    from pathlib import Path
+
+    from core.process import pid_alive
+
+    # Derive lock path from config (same derivation as flow.py:604)
+    try:
+        from models.config import CONFIG_PATH, load_config
+        cfg = load_config(CONFIG_PATH)
+        lock_path = Path(cfg.paths.database_path).parent / "backup.lock"
+    except Exception:
+        lock_path = None
+
+    backup_active = False
+    if lock_path and lock_path.exists():
+        try:
+            pid = int(lock_path.read_text(encoding="utf-8").strip())
+            if pid_alive(pid):
+                print(f"[launch] Backup lock held by PID {pid} — skipping cancellation of RUNNING flows")
+                backup_active = True
+            else:
+                print(f"[launch] Stale backup lock (PID {pid} not running) — cleaning up")
+                lock_path.unlink(missing_ok=True)
+        except (ValueError, OSError) as e:
+            print(f"[launch] Warning: could not read backup lock: {e}")
 
     async def _cancel():
         from prefect.client.orchestration import get_client
@@ -99,6 +128,11 @@ def _cancel_orphaned_runs():
         try:
             async with get_client() as client:
                 for state_type in [StateType.PENDING, StateType.RUNNING]:
+                    # If a backup is actively running, only cancel PENDING flows
+                    if state_type == StateType.RUNNING and backup_active:
+                        print("[launch] Skipping RUNNING flows — backup lock is active")
+                        continue
+
                     runs = await client.read_flow_runs(
                         flow_run_filter=FlowRunFilter(
                             state=FlowRunFilterState(
