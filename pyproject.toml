@@ -5,6 +5,7 @@ description = "AAM Backup Automation — nightly backup via Robocopy (LAN) and R
 readme = "IMPLEMENTATION_PLAN.md"
 requires-python = ">=3.12"
 authors = [{ name = "AAM Associates" }]
+classifiers = ["Operating System :: Microsoft Windows"]
 
 dependencies = [
     "prefect>=3.4.0",
@@ -19,6 +20,8 @@ dependencies = [
     "psutil>=6.0.0",
     "prefect-mcp>=0.0.1b10",
     "ruamel.yaml>=0.18.0",
+    "humanize>=4.0",
+    "exceptiongroup>=1.0",
 ]
 
 [tool.ruff]
