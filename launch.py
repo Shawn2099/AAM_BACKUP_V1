@@ -131,14 +131,27 @@ def main():
     print("  AAM Backup Automation V1 — Launch")
     print("=" * 50)
 
-    # Verify Prefect API server is running
-    print("[launch] Checking Prefect API server...")
-    if not _check_prefect_api():
-        print("[launch] ERROR: Prefect API server is not running on http://127.0.0.1:4200")
-        print("[launch] Start it first: start_server.bat")
-        print("[launch] Or run: uv run prefect server start")
+    # Wait for Prefect API — retry loop handles the startup race that occurs after
+    # a watchdog-triggered service restart (Prefect takes ~45s to be API-ready).
+    # 90s total wait ensures zero sc failure recovery actions are consumed on a
+    # normal restart cycle.
+    print("[launch] Waiting for Prefect API server...")
+    _API_MAX_WAIT  = 90   # seconds
+    _API_INTERVAL  = 10   # seconds between attempts
+    _api_ready     = False
+    for _elapsed in range(0, _API_MAX_WAIT, _API_INTERVAL):
+        if _check_prefect_api():
+            print(f"[launch] Prefect API ready (waited {_elapsed}s)")
+            _api_ready = True
+            break
+        _remaining = _API_MAX_WAIT - _elapsed - _API_INTERVAL
+        print(f"[launch] Not ready yet — retrying in {_API_INTERVAL}s "
+              f"({max(0, _remaining)}s remaining)...")
+        time.sleep(_API_INTERVAL)
+    if not _api_ready:
+        print(f"[launch] ERROR: Prefect API not reachable after {_API_MAX_WAIT}s")
+        print("[launch] Ensure start_server.bat / AamPrefectServer service is running")
         sys.exit(1)
-    print("[launch] Prefect API server is running")
 
     # Start dashboard in daemon thread
     dash_thread = threading.Thread(target=_run_dashboard, daemon=True)

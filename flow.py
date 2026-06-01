@@ -11,8 +11,10 @@ Two deployments from one codebase:
 """
 
 import json
+import os
 import time
 import uuid
+from pathlib import Path
 
 import pendulum
 
@@ -581,46 +583,67 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
 
     logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
 
+    # ── Watchdog lock — signals that a backup is in progress ──
+    # watchdog.py reads this file and defers any service restart until it
+    # disappears. The file contains the PID of this process so the watchdog
+    # can detect stale locks from a previous crash.
+    _lock_path = Path(config.paths.database_path).parent / "backup.lock"
+    try:
+        _lock_path.parent.mkdir(parents=True, exist_ok=True)
+        _lock_path.write_text(str(os.getpid()))
+        logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
+    except OSError as e:
+        logger.warning(f"Could not write backup lock file: {e}")
+
     excs = []
 
-    with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
-        # ── Cloud ──
-        if mode in ("cloud", "all") and config.cloud.enabled:
-            logger.info("Starting cloud backup pipeline")
-            try:
-                _run_cloud_pipeline(config, _stable_run_id("cloud"), utcnow_iso())
-            except Exception as e:
-                excs.append(e)
-
-        # ── LAN ──
-        if mode in ("lan", "all") and config.lan.enabled:
-            logger.info("Starting LAN backup pipeline")
-            try:
-                _run_lan_pipeline(config, _stable_run_id("lan"), utcnow_iso())
-            except Exception as e:
-                excs.append(e)
-
-    # ── Summary ──
-    if excs:
-        error_summary = '; '.join(str(e) for e in excs)
-        logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
-        try:
-            send_failure_alert(
-                config.notifications,
-                config.firm_name,
-                error_summary,
-                {"mode": mode},
-            )
-        except Exception:
-            pass
-        raise ExceptionGroup("Backup completed with errors", excs)
-
-    # ── Maintenance ──
     try:
-        db = ManifestDB(config.paths.database_path)
-        db.purge_old_runs(retention_days=90)
-        db.close()
-    except Exception as e:
-        logger.warning(f"DB maintenance failed (non-critical): {e}")
+        with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
+            # ── Cloud ──
+            if mode in ("cloud", "all") and config.cloud.enabled:
+                logger.info("Starting cloud backup pipeline")
+                try:
+                    _run_cloud_pipeline(config, _stable_run_id("cloud"), utcnow_iso())
+                except Exception as e:
+                    excs.append(e)
 
-    logger.info("AAM Backup completed successfully")
+            # ── LAN ──
+            if mode in ("lan", "all") and config.lan.enabled:
+                logger.info("Starting LAN backup pipeline")
+                try:
+                    _run_lan_pipeline(config, _stable_run_id("lan"), utcnow_iso())
+                except Exception as e:
+                    excs.append(e)
+
+        # ── Summary ──
+        if excs:
+            error_summary = '; '.join(str(e) for e in excs)
+            logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
+            try:
+                send_failure_alert(
+                    config.notifications,
+                    config.firm_name,
+                    error_summary,
+                    {"mode": mode},
+                )
+            except Exception:
+                pass
+            raise ExceptionGroup("Backup completed with errors", excs)
+
+        # ── Maintenance ──
+        try:
+            db = ManifestDB(config.paths.database_path)
+            db.purge_old_runs(retention_days=90)
+            db.close()
+        except Exception as e:
+            logger.warning(f"DB maintenance failed (non-critical): {e}")
+
+        logger.info("AAM Backup completed successfully")
+
+    finally:
+        # Always release the watchdog lock — even on crash or ExceptionGroup raise
+        try:
+            _lock_path.unlink(missing_ok=True)
+            logger.info("Backup lock released")
+        except OSError:
+            pass

@@ -69,7 +69,9 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
 def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
     """Execute robocopy /MIR mirror sync.
 
-    Writes output to temp log file, classifies exit code, cleans up in finally.
+    Robocopy writes all output directly to the /LOG:path file.
+    stdout/stderr from subprocess are discarded (they are empty when /LOG is set).
+    Exit code and error details are read from the log file on failure.
 
     Args:
         source: Source drive path.
@@ -93,8 +95,8 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
 
         result = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,  # robocopy writes via /LOG:path — stdout is empty
+            stderr=subprocess.DEVNULL,  # same — no pipe buffer accumulation on long /MIR runs
             timeout=lan_config.subprocess_timeout_seconds,
         )
 
