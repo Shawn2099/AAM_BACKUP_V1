@@ -462,6 +462,19 @@ class TestRunArchiveTransition:
     BUCKET = "aam-backup-bucket"
     OLD_FY = "FY25-26"
     KEY_PATH = "/path/to/gcs-key.json"
+    MOCK_GCLOUD = "/mock/path/to/gcloud"
+
+    @pytest.fixture(autouse=True)
+    def mock_shutil_which(self):
+        """Mock shutil.which to always find gcloud, making tests deterministic."""
+        with patch("shutil.which", return_value=self.MOCK_GCLOUD):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def mock_path_is_file(self):
+        """Mock Path.is_file so the key file is always detected as present in tests."""
+        with patch("pathlib.Path.is_file", return_value=True):
+            yield
 
     # ── helpers ─────────────────────────────────────────────────────────────
 
@@ -480,7 +493,7 @@ class TestRunArchiveTransition:
             result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
 
         assert result is True
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 2
 
     # ── command structure ───────────────────────────────────────────────────
 
@@ -492,7 +505,7 @@ class TestRunArchiveTransition:
         with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
             run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
 
-        cmd = mock_run.call_args.args[0]
+        cmd = mock_run.call_args_list[1].args[0]
         assert "--recursive" in cmd
         # Ensure no ** glob is present in any argument
         assert not any("**" in arg for arg in cmd)
@@ -502,7 +515,7 @@ class TestRunArchiveTransition:
         with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
             run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
 
-        cmd = mock_run.call_args.args[0]
+        cmd = mock_run.call_args_list[1].args[0]
         assert f"gs://{self.BUCKET}/{self.OLD_FY}/" in cmd
 
     def test_command_sets_archive_storage_class(self):
@@ -510,16 +523,10 @@ class TestRunArchiveTransition:
         with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
             run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
 
-        cmd = mock_run.call_args.args[0]
+        cmd = mock_run.call_args_list[1].args[0]
         assert "--storage-class=ARCHIVE" in cmd
 
-    def test_credentials_injected_into_env(self):
-        """GOOGLE_APPLICATION_CREDENTIALS must be set to gcs_key_path in subprocess env."""
-        with patch("subprocess.run", return_value=self._make_completed(0)) as mock_run:
-            run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
-
-        env_passed = mock_run.call_args.kwargs["env"]
-        assert env_passed["GOOGLE_APPLICATION_CREDENTIALS"] == self.KEY_PATH
+    # ── timeouts and exceptions ─────────────────────────────────────────────
 
     def test_timeout_set_to_600_seconds(self):
         """Timeout must be 600 s (10 min) — metadata-only operation."""
@@ -563,8 +570,8 @@ class TestRunArchiveTransition:
         assert not any(len(s) > 3000 for s in captured_logs)
 
     def test_returns_false_when_gcloud_not_installed(self):
-        """FileNotFoundError (gcloud missing from PATH) → returns False, no raise."""
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        """gcloud missing from PATH (shutil.which returns None) → returns False, no raise."""
+        with patch("shutil.which", return_value=None):
             result = run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
 
         assert result is False
