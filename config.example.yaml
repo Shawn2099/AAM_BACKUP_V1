@@ -36,6 +36,7 @@ wol:
   enabled: true
   mac_address: "AA-BB-CC-DD-EE-FF"
   server_ip: "192.168.1.10"
+  broadcast_address: ""
   wake_timeout_seconds: 300
   ping_interval_seconds: 15
   stability_wait_seconds: 30

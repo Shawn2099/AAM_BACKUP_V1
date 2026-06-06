@@ -129,6 +129,7 @@ Open `config.yaml` and update the following sections using the snippets from Ste
 | `paths.database_path` | SQLite manifest path, e.g. `C:\\BackupAgent\\manifest.db` |
 | `wol.mac_address` | MAC address of the NAS/target server |
 | `wol.server_ip` | IP address of the NAS/target server |
+| `wol.broadcast_address` | **(Optional)** Subnet broadcast IP (e.g., `192.168.1.255`). Leave empty to auto-derive from `server_ip`. |
 | `dashboard.bind_address` | LAN IP of this (source) machine |
 
 > **Fiscal Year Rule:** `source_drive` and `lan_destination` must end with the **same FY folder** (e.g. both end with `FY26-27`). A mismatch will be rejected at validation.
@@ -203,6 +204,16 @@ On **April 1st** each year, the system automatically:
 4. Transitions the old GCS folder to ARCHIVE storage class (requires `gcloud` on PATH).
 
 **No manual action is required for future rollovers.**
+
+> **Note on NAS Availability:** If the NAS is offline during rollover, the system handles it gracefully. It will log an `ACTION REQUIRED` error, proceed with the rollover of the source folder and GCS, and update `config.yaml`. You will just need to manually create the new FY folder on the NAS once it comes back online.
+
+---
+
+## Troubleshooting & Built-in Safeties
+
+*   **Silent Failures Blocked:** The system runs a rigid health check before any backup starts. If GCS keys are missing, the configuration is broken, or the system clock is skewed by >10 minutes, the backup **will halt immediately** with a critical error rather than proceeding and risking data corruption.
+*   **LAN Sync Anomalies:** Standard sync logs only show "Failed" or "Complete." This system monitors `robocopy` closely — if it returns an exit code between 4 and 7 (indicating file mismatches or uncopied extra files), the backup marks the phase as **PARTIAL** requiring manual review, preventing silent data mismatches.
+*   **Dual-Broadcast WoL:** If your NAS sits behind a managed switch or on a separate VLAN, global WoL broadcasts (`255.255.255.255`) are often dropped. The system sends magic packets to both the global broadcast and the auto-derived subnet broadcast (configurable via `wol.broadcast_address`) to ensure maximum delivery reliability.
 
 ---
 
