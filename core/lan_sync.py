@@ -11,6 +11,7 @@ from pathlib import Path
 from loguru import logger
 
 from models.config import LanConfig
+from core.process import resolve_binary
 
 # ═══════════════════════════════════════════════════════════════
 # Flag validation — /NC is FORBIDDEN
@@ -27,10 +28,14 @@ def classify_exit_code(code: int) -> str:
     """Classify robocopy exit code using bitmask rules.
 
     Bit 0 (1): Files copied successfully
-    Bit 1 (2): Extra files/directories detected
-    Bit 2 (4): Mismatched files detected
-    Bit 3 (8): Copy errors (some files failed)
-    Bit 4 (16): Fatal error
+    Bit 1 (2): Extra files/directories detected on destination
+    Bit 2 (4): Mismatched files detected (size/time differ, not overwritten)
+    Bit 3 (8): Copy errors (some files failed to copy)
+    Bit 4 (16): Fatal error (permissions, path not found, etc.)
+
+    Codes 0-3: clean sync states — LAN_COMPLETE
+    Codes 4-7: mismatch/extra flags set — LAN_PARTIAL (worth monitoring)
+    Code 8+  : copy errors or fatal — LAN_FAILED
 
     Returns: LAN_COMPLETE | LAN_PARTIAL | LAN_FAILED
     """
@@ -38,8 +43,11 @@ def classify_exit_code(code: int) -> str:
         return "LAN_FAILED"
     if code & 8:
         return "LAN_PARTIAL"
-    if 0 <= code <= 7:
+    if code in (0, 1, 2, 3):
         return "LAN_COMPLETE"
+    if 4 <= code <= 7:
+        # Bits 2+ set: mismatches or extras flagged — sync completed but with anomalies
+        return "LAN_PARTIAL"
     return "LAN_FAILED"
 
 
@@ -63,7 +71,8 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
     ]
 
     _validate_required_flags(flags)
-    return ["robocopy", source, dest, *flags]
+    robocopy_exe = resolve_binary("robocopy") or "robocopy"
+    return [robocopy_exe, source, dest, *flags]
 
 
 def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:

@@ -1,356 +1,213 @@
-# Windows Server 2016 — Production Deployment Guide
+# AAM Backup Automation – Deployment Guide
 
-This step-by-step document guides a systems administrator or technician through deploying **AAM Backup Automation V1** on Windows Server 2016. Follow these exact, sequential instructions for a reliable, production-ready, 365-day maintenance-free setup.
-
----
-
-## Prerequisites & Verification
-
-Before starting, open a PowerShell terminal and verify system specifications:
-
-| Component | Target Requirement | Verification Command |
-|---|---|---|
-| **OS** | Windows Server 2016 (1607+) | `[Environment]::OSVersion.Version` (Should be `10.0.14393`+) |
-| **Architecture** | 64-bit | `[Environment]::Is64BitOperatingSystem` (Should return `True`) |
-| **Network Access** | Outbound access to Google Cloud Storage (port 443) and local LAN SMB destination (port 445) | `Test-NetConnection -ComputerName googleapis.com -Port 443` |
+This guide covers the complete, end-to-end installation process for deploying the AAM Backup Automation system on a Windows Server or PC.
 
 ---
 
-## ⚙️ Core Network, OS, & Directory Format Requirements
+## Folder Layout (After Setup)
 
-To ensure automated operations function reliably (including Wake-on-LAN, remote shutdowns, GCS syncing, and Financial Year rollovers), verify that the local IT administrator has configured the following environment requirements:
+```
+AAM_BACKUP_V1\
+├── deploy\
+│   ├── bin\
+│   │   ├── nssm.exe          ← auto-downloaded by install_services.bat
+│   │   └── rclone.exe        ← place here manually (see Prerequisites)
+│   ├── keys\
+│   │   └── aam-gcs-key.json  ← place your GCS service account key here
+│   ├── install_services.bat
+│   ├── restart_services.bat
+│   ├── uninstall_services.bat
+│   ├── test_config.bat
+│   └── test_config.py
+├── config.yaml
+├── collect_config_data.py
+└── ...
+```
 
-### 1. 🔌 Wake-on-LAN (WoL) Subnet Boundary
-*   **Requirement:** The backup runner server and the LAN backup server (`10.10.186.231`) **MUST reside inside the exact same physical network and Layer 2 broadcast subnet**.
-*   **Rationale:** Wake-on-LAN broadcasts standard Magic Packets containing the target's MAC address (`6C-4B-90-25-70-5F`). Standard office routers, firewalls, and Layer 3 switches block network broadcasts. If the servers are separated by routers or are on different VLANs, the target server will fail to wake up automatically.
-
-### 2. 🖥️ Windows Server RPC & Remote Shutdown Permissions
-*   **Requirement:** Both servers must run Windows Server. The local IT administrator must configure and allow **Remote RPC administration and shutdown privileges** between the primary server and the target backup server.
-*   **Setup Actions:** 
-    *   Enable remote administration via the local policy or Group Policy Object (GPO) on the target backup server.
-    *   Allow TCP Port **135** (RPC Endpoint Mapper) and the dynamic RPC port range in the Windows Firewall on the target server to accept remote requests from the runner's IP.
-    *   The service account running `AamBackupAgent` must be registered with administrative privileges on the target server to execute `shutdown.exe /s /m \\10.10.186.231 /t 300` successfully.
-
-### 3. 📂 Financial Year Folder Format (`FYXX-YY`)
-*   **Requirement:** The backup system enforces a strict directory naming format: **`FYXX-YY`** (e.g. `FY25-26`, `FY26-27`). The source drive path and LAN destination path in `config.yaml` must point directly to folders matching this format.
-*   **Rationale:** The backup runner isolates operations strictly to the active fiscal year directory. On **April 1st**, the auto-rollover orchestrator triggers automatically, executes a final sync of the closing year, creates the fresh directories for the new year, and atomically rewrites `config.yaml` to point to the new year. Using any other folder format will disable auto-rollover.
-
-### 4. 🔑 Google Cloud IAM Permissions
-*   **Requirement:** The credentials in the Service Account JSON key (`gcs-key.json`) must carry the **`Storage Object Admin`** IAM role on the GCS bucket (`aam-backup-demo-innovizta`).
-*   **Rationale:** Rclone runs in active mirroring (`sync`) mode. It must have full rights to list the bucket objects, create new files, overwrite modified files, and **delete** files that were pruned locally to prevent cloud storage pollution. Less privileged roles (like creator/viewer) will block sync runs.
-
----
-
-## Step 1: Install Python 3.12 (64-bit)
-
-1. Download the **Windows installer (64-bit)** for Python 3.12 from the official downloads page:
-   `https://www.python.org/downloads/release/python-3128/`
-2. **Crucial:** Run the installer as Administrator. Check both options at the bottom of the first setup screen:
-   - [x] **Install launcher for all users (recommended)**
-   - [x] **Add python.exe to PATH**
-3. Select **Customize installation** -> Click **Next** -> Check **Install for all users** -> Click **Install**.
-4. Verify the installation in a **new** PowerShell window:
-   ```powershell
-   python --version
-   # Output must be: Python 3.12.x
-   ```
+> **Note:** `deploy\bin\` is checked first for all binaries before system PATH.
+> You do **not** need to add rclone to Windows system PATH.
 
 ---
 
-## Step 2: Install uv (Python Package Manager)
+## Prerequisites
 
-We use `uv` for fast, reproducible virtual environment and dependency management.
-
+### 1. Install `uv` (Python Package Manager)
+Open PowerShell and run:
 ```powershell
-pip install uv
-uv --version
-# Verify output shows the uv version info
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+*(uv manages Python 3.12 and all dependencies automatically — no separate Python install needed.)*
+
+### 2. Place `rclone.exe` in `deploy\bin\`
+- Download the Windows 64-bit ZIP from [rclone.org/downloads](https://rclone.org/downloads/).
+- Extract and copy **only** `rclone.exe` into `AAM_BACKUP_V1\deploy\bin\`.
+- The system's `resolve_binary()` checks `deploy\bin\` first — **no system PATH change required**.
+
+### 3. Place the GCS Service Account Key in `deploy\keys\`
+- Go to **Google Cloud Console → IAM & Admin → Service Accounts**.
+- Select your service account → **Keys** → **Add Key → JSON**.
+- Save the downloaded `.json` file as `deploy\keys\aam-gcs-key.json`.
+- In `config.yaml`, set:
+  ```yaml
+  paths:
+    gcs_key_path: "C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json"
+  ```
+
+### 4. Verify GCS Bucket Permissions
+The service account must have the **Storage Object Admin** role on your GCS bucket:
+- GCS Console → **Bucket → Permissions → Grant Access**
+- Principal: your service account email
+- Role: `Storage Object Admin`
+
+### 5. Install `gcloud` CLI (Required for FY Rollover Archive)
+At end-of-year rollover, the system moves the closing FY's GCS data to ARCHIVE storage class using `gcloud`. Without it, rollover still completes but the archive transition is skipped.
+- Download from [cloud.google.com/sdk](https://cloud.google.com/sdk/docs/install).
+- Run the installer and let it add `gcloud` to system PATH.
+- No login needed — the system authenticates using the service account key.
+
+---
+
+## Step 1: Create the Initial FY Folders
+
+> The automation creates FY folders **only during rollover** (April 1st). For the **very first deployment**, you must create them manually.
+
+### On the Source PC (D: drive)
+```
+D:\
+└── FY26-27\          ← create this folder manually
+    ├── Accounts\
+    ├── HR\
+    └── ...           ← place your current year's working data here
 ```
 
+### On the LAN Target (NAS/Server)
+Create the matching folder on the network share:
+```
+\\NAS_IP\share\FY26-27\    ← create this folder on the NAS
+```
+The service account user (set in Step 5 below) must have **Read/Write** access to this share.
+
+### For Old FY Data (Historical Migration)
+Move old years to a separate folder **outside** the automation path so they are never touched:
+```
+D:\
+├── _OLD_FY_DATA\
+│   ├── FY23-24\
+│   ├── FY24-25\
+│   └── FY25-26\
+└── FY26-27\          ← automation source_drive
+```
+Upload old data to GCS manually using rclone (one-time):
+```cmd
+deploy\bin\rclone.exe copy "D:\_OLD_FY_DATA\FY25-26" gcs:your-bucket/FY25-26 --progress
+```
+Then manually set those GCS folders to ARCHIVE class via GCS Console.
+
 ---
 
-## Step 3: Install rclone (GCS Engine)
+## Step 2: Gather Hardware & Network Details
 
-1. Download the 64-bit Windows zip from: `https://rclone.org/downloads/`
-2. Extract the archive and copy `rclone.exe` to a PATH-accessible folder (such as `C:\Windows\System32`) to make it globally executable:
-   ```powershell
-   copy-item -Path "C:\path\to\extracted\rclone.exe" -Destination "C:\Windows\System32\rclone.exe" -Force
-   ```
-3. Verify the installation:
-   ```powershell
-   rclone version
-   # Should display: rclone v1.xx.x
-   ```
+Run the built-in configuration collector to get your network MAC addresses, IP addresses, and current FY folder name — all pre-formatted for `config.yaml`.
 
----
-
-## Step 4: Enable TLS 1.2 on Windows Server 2016
-
-Windows Server 2016 does not enable TLS 1.2 by default for standard system libraries. This is required to download packages and communicate securely with Google Cloud.
-
-Open PowerShell **as Administrator** and execute:
-
-```powershell
-# Set TLS 1.2 for current and future sessions
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-Set-ItemProperty -Path 'HKLM:\SOFTWARE\Wow6432Node\Microsoft\.NetFramework\v4.0.30319' -Name 'SchUseStrongCrypto' -Value 1 -Type DWord
-Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\.NetFramework\v4.0.30319' -Name 'SchUseStrongCrypto' -Value 1 -Type DWord
+```cmd
+uv run python collect_config_data.py
 ```
 
+Keep this window open. It will display **Copy-Paste Ready YAML snippets** verified by Pydantic.
+
 ---
 
-## Step 5: Deploy the Repository
+## Step 3: Set up `config.yaml`
 
-Clone the project repository to `C:\AAM_BACKUP_V1` (this matches the default paths configured in our service scripts):
+Open `config.yaml` and update the following sections using the snippets from Step 2:
 
-```powershell
-cd C:\
-git clone https://github.com/Shawn2099/AAM_BACKUP_V1.git
-cd AAM_BACKUP_V1
+| Key | What to set |
+|-----|-------------|
+| `paths.source_drive` | Local data path, e.g. `D:\\FY26-27` |
+| `paths.lan_destination` | UNC path, e.g. `\\\\192.168.1.100\\share\\FY26-27` |
+| `paths.gcs_key_path` | Full path to your `.json` key, e.g. `C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json` |
+| `paths.database_path` | SQLite manifest path, e.g. `C:\\BackupAgent\\manifest.db` |
+| `wol.mac_address` | MAC address of the NAS/target server |
+| `wol.server_ip` | IP address of the NAS/target server |
+| `dashboard.bind_address` | LAN IP of this (source) machine |
+
+> **Fiscal Year Rule:** `source_drive` and `lan_destination` must end with the **same FY folder** (e.g. both end with `FY26-27`). A mismatch will be rejected at validation.
+
+---
+
+## Step 4: Validate Your Configuration
+
+Before installing any Windows Services, run the validator:
+
+1. Double-click **`deploy\test_config.bat`**.
+2. A console window will open and run your `config.yaml` through the full Pydantic schema.
+3. If it prints `✅ SUCCESS`, proceed. If it prints `❌ ERROR`, fix the issue and re-run.
+
+---
+
+## Step 5: Install Windows Services
+
+1. Navigate to the `deploy\` folder.
+2. **Right-click `install_services.bat`** → **"Run as Administrator"**.
+3. The script automatically:
+   - Downloads `nssm.exe` to `deploy\bin\` if missing.
+   - Installs **AamPrefectServer** (Prefect API on port 4200).
+   - Installs **AamBackupAgent** (Dashboard on port 8080 + backup worker).
+   - Installs **AamWatchdog** (service health monitor).
+   - Starts all three in the correct dependency order.
+
+---
+
+## Step 6: Critical Post-Install Actions
+
+### 6a. Set the Service Log On User (LAN Backup — REQUIRED)
+Windows services default to `Local System`, which **cannot access network shares**.
+
+1. Open Start → type `services.msc` → Enter.
+2. Right-click **Aam Backup Agent** → **Properties** → **Log On** tab.
+3. Select **This account**.
+4. Enter the credentials of a Windows/Domain user with **write access** to the LAN share.
+5. Click **OK**.
+
+Repeat for **Aam Watchdog** if it also needs network access.
+
+### 6b. Open Windows Firewall for Dashboard (if accessing from another PC)
+By default, Windows Firewall blocks external access to port 8080. Run in an elevated Command Prompt:
+```cmd
+netsh advfirewall firewall add rule name="AAM Backup Dashboard" dir=in action=allow protocol=TCP localport=8080
 ```
 
----
-
-## Step 6: Install Project Dependencies
-
-Use `uv` to build the isolated, production virtual environment:
-
-```powershell
-uv sync
-```
+### 6c. Restart Services to Apply Changes
+After changing the Log On user or editing `config.yaml`:
+- Right-click **`deploy\restart_services.bat`** → **"Run as Administrator"**.
 
 ---
 
-## Step 7: Configure the Backup System (`config.yaml`)
+## Step 7: Verify Everything is Working
 
-Initialize your production configuration file from the template:
-
-```powershell
-copy config.example.yaml config.yaml
-notepad config.yaml
-```
-
-Edit the following key sections to match your client's environment. Leave the remaining settings as their reliable defaults:
-
-```yaml
-firm_name: "Client Name Ltd"
-
-paths:
-  source_drive: "D:\\"                               # Drive containing database files to back up
-  lan_destination: "\\\\192.168.10.10\\backup_share"  # Target UNC network share path
-  database_path: "C:\\BackupAgent\\manifest.db"      # Manifest database path
-  log_directory: "C:\\BackupAgent\\logs"              # Application runtime log directory
-  temp_directory: "C:\\BackupAgent\\rclone_temp"      # Temp work directory for rclone
-  gcs_key_path: "C:\\BackupAgent\\gcs-key.json"      # GCS Service Account credential key
-
-wol:
-  enabled: true
-  mac_address: "AA-BB-CC-DD-EE-FF"                    # MAC address of LAN storage server
-  server_ip: "192.168.10.10"                         # IP of LAN storage server
-
-cloud:
-  enabled: true
-  bucket: "client-gcs-backup-bucket"
-  project_number: "123456789012"                      # GCP Project Number
-  storage_class: "COLDLINE"                          # Standard, COLDLINE, ARCHIVE, etc.
-
-schedule:
-  cloud_cron: "0 18 * * *"                           # Cloud backup daily at 6 PM IST
-  lan_cron: "0 1 * * *"                              # LAN backup daily at 1 AM IST
-  weekly_cron: "0 8 * * MON"                         # Weekly report every Monday 8 AM
-  monthly_cron: "0 8 1 * *"                          # Monthly report on 1st of month 8 AM
-  timezone: "Asia/Kolkata"                           # IANA timezone for all schedules
-
-notifications:
-  smtp_host: "smtp.gmail.com"
-  smtp_port: 587
-  smtp_username: "backup.reports@gmail.com"
-  smtp_password: "xxxx xxxx xxxx xxxx"               # App Password
-  sender: "backup.reports@gmail.com"
-  recipients:                                        # Multi-recipient list support
-    - "shawnanish007@gmail.com"
-    - "admin@client.com"
-  send_on_failure: true
-  send_on_success: false
-  weekly_enabled: true                               # Enable/disable weekly report emails
-  monthly_enabled: true                              # Enable/disable monthly report emails
-  weekly_summary_day: "monday"
-  weekly_summary_time: "08:00"
-
-dashboard:
-  auth_enabled: true                                # Requires API key to access dashboard
-  api_key: "choose-a-strong-password-here"           # !! CHANGE THIS to anything you want
-
-maintenance:
-  db_retention_days: 90                              # Retain 90 days of run logs in db
-```
+| Check | How |
+|-------|-----|
+| Dashboard UI | Open `http://<bind_address>:8080` in a browser |
+| Prefect UI | Open `http://localhost:4200` in a browser |
+| Service status | Open `services.msc` — all 3 services should show **Running** |
+| Logs | `C:\BackupAgent\logs\` — check `agent_svc.log` for errors |
 
 ---
 
-## Step 8: Initialize Required Directories
+## Future FY Rollovers (Automatic)
 
-Create the operational directories as Administrator:
+On **April 1st** each year, the system automatically:
+1. Runs a final backup of the closing FY to both LAN and GCS.
+2. Creates the new FY folder on source and LAN (e.g. `FY27-28\`).
+3. Updates `config.yaml` to point to the new folders.
+4. Transitions the old GCS folder to ARCHIVE storage class (requires `gcloud` on PATH).
 
-```powershell
-new-item -ItemType Directory -Force -Path "C:\BackupAgent"
-new-item -ItemType Directory -Force -Path "C:\BackupAgent\logs"
-new-item -ItemType Directory -Force -Path "C:\BackupAgent\rclone_temp"
-```
-
----
-
-## Step 9: Install GCS Service Account Key
-
-Copy the `.json` credential key file retrieved from the Google Cloud Console to the secure configuration directory:
-
-```powershell
-copy-item -Path "C:\path\to\your-gcs-key.json" -Destination "C:\BackupAgent\gcs-key.json" -Force
-```
+**No manual action is required for future rollovers.**
 
 ---
 
-## Step 10: Service Credentials and SMB Permissions (Critical)
+## Uninstallation
 
-> [!IMPORTANT]
-> Mapped network drives (e.g. `X:`) are user-specific resources that **cannot** be accessed by Windows Services. The services must connect to the LAN storage server using the direct UNC path (e.g., `\\192.168.10.10\backup_share`).
->
-> By default, services run under the `LocalSystem` account, which does not have network credentials to access authenticated SMB shares. 
-
-To configure network share permissions:
-1. Open Windows **Services manager** (`services.msc`).
-2. If your network share requires active authentication, you must change the log-on account for **AAM Backup Agent**:
-   - Right-click **AamBackupAgent** -> Select **Properties**.
-   - Select the **Log On** tab.
-   - Choose **This account** and fill in the active Administrator username and password (e.g. `DOMAIN\Administrator`, `.\Administrator`, or `.\LocalBackupUser`) that has full read/write permissions on the target network share.
-   - Click **Apply** and restart the service.
-   - *Note: If the service hangs or gets stuck in a `STOP_PENDING` transition state during this restart, refer to the **Stuck Services (STOP_PENDING)** section in the Troubleshooting guide below to clear the process cleanly.*
-
----
-
-## Step 11: Validate the System Clock
-
-Google Cloud Storage OAuth token authentication enforces tight security. System clocks with **more than 10 minutes** of drift from UTC time will fail GCS auth checks.
-
-Verify and sync the server clock:
-
-```powershell
-# Get local time and sync
-net start w32time
-w32tm /resync
-```
-
----
-
-## Step 12: Manual Pre-Flight Testing
-
-Before deploying in the background, run the manual scripts to confirm correct configuration:
-
-1. Launch the Prefect server in one PowerShell terminal:
-   ```powershell
-   cd C:\AAM_BACKUP_V1
-   .\start_server.bat
-   ```
-2. Launch the application in a second PowerShell terminal:
-   ```powershell
-   cd C:\AAM_BACKUP_V1
-   .\start.bat
-   ```
-3. Open your browser:
-   - Navigate to `http://localhost:8080` (Dashboard UI)
-   - Navigate to `http://localhost:4200` (Prefect UI)
-4. On the dashboard, trigger a manual dry-run/backup. Verify that the operations complete successfully.
-
----
-
-## Step 13: Install Production Services via NSSM
-
-For 24/7 reliability, automated self-healing, and service restart on boot, the application runs as three Windows Services managed by NSSM:
-
-1. **AamPrefectServer:** Prefect server backend (API + DB).
-2. **AamBackupAgent:** Dashboard UI and cron schedules.
-3. **AamWatchdog:** Self-healing service sentinel that monitors API health.
-
-> [!NOTE]
-> **No external download required:** NSSM (v2.24-101) is pre-bundled inside the codebase under `deploy/bin/nssm.exe` so the installation can be completed 100% offline.
-
-### 1. Configure Project Path (Optional)
-Open `C:\AAM_BACKUP_V1\deploy\install_services.bat` in a text editor. Ensure that the `PROJECT_DIR` variable accurately matches your path:
-- `PROJECT_DIR`: Path to the cloned project folder (default: `C:\AAM_BACKUP_V1` or `C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1`)
-
-### 2. Run the Service Installer
-Execute the installation batch file from an elevated **Administrator PowerShell** window:
-
-```powershell
-cd C:\AAM_BACKUP_V1
-.\deploy\install_services.bat
-```
-
-This installer script will automatically:
-- Create the system directories and redirect log outputs.
-- Register all 3 services in the Windows Service Control Manager (SCM).
-- Configure stdout/stderr log redirection with 10MB auto-rotation.
-- Set up automatic crash recovery (services auto-restart on crash).
-- Start all three services in the correct sequence automatically.
-
----
-
-## Step 14: Reboot and Verify
-
-1. **Reboot the Windows Server:**
-   ```powershell
-   shutdown /r /t 0
-   ```
-2. **Verify Services Status:**
-   - Press `Win + R`, type `services.msc`, and press Enter.
-   - Verify that **AAM Prefect Server**, **AAM Backup Agent**, and **AAM Backup Watchdog** are all listed and showing **Running** as status.
-3. **Verify Web Dashboards:**
-   - Open your browser and navigate to the dashboard: `http://localhost:8080` (or the configured bind address and port).
-   - Click the **"Email Weekly Report"** button to verify that email notifications are working perfectly for all configured recipients.
-
----
-
-## Troubleshooting & Maintenance
-
-### 📝 Checking Logs
-All service standard output and error streams are captured and auto-rotated in `C:\BackupAgent\logs\`:
-- `agent_svc.log`: Main dashboard UI and task scheduling logs.
-- `prefect_svc.log`: Prefect API server logs.
-- `watchdog_svc.log`: Service monitoring and self-healing log.
-
-### 🚫 Port Conflict (4200 or 8080)
-If the dashboard or Prefect server fails to start, verify if another process is occupying the port:
-
-```powershell
-netstat -ano | findstr :8080
-netstat -ano | findstr :4200
-```
-
-### 🔑 Resetting Corrupted Prefect DB
-If the database gets corrupted during a server power outage, reset the Prefect database:
-
-```powershell
-cd C:\AAM_BACKUP_V1
-uv run prefect server database reset -y
-```
-
-### 🛑 Stuck Services (STOP_PENDING)
-When changing logon credentials, restarting the server, or stopping the services, a service (typically **AamBackupAgent**) might occasionally get stuck in a `STOP_PENDING` state. This happens if the underlying Python worker or subprocesses take too long to close active connections or exit cleanly.
-
-To resolve this and force a clean restart:
-1. **Identify the Stuck Service Process PID:**
-   Open PowerShell or Command Prompt as Administrator and query the extended status of the backup agent:
-   ```powershell
-   sc queryex AamBackupAgent
-   ```
-   Find and note the `PID` value in the printed output.
-2. **Terminate the Stuck Wrapper Process:**
-   Forcefully terminate the stuck NSSM process using its PID (e.g., if the PID is `1320`):
-   ```powershell
-   taskkill /F /PID 1320
-   ```
-3. **Verify and Restart:**
-   Verify that the service has transitioned to `STOPPED` and then start it normally:
-   ```powershell
-   sc query AamBackupAgent
-   net start AamBackupAgent
-   ```
+1. Right-click **`deploy\uninstall_services.bat`** → **"Run as Administrator"**.
+2. This stops and removes all 3 services and kills any orphaned background processes.
+3. Delete the project folder manually after uninstallation.

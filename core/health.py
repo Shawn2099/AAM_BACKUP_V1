@@ -8,6 +8,8 @@ from pathlib import Path
 import pendulum
 from loguru import logger
 
+from core.process import resolve_binary
+
 
 class HealthError(RuntimeError):
     """Raised when a pre-backup health check fails."""
@@ -52,8 +54,8 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
 
 
 def check_binary_exists(name: str) -> bool:
-    """Check if binary is available in PATH."""
-    return shutil.which(name) is not None
+    """Check if binary is available locally or in PATH."""
+    return resolve_binary(name) is not None
 
 
 def check_gcs_key(key_path: str) -> tuple[bool, str]:
@@ -108,11 +110,11 @@ def pre_backup_health(source_path: str, mode: str, gcs_key_path: str | None = No
     Args:
         source_path: Source drive root path.
         mode: "cloud", "lan", or "all"
-        gcs_key_path: Path to GCS service account key. If provided, validates
-            existence; logs warning on failure without blocking backup.
+        gcs_key_path: Path to GCS service account key. Required for cloud mode.
 
     Raises:
-        HealthError: If any check fails.
+        HealthError: If any critical check fails — key missing, clock skewed,
+            rclone/robocopy not found, or source drive inaccessible.
     """
     ok, reason = check_source_drive(source_path)
     if not ok:
@@ -124,10 +126,11 @@ def pre_backup_health(source_path: str, mode: str, gcs_key_path: str | None = No
         if gcs_key_path:
             key_ok, key_reason = check_gcs_key(gcs_key_path)
             if not key_ok:
-                logger.warning(f"GCS key check: {key_reason}")
+                raise HealthError(f"GCS key check failed: {key_reason}")
         clock_ok, clock_reason = check_clock_skew()
         if not clock_ok:
-            logger.warning(f"Clock skew: {clock_reason}")
+            # Clock skew >10 min causes GCS JWT authentication to be rejected
+            raise HealthError(f"Clock skew exceeds limit: {clock_reason}")
 
     if mode in ("lan", "all"):
         if not check_binary_exists("robocopy"):

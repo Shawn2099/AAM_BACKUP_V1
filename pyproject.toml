@@ -39,3 +39,4 @@ ignore = ["E501"]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 filterwarnings = ["ignore::DeprecationWarning"]
+pythonpath = ["."]

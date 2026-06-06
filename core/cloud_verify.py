@@ -4,6 +4,8 @@ import subprocess
 
 from loguru import logger
 
+from core.process import resolve_binary
+
 
 def verify_cloud_integrity(
     source: str,
@@ -30,8 +32,9 @@ def verify_cloud_integrity(
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
+    rclone_exe = resolve_binary("rclone") or "rclone"
     cmd = [
-        "rclone", "check",
+        rclone_exe, "check",
         source, dest,
         "--one-way",
         "--fast-list",

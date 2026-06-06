@@ -1,59 +1,48 @@
 @echo off
-:: ═══════════════════════════════════════════════════════════════
-:: AAM Backup Automation V1 — NSSM Service Uninstaller
-:: Run as Administrator.
-:: Stops and completely removes both AAM services.
-:: ═══════════════════════════════════════════════════════════════
-
-setlocal
-
-set PROJECT_DIR=C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1
-set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
-set SVC_SERVER=AamPrefectServer
-set SVC_AGENT=AamBackupAgent
-set SVC_WATCHDOG=AamWatchdog
+:: ═══════════════════════════════════════════════════════════════════════
+:: Uninstall Services for AAM Backup Automation
+:: ═══════════════════════════════════════════════════════════════════════
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ERROR: Must run as Administrator.
+    echo.
+    echo  ERROR: This script must be run as Administrator.
+    echo  Right-click uninstall_services.bat ^> "Run as administrator"
+    echo.
+    pause
     exit /b 1
 )
 
-echo.
-echo ===================================================================
-echo   AAM Backup Automation V1 — Service Removal
-echo ===================================================================
+set SCRIPT_DIR=%~dp0
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
+set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
+
+if not exist "%NSSM%" (
+    echo [WARN] NSSM not found. Proceeding with sc delete...
+    sc stop AamWatchdog 2>nul
+    sc stop AamBackupAgent 2>nul
+    sc stop AamPrefectServer 2>nul
+    sc delete AamWatchdog 2>nul
+    sc delete AamBackupAgent 2>nul
+    sc delete AamPrefectServer 2>nul
+) else (
+    echo [INFO] Stopping services...
+    "%NSSM%" stop AamWatchdog 2>nul
+    "%NSSM%" stop AamBackupAgent 2>nul
+    "%NSSM%" stop AamPrefectServer 2>nul
+
+    echo [INFO] Removing services...
+    "%NSSM%" remove AamWatchdog confirm 2>nul
+    "%NSSM%" remove AamBackupAgent confirm 2>nul
+    "%NSSM%" remove AamPrefectServer confirm 2>nul
+)
+
+echo [INFO] Killing any orphaned prefect.exe processes...
+taskkill /F /IM prefect.exe /T 2>nul
 
 echo.
-echo [uninstall] Stopping %SVC_WATCHDOG% (monitor first)...
-"%NSSM%" stop %SVC_WATCHDOG% 2>nul
-net stop %SVC_WATCHDOG% 2>nul
-
-echo [uninstall] Stopping %SVC_AGENT%...
-"%NSSM%" stop %SVC_AGENT% 2>nul
-net stop %SVC_AGENT% 2>nul
-
-echo [uninstall] Stopping %SVC_SERVER%...
-"%NSSM%" stop %SVC_SERVER% 2>nul
-net stop %SVC_SERVER% 2>nul
-
-timeout /t 3 /nobreak >nul
-
-echo [uninstall] Removing %SVC_WATCHDOG%...
-"%NSSM%" remove %SVC_WATCHDOG% confirm 2>nul
-sc delete %SVC_WATCHDOG% >nul 2>&1
-
-echo [uninstall] Removing %SVC_AGENT%...
-"%NSSM%" remove %SVC_AGENT% confirm 2>nul
-sc delete %SVC_AGENT% >nul 2>&1
-
-echo [uninstall] Removing %SVC_SERVER%...
-"%NSSM%" remove %SVC_SERVER% confirm 2>nul
-sc delete %SVC_SERVER% >nul 2>&1
-
-echo.
-echo ===================================================================
-echo   Done. Both services have been removed.
-echo   Logs remain at C:\BackupAgent\logs\ — delete manually if needed.
-echo ===================================================================
-echo.
+echo ===================================================
+echo  SERVICES UNINSTALLED SUCCESSFULLY
+echo ===================================================
+pause

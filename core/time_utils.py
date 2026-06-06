@@ -11,6 +11,15 @@ from datetime import date
 
 import pendulum
 
+try:
+    from pendulum.parsing.exceptions import ParserError
+except ImportError:
+    # Fallback for some pendulum 3.x versions
+    try:
+        from pendulum.parsing.parser import ParserError
+    except ImportError:
+        class ParserError(Exception): pass  # Dummy fallback
+
 
 # ═══════════════════════════════════════════════════════════════
 # Current UTC timestamps
@@ -52,7 +61,7 @@ def parse_iso_to_local(iso_str: str | None, tz: str = "Asia/Kolkata") -> str:
         if dt is None:
             return "-"
         return dt.in_timezone(tz).format("YYYY-MM-DD HH:mm:ss")
-    except (ValueError, pendulum.parsing.exceptions.ParserError):
+    except (ValueError, ParserError):
         s = str(iso_str).strip()
         return s[:19].replace("T", " ") if s else "-"
 
@@ -70,7 +79,7 @@ def format_iso_for_js(iso_str: str | None) -> str | None:
         if dt is None:
             return None
         return dt.isoformat()
-    except (ValueError, pendulum.parsing.exceptions.ParserError):
+    except (ValueError, ParserError):
         return None
 
 

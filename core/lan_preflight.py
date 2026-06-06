@@ -8,7 +8,7 @@ import subprocess
 
 from loguru import logger
 
-
+from core.process import resolve_binary
 def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
 
@@ -25,8 +25,9 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     Returns:
         {"ok": bool, "exit_code": int, "error": str | None}
     """
+    robocopy_exe = resolve_binary("robocopy") or "robocopy"
     cmd = [
-        "robocopy",
+        robocopy_exe,
         source,
         dest,
         "/L", "/MIR", "/XJ",

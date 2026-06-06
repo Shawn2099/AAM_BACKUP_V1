@@ -6,7 +6,8 @@ import shutil
 
 # Secure and ultra-reliable CDN hosted by Chocolatey
 chocolatey_url = "https://community.chocolatey.org/api/v2/package/nssm"
-tools_dir = r"C:\BackupAgent\tools"
+project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+tools_dir = os.path.join(project_dir, "deploy", "bin")
 nupkg_path = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_choco.nupkg")
 extract_dir = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_choco_extract")
 inner_extract_dir = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_inner_extract")

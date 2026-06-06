@@ -1,32 +1,18 @@
 @echo off
 :: ═══════════════════════════════════════════════════════════════════════
-:: AAM Backup Automation V1 — NSSM Service Installer (3 services)
+:: AAM Backup Automation V1 — THE ULTIMATE NSSM SERVICE INSTALLER
 :: Run as Administrator from any directory.
 ::
-:: Creates two Windows Services:
-::   AamPrefectServer  — prefect server start (API + scheduler backend)
-::   AamBackupAgent    — launch.py (dashboard UI + Prefect serve())
-::
-:: Both services:
-::   - Start automatically at boot (before user login)
-::   - Restart automatically on crash (30s first, 60s subsequent)
-::   - Capture stdout+stderr to C:\BackupAgent\logs\ with 10MB rotation
-::   - Run under LocalSystem with fixed PREFECT_HOME so DB path never changes
+:: Features:
+::   - Auto-detects project root directory based on script location
+::   - Auto-detects `uv.exe` path from system PATH or common locations
+::   - Auto-downloads NSSM if missing (using uv and download_nssm.py)
+::   - Cleans up orphaned prefect/python processes before reinstalling
+::   - Sets explicit NSSM shutdown timeouts to prevent STOP_PENDING errors
+::   - Sets up resilient restart delays and log rotations for 3 services
 :: ═══════════════════════════════════════════════════════════════════════
 
 setlocal EnableDelayedExpansion
-
-:: ── Configuration ────────────────────────────────────────────────────
-set PROJECT_DIR=C:\Users\Administrator\Desktop\testing\AAM_BACKUP_V1
-set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
-set UV_EXE=C:\Program Files\Python312\Scripts\uv.exe
-set BACKUP_ROOT=C:\BackupAgent
-set LOG_DIR=%BACKUP_ROOT%\logs
-set PREFECT_HOME=%BACKUP_ROOT%\.prefect
-
-set SVC_SERVER=AamPrefectServer
-set SVC_AGENT=AamBackupAgent
-set SVC_WATCHDOG=AamWatchdog
 
 :: ── Guard: must run as Administrator ────────────────────────────────
 net session >nul 2>&1
@@ -35,33 +21,81 @@ if %errorlevel% neq 0 (
     echo  ERROR: This script must be run as Administrator.
     echo  Right-click install_services.bat ^> "Run as administrator"
     echo.
+    pause
     exit /b 1
 )
 
-:: ── Guard: NSSM must exist in bundle ────────────────────────────────
+:: ── Dynamic Path Resolution ─────────────────────────────────────────
+:: Get the directory of the current script (e.g. C:\AAM_BACKUP_V1\deploy)
+set SCRIPT_DIR=%~dp0
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+
+:: 3. Configure Windows Long Path Support
+echo [INFO] Enabling Windows Long Path support (MaxPath > 260 chars)...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo [OK] Long paths enabled in Registry.
+) else (
+    echo [WARN] Failed to enable Long Paths. You may need to enable it via Group Policy.
+)
+
+:: Resolve the parent directory as the project root (e.g. C:\AAM_BACKUP_V1)
+for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
+
+set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
+set BACKUP_ROOT=C:\BackupAgent
+set LOG_DIR=%BACKUP_ROOT%\logs
+set PREFECT_HOME=%BACKUP_ROOT%\.prefect
+
+set SVC_SERVER=AamPrefectServer
+set SVC_AGENT=AamBackupAgent
+set SVC_WATCHDOG=AamWatchdog
+
+:: ── Find uv executable dynamically ──────────────────────────────────
+set "UV_EXE="
+for /f "delims=" %%I in ('where uv 2^>nul') do (
+    set "UV_EXE=%%I"
+    goto :uv_found
+)
+:uv_found
+
+if "%UV_EXE%"=="" (
+    if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
+)
+if "%UV_EXE%"=="" (
+    if exist "C:\Program Files\Python312\Scripts\uv.exe" set "UV_EXE=C:\Program Files\Python312\Scripts\uv.exe"
+)
+
+if "%UV_EXE%"=="" (
+    echo.
+    echo  ERROR: 'uv' package manager not found.
+    echo  Please install it: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+    echo.
+    pause
+    exit /b 1
+)
+
+:: ── Guard: Auto-download NSSM if missing ─────────────────────────────
 if not exist "%NSSM%" (
     echo.
-    echo  ERROR: Bundled NSSM not found at %NSSM%
-    echo  Please ensure deploy\bin\nssm.exe exists in the repository.
-    echo.
-    exit /b 1
+    echo [setup] NSSM not found at %NSSM%. Attempting to auto-download...
+    cd /d "%PROJECT_DIR%"
+    "%UV_EXE%" run python "%PROJECT_DIR%\deploy\download_nssm.py"
+    if not exist "%NSSM%" (
+        echo  ERROR: Failed to automatically download NSSM.
+        pause
+        exit /b 1
+    )
+    echo [setup] NSSM successfully downloaded.
 )
 
-:: ── Guard: uv must exist ─────────────────────────────────────────────
-if not exist "%UV_EXE%" (
-    echo.
-    echo  ERROR: uv not found at %UV_EXE%
-    echo  Check your uv installation and update UV_EXE in this script.
-    echo.
-    exit /b 1
-)
-
-:: ── Guard: project directory must exist ──────────────────────────────
+:: ── Guard: project directory validation ──────────────────────────────
 if not exist "%PROJECT_DIR%\launch.py" (
     echo.
-    echo  ERROR: Project not found at %PROJECT_DIR%
-    echo  Update PROJECT_DIR in this script to match your installation path.
+    echo  ERROR: launch.py not found in %PROJECT_DIR%.
+    echo  Ensure this script is in the 'deploy' folder of the project.
     echo.
+    pause
     exit /b 1
 )
 
@@ -71,7 +105,7 @@ if not exist "%PREFECT_HOME%" mkdir "%PREFECT_HOME%"
 
 echo.
 echo ===================================================================
-echo   AAM Backup Automation V1 — Service Installation
+echo   AAM Backup Automation V1 — ULTIMATE INSTALLER
 echo ===================================================================
 echo   NSSM:         %NSSM%
 echo   uv:           %UV_EXE%
@@ -80,28 +114,32 @@ echo   Logs:         %LOG_DIR%
 echo   Prefect home: %PREFECT_HOME%
 echo ===================================================================
 
-:: ── Remove old services if they exist (idempotent reinstall) ─────────
+:: ── Remove old services (clean reinstall) ────────────────────────────
 echo.
-echo [setup] Removing any existing services (clean reinstall)...
+echo [setup] Stopping and removing any existing services...
 "%NSSM%" stop  %SVC_WATCHDOG% 2>nul
 "%NSSM%" stop  %SVC_AGENT%   2>nul
 "%NSSM%" stop  %SVC_SERVER%  2>nul
+
+echo [setup] Killing any orphaned prefect subprocesses...
+taskkill /F /IM prefect.exe /T 2>nul
+
 "%NSSM%" remove %SVC_WATCHDOG% confirm 2>nul
 "%NSSM%" remove %SVC_AGENT%   confirm 2>nul
 "%NSSM%" remove %SVC_SERVER%  confirm 2>nul
-:: Small pause to let SCM release handles
+
+:: Small pause to let Windows SCM release file handles completely
 timeout /t 3 /nobreak >nul
 
 
 :: ════════════════════════════════════════════════════════════════════
 :: SERVICE 1: AamPrefectServer
-:: Runs: uv run prefect server start
 :: ════════════════════════════════════════════════════════════════════
 echo.
 echo [setup] Installing %SVC_SERVER%...
 
 "%NSSM%" install %SVC_SERVER% "%UV_EXE%"
-"%NSSM%" set %SVC_SERVER% AppParameters         "run prefect server start"
+"%NSSM%" set %SVC_SERVER% AppParameters         "run prefect server start --host 127.0.0.1 --port 4200"
 "%NSSM%" set %SVC_SERVER% AppDirectory          "%PROJECT_DIR%"
 "%NSSM%" set %SVC_SERVER% DisplayName           "AAM Prefect Server"
 "%NSSM%" set %SVC_SERVER% Description           "Prefect 3 API server for AAM Backup Automation V1"
@@ -116,24 +154,27 @@ echo [setup] Installing %SVC_SERVER%...
 "%NSSM%" set %SVC_SERVER% AppRotateOnline       1
 "%NSSM%" set %SVC_SERVER% AppRotateBytes        10485760
 
-:: Restart delay after crash: NSSM-level (immediate kill + delay before restart)
+:: NSSM graceful shutdown settings
+"%NSSM%" set %SVC_SERVER% AppStopMethodSkip     0
+"%NSSM%" set %SVC_SERVER% AppStopMethodConsole  15000
+"%NSSM%" set %SVC_SERVER% AppStopMethodWindow   15000
+"%NSSM%" set %SVC_SERVER% AppStopMethodThreads  15000
+
+:: Restart delay after crash: 30 seconds
 "%NSSM%" set %SVC_SERVER% AppRestartDelay       30000
 
-:: Fixed Prefect home — DB path never changes regardless of service account
-"%NSSM%" set %SVC_SERVER% AppEnvironmentExtra   "PREFECT_HOME=%PREFECT_HOME%" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_SERVER_API_PORT=4200"
+:: Fixed Prefect home
+"%NSSM%" set %SVC_SERVER% AppEnvironmentExtra   "PREFECT_HOME=%PREFECT_HOME%" "PREFECT_API_URL=http://127.0.0.1:4200/api"
 
-:: Windows SCM recovery actions (belt-and-suspenders alongside NSSM)
-:: Reset counter after 24h. On failure: restart after 30s, 60s, 60s.
+:: Windows SCM recovery actions
 sc failure %SVC_SERVER% reset= 86400 actions= restart/30000/restart/60000/restart/60000 >nul
 sc failureflag %SVC_SERVER% 1 >nul
 
-echo [setup] %SVC_SERVER% installed.
+echo [setup] %SVC_SERVER% installed successfully.
 
 
 :: ════════════════════════════════════════════════════════════════════
 :: SERVICE 2: AamBackupAgent
-:: Runs: uv run python launch.py  (dashboard + scheduler)
-:: Depends on AamPrefectServer being Running first.
 :: ════════════════════════════════════════════════════════════════════
 echo.
 echo [setup] Installing %SVC_AGENT%...
@@ -145,10 +186,9 @@ echo [setup] Installing %SVC_AGENT%...
 "%NSSM%" set %SVC_AGENT% Description            "AAM Backup dashboard (port 8080) and Prefect scheduler"
 "%NSSM%" set %SVC_AGENT% Start                  SERVICE_AUTO_START
 
-:: Depend on Prefect server — SCM won't start this until AamPrefectServer is Running
+:: Depend on Prefect server being Running first
 "%NSSM%" set %SVC_AGENT% DependOnService        %SVC_SERVER%
 
-:: Stdout + stderr → agent log, 10 MB rotation
 "%NSSM%" set %SVC_AGENT% AppStdout              "%LOG_DIR%\agent_svc.log"
 "%NSSM%" set %SVC_AGENT% AppStderr              "%LOG_DIR%\agent_svc.log"
 "%NSSM%" set %SVC_AGENT% AppStdoutCreationDisposition 4
@@ -157,23 +197,22 @@ echo [setup] Installing %SVC_AGENT%...
 "%NSSM%" set %SVC_AGENT% AppRotateOnline        1
 "%NSSM%" set %SVC_AGENT% AppRotateBytes         10485760
 
-:: 30s restart delay — gives Prefect server time to be fully ready after its own restart
-"%NSSM%" set %SVC_AGENT% AppRestartDelay        30000
+:: Graceful shutdown - allowing sub-processes (rclone) to finish closing
+"%NSSM%" set %SVC_AGENT% AppStopMethodConsole   30000
+"%NSSM%" set %SVC_AGENT% AppStopMethodWindow    30000
+"%NSSM%" set %SVC_AGENT% AppStopMethodThreads   30000
 
+"%NSSM%" set %SVC_AGENT% AppRestartDelay        30000
 "%NSSM%" set %SVC_AGENT% AppEnvironmentExtra    "PREFECT_HOME=%PREFECT_HOME%" "PREFECT_API_URL=http://127.0.0.1:4200/api"
 
 sc failure %SVC_AGENT% reset= 86400 actions= restart/60000/restart/90000/restart/120000 >nul
 sc failureflag %SVC_AGENT% 1 >nul
 
-echo [setup] %SVC_AGENT% installed.
+echo [setup] %SVC_AGENT% installed successfully.
 
 
 :: ════════════════════════════════════════════════════════════════════
 :: SERVICE 3: AamWatchdog
-:: Runs: uv run python watchdog.py
-:: Polls Prefect API health every 60s. Restarts AamPrefectServer (via
-:: sc stop) if the API is unresponsive for 3 consecutive checks.
-:: No DependOnService — handles Prefect being unavailable gracefully.
 :: ════════════════════════════════════════════════════════════════════
 echo.
 echo [setup] Installing %SVC_WATCHDOG%...
@@ -182,7 +221,7 @@ echo [setup] Installing %SVC_WATCHDOG%...
 "%NSSM%" set %SVC_WATCHDOG% AppParameters          "run python watchdog.py"
 "%NSSM%" set %SVC_WATCHDOG% AppDirectory           "%PROJECT_DIR%"
 "%NSSM%" set %SVC_WATCHDOG% DisplayName            "AAM Backup Watchdog"
-"%NSSM%" set %SVC_WATCHDOG% Description            "Polls Prefect API health, restarts AamPrefectServer if hung-but-alive"
+"%NSSM%" set %SVC_WATCHDOG% Description            "Monitors API health and restarts services if hung"
 "%NSSM%" set %SVC_WATCHDOG% Start                  SERVICE_AUTO_START
 
 "%NSSM%" set %SVC_WATCHDOG% AppStdout              "%LOG_DIR%\watchdog_svc.log"
@@ -193,57 +232,52 @@ echo [setup] Installing %SVC_WATCHDOG%...
 "%NSSM%" set %SVC_WATCHDOG% AppRotateOnline        1
 "%NSSM%" set %SVC_WATCHDOG% AppRotateBytes         10485760
 
-:: Watchdog restart delay — short since it holds no state and boots instantly
 "%NSSM%" set %SVC_WATCHDOG% AppRestartDelay        15000
-
 "%NSSM%" set %SVC_WATCHDOG% AppEnvironmentExtra    "PREFECT_HOME=%PREFECT_HOME%" "PREFECT_API_URL=http://127.0.0.1:4200/api"
 
 sc failure %SVC_WATCHDOG% reset= 86400 actions= restart/15000/restart/30000/restart/30000 >nul
 sc failureflag %SVC_WATCHDOG% 1 >nul
 
-echo [setup] %SVC_WATCHDOG% installed.
+echo [setup] %SVC_WATCHDOG% installed successfully.
 
 
 :: ════════════════════════════════════════════════════════════════════
-:: Start all three services
+:: Start all services
 :: ════════════════════════════════════════════════════════════════════
 echo.
 echo [setup] Starting %SVC_SERVER%...
 net start %SVC_SERVER%
 if %errorlevel% neq 0 (
     echo  ERROR: Failed to start %SVC_SERVER%. Check: %LOG_DIR%\prefect_svc.log
-    exit /b 1
 )
 
-echo [setup] Waiting 20 seconds for Prefect API to become ready...
-timeout /t 20 /nobreak >nul
+echo [setup] Waiting 15 seconds for Prefect API to initialize...
+timeout /t 15 /nobreak >nul
 
 echo [setup] Starting %SVC_AGENT%...
 net start %SVC_AGENT%
 if %errorlevel% neq 0 (
-    echo  WARNING: %SVC_AGENT% failed to start on first attempt.
-    echo  NSSM will retry automatically. Check: %LOG_DIR%\agent_svc.log
+    echo  WARNING: %SVC_AGENT% failed to start. It will retry automatically.
 )
 
 echo [setup] Starting %SVC_WATCHDOG%...
 net start %SVC_WATCHDOG%
 if %errorlevel% neq 0 (
-    echo  WARNING: %SVC_WATCHDOG% failed to start on first attempt.
-    echo  NSSM will retry automatically. Check: %LOG_DIR%\watchdog_svc.log
+    echo  WARNING: %SVC_WATCHDOG% failed to start. It will retry automatically.
 )
 
 echo.
 echo ===================================================================
-echo   Installation complete.
+echo   ULTIMATE INSTALLATION COMPLETE
 echo ===================================================================
 echo   Services:    Open services.msc to verify status
 echo   Prefect UI:  http://localhost:4200
 echo   Dashboard:   http://localhost:8080
-echo   Server log:  %LOG_DIR%\prefect_svc.log
-echo   Agent log:   %LOG_DIR%\agent_svc.log
+echo   Logs:        %LOG_DIR%
 echo ===================================================================
 echo.
-echo   NOTE: If LAN backup fails with access denied errors, the services
-echo   may need to run as a domain or local account with share access
-echo   instead of LocalSystem. Edit via: services.msc > Log On tab.
+echo   NOTE: If LAN backup fails with access denied, the services
+echo   must run as a local/domain user with network share access.
+echo   Configure this via services.msc -^> Log On tab.
 echo.
+pause

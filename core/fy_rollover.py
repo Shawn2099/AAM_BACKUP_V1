@@ -19,7 +19,7 @@ from core.cloud_sync import run_cloud_sync
 from core.lan_sync import run_lan_sync
 from core.time_utils import get_fy_prefix
 
-FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$")
+FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
 
 
 class RolloverError(Exception):
@@ -32,7 +32,7 @@ def _fy_name(path_str: str) -> str | None:
     Works cross-platform with both forward and backslash separators."""
     parts = path_str.replace("\\", "/").rstrip("/").split("/")
     name = parts[-1]
-    return name if FY_PATTERN.match(name) else None
+    return name.upper() if FY_PATTERN.match(name) else None
 
 
 def _parent_path(path_str: str) -> str:
@@ -46,7 +46,7 @@ def _parent_path(path_str: str) -> str:
     parent_parts = parts[:-1] if len(parts) > 1 else parts
 
     if path_str.startswith("\\\\"):
-        return "\\\\" + "\\".join(parent_parts[2:]) if len(parent_parts) > 2 else path_str
+        return "\\\\" + "\\".join(parent_parts[2:]) if len(parent_parts) > 3 else path_str
     elif "\\" in path_str:
         return "\\".join(parent_parts)
     else:
@@ -149,18 +149,37 @@ def run_final_backup(source_drive: str, lan_destination: str,
 
 
 def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str) -> dict[str, Path]:
-    """Create new FY folders on source and LAN. Returns dict of created Paths."""
+    """Create new FY folders on source and LAN. Returns dict of created Paths.
+
+    Source folder creation is mandatory — raises on failure (local disk problem).
+    LAN folder creation is best-effort — logs a clear error if NAS is offline
+    at rollover time, but does NOT block the rollover. The operator must create
+    the LAN folder manually before the next LAN backup runs.
+    """
     created = {}
     new_source = Path(_child_path(source_root, new_fy))
     new_lan = Path(_child_path(lan_root, new_fy))
 
+    # Source folder: local disk — must succeed
     new_source.mkdir(parents=True, exist_ok=True)
     created["source"] = new_source
-    logger.info(f"FY rollover: created {new_source}")
+    logger.info(f"FY rollover: created source folder {new_source}")
 
-    new_lan.mkdir(parents=True, exist_ok=True)
-    created["lan"] = new_lan
-    logger.info(f"FY rollover: created {new_lan}")
+    # LAN folder: network path — may fail if NAS is offline at rollover time
+    try:
+        new_lan.mkdir(parents=True, exist_ok=True)
+        created["lan"] = new_lan
+        logger.info(f"FY rollover: created LAN folder {new_lan}")
+    except OSError as e:
+        logger.error(
+            f"FY rollover: FAILED to create LAN folder {new_lan}: {e}. "
+            f"The NAS may have been offline at rollover time. "
+            f"ACTION REQUIRED: Manually create '{new_lan}' on the NAS "
+            f"before the next LAN backup or it will fail with 'destination not found'."
+        )
+        # Non-blocking — config.yaml still gets updated to new FY.
+        # The LAN backup will fail gracefully at the preflight stage until the
+        # folder is created manually.
 
     return created
 
@@ -335,15 +354,6 @@ def rollover(config_path: str = "config.yaml") -> bool:
 
     src_fy = _fy_name(source_drive)
     lan_fy = _fy_name(lan_destination)
-
-    # Warn if both paths carry an FY suffix but they disagree.  This indicates
-    # a manually edited config.yaml and could cause the wrong year to be archived.
-    if src_fy and lan_fy and src_fy != lan_fy:
-        logger.warning(
-            f"FY rollover: source and LAN FY labels disagree — "
-            f"source={src_fy!r}, lan={lan_fy!r}. "
-            "Using source FY as the canonical closing year."
-        )
 
     old_fy = src_fy or lan_fy
     if old_fy is None:

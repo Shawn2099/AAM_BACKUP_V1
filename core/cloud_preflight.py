@@ -9,6 +9,7 @@ import subprocess
 from loguru import logger
 
 from core.rclone_config import temp_rclone_config
+from core.process import resolve_binary
 
 
 def run_cloud_dry_run(
@@ -39,8 +40,9 @@ def run_cloud_dry_run(
     with temp_rclone_config(gcs_key_path, location, project_number, storage_class) as config_path:
         dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
+        rclone_exe = resolve_binary("rclone") or "rclone"
         cmd = [
-            "rclone", "check",
+            rclone_exe, "check",
             source, dest,
             "--one-way",
             "--fast-list",

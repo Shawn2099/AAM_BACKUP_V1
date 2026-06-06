@@ -65,6 +65,14 @@ class WolConfig(BaseModel):
     enabled: bool = True
     mac_address: str
     server_ip: str = "192.168.10.10"
+    broadcast_address: str = Field(
+        default="",
+        description=(
+            "WoL magic packet broadcast target. Leave empty to auto-derive from server_ip "
+            "(e.g. 192.168.10.10 → 192.168.10.255). Set explicitly if the NAS is on a "
+            "different VLAN or managed switch that blocks 255.255.255.255."
+        ),
+    )
     wake_timeout_seconds: int = Field(default=300, ge=60, le=600)
     ping_interval_seconds: int = Field(default=15, ge=5, le=60)
     stability_wait_seconds: int = Field(default=30, ge=0)
@@ -84,6 +92,37 @@ class WolConfig(BaseModel):
         except ipaddress.AddressValueError:
             raise ValueError(f"Invalid IPv4 address: {v}")
         return v
+
+    @field_validator("broadcast_address")
+    @classmethod
+    def valid_broadcast_address(cls, v: str) -> str:
+        """Validate broadcast_address if provided. Empty string means auto-derive."""
+        if v and v != "":
+            try:
+                ipaddress.IPv4Address(v)
+            except ipaddress.AddressValueError:
+                raise ValueError(
+                    f"Invalid broadcast_address IPv4 '{v}'. "
+                    "Set to empty string to auto-derive from server_ip."
+                )
+        return v
+
+    def get_broadcast_address(self) -> str:
+        """Return effective WoL broadcast address.
+
+        If broadcast_address is explicitly set in config, use it.
+        Otherwise, auto-derive the /24 subnet broadcast from server_ip:
+          192.168.10.100  →  192.168.10.255
+
+        This covers the common case (same /24 as source PC) without any
+        manual config. Users on a different VLAN must set broadcast_address
+        explicitly to their NAS subnet's broadcast address.
+        """
+        if self.broadcast_address:
+            return self.broadcast_address
+        # Derive /24 subnet broadcast: replace last octet with 255
+        parts = self.server_ip.rsplit(".", 1)
+        return f"{parts[0]}.255"
 
 
 class CloudConfig(BaseModel):
@@ -220,6 +259,24 @@ class AppConfig(BaseModel):
             raise ValueError("paths.gcs_key_path is required when cloud is enabled")
         if not self.lan.enabled and not self.cloud.enabled:
             raise ValueError("At least one destination (lan or cloud) must be enabled")
+
+        # FY Mismatch Safety Guard:
+        # Prevent mirroring FY24-25 into FY23-24 if a human typo occurs.
+        fy_pattern = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
+        src_parts = self.paths.source_drive.replace("\\", "/").rstrip("/").split("/")
+        src_fy = src_parts[-1].upper() if fy_pattern.match(src_parts[-1]) else None
+
+        lan_parts = self.paths.lan_destination.replace("\\", "/").rstrip("/").split("/")
+        lan_fy = lan_parts[-1].upper() if fy_pattern.match(lan_parts[-1]) else None
+
+        if src_fy and lan_fy and src_fy != lan_fy:
+            raise ValueError(
+                f"CRITICAL DATA LOSS PREVENTION: source_drive FY ({src_fy}) and "
+                f"lan_destination FY ({lan_fy}) do not match! "
+                "The system refuses to start because syncing would overwrite the old FY data with the new FY data. "
+                "Please manually correct config.yaml so both paths point to the identical FY folder."
+            )
+
         return self
 
     @classmethod

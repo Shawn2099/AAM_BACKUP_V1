@@ -89,13 +89,11 @@ def _configure_logging() -> None:
 def _pid_is_alive(pid: int) -> bool:
     """Return True if a process with the given PID is currently running."""
     try:
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return str(pid) in result.stdout
+        import psutil
+        return psutil.pid_exists(pid)
     except Exception:
         return False
+
 
 
 def _is_backup_running() -> bool:
@@ -123,19 +121,18 @@ def _is_backup_running() -> bool:
             logger.warning(f"Could not read backup lock file: {exc}")
 
     # ── Fallback: check for active rclone / robocopy processes ───────────────
-    for proc_name in ("rclone.exe", "robocopy.exe"):
-        try:
-            r = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {proc_name}", "/NH"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if proc_name in r.stdout:
+    try:
+        import psutil
+        backup_procs = {"rclone.exe", "robocopy.exe"}
+        for proc in psutil.process_iter(["name"]):
+            if proc.info["name"] in backup_procs:
                 logger.info(
-                    f"Fallback: {proc_name} is running — treating as active backup"
+                    f"Fallback: {proc.info['name']} (PID {proc.pid}) is running "
+                    "— treating as active backup"
                 )
                 return True
-        except Exception:
-            pass
+    except Exception as exc:
+        logger.warning(f"Fallback process check failed: {exc}")
 
     return False
 

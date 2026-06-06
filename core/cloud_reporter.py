@@ -12,6 +12,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.process import resolve_binary
+
 
 def _base_args(config_path: str) -> list[str]:
     return ["--config", config_path, "--gcs-no-check-bucket", "--fast-list"]
@@ -23,7 +25,8 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str) -> dict:
     Instant — GCS returns pre-computed object counts.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
-    cmd = ["rclone", "size", dest, "--json", *_base_args(config_path)]
+    rclone_exe = resolve_binary("rclone") or "rclone"
+    cmd = [rclone_exe, "size", dest, "--json", *_base_args(config_path)]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -41,7 +44,8 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str) -> list[di
     Files only — directory entries filtered out.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
-    cmd = ["rclone", "lsjson", dest, "-R", *_base_args(config_path)]
+    rclone_exe = resolve_binary("rclone") or "rclone"
+    cmd = [rclone_exe, "lsjson", dest, "-R", *_base_args(config_path)]
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -74,8 +78,9 @@ def get_cloud_diff(
         fd, diff_file = tempfile.mkstemp(suffix=".txt", prefix="cloud_diff_")
         os.close(fd)  # Release handle so rclone can write to it
 
+        rclone_exe = resolve_binary("rclone") or "rclone"
         cmd = [
-            "rclone", "check",
+            rclone_exe, "check",
             source, dest,
             "--combined", diff_file,
             *_base_args(config_path),

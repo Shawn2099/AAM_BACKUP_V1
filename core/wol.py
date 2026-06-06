@@ -27,13 +27,30 @@ def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 5.0) -> boo
         return False
 
 
-def _send_magic_packet(mac_address: str) -> None:
-    """Send WoL magic packet to global broadcast 255.255.255.255:9."""
+def _send_magic_packet(mac_address: str, subnet_broadcast: str) -> None:
+    """Send WoL magic packet to both global and subnet-directed broadcast.
+
+    Global broadcast (255.255.255.255) works for most flat LAN setups.
+    Subnet-directed broadcast (e.g. 192.168.10.255) reaches devices behind
+    managed switches that drop 255.255.255.255 or across VLAN boundaries.
+    Sending both maximises delivery without any router reconfiguration.
+    """
     try:
         wol_send(mac_address, ip_address="255.255.255.255", port=9)
-        logger.info(f"WoL magic packet sent to {mac_address}")
+        logger.debug(f"WoL magic packet sent to {mac_address} via 255.255.255.255")
     except OSError as e:
-        raise OSError(f"Failed to send WoL packet: {e}")
+        logger.warning(f"WoL global broadcast failed: {e}")
+
+    if subnet_broadcast != "255.255.255.255":
+        try:
+            wol_send(mac_address, ip_address=subnet_broadcast, port=9)
+            logger.info(
+                f"WoL magic packet sent to {mac_address} via subnet broadcast {subnet_broadcast}"
+            )
+        except OSError as e:
+            logger.warning(f"WoL subnet broadcast ({subnet_broadcast}) failed: {e}")
+
+
 
 
 def wait_for_server(
