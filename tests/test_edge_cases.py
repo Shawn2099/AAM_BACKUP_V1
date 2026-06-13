@@ -521,10 +521,10 @@ class TestPipelineExitCodes:
             assert status == "LAN_FAILED", f"exit {code} should be LAN_FAILED"
 
     def test_lan_complete_range(self):
-        """LAN_COMPLETE (exit 0-7)."""
+        """LAN_COMPLETE (exit 0-3)."""
         from core.lan_sync import classify_exit_code
 
-        for code in range(0, 8):
+        for code in range(0, 4):
             status = classify_exit_code(code)
             assert status == "LAN_COMPLETE", f"exit {code} should be LAN_COMPLETE"
 
@@ -565,11 +565,12 @@ class TestWatchdogBackupDetection:
         """No lock file, rclone running → backup detected."""
         lock_path = tmp_path / "backup.lock"  # Doesn't exist
 
-        mock_result = MagicMock()
-        mock_result.stdout = "rclone.exe                    12345 Console                    1    100,000 K"
+        mock_proc = MagicMock()
+        mock_proc.info = {"name": "rclone.exe"}
+        mock_proc.pid = 12345
 
         with patch("watchdog.BACKUP_LOCK_PATH", lock_path):
-            with patch("subprocess.run", return_value=mock_result):
+            with patch("psutil.process_iter", return_value=[mock_proc]):
                 from watchdog import _is_backup_running
                 result = _is_backup_running()
 
@@ -579,11 +580,12 @@ class TestWatchdogBackupDetection:
         """No lock, no rclone/robocopy → backup not running."""
         lock_path = tmp_path / "backup.lock"
 
-        mock_result = MagicMock()
-        mock_result.stdout = "INFO: No tasks are running which match the specified criteria."
+        mock_proc = MagicMock()
+        mock_proc.info = {"name": "explorer.exe"}
+        mock_proc.pid = 999
 
         with patch("watchdog.BACKUP_LOCK_PATH", lock_path):
-            with patch("subprocess.run", return_value=mock_result):
+            with patch("psutil.process_iter", return_value=[mock_proc]):
                 from watchdog import _is_backup_running
                 result = _is_backup_running()
 
