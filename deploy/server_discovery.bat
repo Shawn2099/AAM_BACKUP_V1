@@ -186,7 +186,8 @@ if %errorlevel%==0 (
 echo ### Internet Connectivity >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
-ping -n 1 8.8.8.8 >nul 2>&1
+:: Use ping with timeout (2 seconds) to avoid hanging
+ping -n 1 -w 2000 8.8.8.8 >nul 2>&1
 if %errorlevel%==0 (
     echo - **Internet Access:** Available >> "%REPORT_MD%"
 ) else (
@@ -406,7 +407,8 @@ echo   "connectivity": { >> "%REPORT_JSON%"
 echo ### Google Cloud Storage >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
-ping -n 1 storage.googleapis.com >nul 2>&1
+:: Use ping with timeout (2 seconds) to avoid hanging
+ping -n 1 -w 2000 storage.googleapis.com >nul 2>&1
 if %errorlevel%==0 (
     echo - **storage.googleapis.com:** Reachable >> "%REPORT_MD%"
     echo     "gcs_reachable": "yes", >> "%REPORT_JSON%"
@@ -419,8 +421,12 @@ if %errorlevel%==0 (
 echo ### SMTP Connectivity >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
-:: Test port 587 (TLS)
-powershell -Command "Test-NetConnection -ComputerName smtp.gmail.com -Port 587 -WarningAction SilentlyContinue | Select-Object TcpTestSucceeded" 2>nul | findstr "True" >nul 2>&1
+:: Use PowerShell with timeout to avoid hanging
+:: Note: Test-NetConnection is available on Server 2016+ (PowerShell 5.1)
+echo Testing SMTP ports (may take 30-60 seconds if blocked)... >> "%REPORT_MD%"
+
+:: Test port 587 (TLS) - with 5 second timeout
+powershell -Command "try { $tcp = New-Object System.Net.Sockets.TcpClient; $result = $tcp.BeginConnect('smtp.gmail.com', 587, $null, $null); $wait = $result.AsyncWaitHandle.WaitOne(5000, $false); if ($wait) { $tcp.EndConnect($result); $tcp.Close(); Write-Output 'True' } else { $tcp.Close(); Write-Output 'False' } } catch { Write-Output 'False' }" 2>nul | findstr "True" >nul 2>&1
 if %errorlevel%==0 (
     echo - **Port 587 (SMTP TLS):** Open >> "%REPORT_MD%"
     echo     "smtp_587": "open", >> "%REPORT_JSON%"
@@ -429,8 +435,8 @@ if %errorlevel%==0 (
     echo     "smtp_587": "blocked", >> "%REPORT_JSON%"
 )
 
-:: Test port 465 (SSL)
-powershell -Command "Test-NetConnection -ComputerName smtp.gmail.com -Port 465 -WarningAction SilentlyContinue | Select-Object TcpTestSucceeded" 2>nul | findstr "True" >nul 2>&1
+:: Test port 465 (SSL) - with 5 second timeout
+powershell -Command "try { $tcp = New-Object System.Net.Sockets.TcpClient; $result = $tcp.BeginConnect('smtp.gmail.com', 465, $null, $null); $wait = $result.AsyncWaitHandle.WaitOne(5000, $false); if ($wait) { $tcp.EndConnect($result); $tcp.Close(); Write-Output 'True' } else { $tcp.Close(); Write-Output 'False' } } catch { Write-Output 'False' }" 2>nul | findstr "True" >nul 2>&1
 if %errorlevel%==0 (
     echo - **Port 465 (SMTP SSL):** Open >> "%REPORT_MD%"
     echo     "smtp_465": "open", >> "%REPORT_JSON%"
@@ -439,8 +445,8 @@ if %errorlevel%==0 (
     echo     "smtp_465": "blocked", >> "%REPORT_JSON%"
 )
 
-:: Test port 25 (Plain)
-powershell -Command "Test-NetConnection -ComputerName smtp.gmail.com -Port 25 -WarningAction SilentlyContinue | Select-Object TcpTestSucceeded" 2>nul | findstr "True" >nul 2>&1
+:: Test port 25 (Plain) - with 5 second timeout
+powershell -Command "try { $tcp = New-Object System.Net.Sockets.TcpClient; $result = $tcp.BeginConnect('smtp.gmail.com', 25, $null, $null); $wait = $result.AsyncWaitHandle.WaitOne(5000, $false); if ($wait) { $tcp.EndConnect($result); $tcp.Close(); Write-Output 'True' } else { $tcp.Close(); Write-Output 'False' } } catch { Write-Output 'False' }" 2>nul | findstr "True" >nul 2>&1
 if %errorlevel%==0 (
     echo - **Port 25 (SMTP Plain):** Open >> "%REPORT_MD%"
     echo     "smtp_25": "open" >> "%REPORT_JSON%"
@@ -539,7 +545,7 @@ if %errorlevel%==0 (
 )
 
 :: Check GCS connectivity
-ping -n 1 storage.googleapis.com >nul 2>&1
+ping -n 1 -w 2000 storage.googleapis.com >nul 2>&1
 if not %errorlevel%==0 (
     set "READY=No"
     set "ISSUES=!ISSUES!- Cannot reach Google Cloud Storage\n"
@@ -938,13 +944,32 @@ if "!BACKUP_SW_FOUND!"=="0" (
 echo ### Antivirus Software >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
-wmic /namespace:\\root\SecurityCenter2 path AntiVirusProduct get displayName 2>nul | findstr /v "displayName" >nul 2>&1
+:: SecurityCenter2 is only available on Windows client (10/11), not Server editions
+:: Use a graceful fallback
+set "AV_FOUND=0"
+wmic /namespace:\\root\SecurityCenter2 path AntiVirusProduct get displayName 2>nul | findstr /v "displayName" | findstr /v "^$" >nul 2>&1
 if %errorlevel%==0 (
-    for /f "tokens=*" %%a in ('wmic /namespace:\\root\SecurityCenter2 path AntiVirusProduct get displayName 2^>nul ^| findstr /v "displayName"') do (
-        if not "%%a"=="" echo - **%%a** (may interfere with backups) >> "%REPORT_MD%"
+    for /f "tokens=*" %%a in ('wmic /namespace:\\root\SecurityCenter2 path AntiVirusProduct get displayName 2^>nul ^| findstr /v "displayName" ^| findstr /v "^$"') do (
+        if not "%%a"=="" (
+            echo - **%%a** (may interfere with backups) >> "%REPORT_MD%"
+            set "AV_FOUND=1"
+        )
     )
-) else (
-    echo - No antivirus detected (or WMI not available) >> "%REPORT_MD%"
+)
+
+:: Fallback: Check for common AV services
+if "!AV_FOUND!"=="0" (
+    for %%s in (WinDefend MsMpSvc AVP SepMasterService McShield) do (
+        sc query %%s >nul 2>&1
+        if !errorlevel!==0 (
+            echo - **%%s:** Running (antivirus service) >> "%REPORT_MD%"
+            set "AV_FOUND=1"
+        )
+    )
+)
+
+if "!AV_FOUND!"=="0" (
+    echo - No antivirus detected (or not accessible via WMI) >> "%REPORT_MD%"
 )
 
 echo     "backup_software_checked": "yes", >> "%REPORT_JSON%"
