@@ -1,32 +1,45 @@
 # ═══════════════════════════════════════════════════
-# AAM BACKUP AUTOMATION V1 — CONFIGURATION TEMPLATE
+# AAM BACKUP AUTOMATION V1 — CONFIGURATION
 # ═══════════════════════════════════════════════════
-# Copy this file to config.yaml and fill in your values.
-# config.yaml is gitignored — it will never be committed.
+# Edit this file to change any setting.
+# Restart the serve.py / AamBackupAgent service after changes.
+# FY Rollover: On April 1 the system automatically updates source_drive
+# and lan_destination to the new FY folder and rewrites this file.
 # ═══════════════════════════════════════════════════
 
-firm_name: "Your Firm Name"
+firm_name: "YourFirmName"
 
 # ═══════════════════════════════════════════════════
 # FILE SYSTEM PATHS
+# IMPORTANT: Both source_drive and lan_destination MUST end with the
+# current Fiscal Year folder (e.g. \FY25-26). The system uses this
+# suffix for GCS prefix routing and FY rollover detection.
 # ═══════════════════════════════════════════════════
 paths:
-  source_drive: "D:\\"
-  lan_destination: "\\\\YOUR_SERVER_IP\\backup_share"
+  source_drive: "D:\\YOUR_DATA\\FY25-26"
+  lan_destination: "\\\\NAS_IP\\share\\FY25-26"
   database_path: "C:\\BackupAgent\\manifest.db"
   log_directory: "C:\\BackupAgent\\logs"
-  temp_directory: "C:\\BackupAgent\\rclone_temp"
   gcs_key_path: "C:\\BackupAgent\\gcs-key.json"
 
-# --- LAN BACKUP ---
+# ═══════════════════════════════════════════════════
+# LAN BACKUP (Robocopy /MIR to NAS)
+# ═══════════════════════════════════════════════════
 lan:
   enabled: true
+  # Robocopy /R — retries per failed file
   retry_count: 3
+  # Robocopy /W — seconds to wait between retries
   retry_wait_seconds: 10
+  # Hard timeout for the entire robocopy process (seconds). 14400 = 4 hours
   subprocess_timeout_seconds: 14400
+  # Shut down the NAS server after a successful LAN sync
   shutdown_after_backup: true
+  # Flow-level retry attempts (full robocopy re-runs on failure)
   max_attempts: 2
+  # Seconds between flow-level retry attempts
   retry_delay_seconds: 600
+  # Robocopy /MT — parallel copy threads
   mt_threads: 8
 
 # ═══════════════════════════════════════════════════
@@ -34,38 +47,61 @@ lan:
 # ═══════════════════════════════════════════════════
 wol:
   enabled: true
-  mac_address: "AA-BB-CC-DD-EE-FF"
-  server_ip: "192.168.1.10"
+  # MAC address of the NAS server (colons or hyphens accepted)
+  mac_address: "AA:BB:CC:DD:EE:FF"
+  # IP of the NAS server — used for SMB port reachability check
+  server_ip: "192.168.1.100"
+  # Subnet-directed broadcast address for the Magic Packet.
+  # Leave empty to auto-derive from server_ip (e.g. 192.168.1.100 → 10.10.186.255).
+  # Set explicitly if the NAS is on a different VLAN or managed switch
+  # that blocks the global 255.255.255.255 broadcast.
   broadcast_address: ""
+  # Max seconds to wait for the NAS to respond on SMB port 445 after WoL
   wake_timeout_seconds: 300
+  # Seconds between SMB reachability polls during wake wait
   ping_interval_seconds: 15
+  # Extra seconds to wait after SMB responds (allows services to fully start)
   stability_wait_seconds: 30
 
 # ═══════════════════════════════════════════════════
-# CLOUD BACKUP (GCS)
+# CLOUD BACKUP (rclone sync → Google Cloud Storage)
 # ═══════════════════════════════════════════════════
 cloud:
   enabled: true
-  bucket: "your-gcs-bucket"
-  project_number: "000000000000"
+  bucket: "your-gcs-bucket-name"
+  project_number: "YOUR_GCP_PROJECT_NUMBER"
+  # GCS region — must match the bucket's region
   location: "asia-south1"
+  # Storage class for new uploads. Options: STANDARD, NEARLINE, COLDLINE, ARCHIVE
   storage_class: "COLDLINE"
+  # rclone --bwlimit: bandwidth cap for uploads. Format: 10M, 500k, 1G
   bandwidth_limit: "10M"
+  # rclone --retries per failed file transfer
   retry_count: 3
+  # Hard timeout for the entire rclone sync process (seconds). 21600 = 6 hours
   subprocess_timeout_seconds: 21600
+  # Flow-level retry attempts (full rclone re-runs on failure)
   max_attempts: 3
+  # Seconds between flow-level retry attempts
   retry_delay_seconds: 300
+  # Timeout for post-sync rclone check/verify step (seconds)
   verify_timeout_seconds: 600
+  # rclone --transfers: concurrent file uploads
   transfers: 4
+  # rclone --checkers: concurrent file comparison workers
   checkers: 16
 
 # ═══════════════════════════════════════════════════
-# SCHEDULES
+# SCHEDULES (cron, all times in timezone below)
 # ═══════════════════════════════════════════════════
 schedule:
+  # Cloud backup: daily at 6:00 PM
   cloud_cron: "0 18 * * *"
+  # LAN backup: daily at 1:00 AM
   lan_cron: "0 1 * * *"
+  # Weekly email report: every Monday at 8:00 AM
   weekly_cron: "0 8 * * MON"
+  # Monthly email report: 1st of every month at 8:00 AM
   monthly_cron: "0 8 1 * *"
   timezone: "Asia/Kolkata"
 
@@ -74,33 +110,35 @@ schedule:
 # ═══════════════════════════════════════════════════
 dashboard:
   auth_enabled: true
-  api_key: "generate-a-random-key-here"
+  # API key required when auth_enabled is true — change before production
+  api_key: "CHANGE_THIS_STRONG_KEY"
+  # Bind address: 127.0.0.1 = localhost only. 0.0.0.0 = all interfaces (LAN accessible)
   bind_address: "127.0.0.1"
   port: 8080
 
 # ═══════════════════════════════════════════════════
-# NOTIFICATIONS
+# EMAIL NOTIFICATIONS
 # ═══════════════════════════════════════════════════
 notifications:
-  smtp_host: ""
-  smtp_port: 587          # 587 for STARTTLS, 465 for SSL
-  smtp_username: ""
-  smtp_password: ""
-  sender: ""
-  recipients:             # Supports multiple — add as many as needed
-    - "admin@example.com"
-    # - "manager@example.com"
-  send_on_failure: true   # Immediate alert email when backup fails
-  send_on_success: false  # Email on every successful backup (usually noisy)
-  weekly_enabled: true    # Send weekly summary report email (every Monday)
-  monthly_enabled: true   # Send monthly summary report email (1st of month)
-  weekly_summary_day: "monday"
-  weekly_summary_time: "08:00"
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_username: "your-smtp-user@gmail.com"
+  smtp_password: "YOUR_APP_PASSWORD"
+  sender: "your-smtp-user@gmail.com"
+  recipients:
+    - "admin@yourcompany.com"
+  # Send an immediate alert email when a backup fails
+  send_on_failure: true
+  # Send a confirmation email when a backup succeeds (set true if desired)
+  send_on_success: false
+  # Send the weekly summary report email every Monday
+  weekly_enabled: true
+  # Send the monthly summary report email on the 1st of every month
+  monthly_enabled: true
 
 # ═══════════════════════════════════════════════════
 # MAINTENANCE
 # ═══════════════════════════════════════════════════
 maintenance:
-  db_retention_days: 90   # Days of run history to keep in the database (7–3650)
-                          # Purged automatically on every successful backup run.
-                          # For compliance-heavy clients: 365 or higher.
+  # Days of run history to keep in the SQLite database (7–3650)
+  db_retention_days: 90
