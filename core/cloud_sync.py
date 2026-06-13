@@ -22,10 +22,10 @@ def classify_rclone_exit(code: int) -> str:
     3  → CLOUD_FAILED     (directory not found)
     4  → CLOUD_PARTIAL    (file not found — transient)
     5  → CLOUD_PARTIAL    (temporary — network, retryable)
-    6  → CLOUD_PARTIAL    (less serious — partial transfer)
+    6  → CLOUD_FAILED     (less serious — NoRetry errors)
     7  → CLOUD_FAILED     (fatal — auth, bucket, critical)
     8  → CLOUD_FAILED     (transfer limit exceeded)
-    9  → CLOUD_COMPLETE   (no files to transfer)
+    9  → CLOUD_PARTIAL    (no files transferred — requires --error-on-no-transfer)
     10 → CLOUD_PARTIAL    (duration limit hit)
     """
     mapping = {
@@ -35,10 +35,10 @@ def classify_rclone_exit(code: int) -> str:
         3: "CLOUD_FAILED",
         4: "CLOUD_PARTIAL",
         5: "CLOUD_PARTIAL",
-        6: "CLOUD_PARTIAL",
+        6: "CLOUD_FAILED",
         7: "CLOUD_FAILED",
         8: "CLOUD_FAILED",
-        9: "CLOUD_COMPLETE",
+        9: "CLOUD_PARTIAL",
         10: "CLOUD_PARTIAL",
     }
     return mapping.get(code, "CLOUD_FAILED")

@@ -20,6 +20,7 @@ def run_cloud_dry_run(
     project_number: str,
     storage_class: str,
     location: str = "asia-south1",
+    timeout: int = 300,
 ) -> dict:
     """Run rclone check --one-way as dry-run validation.
 
@@ -57,10 +58,10 @@ def run_cloud_dry_run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            logger.error("Cloud dry-run timed out after 300s")
+            logger.error(f"Cloud dry-run timed out after {timeout}s")
             return {"ok": False, "matched": False, "exit_code": -1, "error": "Timeout"}
         except FileNotFoundError:
             logger.error("rclone not found")

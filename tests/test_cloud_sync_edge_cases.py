@@ -58,8 +58,8 @@ class TestClassifyRcloneExitComprehensive:
         assert classify_rclone_exit(5) == "CLOUD_PARTIAL"
 
     def test_6_noretry_error(self):
-        """Exit 6: Less serious errors (like 461 from dropbox) — now CLOUD_PARTIAL."""
-        assert classify_rclone_exit(6) == "CLOUD_PARTIAL"
+        """Exit 6: Less serious errors (like 461 from dropbox) — NoRetry."""
+        assert classify_rclone_exit(6) == "CLOUD_FAILED"
 
     def test_7_fatal_error(self):
         """Exit 7: Fatal error — account suspended, retries won't help."""
@@ -70,8 +70,8 @@ class TestClassifyRcloneExitComprehensive:
         assert classify_rclone_exit(8) == "CLOUD_FAILED"
 
     def test_9_no_files_transferred(self):
-        """Exit 9: No files transferred (requires --error-on-no-transfer) — now CLOUD_COMPLETE."""
-        assert classify_rclone_exit(9) == "CLOUD_COMPLETE"
+        """Exit 9: No files transferred (requires --error-on-no-transfer)."""
+        assert classify_rclone_exit(9) == "CLOUD_PARTIAL"
 
     def test_10_duration_exceeded(self):
         """Exit 10: Duration exceeded — --max-duration reached."""
@@ -99,17 +99,17 @@ class TestClassifyRcloneExitComprehensive:
     # --- Verify no duplicate mappings ---
 
     def test_only_zero_is_complete(self):
-        """Only exit 0 and 9 map to CLOUD_COMPLETE."""
+        """Only exit 0 maps to CLOUD_COMPLETE."""
         for code in range(11):
             result = classify_rclone_exit(code)
-            if code in (0, 9):
+            if code == 0:
                 assert result == "CLOUD_COMPLETE", f"Exit {code} should be COMPLETE"
             else:
                 assert result != "CLOUD_COMPLETE", f"Exit {code} should NOT be COMPLETE"
 
     def test_noretry_codes_are_failed(self):
-        """Exit code 6 must be CLOUD_PARTIAL."""
-        assert classify_rclone_exit(6) == "CLOUD_PARTIAL"
+        """Exit code 6 (NoRetry) must be CLOUD_FAILED."""
+        assert classify_rclone_exit(6) == "CLOUD_FAILED"
 
     def test_retryable_codes_are_partial(self):
         """Exit codes 4,5 (retryable) must be CLOUD_PARTIAL."""
@@ -117,7 +117,8 @@ class TestClassifyRcloneExitComprehensive:
         assert classify_rclone_exit(5) == "CLOUD_PARTIAL"
 
     def test_limit_codes_are_partial(self):
-        """Exit code 10 (limits/status) must be CLOUD_PARTIAL."""
+        """Exit codes 9,10 (limits/status) must be CLOUD_PARTIAL."""
+        assert classify_rclone_exit(9) == "CLOUD_PARTIAL"
         assert classify_rclone_exit(10) == "CLOUD_PARTIAL"
 
 
@@ -326,10 +327,10 @@ class TestRunCloudSyncComprehensive:
         (3, "CLOUD_FAILED"),
         (4, "CLOUD_PARTIAL"),
         (5, "CLOUD_PARTIAL"),
-        (6, "CLOUD_PARTIAL"),
+        (6, "CLOUD_FAILED"),
         (7, "CLOUD_FAILED"),
         (8, "CLOUD_FAILED"),
-        (9, "CLOUD_COMPLETE"),
+        (9, "CLOUD_PARTIAL"),
         (10, "CLOUD_PARTIAL"),
     ])
     def test_exit_code_classification(self, exit_code, expected_status):

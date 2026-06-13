@@ -25,8 +25,9 @@ class TestClassifyRcloneExit:
     def test_zero_is_complete(self):
         assert classify_rclone_exit(0) == "CLOUD_COMPLETE"
 
-    def test_nine_is_complete(self):
-        assert classify_rclone_exit(9) == "CLOUD_COMPLETE"
+    def test_nine_is_partial(self):
+        """Exit 9 = 'no files transferred' with --error-on-no-transfer."""
+        assert classify_rclone_exit(9) == "CLOUD_PARTIAL"
 
     def test_one_is_failed(self):
         assert classify_rclone_exit(1) == "CLOUD_FAILED"
@@ -43,8 +44,9 @@ class TestClassifyRcloneExit:
     def test_five_is_partial(self):
         assert classify_rclone_exit(5) == "CLOUD_PARTIAL"
 
-    def test_six_is_partial(self):
-        assert classify_rclone_exit(6) == "CLOUD_PARTIAL"
+    def test_six_is_failed(self):
+        """Exit 6 = 'NoRetry errors' — retries won't help."""
+        assert classify_rclone_exit(6) == "CLOUD_FAILED"
 
     def test_seven_is_failed(self):
         assert classify_rclone_exit(7) == "CLOUD_FAILED"
@@ -167,7 +169,7 @@ class TestRunCloudSync:
     def test_no_files_to_transfer_exit_9(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
         mock_run.return_value = MagicMock(returncode=9)
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_COMPLETE"
+        assert result["status"] == "CLOUD_PARTIAL"
         assert result["exit_code"] == 9
 
     @patch("core.cloud_sync.os.close")

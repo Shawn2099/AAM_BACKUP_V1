@@ -12,8 +12,6 @@ from loguru import logger
 
 from core.time_utils import cutoff_iso, utcnow_iso
 
-SCHEMA_VERSION = 1
-
 DDL = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;

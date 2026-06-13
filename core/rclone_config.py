@@ -20,6 +20,16 @@ def write_temp_config(
     Uses mkstemp + close to avoid Windows file handle lock.
     Returns path to temp file. Caller must clean up.
     """
+    # Sanitize inputs — strip whitespace and validate
+    location = location.strip()
+    storage_class = storage_class.strip()
+    project_number = project_number.strip()
+    
+    # Validate storage class (GCS valid values)
+    valid_storage_classes = {"", "STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE", "MULTI_REGIONAL", "REGIONAL", "DURABLE_REDUCED_AVAILABILITY"}
+    if storage_class and storage_class.upper() not in valid_storage_classes:
+        raise ValueError(f"Invalid storage_class: {storage_class!r}. Must be one of {valid_storage_classes}")
+    
     key_abs = str(Path(gcs_key_path).resolve()).replace("\\", "/")
     content = f"""[aam_gcs]
 type = google cloud storage
