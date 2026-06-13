@@ -198,9 +198,9 @@ echo [setup] Installing %SVC_AGENT%...
 "%NSSM%" set %SVC_AGENT% AppRotateBytes         10485760
 
 :: Graceful shutdown - allowing sub-processes (rclone) to finish closing
-"%NSSM%" set %SVC_AGENT% AppStopMethodConsole   30000
-"%NSSM%" set %SVC_AGENT% AppStopMethodWindow    30000
-"%NSSM%" set %SVC_AGENT% AppStopMethodThreads   30000
+"%NSSM%" set %SVC_AGENT% AppStopMethodConsole   120000
+"%NSSM%" set %SVC_AGENT% AppStopMethodWindow    120000
+"%NSSM%" set %SVC_AGENT% AppStopMethodThreads   120000
 
 "%NSSM%" set %SVC_AGENT% AppRestartDelay        30000
 "%NSSM%" set %SVC_AGENT% AppEnvironmentExtra    "PREFECT_HOME=%PREFECT_HOME%" "PREFECT_API_URL=http://127.0.0.1:4200/api"

@@ -4,12 +4,20 @@ Validated on load. No dead sections. Only what's actually used.
 """
 
 import ipaddress
+import os
 import re
+from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CONFIG_PATH = "config.yaml"
+
+# Default log directory: use AAM_LOG_DIR env var, or project_root/logs
+_DEFAULT_LOG_DIR = os.environ.get(
+    "AAM_LOG_DIR",
+    str(Path(__file__).parent.parent / "logs"),
+)
 
 
 class PathsConfig(BaseModel):
@@ -18,7 +26,7 @@ class PathsConfig(BaseModel):
     source_drive: str = Field(..., description="Source drive root path, e.g. D:\\")
     lan_destination: str = Field(..., description="LAN UNC path, e.g. \\\\192.168.10.10\\share$")
     database_path: str = Field(..., description="Path to SQLite manifest database")
-    log_directory: str = Field(default="C:\\BackupAgent\\logs")
+    log_directory: str = Field(default=_DEFAULT_LOG_DIR)
     gcs_key_path: str = Field(..., description="Path to GCS service account JSON key file")
 
     @field_validator("source_drive")

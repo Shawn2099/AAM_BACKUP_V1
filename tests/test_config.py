@@ -69,7 +69,8 @@ class TestPathsConfig:
             database_path="C:\\db\\test.db",
             gcs_key_path="C:\\keys\\key.json",
         )
-        assert cfg.log_directory == "C:\\BackupAgent\\logs"
+        # Default log_directory is now relative to project root (or AAM_LOG_DIR env var)
+        assert cfg.log_directory.endswith("logs")
 
 
 class TestLanConfig:
