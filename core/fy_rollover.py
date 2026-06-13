@@ -277,6 +277,7 @@ def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=30,
+                env=env,
             )
             if auth_result.returncode != 0:
                 logger.warning(
@@ -302,6 +303,7 @@ def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
             stderr=subprocess.PIPE,
             text=True,
             timeout=600,   # 10 min — metadata-only rewrite; no data transfer
+            env=env,
         )
         if result.returncode == 0:
             logger.info(

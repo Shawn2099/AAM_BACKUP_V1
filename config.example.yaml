@@ -73,7 +73,9 @@ cloud:
   # GCS region — must match the bucket's region
   location: "asia-south1"
   # Storage class for new uploads. Options: STANDARD, NEARLINE, COLDLINE, ARCHIVE
-  storage_class: "COLDLINE"
+  # STANDARD = best for active daily backups (full performance, immediately accessible)
+  # The annual FY rollover transitions old-year data to ARCHIVE automatically via gcloud
+  storage_class: "STANDARD"
   # rclone --bwlimit: bandwidth cap for uploads. Format: 10M, 500k, 1G
   bandwidth_limit: "10M"
   # rclone --retries per failed file transfer

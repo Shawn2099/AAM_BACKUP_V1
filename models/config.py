@@ -130,7 +130,7 @@ class CloudConfig(BaseModel):
     bucket: str = "aam-backup-demo-innovizta"
     project_number: str = "920173882190"
     location: str = "asia-south1"
-    storage_class: str = "COLDLINE"
+    storage_class: str = "STANDARD"
     bandwidth_limit: str = "10M"
     retry_count: int = Field(default=3, ge=1, le=10)
     subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
