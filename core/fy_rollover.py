@@ -98,6 +98,7 @@ def run_final_backup(source_drive: str, lan_destination: str,
                 retries=cloud_config.retry_count,
                 transfers=cloud_config.transfers,
                 checkers=cloud_config.checkers,
+                max_delete_percent=cloud_config.max_delete_percent,
                 timeout=cloud_config.subprocess_timeout_seconds,
             )
             exit_code = result.get("exit_code", -1)

@@ -54,8 +54,14 @@ def build_rclone_sync_command(
     retries: int = 3,
     transfers: int = 4,
     checkers: int = 16,
+    max_delete_percent: int = 45,
 ) -> list[str]:
-    """Build rclone sync command with GCS-optimized flags."""
+    """Build rclone sync command with GCS-optimized flags.
+
+    max_delete_percent: ransomware kill-switch — rclone aborts the entire sync
+    (exit code 8, CLOUD_FAILED) if deletions would exceed this % of destination
+    file count. Nothing is written or deleted when it triggers.
+    """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
     return [
@@ -73,6 +79,7 @@ def build_rclone_sync_command(
         "--retries", str(retries),
         "--retries-sleep", "30s",
         "--track-renames",
+        "--max-delete", str(max_delete_percent),
         "--use-json-log",
         "--log-level", "INFO",
         "--stats", "60s",
@@ -91,11 +98,16 @@ def run_cloud_sync(
     retries: int = 3,
     transfers: int = 4,
     checkers: int = 16,
+    max_delete_percent: int = 45,
     timeout: int = 21600,
 ) -> dict:
     """Execute rclone sync to mirror source → GCS.
 
     Creates temp config, executes sync, cleans up in finally.
+
+    max_delete_percent: ransomware kill-switch threshold. If rclone would delete
+    more than this % of destination files it aborts with exit code 8 (CLOUD_FAILED)
+    and leaves the bucket untouched.
 
     Returns:
         {"status": str, "exit_code": int, "error": str | None}
@@ -105,7 +117,11 @@ def run_cloud_sync(
     with temp_rclone_config(
         gcs_key_path, location, project_number, storage_class
     ) as config_path:
-        cmd = build_rclone_sync_command(source, bucket, fy_prefix, config_path, storage_class, bwlimit, retries, transfers, checkers)
+        cmd = build_rclone_sync_command(
+            source, bucket, fy_prefix, config_path, storage_class,
+            bwlimit, retries, transfers, checkers,
+            max_delete_percent=max_delete_percent,
+        )
 
         logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")
 

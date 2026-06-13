@@ -173,6 +173,7 @@ class TestBuildRcloneSyncCommandFlags:
         "--retries",
         "--retries-sleep",
         "--track-renames",
+        "--max-delete",
         "--use-json-log",
         "--log-level",
         "--stats",
@@ -195,6 +196,7 @@ class TestBuildRcloneSyncCommandFlags:
         ("--retries-sleep", "30s"),
         ("--log-level", "INFO"),
         ("--stats", "60s"),
+        ("--max-delete", "45"),
     ])
     def test_flag_value(self, flag, expected):
         """Flag values should match expected defaults."""
@@ -246,6 +248,21 @@ class TestBuildRcloneSyncCommandFlags:
         cmd = self._build_default()
         flags = [x for x in cmd if x.startswith("--")]
         assert len(flags) == len(set(flags)), f"Duplicate flags found"
+
+    # --- Ransomware kill-switch ---
+
+    def test_max_delete_default_is_45(self):
+        """Default ransomware kill-switch should be 45%."""
+        cmd = self._build_default()
+        assert "--max-delete" in cmd
+        idx = cmd.index("--max-delete")
+        assert cmd[idx + 1] == "45"
+
+    def test_max_delete_custom_value(self):
+        """Custom max_delete_percent is injected correctly."""
+        cmd = self._build_default(max_delete_percent=20)
+        idx = cmd.index("--max-delete")
+        assert cmd[idx + 1] == "20"
 
 
 # ---------------------------------------------------------------------------

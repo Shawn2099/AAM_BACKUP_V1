@@ -106,6 +106,7 @@ def cloud_sync_task(config, fy_prefix: str):
         storage_class=config.cloud.storage_class,
         transfers=config.cloud.transfers,
         checkers=config.cloud.checkers,
+        max_delete_percent=config.cloud.max_delete_percent,
         timeout=config.cloud.subprocess_timeout_seconds,
     )
     if result["status"] == "CLOUD_FAILED":

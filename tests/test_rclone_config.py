@@ -50,3 +50,24 @@ class TestWriteTempConfig:
             assert "type = google cloud storage" in content
         finally:
             Path(result).unlink(missing_ok=True)
+
+    def test_sanitization_and_validation(self, tmp_path):
+        import pytest
+        key_path = tmp_path / "key.json"
+        key_path.write_text("{}")
+
+        # Test valid storage class is accepted and sanitized
+        result = write_temp_config(str(key_path), "  asia-south1  ", "  12345  ", "  coldline  ")
+        try:
+            content = Path(result).read_text()
+            assert "location = asia-south1" in content
+            assert "project_number = 12345" in content
+            assert "storage_class = coldline" in content
+        finally:
+            Path(result).unlink(missing_ok=True)
+
+        # Test invalid storage class raises ValueError
+        with pytest.raises(ValueError) as excinfo:
+            write_temp_config(str(key_path), "asia-south1", "12345", "INVALID_STORAGE_CLASS")
+        assert "Invalid storage_class" in str(excinfo.value)
+
