@@ -35,14 +35,14 @@ class TestSmbPortOpen:
 class TestSendMagicPacket:
     @patch("core.wol.wol_send")
     def test_sends_packet(self, mock_wol):
-        _send_magic_packet("AA:BB:CC:DD:EE:FF")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "255.255.255.255")
         mock_wol.assert_called_once_with("AA:BB:CC:DD:EE:FF", ip_address="255.255.255.255", port=9)
 
     @patch("core.wol.wol_send", side_effect=OSError("send failed"))
-    def test_os_error_raises(self, mock_wol):
-        import pytest
-        with pytest.raises(OSError, match="Failed to send WoL packet"):
-            _send_magic_packet("AA:BB:CC:DD:EE:FF")
+    @patch("core.wol.logger.warning")
+    def test_os_error_logs_warning(self, mock_logger_warning, mock_wol):
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "255.255.255.255")
+        mock_logger_warning.assert_called_with("WoL global broadcast failed: send failed")
 
 
 class TestWaitForServer:
@@ -88,10 +88,11 @@ class TestEnsureServerOnline:
         config.wol.enabled = True
         config.wol.server_ip = "192.168.10.10"
         config.wol.mac_address = "AA:BB:CC:DD:EE:FF"
+        config.wol.subnet_broadcast = "192.168.10.255"
         config.wol.wake_timeout_seconds = 300
         config.wol.ping_interval_seconds = 15
         config.wol.stability_wait_seconds = 30
         result = ensure_server_online(config)
         assert result is True
-        mock_wol.assert_called_once()
+        mock_wol.assert_called_once_with("AA:BB:CC:DD:EE:FF", "192.168.10.255")
         mock_wait.assert_called_once()

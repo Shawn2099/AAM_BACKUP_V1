@@ -6,6 +6,12 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config):
+    """Global pytest configuration."""
+    import logging
+    # Suppress noisy teardown logs from the ephemeral Prefect server
+    logging.getLogger("prefect.server").setLevel(logging.ERROR)
+
 @pytest.fixture
 def temp_db_path():
     """Create a temporary SQLite database path, cleaned up after test."""

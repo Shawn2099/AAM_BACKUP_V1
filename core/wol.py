@@ -96,7 +96,7 @@ def ensure_server_online(config: AppConfig) -> bool:
         return True
 
     logger.info(f"Backup server {server_ip} offline, sending WoL")
-    _send_magic_packet(config.wol.mac_address)
+    _send_magic_packet(config.wol.mac_address, config.wol.subnet_broadcast)
     wait_for_server(
         server_ip,
         config.wol.wake_timeout_seconds,

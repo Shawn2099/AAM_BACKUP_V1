@@ -82,9 +82,10 @@ class TestCheckGcsKey:
 
 class TestCheckClockSkew:
     def test_passes_when_google_reachable(self):
+        import email.utils
         mock_conn = MagicMock()
         mock_resp = MagicMock()
-        mock_resp.getheader.return_value = "Tue, 27 May 2026 13:00:00 GMT"
+        mock_resp.getheader.return_value = email.utils.formatdate(usegmt=True)
         mock_conn.getresponse.return_value = mock_resp
 
         with patch("core.health.http.client.HTTPSConnection", return_value=mock_conn):

@@ -20,10 +20,10 @@ class TestClassifyExitCode:
         assert classify_exit_code(2) == "LAN_COMPLETE"
 
     def test_bit2_mismatched(self):
-        assert classify_exit_code(4) == "LAN_COMPLETE"
+        assert classify_exit_code(4) == "LAN_PARTIAL"
 
     def test_bits_0_1_2_combined(self):
-        assert classify_exit_code(7) == "LAN_COMPLETE"
+        assert classify_exit_code(7) == "LAN_PARTIAL"
 
     def test_bit3_copy_errors_returns_partial(self):
         assert classify_exit_code(8) == "LAN_PARTIAL"
