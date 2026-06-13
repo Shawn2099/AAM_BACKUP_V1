@@ -88,7 +88,7 @@ class TestEnsureServerOnline:
         config.wol.enabled = True
         config.wol.server_ip = "192.168.10.10"
         config.wol.mac_address = "AA:BB:CC:DD:EE:FF"
-        config.wol.subnet_broadcast = "192.168.10.255"
+        config.wol.get_broadcast_address.return_value = "192.168.10.255"
         config.wol.wake_timeout_seconds = 300
         config.wol.ping_interval_seconds = 15
         config.wol.stability_wait_seconds = 30
