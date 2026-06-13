@@ -33,7 +33,7 @@ echo { > "%REPORT_JSON%"
 echo   "generated": "%DATE% %TIME%", >> "%REPORT_JSON%"
 
 :: ── 1. System Information ──────────────────────────────────────────
-echo [1/15] Gathering system information...
+echo [1/18] Gathering system information...
 
 echo ## 1. System Information >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -79,7 +79,7 @@ echo     "is_admin": "%IS_ADMIN%" >> "%REPORT_JSON%"
 echo   }, >> "%REPORT_JSON%"
 
 :: ── 2. Storage Information ─────────────────────────────────────────
-echo [2/15] Gathering storage information...
+echo [2/18] Gathering storage information...
 
 echo ## 2. Storage Information >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -140,7 +140,7 @@ for %%d in (C D E F G H) do (
 echo. >> "%REPORT_MD%"
 
 :: ── 3. Network Information ─────────────────────────────────────────
-echo [3/15] Gathering network information...
+echo [3/18] Gathering network information...
 
 echo ## 3. Network Information >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -196,7 +196,7 @@ if %errorlevel%==0 (
 echo. >> "%REPORT_MD%"
 
 :: ── 4. Software & Tools ────────────────────────────────────────────
-echo [4/15] Checking software and tools...
+echo [4/18] Checking software and tools...
 
 echo ## 4. Software & Tools >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -279,7 +279,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 5. Permissions & Access ────────────────────────────────────────
-echo [5/15] Checking permissions and access...
+echo [5/18] Checking permissions and access...
 
 echo ## 5. Permissions & Access >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -334,7 +334,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 6. Existing Installation ───────────────────────────────────────
-echo [6/15] Checking for existing installation...
+echo [6/18] Checking for existing installation...
 
 echo ## 6. Existing Installation >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -394,8 +394,204 @@ if exist "%~dp0..\*.json" (
 echo   } >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
+:: ── 16. Connectivity Tests ────────────────────────────────────────
+echo [16/18] Testing connectivity to AAM services...
+
+echo ## 16. Connectivity Tests >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo   "connectivity": { >> "%REPORT_JSON%"
+
+:: Test Google Cloud Storage connectivity
+echo ### Google Cloud Storage >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+ping -n 1 storage.googleapis.com >nul 2>&1
+if %errorlevel%==0 (
+    echo - **storage.googleapis.com:** Reachable >> "%REPORT_MD%"
+    echo     "gcs_reachable": "yes", >> "%REPORT_JSON%"
+) else (
+    echo - **storage.googleapis.com:** NOT reachable (cloud backups will fail) >> "%REPORT_MD%"
+    echo     "gcs_reachable": "no", >> "%REPORT_JSON%"
+)
+
+:: Test SMTP connectivity (common ports)
+echo ### SMTP Connectivity >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+:: Test port 587 (TLS)
+powershell -Command "Test-NetConnection -ComputerName smtp.gmail.com -Port 587 -WarningAction SilentlyContinue | Select-Object TcpTestSucceeded" 2>nul | findstr "True" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **Port 587 (SMTP TLS):** Open >> "%REPORT_MD%"
+    echo     "smtp_587": "open", >> "%REPORT_JSON%"
+) else (
+    echo - **Port 587 (SMTP TLS):** Blocked or unreachable >> "%REPORT_MD%"
+    echo     "smtp_587": "blocked", >> "%REPORT_JSON%"
+)
+
+:: Test port 465 (SSL)
+powershell -Command "Test-NetConnection -ComputerName smtp.gmail.com -Port 465 -WarningAction SilentlyContinue | Select-Object TcpTestSucceeded" 2>nul | findstr "True" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **Port 465 (SMTP SSL):** Open >> "%REPORT_MD%"
+    echo     "smtp_465": "open", >> "%REPORT_JSON%"
+) else (
+    echo - **Port 465 (SMTP SSL):** Blocked or unreachable >> "%REPORT_MD%"
+    echo     "smtp_465": "blocked", >> "%REPORT_JSON%"
+)
+
+:: Test port 25 (Plain)
+powershell -Command "Test-NetConnection -ComputerName smtp.gmail.com -Port 25 -WarningAction SilentlyContinue | Select-Object TcpTestSucceeded" 2>nul | findstr "True" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **Port 25 (SMTP Plain):** Open >> "%REPORT_MD%"
+    echo     "smtp_25": "open" >> "%REPORT_JSON%"
+) else (
+    echo - **Port 25 (SMTP Plain):** Blocked or unreachable >> "%REPORT_MD%"
+    echo     "smtp_25": "blocked" >> "%REPORT_JSON%"
+)
+
+echo   }, >> "%REPORT_JSON%"
+echo. >> "%REPORT_MD%"
+
+:: ── 17. Pending Reboot & Windows Update ────────────────────────────
+echo [17/18] Checking pending reboot and Windows Update...
+
+echo ## 17. Pending Reboot & Windows Update >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo   "reboot_update": { >> "%REPORT_JSON%"
+
+:: Check for pending reboot
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **Pending Reboot:** YES (reboot before deployment) >> "%REPORT_MD%"
+    echo     "pending_reboot": "yes", >> "%REPORT_JSON%"
+) else (
+    echo - **Pending Reboot:** No >> "%REPORT_MD%"
+    echo     "pending_reboot": "no", >> "%REPORT_JSON%"
+)
+
+:: Check for pending Windows Update
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **Windows Update Reboot:** Required >> "%REPORT_MD%"
+    echo     "update_reboot": "required", >> "%REPORT_JSON%"
+) else (
+    echo - **Windows Update Reboot:** Not required >> "%REPORT_MD%"
+    echo     "update_reboot": "not_required", >> "%REPORT_JSON%"
+)
+
+:: Check last update time
+echo ### Recent Updates >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+wmic qfe list brief /format:table 2>nul | findstr /v "Description" | findstr /v "^$" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **Recent Updates:** Retrieved (see JSON) >> "%REPORT_MD%"
+    
+    echo     "recent_updates": [ >> "%REPORT_JSON%"
+    set "FIRST=1"
+    for /f "tokens=1,2,3" %%a in ('wmic qfe list brief /format:table 2^>nul ^| findstr /v "Description" ^| findstr /v "^$"') do (
+        if not "%%a"=="" (
+            if "!FIRST!"=="1" (
+                set "FIRST=0"
+            ) else (
+                echo , >> "%REPORT_JSON%"
+            )
+            echo       {"hotfix": "%%a", "installed": "%%b %%c"} >> "%REPORT_JSON%"
+        )
+    )
+    echo     ] >> "%REPORT_JSON%"
+) else (
+    echo - **Recent Updates:** Could not retrieve >> "%REPORT_MD%"
+    echo     "recent_updates": [] >> "%REPORT_JSON%"
+)
+
+echo   }, >> "%REPORT_JSON%"
+echo. >> "%REPORT_MD%"
+
+:: ── 18. Final Summary & Recommendations ───────────────────────────
+echo [18/18] Generating final summary...
+
+echo ## 18. Final Summary & Recommendations >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo   "summary": { >> "%REPORT_JSON%"
+
+set "READY=Yes"
+set "ISSUES="
+set "WARNINGS="
+
+:: Critical checks
+if not exist "%~dp0..\config.yaml" (
+    set "READY=No"
+    set "ISSUES=!ISSUES!- Missing config.yaml\n"
+)
+
+if "!IS_ADMIN!"=="No" (
+    set "READY=No"
+    set "ISSUES=!ISSUES!- Not running as administrator\n"
+)
+
+:: Check for pending reboot
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" >nul 2>&1
+if %errorlevel%==0 (
+    set "WARNINGS=!WARNINGS!- Pending reboot detected\n"
+)
+
+:: Check GCS connectivity
+ping -n 1 storage.googleapis.com >nul 2>&1
+if not %errorlevel%==0 (
+    set "READY=No"
+    set "ISSUES=!ISSUES!- Cannot reach Google Cloud Storage\n"
+)
+
+:: Check port availability
+netstat -an | findstr ":4200 " | findstr "LISTENING" >nul 2>&1
+if %errorlevel%==0 (
+    set "WARNINGS=!WARNINGS!- Port 4200 already in use\n"
+)
+
+netstat -an | findstr ":8080 " | findstr "LISTENING" >nul 2>&1
+if %errorlevel%==0 (
+    set "WARNINGS=!WARNINGS!- Port 8080 already in use\n"
+)
+
+:: Output summary
+if "!READY!"=="Yes" (
+    echo ### Deployment Readiness: READY >> "%REPORT_MD%"
+    echo     "ready": "yes", >> "%REPORT_JSON%"
+) else (
+    echo ### Deployment Readiness: ISSUES FOUND >> "%REPORT_MD%"
+    echo     "ready": "no", >> "%REPORT_JSON%"
+    echo. >> "%REPORT_MD%"
+    echo **Critical Issues:** >> "%REPORT_MD%"
+    echo !ISSUES! >> "%REPORT_MD%"
+)
+
+if not "!WARNINGS!"=="" (
+    echo. >> "%REPORT_MD%"
+    echo **Warnings:** >> "%REPORT_MD%"
+    echo !WARNINGS! >> "%REPORT_MD%"
+    echo     "warnings": "!WARNINGS!", >> "%REPORT_JSON%"
+) else (
+    echo     "warnings": "none", >> "%REPORT_JSON%"
+)
+
+echo. >> "%REPORT_MD%"
+echo ### Next Steps >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+echo 1. Send both reports to deployment team >> "%REPORT_MD%"
+echo 2. Team will generate config.yaml from collected data >> "%REPORT_MD%"
+echo 3. Schedule deployment window >> "%REPORT_MD%"
+echo 4. Run install_services.bat as Administrator >> "%REPORT_MD%"
+
+echo     "issues": "!ISSUES!", >> "%REPORT_JSON%"
+echo     "next_steps": "Send reports to deployment team" >> "%REPORT_JSON%"
+
+echo   } >> "%REPORT_JSON%"
+
 :: ── 13. Windows Services Status ────────────────────────────────────
-echo [13/15] Checking Windows services...
+echo [13/18] Checking Windows services...
 
 echo ## 13. Windows Services Status >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -442,7 +638,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 14. Installed Software ────────────────────────────────────────
-echo [14/15] Checking installed software...
+echo [14/18] Checking installed software...
 
 echo ## 14. Installed Software >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -492,7 +688,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 15. Environment & System Variables ─────────────────────────────
-echo [15/15] Checking environment variables...
+echo [15/18] Checking environment variables...
 
 echo ## 15. Environment & System Variables >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -562,7 +758,7 @@ echo   } >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 7. Port Availability ────────────────────────────────────────────
-echo [7/15] Checking port availability...
+echo [7/18] Checking port availability...
 
 echo ## 7. Port Availability >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -593,7 +789,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 8. System Resources ───────────────────────────────────────────
-echo [8/15] Checking system resources...
+echo [8/18] Checking system resources...
 
 echo ## 8. System Resources >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -625,7 +821,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 9. Timezone & Power ────────────────────────────────────────────
-echo [9/15] Checking timezone and power settings...
+echo [9/18] Checking timezone and power settings...
 
 echo ## 9. Timezone & Power >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -661,7 +857,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 10. Windows Features & Dependencies ────────────────────────────
-echo [10/15] Checking Windows features and dependencies...
+echo [10/18] Checking Windows features and dependencies...
 
 echo ## 10. Windows Features & Dependencies >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -712,7 +908,7 @@ echo   } >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 11. Potential Conflicts ────────────────────────────────────────
-echo [11/15] Checking for potential conflicts...
+echo [11/18] Checking for potential conflicts...
 
 echo ## 11. Potential Conflicts >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -758,7 +954,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 12. Event Log Errors ──────────────────────────────────────────
-echo [12/15] Checking recent system errors...
+echo [12/18] Checking recent system errors...
 
 echo ## 12. Recent System Errors >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
