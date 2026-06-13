@@ -33,7 +33,7 @@ echo { > "%REPORT_JSON%"
 echo   "generated": "%DATE% %TIME%", >> "%REPORT_JSON%"
 
 :: ── 1. System Information ──────────────────────────────────────────
-echo [1/6] Gathering system information...
+echo [1/15] Gathering system information...
 
 echo ## 1. System Information >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -79,7 +79,7 @@ echo     "is_admin": "%IS_ADMIN%" >> "%REPORT_JSON%"
 echo   }, >> "%REPORT_JSON%"
 
 :: ── 2. Storage Information ─────────────────────────────────────────
-echo [2/6] Gathering storage information...
+echo [2/15] Gathering storage information...
 
 echo ## 2. Storage Information >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -140,7 +140,7 @@ for %%d in (C D E F G H) do (
 echo. >> "%REPORT_MD%"
 
 :: ── 3. Network Information ─────────────────────────────────────────
-echo [3/6] Gathering network information...
+echo [3/15] Gathering network information...
 
 echo ## 3. Network Information >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -196,7 +196,7 @@ if %errorlevel%==0 (
 echo. >> "%REPORT_MD%"
 
 :: ── 4. Software & Tools ────────────────────────────────────────────
-echo [4/6] Checking software and tools...
+echo [4/15] Checking software and tools...
 
 echo ## 4. Software & Tools >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -279,7 +279,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 5. Permissions & Access ────────────────────────────────────────
-echo [5/6] Checking permissions and access...
+echo [5/15] Checking permissions and access...
 
 echo ## 5. Permissions & Access >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -334,7 +334,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 6. Existing Installation ───────────────────────────────────────
-echo [6/6] Checking for existing installation...
+echo [6/15] Checking for existing installation...
 
 echo ## 6. Existing Installation >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -394,8 +394,175 @@ if exist "%~dp0..\*.json" (
 echo   } >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
+:: ── 13. Windows Services Status ────────────────────────────────────
+echo [13/15] Checking Windows services...
+
+echo ## 13. Windows Services Status >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo   "services": { >> "%REPORT_JSON%"
+
+:: Check critical services
+echo ### Critical Services >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+for %%s in (LanmanServer LanmanWorkstation W32Time EventLog Schedule Spooler wuauserv) do (
+    sc query %%s >nul 2>&1
+    if !errorlevel!==0 (
+        for /f "tokens=3 delims=: " %%a in ('sc query %%s ^| findstr "STATE"') do (
+            echo - **%%s:** %%a >> "%REPORT_MD%"
+        )
+    )
+)
+
+echo     "critical_services_checked": "yes", >> "%REPORT_JSON%"
+
+:: Check for services that might interfere
+echo ### Potential Interference >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+set "INTERFERENCE_FOUND=0"
+for %%s in (WSearch Spooler SQLSERVERAGENT MSSQLSERVER) do (
+    sc query %%s >nul 2>&1
+    if !errorlevel!==0 (
+        for /f "tokens=3 delims=: " %%a in ('sc query %%s ^| findstr "STATE"') do (
+            echo - **%%s:** %%a (may use resources) >> "%REPORT_MD%"
+            set "INTERFERENCE_FOUND=1"
+        )
+    )
+)
+
+if "!INTERFERENCE_FOUND!"=="0" (
+    echo - No interfering services detected >> "%REPORT_MD%"
+)
+
+echo     "interference_checked": "yes" >> "%REPORT_JSON%"
+
+echo   }, >> "%REPORT_JSON%"
+echo. >> "%REPORT_MD%"
+
+:: ── 14. Installed Software ────────────────────────────────────────
+echo [14/15] Checking installed software...
+
+echo ## 14. Installed Software >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo   "installed_software": { >> "%REPORT_JSON%"
+
+:: Get installed programs
+echo ### Key Software >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+wmic product get name,version /format:csv 2>nul | findstr /v "Name" | findstr /v "^$" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **Installed Programs:** Retrieved (see JSON) >> "%REPORT_MD%"
+    
+    echo     "programs": [ >> "%REPORT_JSON%"
+    set "FIRST=1"
+    for /f "tokens=2,3 delims=," %%a in ('wmic product get name^,version /format:csv 2^>nul ^| findstr /v "Name" ^| findstr /v "^$"') do (
+        if not "%%a"=="" (
+            if "!FIRST!"=="1" (
+                set "FIRST=0"
+            ) else (
+                echo , >> "%REPORT_JSON%"
+            )
+            echo       {"name": "%%a", "version": "%%b"} >> "%REPORT_JSON%"
+        )
+    )
+    echo     ], >> "%REPORT_JSON%"
+) else (
+    echo - **Installed Programs:** Could not retrieve >> "%REPORT_MD%"
+    echo     "programs": [], >> "%REPORT_JSON%"
+)
+
+:: Check for Python installations
+echo ### Python Installations >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+where python >nul 2>&1
+if %errorlevel%==0 (
+    for /f "tokens=*" %%p in ('where python 2^>nul') do (
+        echo - **Python found at:** %%p >> "%REPORT_MD%"
+    )
+)
+
+echo     "python_locations_checked": "yes" >> "%REPORT_JSON%"
+
+echo   }, >> "%REPORT_JSON%"
+echo. >> "%REPORT_MD%"
+
+:: ── 15. Environment & System Variables ─────────────────────────────
+echo [15/15] Checking environment variables...
+
+echo ## 15. Environment & System Variables >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo   "environment": { >> "%REPORT_JSON%"
+
+:: Check PATH for relevant tools
+echo ### PATH Check >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo - **PATH entries:** >> "%REPORT_MD%"
+echo '>> "%REPORT_MD%"
+echo %PATH% | findstr /i "python rclone nssm uv" >> "%REPORT_MD%"
+echo '>> "%REPORT_MD%"
+
+echo     "path_checked": "yes", >> "%REPORT_JSON%"
+
+:: Check for relevant environment variables
+echo ### Relevant Environment Variables >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+if defined PYTHON_HOME (
+    echo - **PYTHON_HOME:** %PYTHON_HOME% >> "%REPORT_MD%"
+    echo     "python_home": "%PYTHON_HOME%", >> "%REPORT_JSON%"
+) else (
+    echo     "python_home": "not set", >> "%REPORT_JSON%"
+)
+
+if defined PYTHONPATH (
+    echo - **PYTHONPATH:** %PYTHONPATH% >> "%REPORT_MD%"
+    echo     "pythonpath": "%PYTHONPATH%", >> "%REPORT_JSON%"
+) else (
+    echo     "pythonpath": "not set", >> "%REPORT_JSON%"
+)
+
+if defined UV_HOME (
+    echo - **UV_HOME:** %UV_HOME% >> "%REPORT_MD%"
+    echo     "uv_home": "%UV_HOME%", >> "%REPORT_JSON%"
+) else (
+    echo     "uv_home": "not set", >> "%REPORT_JSON%"
+)
+
+if defined PREFECT_HOME (
+    echo - **PREFECT_HOME:** %PREFECT_HOME% >> "%REPORT_MD%"
+    echo     "prefect_home": "%PREFECT_HOME%", >> "%REPORT_JSON%"
+) else (
+    echo     "prefect_home": "not set", >> "%REPORT_JSON%"
+)
+
+if defined RCLONE_CONFIG (
+    echo - **RCLONE_CONFIG:** %RCLONE_CONFIG% >> "%REPORT_MD%"
+    echo     "rclone_config": "%RCLONE_CONFIG%", >> "%REPORT_JSON%"
+) else (
+    echo     "rclone_config": "not set", >> "%REPORT_JSON%"
+)
+
+:: Check TEMP/TMP paths
+echo ### Temp Paths >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+echo - **TEMP:** %TEMP% >> "%REPORT_MD%"
+echo - **TMP:** %TMP% >> "%REPORT_MD%"
+
+echo     "temp_path": "%TEMP%", >> "%REPORT_JSON%"
+echo     "tmp_path": "%TMP%" >> "%REPORT_JSON%"
+
+echo   } >> "%REPORT_JSON%"
+echo. >> "%REPORT_MD%"
+
 :: ── 7. Port Availability ────────────────────────────────────────────
-echo [7/12] Checking port availability...
+echo [7/15] Checking port availability...
 
 echo ## 7. Port Availability >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -426,7 +593,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 8. System Resources ───────────────────────────────────────────
-echo [8/12] Checking system resources...
+echo [8/15] Checking system resources...
 
 echo ## 8. System Resources >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -458,7 +625,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 9. Timezone & Power ────────────────────────────────────────────
-echo [9/12] Checking timezone and power settings...
+echo [9/15] Checking timezone and power settings...
 
 echo ## 9. Timezone & Power >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -494,7 +661,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 10. Windows Features & Dependencies ────────────────────────────
-echo [10/12] Checking Windows features and dependencies...
+echo [10/15] Checking Windows features and dependencies...
 
 echo ## 10. Windows Features & Dependencies >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -545,7 +712,7 @@ echo   } >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 11. Potential Conflicts ────────────────────────────────────────
-echo [11/12] Checking for potential conflicts...
+echo [11/15] Checking for potential conflicts...
 
 echo ## 11. Potential Conflicts >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -591,7 +758,7 @@ echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 12. Event Log Errors ──────────────────────────────────────────
-echo [12/12] Checking recent system errors...
+echo [12/15] Checking recent system errors...
 
 echo ## 12. Recent System Errors >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
