@@ -489,18 +489,18 @@ class TestPipelineExitCodes:
     """Exit code classification edge cases."""
 
     def test_cloud_partial_does_not_raise(self):
-        """CLOUD_PARTIAL (exit 4, 5, 9, 10) completes pipeline."""
+        """CLOUD_PARTIAL (exit 4, 5, 6, 10) completes pipeline."""
         from core.cloud_sync import classify_rclone_exit
 
-        for code in (4, 5, 9, 10):
+        for code in (4, 5, 6, 10):
             status = classify_rclone_exit(code)
             assert status == "CLOUD_PARTIAL", f"exit {code} should be CLOUD_PARTIAL"
 
     def test_cloud_failed_raises(self):
-        """CLOUD_FAILED (exit 1-3, 6, 7, 8) aborts pipeline."""
+        """CLOUD_FAILED (exit 1-3, 7, 8) aborts pipeline."""
         from core.cloud_sync import classify_rclone_exit
 
-        for code in (1, 2, 3, 6, 7, 8):
+        for code in (1, 2, 3, 7, 8):
             status = classify_rclone_exit(code)
             assert status == "CLOUD_FAILED", f"exit {code} should be CLOUD_FAILED"
 

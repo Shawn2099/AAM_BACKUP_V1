@@ -19,3 +19,5 @@ graphify-out/
 <MagicMock*
 prefect_logs/.~lock*
 .gitnexus
+.venv_test/
+plan.md

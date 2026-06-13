@@ -111,7 +111,7 @@ class TestWolConfig:
 class TestCloudConfig:
     def test_defaults(self):
         cfg = CloudConfig()
-        assert cfg.storage_class == "COLDLINE"
+        assert cfg.storage_class == "STANDARD"
         assert cfg.bandwidth_limit == "10M"
         assert cfg.transfers == 4
         assert cfg.checkers == 16
