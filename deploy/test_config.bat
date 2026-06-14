@@ -30,3 +30,4 @@ if "%UV_EXE%"=="" (
 
 cd /d "%PROJECT_DIR%"
 "%UV_EXE%" run python "%SCRIPT_DIR%\test_config.py"
+pause

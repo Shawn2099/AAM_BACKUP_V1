@@ -10,10 +10,15 @@ HOW IT WORKS
 1. Polls http://127.0.0.1:4200/api/health every 60 seconds.
 2. After FAILURE_THRESHOLD (5) consecutive failures (~5 minutes), considers
    the Prefect server hung-but-alive.
-3. Before acting, ALWAYS checks for an active backup via backup.lock:
-   - If a backup is running → logs a deferral and waits. Checks again in
-     2 minutes. Repeats indefinitely until backup completes. Under NO
-     condition does the watchdog interrupt a running backup.
+3. Before acting, ALWAYS checks for an active backup via two signals:
+   - Signal A (real transfer): rclone.exe / robocopy.exe process is alive.
+     → Defer up to MAX_TRANSFER_DEFERRALS (default 240 × 2 min = 8 h).
+       A legitimate transfer (max 6 h by subprocess_timeout_seconds) is
+       never cut short. A zombie/hung rclone is force-restarted after 8 h.
+   - Signal B (lock only, no transfer process): lock file exists + PID alive
+     but no rclone/robocopy detected. Suspicious — PID reuse or crash.
+     Applies MAX_DEFERRALS cap (~30 min), then forces lock removal + restart.
+   - No lock and no transfer process → restart promptly.
    - If no backup → issues sc stop AamPrefectServer. NSSM + sc failure
      actions restart both AamPrefectServer and AamBackupAgent automatically.
 4. After a restart, sleeps 120 seconds (RESTART_COOLDOWN) before resuming
@@ -44,7 +49,11 @@ CHECK_INTERVAL_SECONDS = 60     # normal poll interval
 FAILURE_THRESHOLD      = 5      # consecutive failures before considering action
 REQUEST_TIMEOUT        = 10     # HTTP timeout per health check (seconds)
 BACKUP_WAIT_INTERVAL   = 120    # re-check interval while a backup is running
-MAX_DEFERRALS          = 15     # force restart after this many consecutive deferrals (~30 min)
+MAX_DEFERRALS          = 15     # stale-lock cap: force restart after ~30 min (no transfer process seen)
+MAX_TRANSFER_DEFERRALS = 240    # real-transfer cap: force restart after 8 h (240 × 2 min)
+                                 # — well above subprocess_timeout_seconds (21 600 s = 6 h),
+                                 #   so a legitimate transfer is never cut short.
+                                 #   A genuinely zombie/hung rclone is recovered within 8 h.
 RESTART_COOLDOWN       = 120    # wait after triggering a restart before resuming
 WATCHED_SERVICE        = "AamPrefectServer"
 
@@ -95,18 +104,31 @@ def _pid_is_alive(pid: int) -> bool:
         return False
 
 
+def _transfer_process_running() -> bool:
+    """Return True if rclone.exe or robocopy.exe is actively running.
+
+    This is the definitive signal that a real data transfer is in progress.
+    Used to decide whether deferral should be indefinite (real transfer) or
+    capped (lock-without-transfer — suspicious stale lock scenario).
+    """
+    try:
+        import psutil
+        transfer_procs = {"rclone.exe", "robocopy.exe"}
+        for proc in psutil.process_iter(["name"]):
+            if proc.info["name"] in transfer_procs:
+                return True
+    except Exception as exc:
+        logger.warning(f"Transfer process check failed: {exc}")
+    return False
+
 
 def _is_backup_running() -> bool:
     """Return True if a backup flow is actively in progress.
 
     Primary check: PID-stamped lock file written by flow.py.
-    Fallback check: rclone.exe / robocopy.exe process existence, which covers
-    the data-transfer phase even if the lock file was lost (e.g. OS crash).
-
     Stale lock detection: if the PID in the lock file is no longer alive, the
     lock is from a previous crash and is removed automatically.
     """
-    # ── Primary: PID lock file ───────────────────────────────────────────────
     if BACKUP_LOCK_PATH.exists():
         try:
             pid = int(BACKUP_LOCK_PATH.read_text().strip())
@@ -119,20 +141,6 @@ def _is_backup_running() -> bool:
             BACKUP_LOCK_PATH.unlink(missing_ok=True)
         except (ValueError, OSError) as exc:
             logger.warning(f"Could not read backup lock file: {exc}")
-
-    # ── Fallback: check for active rclone / robocopy processes ───────────────
-    try:
-        import psutil
-        backup_procs = {"rclone.exe", "robocopy.exe"}
-        for proc in psutil.process_iter(["name"]):
-            if proc.info["name"] in backup_procs:
-                logger.info(
-                    f"Fallback: {proc.info['name']} (PID {proc.pid}) is running "
-                    "— treating as active backup"
-                )
-                return True
-    except Exception as exc:
-        logger.warning(f"Fallback process check failed: {exc}")
 
     return False
 
@@ -230,26 +238,64 @@ def main() -> None:
             continue
 
         # ── Threshold reached — check for active backup before acting ────────
-        if _is_backup_running():
+        lock_held  = _is_backup_running()       # PID-validated lock file
+        transferring = _transfer_process_running()  # rclone / robocopy alive
+
+        if transferring:
+            # ── Real transfer detected — defer with an 8-hour safety cap ─────
+            # Protects legitimate multi-hour backups from being interrupted.
+            # The cap (MAX_TRANSFER_DEFERRALS) guards against a zombie rclone
+            # process that is alive but making no progress and somehow escaped
+            # Python's subprocess_timeout_seconds kill.
             deferrals += 1
-            if deferrals >= MAX_DEFERRALS:
+            if deferrals >= MAX_TRANSFER_DEFERRALS:
                 logger.error(
-                    f"Prefect API has been unhealthy for {failures} checks and backup "
-                    f"lock has persisted for {deferrals} deferrals (~{deferrals * BACKUP_WAIT_INTERVAL // 60} min). "
-                    f"Possible stale lock from PID reuse. Forcing restart."
+                    f"Prefect API has been unhealthy for {failures} checks and a "
+                    f"transfer process has been detected for {deferrals} deferrals "
+                    f"(~{deferrals * BACKUP_WAIT_INTERVAL // 3600} h). "
+                    f"Possible zombie rclone/robocopy. Forcing restart."
                 )
-                # Force-remove the lock and proceed with restart
                 try:
                     BACKUP_LOCK_PATH.unlink(missing_ok=True)
                 except OSError:
                     pass
                 deferrals = 0
-                # Fall through to restart logic below
+                # Fall through to restart logic
             else:
                 logger.warning(
-                    f"Prefect API has been unhealthy for {failures} checks but a backup "
-                    f"is currently in progress. Deferring restart to avoid interrupting "
-                    f"backup. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
+                    f"Prefect API has been unhealthy for {failures} checks but a real "
+                    f"data transfer is in progress (rclone/robocopy detected). "
+                    f"Deferring restart. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
+                    f"(deferral {deferrals}/{MAX_TRANSFER_DEFERRALS} — cap at 8 h)"
+                )
+                time.sleep(BACKUP_WAIT_INTERVAL)
+                continue
+
+        if lock_held:
+            # ── Lock exists but no transfer process — suspicious ─────────────
+            # Could be: (a) flow is between rclone calls (pre/post-flight steps),
+            # or (b) stale lock from PID reuse after a crash.
+            # Apply the MAX_DEFERRALS cap to avoid waiting forever on (b).
+            deferrals += 1
+            if deferrals >= MAX_DEFERRALS:
+                logger.error(
+                    f"Prefect API has been unhealthy for {failures} checks and backup "
+                    f"lock has persisted for {deferrals} deferrals (~{deferrals * BACKUP_WAIT_INTERVAL // 60} min) "
+                    f"with no active transfer process. Possible stale lock from PID reuse. "
+                    f"Forcing restart."
+                )
+                # Force-remove the lock and fall through to restart logic
+                try:
+                    BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                deferrals = 0
+            else:
+                logger.warning(
+                    f"Prefect API has been unhealthy for {failures} checks. "
+                    f"Backup lock is held but no transfer process detected — "
+                    f"possibly between rclone calls. Deferring restart. "
+                    f"Will re-check in {BACKUP_WAIT_INTERVAL}s. "
                     f"(deferral {deferrals}/{MAX_DEFERRALS})"
                 )
                 time.sleep(BACKUP_WAIT_INTERVAL)

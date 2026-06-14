@@ -35,6 +35,7 @@ echo [INFO] Enabling Windows Long Path support (MaxPath > 260 chars)...
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo [OK] Long paths enabled in Registry.
+    echo [WARN] A REBOOT may be required before long-path support takes effect.
 ) else (
     echo [WARN] Failed to enable Long Paths. You may need to enable it via Group Policy.
 )

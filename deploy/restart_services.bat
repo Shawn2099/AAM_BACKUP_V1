@@ -14,6 +14,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+set "LOG_DIR=C:\BackupAgent\logs"
+
 echo [INFO] Stopping all AAM Backup services...
 net stop AamWatchdog 2>nul
 net stop AamBackupAgent 2>nul
@@ -22,6 +24,14 @@ net stop AamPrefectServer 2>nul
 echo.
 echo [INFO] Restarting AAM Backup services...
 net start AamPrefectServer
+if %errorlevel% neq 0 (
+    echo.
+    echo  ERROR: AamPrefectServer failed to start.
+    echo  Dependent services cannot start without it.
+    echo  Check: %LOG_DIR%\prefect_svc.log
+    pause
+    exit /b 1
+)
 echo [INFO] Waiting 10 seconds for Prefect API to spin up...
 timeout /t 10 /nobreak >nul
 net start AamBackupAgent

@@ -562,17 +562,14 @@ class TestWatchdogBackupDetection:
         assert result is True
 
     def test_fallback_rclone_detection(self, tmp_path):
-        """No lock file, rclone running → backup detected."""
-        lock_path = tmp_path / "backup.lock"  # Doesn't exist
-
+        """No lock file, rclone running → transfer process detected."""
         mock_proc = MagicMock()
         mock_proc.info = {"name": "rclone.exe"}
         mock_proc.pid = 12345
 
-        with patch("watchdog.BACKUP_LOCK_PATH", lock_path):
-            with patch("psutil.process_iter", return_value=[mock_proc]):
-                from watchdog import _is_backup_running
-                result = _is_backup_running()
+        with patch("psutil.process_iter", return_value=[mock_proc]):
+            from watchdog import _transfer_process_running
+            result = _transfer_process_running()
 
         assert result is True
 

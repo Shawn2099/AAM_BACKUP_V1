@@ -8,9 +8,15 @@ import shutil
 chocolatey_url = "https://community.chocolatey.org/api/v2/package/nssm"
 project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 tools_dir = os.path.join(project_dir, "deploy", "bin")
-nupkg_path = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_choco.nupkg")
-extract_dir = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_choco_extract")
-inner_extract_dir = os.path.join(os.environ.get("TEMP", r"C:\Temp"), "nssm_inner_extract")
+
+# Use TEMP env var if set; fall back to C:\Temp and create it if needed
+_temp_base = os.environ.get("TEMP") or os.environ.get("TMP") or r"C:\Temp"
+if not os.path.exists(_temp_base):
+    os.makedirs(_temp_base, exist_ok=True)
+
+nupkg_path = os.path.join(_temp_base, "nssm_choco.nupkg")
+extract_dir = os.path.join(_temp_base, "nssm_choco_extract")
+inner_extract_dir = os.path.join(_temp_base, "nssm_inner_extract")
 nssm_dest = os.path.join(tools_dir, "nssm.exe")
 
 print("===================================================")

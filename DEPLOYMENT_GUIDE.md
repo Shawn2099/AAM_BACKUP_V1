@@ -67,6 +67,19 @@ At end-of-year rollover, the system moves the closing FY's GCS data to ARCHIVE s
 
 ---
 
+## Step 0: Run Server Discovery (Target Environment Check)
+
+Before configuring or installing anything, run the discovery script to ensure the server meets all requirements and to collect critical configuration data (like paths, network interfaces, and MAC addresses).
+
+1. Copy the entire `AAM_BACKUP_V1` folder to your target Windows Server.
+2. Navigate to the `deploy\` folder.
+3. **Right-click `server_discovery.bat`** → **"Run as Administrator"**.
+4. Wait for the script to complete (it takes 1-2 minutes).
+5. Open the generated `server_discovery_report.md` file. It contains your IP addresses, Wake-on-LAN adapter status, UAC mode, open ports, storage info, and any critical warnings (like missing permissions, proxy settings, or blocked Google Cloud access).
+6. Send the `.md` and `.json` reports to the deployment team, or use the collected info in the following steps to configure the system.
+
+---
+
 ## Step 1: Create the Initial FY Folders
 
 > The automation creates FY folders **only during rollover** (April 1st). For the **very first deployment**, you must create them manually.
@@ -162,15 +175,14 @@ Before installing any Windows Services, run the validator:
 ## Step 6: Critical Post-Install Actions
 
 ### 6a. Set the Service Log On User (LAN Backup — REQUIRED)
-Windows services default to `Local System`, which **cannot access network shares**.
+**CRITICAL:** Windows services default to `Local System`, which **cannot access network UNC paths** (`\\NAS_IP\share`). Robocopy will fail with "Access Denied" if this is not changed.
 
 1. Open Start → type `services.msc` → Enter.
-2. Right-click **Aam Backup Agent** → **Properties** → **Log On** tab.
+2. Right-click **AamBackupAgent** → **Properties** → **Log On** tab.
 3. Select **This account**.
-4. Enter the credentials of a Windows/Domain user with **write access** to the LAN share.
+4. Enter the credentials of a Windows/Domain user with **Read/Write access** to the LAN share.
 5. Click **OK**.
-
-Repeat for **Aam Watchdog** if it also needs network access.
+6. Repeat the exact same steps for **AamWatchdog** to ensure it can access necessary network paths.
 
 ### 6b. Open Windows Firewall for Dashboard (if accessing from another PC)
 By default, Windows Firewall blocks external access to port 8080. Run in an elevated Command Prompt:
@@ -178,7 +190,14 @@ By default, Windows Firewall blocks external access to port 8080. Run in an elev
 netsh advfirewall firewall add rule name="AAM Backup Dashboard" dir=in action=allow protocol=TCP localport=8080
 ```
 
-### 6c. Restart Services to Apply Changes
+### 6c. Configure Timeout for Initial Cloud Sync (IMPORTANT)
+If this is the very first time syncing to GCS and you have a large dataset, the default 6-hour timeout might kill the upload prematurely.
+1. Open `config.yaml`.
+2. Temporarily set `subprocess_timeout_seconds: 259200` (72 hours).
+3. Restart the `AamBackupAgent` service (see 6d).
+4. After the initial sync finishes successfully, change it back to `21600` (6 hours) and restart the service again for daily operation.
+
+### 6d. Restart Services to Apply Changes
 After changing the Log On user or editing `config.yaml`:
 - Right-click **`deploy\restart_services.bat`** → **"Run as Administrator"**.
 

@@ -23,6 +23,10 @@ echo     %REPORT_JSON%
 echo ====================================================================
 echo.
 
+set "TARGET_IP="
+set /p TARGET_IP="Enter Backup Server IP to test connectivity (or press Enter to skip): "
+echo.
+
 :: ── Initialize Reports ──────────────────────────────────────────────
 echo # Server Discovery Report > "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -92,30 +96,37 @@ echo ^|-------^|------^|-------^|------^|-------------^| >> "%REPORT_MD%"
 echo   "drives": [ >> "%REPORT_JSON%"
 
 set "DRIVE_COUNT=0"
-for /f "tokens=1-5" %%a in ('wmic logicaldisk get caption^,drivetype^,size^,freespace^,filesystem /format:csv 2^>nul ^| findstr /v "Caption"') do (
+:: wmic CSV output column order: Node,Caption,DriveType,FileSystem,FreeSpace,Size
+:: tokens: %%a=Node %%b=Caption %%c=DriveType %%d=FileSystem %%e=FreeSpace %%f=Size
+for /f "tokens=1-6 delims=," %%a in ('wmic logicaldisk get caption^,drivetype^,filesystem^,freespace^,size /format:csv 2^>nul ^| findstr /v "Caption" ^| findstr /v "^$"') do (
+    if not "%%b"=="" (
     set /a DRIVE_COUNT+=1
-    
-    :: Drive type mapping
+
+    :: Drive type mapping (%%c = DriveType)
     set "DRIVE_TYPE=Unknown"
-    if "%%b"=="2" set "DRIVE_TYPE=Removable"
-    if "%%b"=="3" set "DRIVE_TYPE=Local"
-    if "%%b"=="4" set "DRIVE_TYPE=Network"
-    if "%%b"=="5" set "DRIVE_TYPE=CD-ROM"
-    
-    :: Convert bytes to GB
-    set /a "TOTAL_GB=%%d / 1073741824"
-    set /a "FREE_GB=%%e / 1073741824"
-    
-    echo ^| %%a ^| !DRIVE_TYPE! ^| !TOTAL_GB! GB ^| !FREE_GB! GB ^| %%c ^| >> "%REPORT_MD%"
-    
+    if "%%c"=="2" set "DRIVE_TYPE=Removable"
+    if "%%c"=="3" set "DRIVE_TYPE=Local"
+    if "%%c"=="4" set "DRIVE_TYPE=Network"
+    if "%%c"=="5" set "DRIVE_TYPE=CD-ROM"
+
+    :: Convert bytes to GB using PowerShell to avoid 32-bit set/a overflow
+    :: %%e=FreeSpace bytes, %%f=Size bytes
+    for /f %%G in ('powershell -NoProfile -Command "[math]::Round([decimal]'%%f' / 1073741824, 1)" 2^>nul') do set "TOTAL_GB=%%G"
+    for /f %%H in ('powershell -NoProfile -Command "[math]::Round([decimal]'%%e' / 1073741824, 1)" 2^>nul') do set "FREE_GB=%%H"
+    if "!TOTAL_GB!"=="" set "TOTAL_GB=0"
+    if "!FREE_GB!"=="" set "FREE_GB=0"
+
+    echo ^| %%b ^| !DRIVE_TYPE! ^| !TOTAL_GB! GB ^| !FREE_GB! GB ^| %%d ^| >> "%REPORT_MD%"
+
     if !DRIVE_COUNT! GTR 1 echo , >> "%REPORT_JSON%"
     echo     { >> "%REPORT_JSON%"
-    echo       "drive": "%%a", >> "%REPORT_JSON%"
+    echo       "drive": "%%b", >> "%REPORT_JSON%"
     echo       "type": "!DRIVE_TYPE!", >> "%REPORT_JSON%"
     echo       "total_gb": !TOTAL_GB!, >> "%REPORT_JSON%"
     echo       "free_gb": !FREE_GB!, >> "%REPORT_JSON%"
-    echo       "filesystem": "%%c" >> "%REPORT_JSON%"
+    echo       "filesystem": "%%d" >> "%REPORT_JSON%"
     echo     } >> "%REPORT_JSON%"
+    )
 )
 
 echo   ], >> "%REPORT_JSON%"
@@ -171,7 +182,37 @@ for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /i "Default Gateway" ^| 
 :got_gw
 echo     "default_gateway": "!GATEWAY!", >> "%REPORT_JSON%"
 
-echo   }, >> "%REPORT_JSON%"
+echo ### Wake-on-LAN (WoL) Status >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+set "WOL_FOUND=0"
+set "WOL_STATUS=none"
+set "WOL_ADAPTER="
+
+for /f "tokens=*" %%a in ('powershell -Command "try { Get-NetAdapterPowerManagement -ErrorAction Stop | Where-Object { $_.WakeOnMagicPacket -eq 'Enabled' } | Select-Object -ExpandProperty Name } catch { Write-Output 'ERROR' }" 2^>nul') do (
+    if "%%a"=="ERROR" (
+        echo - **WoL Check:** Could not determine ^(requires PowerShell 5.1+^) >> "%REPORT_MD%"
+        set "WOL_STATUS=unknown"
+        set "WOL_FOUND=-1"
+    ) else if not "%%a"=="" (
+        echo - **Adapter [%%a]:** Wake on Magic Packet is ENABLED >> "%REPORT_MD%"
+        set "WOL_STATUS=enabled"
+        set "WOL_ADAPTER=%%a"
+        set "WOL_FOUND=1"
+    )
+)
+
+if "!WOL_FOUND!"=="0" (
+    echo - **WoL Check:** No adapters found with Wake on Magic Packet enabled >> "%REPORT_MD%"
+    set "WOL_STATUS=disabled"
+)
+echo. >> "%REPORT_MD%"
+
+echo     "wol_status": "!WOL_STATUS!", >> "%REPORT_JSON%"
+if "!WOL_ADAPTER!"=="" (
+    echo     "wol_adapter": null, >> "%REPORT_JSON%"
+) else (
+    echo     "wol_adapter": "!WOL_ADAPTER!", >> "%REPORT_JSON%"
+)
 
 echo ### DNS Resolution Test >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
@@ -179,8 +220,10 @@ echo. >> "%REPORT_MD%"
 nslookup google.com >nul 2>&1
 if %errorlevel%==0 (
     echo - **DNS Resolution:** Working >> "%REPORT_MD%"
+    echo     "dns_resolution": "working", >> "%REPORT_JSON%"
 ) else (
     echo - **DNS Resolution:** Failed >> "%REPORT_MD%"
+    echo     "dns_resolution": "failed", >> "%REPORT_JSON%"
 )
 
 echo ### Internet Connectivity >> "%REPORT_MD%"
@@ -190,11 +233,69 @@ echo. >> "%REPORT_MD%"
 ping -n 1 -w 2000 8.8.8.8 >nul 2>&1
 if %errorlevel%==0 (
     echo - **Internet Access:** Available >> "%REPORT_MD%"
+    echo     "internet_access": "available", >> "%REPORT_JSON%"
 ) else (
     echo - **Internet Access:** Not available or blocked >> "%REPORT_MD%"
+    echo     "internet_access": "blocked", >> "%REPORT_JSON%"
 )
 
 echo. >> "%REPORT_MD%"
+
+echo ### Local Network Devices (ARP Cache) >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+echo Identifying local network devices for potential WoL targets: >> "%REPORT_MD%"
+echo ^`^`^` >> "%REPORT_MD%"
+arp -a >> "%REPORT_MD%"
+echo ^`^`^` >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo ### Target Backup Server Test >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+echo     "target_server": { >> "%REPORT_JSON%"
+if not "!TARGET_IP!"=="" (
+    echo - **Target IP:** !TARGET_IP! >> "%REPORT_MD%"
+    echo       "ip": "!TARGET_IP!", >> "%REPORT_JSON%"
+    
+    :: Ping test
+    ping -n 1 -w 2000 !TARGET_IP! >nul 2>&1
+    if !errorlevel!==0 (
+        echo - **Ping:** Successful >> "%REPORT_MD%"
+        echo       "ping": "successful", >> "%REPORT_JSON%"
+        
+        :: ARP test for MAC address (useful for WoL)
+        set "TARGET_MAC="
+        for /f "tokens=2" %%m in ('arp -a !TARGET_IP! 2^>nul ^| findstr /i "!TARGET_IP!"') do set "TARGET_MAC=%%m"
+        if not "!TARGET_MAC!"=="" (
+            echo - **MAC Address:** !TARGET_MAC! ^(can be used for WoL^) >> "%REPORT_MD%"
+            echo       "mac_address": "!TARGET_MAC!", >> "%REPORT_JSON%"
+        ) else (
+            echo - **MAC Address:** Could not resolve via ARP >> "%REPORT_MD%"
+            echo       "mac_address": null, >> "%REPORT_JSON%"
+        )
+        
+        :: Test SMB Port 445
+        powershell -Command "try { $tcp = New-Object System.Net.Sockets.TcpClient; $result = $tcp.BeginConnect('!TARGET_IP!', 445, $null, $null); $wait = $result.AsyncWaitHandle.WaitOne(2000, $false); if ($wait) { $tcp.EndConnect($result); $tcp.Close(); Write-Output 'True' } else { $tcp.Close(); Write-Output 'False' } } catch { Write-Output 'False' }" 2^>nul | findstr "True" >nul 2>&1
+        if !errorlevel!==0 (
+            echo - **SMB Port 445:** Open ^(File sharing reachable^) >> "%REPORT_MD%"
+            echo       "smb_port_445": "open" >> "%REPORT_JSON%"
+        ) else (
+            echo - **SMB Port 445:** Blocked or Unreachable >> "%REPORT_MD%"
+            echo       "smb_port_445": "blocked" >> "%REPORT_JSON%"
+        )
+    ) else (
+        echo - **Ping:** Failed ^(Host unreachable or ICMP blocked^) >> "%REPORT_MD%"
+        echo       "ping": "failed", >> "%REPORT_JSON%"
+        echo       "mac_address": null, >> "%REPORT_JSON%"
+        echo       "smb_port_445": "unknown" >> "%REPORT_JSON%"
+    )
+) else (
+    echo - No target IP provided. Skipped. >> "%REPORT_MD%"
+    echo       "ip": null >> "%REPORT_JSON%"
+)
+echo     } >> "%REPORT_JSON%"
+echo. >> "%REPORT_MD%"
+
+echo   }, >> "%REPORT_JSON%"
 
 :: ── 4. Software & Tools ────────────────────────────────────────────
 echo [4/18] Checking software and tools...
@@ -256,8 +357,8 @@ if %errorlevel%==0 (
     echo     "rclone": "not installed", >> "%REPORT_JSON%"
 )
 
-:: Check robocopy
-robocopy /? >nul 2>&1
+:: Check robocopy — note: robocopy /? returns exit code 16, so use 'where' instead
+where robocopy >nul 2>&1
 if %errorlevel%==0 (
     echo - **robocopy:** Available >> "%REPORT_MD%"
     echo     "robocopy": "available", >> "%REPORT_JSON%"
@@ -307,27 +408,59 @@ if %errorlevel%==0 (
     echo     "existing_service": "not found", >> "%REPORT_JSON%"
 )
 
-:: Check common UNC paths
+:: Network Share Access check removed - performing random net use /delete on a live server is risky.
 echo ### Network Share Access >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
+echo - Skipped automated share test to ensure zero impact on live network connections. >> "%REPORT_MD%"
 
-set "SHARE_FOUND=0"
-for %%s in (
-    "\\192.168.10.10\share$"
-    "\\192.168.1.1\share"
-    "\\NAS\backup"
-    "\\SERVER\share"
-) do (
-    net use %%s >nul 2>&1
-    if !errorlevel!==0 (
-        echo - **%%s:** Accessible >> "%REPORT_MD%"
-        set "SHARE_FOUND=1"
-        net use %%s /delete >nul 2>&1
+echo ### Local Administrators >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+echo The following users can be used to run the backup service (AamBackupAgent) >> "%REPORT_MD%"
+echo to ensure access to UNC paths: >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo   "administrators": [ >> "%REPORT_JSON%"
+set "FIRST_ADMIN=1"
+for /f "tokens=*" %%a in ('net localgroup administrators ^| findstr /v "Alias Name Comment Members \-\-\- The command completed"') do (
+    if not "%%a"=="" (
+        echo - %%a >> "%REPORT_MD%"
+        if "!FIRST_ADMIN!"=="1" (
+            set "FIRST_ADMIN=0"
+        ) else (
+            echo , >> "%REPORT_JSON%"
+        )
+        echo     "%%a" >> "%REPORT_JSON%"
     )
 )
+echo   ] >> "%REPORT_JSON%"
 
-if "!SHARE_FOUND!"=="0" (
-    echo - No common shares found (enter specific UNC path during config) >> "%REPORT_MD%"
+echo ### PowerShell Execution Policy >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+for /f "tokens=*" %%a in ('powershell -noprofile -command "Get-ExecutionPolicy"') do set "PS_EXEC_POLICY=%%a"
+echo - **Execution Policy:** %PS_EXEC_POLICY% >> "%REPORT_MD%"
+echo     ,"powershell_execution_policy": "%PS_EXEC_POLICY%" >> "%REPORT_JSON%"
+
+if /I "%PS_EXEC_POLICY%"=="Restricted" (
+    echo   - WARNING: Set to Restricted. PowerShell scripts will fail. Run 'Set-ExecutionPolicy RemoteSigned' >> "%REPORT_MD%"
+)
+
+echo ### User Account Control (UAC) >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA >nul 2>&1
+if %errorlevel%==0 (
+    for /f "tokens=3" %%a in ('reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA 2^>nul ^| findstr "EnableLUA"') do set "UAC_ENABLED=%%a"
+    if "!UAC_ENABLED!"=="0x1" (
+        echo - **UAC Status:** Enabled ^(Strict mode may require explicit admin elevation^) >> "%REPORT_MD%"
+        echo     ,"uac_enabled": "yes" >> "%REPORT_JSON%"
+    ) else (
+        echo - **UAC Status:** Disabled >> "%REPORT_MD%"
+        echo     ,"uac_enabled": "no" >> "%REPORT_JSON%"
+    )
+) else (
+    echo - **UAC Status:** Could not determine >> "%REPORT_MD%"
+    echo     ,"uac_enabled": "unknown" >> "%REPORT_JSON%"
 )
 
 echo   }, >> "%REPORT_JSON%"
@@ -392,7 +525,8 @@ if exist "%~dp0..\*.json" (
     echo     "gcs_key": "not found" >> "%REPORT_JSON%"
 )
 
-echo   } >> "%REPORT_JSON%"
+:: Note the trailing comma — more JSON sections follow
+echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 16. Connectivity Tests ────────────────────────────────────────
@@ -402,6 +536,40 @@ echo ## 16. Connectivity Tests >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "connectivity": { >> "%REPORT_JSON%"
+
+echo ### Proxy Settings >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+set "PROXY_ENABLED=no"
+set "PROXY_SERVER="
+
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable >nul 2>&1
+if %errorlevel%==0 (
+    for /f "tokens=3" %%a in ('reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable 2^>nul ^| findstr "ProxyEnable"') do (
+        if "%%a"=="0x1" set "PROXY_ENABLED=yes"
+    )
+)
+
+if "!PROXY_ENABLED!"=="yes" (
+    for /f "tokens=3" %%a in ('reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyServer 2^>nul ^| findstr "ProxyServer"') do set "PROXY_SERVER=%%a"
+    echo - **System Proxy:** Enabled ^(!PROXY_SERVER!^) >> "%REPORT_MD%"
+    echo     "proxy_enabled": "yes", >> "%REPORT_JSON%"
+    echo     "proxy_server": "!PROXY_SERVER!", >> "%REPORT_JSON%"
+) else (
+    echo - **System Proxy:** Not configured >> "%REPORT_MD%"
+    echo     "proxy_enabled": "no", >> "%REPORT_JSON%"
+)
+
+if defined HTTP_PROXY (
+    echo - **HTTP_PROXY (Env):** %HTTP_PROXY% >> "%REPORT_MD%"
+    echo     "env_http_proxy": "%HTTP_PROXY%", >> "%REPORT_JSON%"
+)
+if defined HTTPS_PROXY (
+    echo - **HTTPS_PROXY (Env):** %HTTPS_PROXY% >> "%REPORT_MD%"
+    echo     "env_https_proxy": "%HTTPS_PROXY%", >> "%REPORT_JSON%"
+)
+
+echo. >> "%REPORT_MD%"
 
 :: Test Google Cloud Storage connectivity
 echo ### Google Cloud Storage >> "%REPORT_MD%"
@@ -416,6 +584,60 @@ if %errorlevel%==0 (
     echo - **storage.googleapis.com:** NOT reachable (cloud backups will fail) >> "%REPORT_MD%"
     echo     "gcs_reachable": "no", >> "%REPORT_JSON%"
 )
+
+:: Test Time Skew against Google
+echo ### Time Skew Check >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+set "SKEW_STATUS=ERROR"
+set "SKEW_DIFF=0"
+for /f "tokens=1,2 delims=|" %%a in ('powershell -Command "try { $res = Invoke-WebRequest -Uri 'http://google.com' -Method Head -UseBasicParsing -TimeoutSec 5; $dateStr = $res.Headers['Date']; $googleTime = [DateTime]::ParseExact($dateStr, 'r', [System.Globalization.CultureInfo]::InvariantCulture).ToUniversalTime(); $localTime = [DateTime]::UtcNow; $diff = [math]::Round([math]::Abs(($googleTime - $localTime).TotalSeconds)); if ($diff -gt 180) { Write-Output \"FAIL|$diff\" } else { Write-Output \"PASS|$diff\" } } catch { Write-Output 'ERROR|0' }" 2^>nul') do (
+    set "SKEW_STATUS=%%a"
+    set "SKEW_DIFF=%%b"
+)
+
+if "!SKEW_STATUS!"=="PASS" (
+    echo - **Time Skew:** OK (difference: !SKEW_DIFF! seconds) >> "%REPORT_MD%"
+    echo     "time_skew": "ok", >> "%REPORT_JSON%"
+    echo     "time_skew_seconds": !SKEW_DIFF!, >> "%REPORT_JSON%"
+) else if "!SKEW_STATUS!"=="FAIL" (
+    echo - **Time Skew:** FAILED (difference: !SKEW_DIFF! seconds) - RUN w32tm /resync >> "%REPORT_MD%"
+    echo     "time_skew": "failed", >> "%REPORT_JSON%"
+    echo     "time_skew_seconds": !SKEW_DIFF!, >> "%REPORT_JSON%"
+) else (
+    echo - **Time Skew:** Could not verify against google.com >> "%REPORT_MD%"
+    echo     "time_skew": "error", >> "%REPORT_JSON%"
+    echo     "time_skew_seconds": null, >> "%REPORT_JSON%"
+)
+
+
+:: Test NTP Accessibility
+echo ### NTP Accessibility >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+echo Testing NTP (UDP 123) against common time servers (may take a few seconds)... >> "%REPORT_MD%"
+
+:: Test time.windows.com
+w32tm /stripchart /computer:time.windows.com /dataonly /samples:1 2>nul | findstr /R /C:", [+\-]" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **time.windows.com:** Reachable (UDP 123 Open) >> "%REPORT_MD%"
+    echo     "ntp_windows": "open", >> "%REPORT_JSON%"
+) else (
+    echo - **time.windows.com:** Blocked or Unreachable >> "%REPORT_MD%"
+    echo     "ntp_windows": "blocked", >> "%REPORT_JSON%"
+)
+
+:: Test pool.ntp.org
+w32tm /stripchart /computer:pool.ntp.org /dataonly /samples:1 2>nul | findstr /R /C:", [+\-]" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **pool.ntp.org:** Reachable (UDP 123 Open) >> "%REPORT_MD%"
+    echo     "ntp_pool": "open", >> "%REPORT_JSON%"
+) else (
+    echo - **pool.ntp.org:** Blocked or Unreachable >> "%REPORT_MD%"
+    echo     "ntp_pool": "blocked", >> "%REPORT_JSON%"
+)
+
+echo. >> "%REPORT_MD%"
 
 :: Test SMTP connectivity (common ports)
 echo ### SMTP Connectivity >> "%REPORT_MD%"
@@ -594,7 +816,8 @@ echo 4. Run install_services.bat as Administrator >> "%REPORT_MD%"
 echo     "issues": "!ISSUES!", >> "%REPORT_JSON%"
 echo     "next_steps": "Send reports to deployment team" >> "%REPORT_JSON%"
 
-echo   } >> "%REPORT_JSON%"
+:: Trailing comma — services and other sections follow
+echo   }, >> "%REPORT_JSON%"
 
 :: ── 13. Windows Services Status ────────────────────────────────────
 echo [13/18] Checking Windows services...
@@ -638,7 +861,34 @@ if "!INTERFERENCE_FOUND!"=="0" (
     echo - No interfering services detected >> "%REPORT_MD%"
 )
 
-echo     "interference_checked": "yes" >> "%REPORT_JSON%"
+echo     "interference_checked": "yes", >> "%REPORT_JSON%"
+
+echo ### VSS (Volume Shadow Copy) Health >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+sc query vss >nul 2>&1
+if %errorlevel%==0 (
+    for /f "tokens=3 delims=: " %%a in ('sc query vss ^| findstr "STATE"') do set "VSS_STATE=%%a"
+    echo - **VSS Service State:** !VSS_STATE! >> "%REPORT_MD%"
+    echo     "vss_service": "!VSS_STATE!", >> "%REPORT_JSON%"
+) else (
+    echo - **VSS Service:** Not found or inaccessible >> "%REPORT_MD%"
+    echo     "vss_service": "unknown", >> "%REPORT_JSON%"
+)
+
+:: Check for VSS writer errors
+echo - Checking VSS Writers... >> "%REPORT_MD%"
+vssadmin list writers 2>nul | findstr /i "error state" | findstr /v /c:"No error" >nul 2>&1
+if %errorlevel%==0 (
+    echo - **VSS Writers:** ERRORS DETECTED (backups of locked files may fail) >> "%REPORT_MD%"
+    echo     "vss_writers_healthy": "no" >> "%REPORT_JSON%"
+    echo ^`^`^` >> "%REPORT_MD%"
+    vssadmin list writers | findstr /B /C:"Writer name:" /C:"   State:" /C:"   Last error:" >> "%REPORT_MD%"
+    echo ^`^`^` >> "%REPORT_MD%"
+) else (
+    echo - **VSS Writers:** All writers stable/healthy >> "%REPORT_MD%"
+    echo     "vss_writers_healthy": "yes" >> "%REPORT_JSON%"
+)
 
 echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
@@ -760,7 +1010,7 @@ echo - **TMP:** %TMP% >> "%REPORT_MD%"
 echo     "temp_path": "%TEMP%", >> "%REPORT_JSON%"
 echo     "tmp_path": "%TMP%" >> "%REPORT_JSON%"
 
-echo   } >> "%REPORT_JSON%"
+echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 7. Port Availability ────────────────────────────────────────────
@@ -802,9 +1052,9 @@ echo. >> "%REPORT_MD%"
 
 echo   "resources": { >> "%REPORT_JSON%"
 
-:: Get total RAM
-for /f "tokens=2 delims==" %%a in ('wmic computersystem get totalphysicalmemory /value 2^>nul ^| find "="') do set "TOTAL_RAM=%%a"
-set /a "TOTAL_RAM_GB=TOTAL_RAM / 1073741824"
+:: Get total RAM — use PowerShell to avoid 32-bit set/a overflow (e.g. 8 GB = 8589934592 overflows)
+for /f %%a in ('powershell -NoProfile -Command "[math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory / 1073741824, 1)" 2^>nul') do set "TOTAL_RAM_GB=%%a"
+if "!TOTAL_RAM_GB!"=="" set "TOTAL_RAM_GB=0"
 echo - **Total RAM:** !TOTAL_RAM_GB! GB >> "%REPORT_MD%"
 echo     "total_ram_gb": !TOTAL_RAM_GB!, >> "%REPORT_JSON%"
 
@@ -907,10 +1157,28 @@ if %errorlevel%==0 (
     echo     "firewall": "active", >> "%REPORT_JSON%"
 ) else (
     echo - **Windows Firewall:** Inactive >> "%REPORT_MD%"
-    echo     "firewall": "inactive" >> "%REPORT_JSON%"
+    echo     "firewall": "inactive", >> "%REPORT_JSON%"
 )
 
-echo   } >> "%REPORT_JSON%"
+echo ### Long Path Support (MAX_PATH) >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled >nul 2>&1
+if %errorlevel%==0 (
+    for /f "tokens=3" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled 2^>nul ^| findstr "LongPathsEnabled"') do set "LONG_PATHS=%%a"
+    if "!LONG_PATHS!"=="0x1" (
+        echo - **Long Paths (>260 chars):** Enabled >> "%REPORT_MD%"
+        echo     "long_paths_enabled": "yes" >> "%REPORT_JSON%"
+    ) else (
+        echo - **Long Paths (>260 chars):** Disabled (Deep directory backups may fail) >> "%REPORT_MD%"
+        echo     "long_paths_enabled": "no" >> "%REPORT_JSON%"
+    )
+) else (
+    echo - **Long Paths (>260 chars):** Key not found (Disabled by default) >> "%REPORT_MD%"
+    echo     "long_paths_enabled": "no" >> "%REPORT_JSON%"
+)
+
+echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
 
 :: ── 11. Potential Conflicts ────────────────────────────────────────
@@ -940,40 +1208,60 @@ if "!BACKUP_SW_FOUND!"=="0" (
     echo - No other backup software detected >> "%REPORT_MD%"
 )
 
-:: Check for antivirus
-echo ### Antivirus Software >> "%REPORT_MD%"
+:: Windows Defender / Anti-Malware Detailed Check
+echo ### Antivirus ^& Windows Defender >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
-:: SecurityCenter2 is only available on Windows client (10/11), not Server editions
-:: Use a graceful fallback
-set "AV_FOUND=0"
-wmic /namespace:\\root\SecurityCenter2 path AntiVirusProduct get displayName 2>nul | findstr /v "displayName" | findstr /v "^$" >nul 2>&1
-if %errorlevel%==0 (
-    for /f "tokens=*" %%a in ('wmic /namespace:\\root\SecurityCenter2 path AntiVirusProduct get displayName 2^>nul ^| findstr /v "displayName" ^| findstr /v "^$"') do (
-        if not "%%a"=="" (
-            echo - **%%a** (may interfere with backups) >> "%REPORT_MD%"
-            set "AV_FOUND=1"
-        )
-    )
-)
-
-:: Fallback: Check for common AV services
-if "!AV_FOUND!"=="0" (
-    for %%s in (WinDefend MsMpSvc AVP SepMasterService McShield) do (
-        sc query %%s >nul 2>&1
-        if !errorlevel!==0 (
-            echo - **%%s:** Running (antivirus service) >> "%REPORT_MD%"
-            set "AV_FOUND=1"
-        )
-    )
-)
-
-if "!AV_FOUND!"=="0" (
-    echo - No antivirus detected (or not accessible via WMI) >> "%REPORT_MD%"
-)
-
 echo     "backup_software_checked": "yes", >> "%REPORT_JSON%"
-echo     "antivirus_checked": "yes" >> "%REPORT_JSON%"
+
+set "AV_FOUND=0"
+:: Check Windows Defender via PowerShell (Standard on Windows Server 2016+)
+powershell -Command "if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) { $status = Get-MpComputerStatus; if ($status) { Write-Output \"RTP:$($status.RealTimeProtectionEnabled)\" } else { Write-Output 'NONE' } } else { Write-Output 'NONE' }" 2>nul > "%TEMP%\wd_status.txt"
+
+for /f "tokens=1,2 delims=:" %%a in (%TEMP%\wd_status.txt) do (
+    if "%%a"=="RTP" (
+        set "AV_FOUND=1"
+        if "%%b"=="True" (
+            echo - **Windows Defender:** Active (Real-Time Protection is ON) >> "%REPORT_MD%"
+            echo     "defender_active": "yes", >> "%REPORT_JSON%"
+            echo   - WARNING: Real-Time Protection can significantly slow down backups or lock files. >> "%REPORT_MD%"
+        ) else (
+            echo - **Windows Defender:** Installed (Real-Time Protection is OFF) >> "%REPORT_MD%"
+            echo     "defender_active": "no", >> "%REPORT_JSON%"
+        )
+        
+        :: Check exclusions
+        echo - **Defender Exclusions:** >> "%REPORT_MD%"
+        set "HAS_EXC=0"
+        for /f "tokens=*" %%e in ('powershell -Command "(Get-MpPreference).ExclusionPath" 2^>nul') do (
+            if not "%%e"=="" (
+                echo   - %%e >> "%REPORT_MD%"
+                set "HAS_EXC=1"
+            )
+        )
+        if "!HAS_EXC!"=="0" echo   - None configured >> "%REPORT_MD%"
+    )
+)
+del "%TEMP%\wd_status.txt" 2>nul
+
+:: Fallback / Third-Party AV Check via Services
+set "THIRD_PARTY_AV_FOUND=no"
+for %%s in (AVP SepMasterService McShield SAVAdminService SavService sophossps) do (
+    sc query %%s >nul 2>&1
+    if !errorlevel!==0 (
+        echo - **Third-Party AV Service Found:** %%s (may interfere with backups) >> "%REPORT_MD%"
+        set "AV_FOUND=1"
+        set "THIRD_PARTY_AV_FOUND=yes"
+    )
+)
+
+if "!AV_FOUND!"=="0" (
+    echo - No antivirus or Defender active/detected. >> "%REPORT_MD%"
+    echo     "antivirus_detected": "no" >> "%REPORT_JSON%"
+) else (
+    echo     "antivirus_detected": "yes", >> "%REPORT_JSON%"
+    echo     "third_party_av": "!THIRD_PARTY_AV_FOUND!" >> "%REPORT_JSON%"
+)
 
 echo   }, >> "%REPORT_JSON%"
 echo. >> "%REPORT_MD%"
