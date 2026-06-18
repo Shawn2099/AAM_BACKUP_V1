@@ -23,7 +23,7 @@ def main():
         
     try:
         config = load_config(config_path)
-        print("✅ SUCCESS: config.yaml is fully valid!")
+        print("[SUCCESS] config.yaml is fully valid!")
         print(f"\nSummary:")
         print(f"  - Source: {config.paths.source_drive}")
         print(f"  - LAN Destination: {config.paths.lan_destination} (Enabled: {config.lan.enabled})")
@@ -34,7 +34,7 @@ def main():
             
         print("\nReady to run `restart_services.bat`.")
     except Exception as e:
-        print("❌ ERROR in config.yaml validation:")
+        print("[ERROR] in config.yaml validation:")
         print("--------------------------------------------------")
         print(str(e))
         print("--------------------------------------------------")

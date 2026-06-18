@@ -96,12 +96,9 @@ def _configure_logging() -> None:
 # ── Backup detection ──────────────────────────────────────────────────────────
 
 def _pid_is_alive(pid: int) -> bool:
-    """Return True if a process with the given PID is currently running."""
-    try:
-        import psutil
-        return psutil.pid_exists(pid)
-    except Exception:
-        return False
+    """Thin wrapper kept for internal use; prefer read_lock_alive for lock checks."""
+    import psutil
+    return psutil.pid_exists(pid)
 
 
 def _transfer_process_running() -> bool:
@@ -123,25 +120,27 @@ def _transfer_process_running() -> bool:
 
 
 def _is_backup_running() -> bool:
-    """Return True if a backup flow is actively in progress.
+    """Return True if the backup flow that wrote backup.lock is still running.
 
-    Primary check: PID-stamped lock file written by flow.py.
-    Stale lock detection: if the PID in the lock file is no longer alive, the
-    lock is from a previous crash and is removed automatically.
+    Reads the lock file as 'PID:create_time' (new format) or bare 'PID'
+    (legacy).  The create_time check guarantees stale PID-reuse is detected
+    correctly even if a different Python process inherited the same PID after
+    a crash.
     """
-    if BACKUP_LOCK_PATH.exists():
-        try:
-            pid = int(BACKUP_LOCK_PATH.read_text().strip())
-            if _pid_is_alive(pid):
-                return True
-            # PID is gone — stale lock, clean it up
-            logger.warning(
-                f"Stale backup lock detected (PID {pid} not running) — removing"
-            )
-            BACKUP_LOCK_PATH.unlink(missing_ok=True)
-        except (ValueError, OSError) as exc:
-            logger.warning(f"Could not read backup lock file: {exc}")
-
+    if not BACKUP_LOCK_PATH.exists():
+        return False
+    try:
+        from core.process import read_lock_alive
+        alive, pid = read_lock_alive(BACKUP_LOCK_PATH)
+        if alive:
+            return True
+        # Lock is stale — clean it up.
+        logger.warning(
+            f"Stale backup lock detected (PID {pid} not running or reused) — removing"
+        )
+        BACKUP_LOCK_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(f"Could not read backup lock file: {exc}")
     return False
 
 

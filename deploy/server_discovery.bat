@@ -300,7 +300,7 @@ echo   }, >> "%REPORT_JSON%"
 :: ── 4. Software & Tools ────────────────────────────────────────────
 echo [4/18] Checking software and tools...
 
-echo ## 4. Software & Tools >> "%REPORT_MD%"
+echo ## 4. Software ^& Tools >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "software": { >> "%REPORT_JSON%"
@@ -383,7 +383,7 @@ echo. >> "%REPORT_MD%"
 :: ── 5. Permissions & Access ────────────────────────────────────────
 echo [5/18] Checking permissions and access...
 
-echo ## 5. Permissions & Access >> "%REPORT_MD%"
+echo ## 5. Permissions ^& Access >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "permissions": { >> "%REPORT_JSON%"
@@ -401,10 +401,10 @@ if %errorlevel%==0 (
 :: Check if can create services
 sc query AamBackupAgent >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Existing Service (AamBackupAgent):** Found >> "%REPORT_MD%"
+    echo - **Existing Service ^(AamBackupAgent^):** Found >> "%REPORT_MD%"
     echo     "existing_service": "found", >> "%REPORT_JSON%"
 ) else (
-    echo - **Existing Service (AamBackupAgent):** Not found >> "%REPORT_MD%"
+    echo - **Existing Service ^(AamBackupAgent^):** Not found >> "%REPORT_MD%"
     echo     "existing_service": "not found", >> "%REPORT_JSON%"
 )
 
@@ -415,7 +415,7 @@ echo - Skipped automated share test to ensure zero impact on live network connec
 
 echo ### Local Administrators >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
-echo The following users can be used to run the backup service (AamBackupAgent) >> "%REPORT_MD%"
+echo The following users can be used to run the backup service ^(AamBackupAgent^) >> "%REPORT_MD%"
 echo to ensure access to UNC paths: >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
@@ -683,7 +683,7 @@ echo. >> "%REPORT_MD%"
 :: ── 17. Pending Reboot & Windows Update ────────────────────────────
 echo [17/18] Checking pending reboot and Windows Update...
 
-echo ## 17. Pending Reboot & Windows Update >> "%REPORT_MD%"
+echo ## 17. Pending Reboot ^& Windows Update >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "reboot_update": { >> "%REPORT_JSON%"
@@ -740,7 +740,7 @@ echo. >> "%REPORT_MD%"
 :: ── 18. Final Summary & Recommendations ───────────────────────────
 echo [18/18] Generating final summary...
 
-echo ## 18. Final Summary & Recommendations >> "%REPORT_MD%"
+echo ## 18. Final Summary ^& Recommendations >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "summary": { >> "%REPORT_JSON%"
@@ -946,7 +946,7 @@ echo. >> "%REPORT_MD%"
 :: ── 15. Environment & System Variables ─────────────────────────────
 echo [15/18] Checking environment variables...
 
-echo ## 15. Environment & System Variables >> "%REPORT_MD%"
+echo ## 15. Environment ^& System Variables >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "environment": { >> "%REPORT_JSON%"
@@ -1079,7 +1079,7 @@ echo. >> "%REPORT_MD%"
 :: ── 9. Timezone & Power ────────────────────────────────────────────
 echo [9/18] Checking timezone and power settings...
 
-echo ## 9. Timezone & Power >> "%REPORT_MD%"
+echo ## 9. Timezone ^& Power >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "timezone_power": { >> "%REPORT_JSON%"
@@ -1115,7 +1115,7 @@ echo. >> "%REPORT_MD%"
 :: ── 10. Windows Features & Dependencies ────────────────────────────
 echo [10/18] Checking Windows features and dependencies...
 
-echo ## 10. Windows Features & Dependencies >> "%REPORT_MD%"
+echo ## 10. Windows Features ^& Dependencies >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 echo   "dependencies": { >> "%REPORT_JSON%"

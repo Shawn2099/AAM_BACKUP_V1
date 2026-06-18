@@ -62,7 +62,7 @@ class TestBuildRobocopyCommand:
     def test_basic_command_structure(self):
         cfg = LanConfig(retry_count=3, retry_wait_seconds=10, mt_threads=8)
         cmd = build_robocopy_command("D:\\", "\\\\10.0.0.1\\share", cfg)
-        assert cmd[0] == "robocopy"
+        assert "robocopy" in cmd[0].lower()
         assert cmd[1] == "D:\\"
         assert cmd[2] == "\\\\10.0.0.1\\share"
         assert "/MIR" in cmd

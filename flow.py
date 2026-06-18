@@ -25,6 +25,7 @@ from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
 from core.backup_repository import record_run_history, record_sync_results
+from core.process import write_lock
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
 from core.cloud_sync import run_cloud_sync
@@ -601,27 +602,12 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
 
     # ── Watchdog lock — signals that a backup is in progress ──
-    # watchdog.py reads this file and defers any service restart until it
-    # disappears. The file contains the PID of this process so the watchdog
-    # can detect stale locks from a previous crash.
+    # watchdog.py and launch.py read this file and defer any service restart
+    # until it disappears.  Format: "PID:create_time" — the process creation
+    # timestamp makes PID-reuse detection mathematically exact (see core/process.py).
     _lock_path = Path(config.paths.database_path).parent / "backup.lock"
     try:
-        _lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write: write PID to a temp file, then os.replace() so the
-        # watchdog never reads a partially-written PID.
-        fd, tmp = tempfile.mkstemp(
-            dir=str(_lock_path.parent), prefix=".backup.lock.", suffix=".tmp"
-        )
-        try:
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-            fd = -1
-            os.replace(tmp, str(_lock_path))
-        except BaseException:
-            if fd >= 0:
-                os.close(fd)
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        write_lock(_lock_path)
         logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
     except OSError as e:
         logger.warning(f"Could not write backup lock file: {e}")

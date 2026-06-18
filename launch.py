@@ -96,9 +96,9 @@ def _cancel_orphaned_runs():
     import asyncio
     from pathlib import Path
 
-    from core.process import pid_alive
+    from core.process import read_lock_alive
 
-    # Derive lock path from config (same derivation as flow.py:604)
+    # Derive lock path from config (same derivation as flow.py)
     try:
         from models.config import CONFIG_PATH, load_config
         cfg = load_config(CONFIG_PATH)
@@ -107,17 +107,15 @@ def _cancel_orphaned_runs():
         lock_path = None
 
     backup_active = False
-    if lock_path and lock_path.exists():
-        try:
-            pid = int(lock_path.read_text(encoding="utf-8").strip())
-            if pid_alive(pid):
-                print(f"[launch] Backup lock held by PID {pid} — skipping cancellation of RUNNING flows")
-                backup_active = True
-            else:
-                print(f"[launch] Stale backup lock (PID {pid} not running) — cleaning up")
-                lock_path.unlink(missing_ok=True)
-        except (ValueError, OSError) as e:
-            print(f"[launch] Warning: could not read backup lock: {e}")
+    if lock_path:
+        alive, pid = read_lock_alive(lock_path)
+        if alive:
+            print(f"[launch] Backup lock held by PID {pid} — skipping cancellation of RUNNING flows")
+            backup_active = True
+        elif pid is not None:
+            print(f"[launch] Stale backup lock (PID {pid} not running or reused) — cleaning up")
+            lock_path.unlink(missing_ok=True)
+
 
     async def _cancel():
         from prefect.client.orchestration import get_client
