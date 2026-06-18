@@ -182,7 +182,7 @@ for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /i "Default Gateway" ^| 
 :got_gw
 echo     "default_gateway": "!GATEWAY!", >> "%REPORT_JSON%"
 
-echo ### Wake-on-LAN (WoL) Status >> "%REPORT_MD%"
+echo ### Wake-on-LAN ^(WoL^) Status >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 set "WOL_FOUND=0"
 set "WOL_STATUS=none"
@@ -241,7 +241,7 @@ if %errorlevel%==0 (
 
 echo. >> "%REPORT_MD%"
 
-echo ### Local Network Devices (ARP Cache) >> "%REPORT_MD%"
+echo ### Local Network Devices ^(ARP Cache^) >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 echo Identifying local network devices for potential WoL targets: >> "%REPORT_MD%"
 echo ^`^`^` >> "%REPORT_MD%"
@@ -445,7 +445,7 @@ if /I "%PS_EXEC_POLICY%"=="Restricted" (
     echo   - WARNING: Set to Restricted. PowerShell scripts will fail. Run 'Set-ExecutionPolicy RemoteSigned' >> "%REPORT_MD%"
 )
 
-echo ### User Account Control (UAC) >> "%REPORT_MD%"
+echo ### User Account Control ^(UAC^) >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA >nul 2>&1
@@ -561,11 +561,11 @@ if "!PROXY_ENABLED!"=="yes" (
 )
 
 if defined HTTP_PROXY (
-    echo - **HTTP_PROXY (Env):** %HTTP_PROXY% >> "%REPORT_MD%"
+    echo - **HTTP_PROXY ^(Env^):** %HTTP_PROXY% >> "%REPORT_MD%"
     echo     "env_http_proxy": "%HTTP_PROXY%", >> "%REPORT_JSON%"
 )
 if defined HTTPS_PROXY (
-    echo - **HTTPS_PROXY (Env):** %HTTPS_PROXY% >> "%REPORT_MD%"
+    echo - **HTTPS_PROXY ^(Env^):** %HTTPS_PROXY% >> "%REPORT_MD%"
     echo     "env_https_proxy": "%HTTPS_PROXY%", >> "%REPORT_JSON%"
 )
 
@@ -581,7 +581,7 @@ if %errorlevel%==0 (
     echo - **storage.googleapis.com:** Reachable >> "%REPORT_MD%"
     echo     "gcs_reachable": "yes", >> "%REPORT_JSON%"
 ) else (
-    echo - **storage.googleapis.com:** NOT reachable (cloud backups will fail) >> "%REPORT_MD%"
+    echo - **storage.googleapis.com:** NOT reachable ^(cloud backups will fail^) >> "%REPORT_MD%"
     echo     "gcs_reachable": "no", >> "%REPORT_JSON%"
 )
 
@@ -597,11 +597,11 @@ for /f "tokens=1,2 delims=|" %%a in ('powershell -Command "try { $res = Invoke-W
 )
 
 if "!SKEW_STATUS!"=="PASS" (
-    echo - **Time Skew:** OK (difference: !SKEW_DIFF! seconds) >> "%REPORT_MD%"
+    echo - **Time Skew:** OK ^(difference: !SKEW_DIFF! seconds^) >> "%REPORT_MD%"
     echo     "time_skew": "ok", >> "%REPORT_JSON%"
     echo     "time_skew_seconds": !SKEW_DIFF!, >> "%REPORT_JSON%"
 ) else if "!SKEW_STATUS!"=="FAIL" (
-    echo - **Time Skew:** FAILED (difference: !SKEW_DIFF! seconds) - RUN w32tm /resync >> "%REPORT_MD%"
+    echo - **Time Skew:** FAILED ^(difference: !SKEW_DIFF! seconds^) - RUN w32tm /resync >> "%REPORT_MD%"
     echo     "time_skew": "failed", >> "%REPORT_JSON%"
     echo     "time_skew_seconds": !SKEW_DIFF!, >> "%REPORT_JSON%"
 ) else (
@@ -615,12 +615,12 @@ if "!SKEW_STATUS!"=="PASS" (
 echo ### NTP Accessibility >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
-echo Testing NTP (UDP 123) against common time servers (may take a few seconds)... >> "%REPORT_MD%"
+echo Testing NTP ^(UDP 123^) against common time servers ^(may take a few seconds^)... >> "%REPORT_MD%"
 
 :: Test time.windows.com
 w32tm /stripchart /computer:time.windows.com /dataonly /samples:1 2>nul | findstr /R /C:", [+\-]" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **time.windows.com:** Reachable (UDP 123 Open) >> "%REPORT_MD%"
+    echo - **time.windows.com:** Reachable ^(UDP 123 Open^) >> "%REPORT_MD%"
     echo     "ntp_windows": "open", >> "%REPORT_JSON%"
 ) else (
     echo - **time.windows.com:** Blocked or Unreachable >> "%REPORT_MD%"
@@ -630,7 +630,7 @@ if %errorlevel%==0 (
 :: Test pool.ntp.org
 w32tm /stripchart /computer:pool.ntp.org /dataonly /samples:1 2>nul | findstr /R /C:", [+\-]" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **pool.ntp.org:** Reachable (UDP 123 Open) >> "%REPORT_MD%"
+    echo - **pool.ntp.org:** Reachable ^(UDP 123 Open^) >> "%REPORT_MD%"
     echo     "ntp_pool": "open", >> "%REPORT_JSON%"
 ) else (
     echo - **pool.ntp.org:** Blocked or Unreachable >> "%REPORT_MD%"
@@ -645,35 +645,35 @@ echo. >> "%REPORT_MD%"
 
 :: Use PowerShell with timeout to avoid hanging
 :: Note: Test-NetConnection is available on Server 2016+ (PowerShell 5.1)
-echo Testing SMTP ports (may take 30-60 seconds if blocked)... >> "%REPORT_MD%"
+echo Testing SMTP ports ^(may take 30-60 seconds if blocked^)... >> "%REPORT_MD%"
 
 :: Test port 587 (TLS) - with 5 second timeout
 powershell -Command "try { $tcp = New-Object System.Net.Sockets.TcpClient; $result = $tcp.BeginConnect('smtp.gmail.com', 587, $null, $null); $wait = $result.AsyncWaitHandle.WaitOne(5000, $false); if ($wait) { $tcp.EndConnect($result); $tcp.Close(); Write-Output 'True' } else { $tcp.Close(); Write-Output 'False' } } catch { Write-Output 'False' }" 2>nul | findstr "True" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Port 587 (SMTP TLS):** Open >> "%REPORT_MD%"
+    echo - **Port 587 ^(SMTP TLS^):** Open >> "%REPORT_MD%"
     echo     "smtp_587": "open", >> "%REPORT_JSON%"
 ) else (
-    echo - **Port 587 (SMTP TLS):** Blocked or unreachable >> "%REPORT_MD%"
+    echo - **Port 587 ^(SMTP TLS^):** Blocked or unreachable >> "%REPORT_MD%"
     echo     "smtp_587": "blocked", >> "%REPORT_JSON%"
 )
 
 :: Test port 465 (SSL) - with 5 second timeout
 powershell -Command "try { $tcp = New-Object System.Net.Sockets.TcpClient; $result = $tcp.BeginConnect('smtp.gmail.com', 465, $null, $null); $wait = $result.AsyncWaitHandle.WaitOne(5000, $false); if ($wait) { $tcp.EndConnect($result); $tcp.Close(); Write-Output 'True' } else { $tcp.Close(); Write-Output 'False' } } catch { Write-Output 'False' }" 2>nul | findstr "True" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Port 465 (SMTP SSL):** Open >> "%REPORT_MD%"
+    echo - **Port 465 ^(SMTP SSL^):** Open >> "%REPORT_MD%"
     echo     "smtp_465": "open", >> "%REPORT_JSON%"
 ) else (
-    echo - **Port 465 (SMTP SSL):** Blocked or unreachable >> "%REPORT_MD%"
+    echo - **Port 465 ^(SMTP SSL^):** Blocked or unreachable >> "%REPORT_MD%"
     echo     "smtp_465": "blocked", >> "%REPORT_JSON%"
 )
 
 :: Test port 25 (Plain) - with 5 second timeout
 powershell -Command "try { $tcp = New-Object System.Net.Sockets.TcpClient; $result = $tcp.BeginConnect('smtp.gmail.com', 25, $null, $null); $wait = $result.AsyncWaitHandle.WaitOne(5000, $false); if ($wait) { $tcp.EndConnect($result); $tcp.Close(); Write-Output 'True' } else { $tcp.Close(); Write-Output 'False' } } catch { Write-Output 'False' }" 2>nul | findstr "True" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Port 25 (SMTP Plain):** Open >> "%REPORT_MD%"
+    echo - **Port 25 ^(SMTP Plain^):** Open >> "%REPORT_MD%"
     echo     "smtp_25": "open" >> "%REPORT_JSON%"
 ) else (
-    echo - **Port 25 (SMTP Plain):** Blocked or unreachable >> "%REPORT_MD%"
+    echo - **Port 25 ^(SMTP Plain^):** Blocked or unreachable >> "%REPORT_MD%"
     echo     "smtp_25": "blocked" >> "%REPORT_JSON%"
 )
 
@@ -691,7 +691,7 @@ echo   "reboot_update": { >> "%REPORT_JSON%"
 :: Check for pending reboot
 reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Pending Reboot:** YES (reboot before deployment) >> "%REPORT_MD%"
+    echo - **Pending Reboot:** YES ^(reboot before deployment^) >> "%REPORT_MD%"
     echo     "pending_reboot": "yes", >> "%REPORT_JSON%"
 ) else (
     echo - **Pending Reboot:** No >> "%REPORT_MD%"
@@ -714,7 +714,7 @@ echo. >> "%REPORT_MD%"
 
 wmic qfe list brief /format:table 2>nul | findstr /v "Description" | findstr /v "^$" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Recent Updates:** Retrieved (see JSON) >> "%REPORT_MD%"
+    echo - **Recent Updates:** Retrieved ^(see JSON^) >> "%REPORT_MD%"
     
     echo     "recent_updates": [ >> "%REPORT_JSON%"
     set "FIRST=1"
@@ -851,7 +851,7 @@ for %%s in (WSearch Spooler SQLSERVERAGENT MSSQLSERVER) do (
     sc query %%s >nul 2>&1
     if !errorlevel!==0 (
         for /f "tokens=3 delims=: " %%a in ('sc query %%s ^| findstr "STATE"') do (
-            echo - **%%s:** %%a (may use resources) >> "%REPORT_MD%"
+            echo - **%%s:** %%a ^(may use resources^) >> "%REPORT_MD%"
             set "INTERFERENCE_FOUND=1"
         )
     )
@@ -863,7 +863,7 @@ if "!INTERFERENCE_FOUND!"=="0" (
 
 echo     "interference_checked": "yes", >> "%REPORT_JSON%"
 
-echo ### VSS (Volume Shadow Copy) Health >> "%REPORT_MD%"
+echo ### VSS ^(Volume Shadow Copy^) Health >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 sc query vss >nul 2>&1
@@ -880,7 +880,7 @@ if %errorlevel%==0 (
 echo - Checking VSS Writers... >> "%REPORT_MD%"
 vssadmin list writers 2>nul | findstr /i "error state" | findstr /v /c:"No error" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **VSS Writers:** ERRORS DETECTED (backups of locked files may fail) >> "%REPORT_MD%"
+    echo - **VSS Writers:** ERRORS DETECTED ^(backups of locked files may fail^) >> "%REPORT_MD%"
     echo     "vss_writers_healthy": "no" >> "%REPORT_JSON%"
     echo ^`^`^` >> "%REPORT_MD%"
     vssadmin list writers | findstr /B /C:"Writer name:" /C:"   State:" /C:"   Last error:" >> "%REPORT_MD%"
@@ -907,7 +907,7 @@ echo. >> "%REPORT_MD%"
 
 wmic product get name,version /format:csv 2>nul | findstr /v "Name" | findstr /v "^$" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Installed Programs:** Retrieved (see JSON) >> "%REPORT_MD%"
+    echo - **Installed Programs:** Retrieved ^(see JSON^) >> "%REPORT_MD%"
     
     echo     "programs": [ >> "%REPORT_JSON%"
     set "FIRST=1"
@@ -1024,20 +1024,20 @@ echo   "ports": { >> "%REPORT_JSON%"
 :: Check port 4200 (Prefect Server)
 netstat -an | findstr ":4200 " | findstr "LISTENING" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Port 4200 (Prefect):** IN USE >> "%REPORT_MD%"
+    echo - **Port 4200 ^(Prefect^):** IN USE >> "%REPORT_MD%"
     echo     "prefect_4200": "in_use", >> "%REPORT_JSON%"
 ) else (
-    echo - **Port 4200 (Prefect):** Available >> "%REPORT_MD%"
+    echo - **Port 4200 ^(Prefect^):** Available >> "%REPORT_MD%"
     echo     "prefect_4200": "available", >> "%REPORT_JSON%"
 )
 
 :: Check port 8080 (Dashboard)
 netstat -an | findstr ":8080 " | findstr "LISTENING" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Port 8080 (Dashboard):** IN USE >> "%REPORT_MD%"
+    echo - **Port 8080 ^(Dashboard^):** IN USE >> "%REPORT_MD%"
     echo     "dashboard_8080": "in_use" >> "%REPORT_JSON%"
 ) else (
-    echo - **Port 8080 (Dashboard):** Available >> "%REPORT_MD%"
+    echo - **Port 8080 ^(Dashboard^):** Available >> "%REPORT_MD%"
     echo     "dashboard_8080": "available" >> "%REPORT_JSON%"
 )
 
@@ -1092,10 +1092,10 @@ echo     "timezone": "%TIMEZONE%", >> "%REPORT_JSON%"
 :: Check if auto-updates enabled
 reg query "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoUpdate >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Auto Updates:** Disabled (good for servers) >> "%REPORT_MD%"
+    echo - **Auto Updates:** Disabled ^(good for servers^) >> "%REPORT_MD%"
     echo     "auto_updates": "disabled", >> "%REPORT_JSON%"
 ) else (
-    echo - **Auto Updates:** Enabled (may cause unexpected reboots) >> "%REPORT_MD%"
+    echo - **Auto Updates:** Enabled ^(may cause unexpected reboots^) >> "%REPORT_MD%"
     echo     "auto_updates": "enabled", >> "%REPORT_JSON%"
 )
 
@@ -1136,7 +1136,7 @@ if %errorlevel%==0 (
     echo - **Visual C++ 2015-2022:** Installed >> "%REPORT_MD%"
     echo     "vc_redist": "installed", >> "%REPORT_JSON%"
 ) else (
-    echo - **Visual C++ 2015-2022:** Not found (may be needed) >> "%REPORT_MD%"
+    echo - **Visual C++ 2015-2022:** Not found ^(may be needed^) >> "%REPORT_MD%"
     echo     "vc_redist": "not found", >> "%REPORT_JSON%"
 )
 
@@ -1153,28 +1153,28 @@ if %errorlevel%==0 (
 :: Check Windows Firewall
 netsh advfirewall show allprofiles state | findstr /i "ON" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Windows Firewall:** Active (ports 4200, 8080 may need rules) >> "%REPORT_MD%"
+    echo - **Windows Firewall:** Active ^(ports 4200, 8080 may need rules^) >> "%REPORT_MD%"
     echo     "firewall": "active", >> "%REPORT_JSON%"
 ) else (
     echo - **Windows Firewall:** Inactive >> "%REPORT_MD%"
     echo     "firewall": "inactive", >> "%REPORT_JSON%"
 )
 
-echo ### Long Path Support (MAX_PATH) >> "%REPORT_MD%"
+echo ### Long Path Support ^(MAX_PATH^) >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 
 reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled >nul 2>&1
 if %errorlevel%==0 (
     for /f "tokens=3" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled 2^>nul ^| findstr "LongPathsEnabled"') do set "LONG_PATHS=%%a"
     if "!LONG_PATHS!"=="0x1" (
-        echo - **Long Paths (>260 chars):** Enabled >> "%REPORT_MD%"
+        echo - **Long Paths ^(>260 chars^):** Enabled >> "%REPORT_MD%"
         echo     "long_paths_enabled": "yes" >> "%REPORT_JSON%"
     ) else (
-        echo - **Long Paths (>260 chars):** Disabled (Deep directory backups may fail) >> "%REPORT_MD%"
+        echo - **Long Paths ^(>260 chars^):** Disabled ^(Deep directory backups may fail^) >> "%REPORT_MD%"
         echo     "long_paths_enabled": "no" >> "%REPORT_JSON%"
     )
 ) else (
-    echo - **Long Paths (>260 chars):** Key not found (Disabled by default) >> "%REPORT_MD%"
+    echo - **Long Paths ^(>260 chars^):** Key not found ^(Disabled by default^) >> "%REPORT_MD%"
     echo     "long_paths_enabled": "no" >> "%REPORT_JSON%"
 )
 
@@ -1199,7 +1199,7 @@ set "BACKUP_SW_FOUND=0"
 for %%s in (AcronisAgent VeeamBackupAgent CarboniteService CrashPlanService MozyBackup) do (
     sc query %%s >nul 2>&1
     if !errorlevel!==0 (
-        echo - **%%s:** Running (may conflict) >> "%REPORT_MD%"
+        echo - **%%s:** Running ^(may conflict^) >> "%REPORT_MD%"
         set "BACKUP_SW_FOUND=1"
     )
 )
@@ -1222,11 +1222,11 @@ for /f "tokens=1,2 delims=:" %%a in (%TEMP%\wd_status.txt) do (
     if "%%a"=="RTP" (
         set "AV_FOUND=1"
         if "%%b"=="True" (
-            echo - **Windows Defender:** Active (Real-Time Protection is ON) >> "%REPORT_MD%"
+            echo - **Windows Defender:** Active ^(Real-Time Protection is ON^) >> "%REPORT_MD%"
             echo     "defender_active": "yes", >> "%REPORT_JSON%"
             echo   - WARNING: Real-Time Protection can significantly slow down backups or lock files. >> "%REPORT_MD%"
         ) else (
-            echo - **Windows Defender:** Installed (Real-Time Protection is OFF) >> "%REPORT_MD%"
+            echo - **Windows Defender:** Installed ^(Real-Time Protection is OFF^) >> "%REPORT_MD%"
             echo     "defender_active": "no", >> "%REPORT_JSON%"
         )
         
@@ -1249,7 +1249,7 @@ set "THIRD_PARTY_AV_FOUND=no"
 for %%s in (AVP SepMasterService McShield SAVAdminService SavService sophossps) do (
     sc query %%s >nul 2>&1
     if !errorlevel!==0 (
-        echo - **Third-Party AV Service Found:** %%s (may interfere with backups) >> "%REPORT_MD%"
+        echo - **Third-Party AV Service Found:** %%s ^(may interfere with backups^) >> "%REPORT_MD%"
         set "AV_FOUND=1"
         set "THIRD_PARTY_AV_FOUND=yes"
     )
@@ -1277,7 +1277,7 @@ echo   "recent_errors": { >> "%REPORT_JSON%"
 :: Check for critical errors in last 24 hours
 wevtutil qe System /c:5 /rd:true /f:text 2>nul | findstr /i "Critical Error" >nul 2>&1
 if %errorlevel%==0 (
-    echo - **Recent Errors Found:** Yes (check Event Viewer) >> "%REPORT_MD%"
+    echo - **Recent Errors Found:** Yes ^(check Event Viewer^) >> "%REPORT_MD%"
     echo     "has_errors": "yes" >> "%REPORT_JSON%"
 ) else (
     echo - **Recent Errors:** None found >> "%REPORT_MD%"

@@ -117,13 +117,14 @@ echo ===================================================================
 
 :: ── Remove old services (clean reinstall) ────────────────────────────
 echo.
+echo [setup] Force-killing Python and Prefect processes to prevent hanging...
+taskkill /F /IM python.exe /T 2>nul
+taskkill /F /IM prefect.exe /T 2>nul
+
 echo [setup] Stopping and removing any existing services...
 "%NSSM%" stop  %SVC_WATCHDOG% 2>nul
 "%NSSM%" stop  %SVC_AGENT%   2>nul
 "%NSSM%" stop  %SVC_SERVER%  2>nul
-
-echo [setup] Killing any orphaned prefect subprocesses...
-taskkill /F /IM prefect.exe /T 2>nul
 
 "%NSSM%" remove %SVC_WATCHDOG% confirm 2>nul
 "%NSSM%" remove %SVC_AGENT%   confirm 2>nul
