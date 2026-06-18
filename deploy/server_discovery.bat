@@ -244,6 +244,15 @@ echo. >> "%REPORT_MD%"
 echo ### Local Network Devices ^(ARP Cache^) >> "%REPORT_MD%"
 echo. >> "%REPORT_MD%"
 echo Identifying local network devices for potential WoL targets: >> "%REPORT_MD%"
+echo. >> "%REPORT_MD%"
+if not "!PRIMARY_IP!"=="" (
+    for /f "tokens=1-3 delims=." %%a in ("!PRIMARY_IP!") do set "SUBNET=%%a.%%b.%%c"
+    if not "!SUBNET!"=="" (
+        echo Scanning subnet !SUBNET!.x to discover all active MAC addresses... >> "%REPORT_MD%"
+        for /L %%i in (1,1,254) do start /b ping -n 1 -w 200 !SUBNET!.%%i >nul 2^>^&1
+        powershell -Command "Start-Sleep -Seconds 3" >nul 2>&1
+    )
+)
 echo ^`^`^` >> "%REPORT_MD%"
 arp -a >> "%REPORT_MD%"
 echo ^`^`^` >> "%REPORT_MD%"
