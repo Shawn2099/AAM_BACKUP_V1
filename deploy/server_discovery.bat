@@ -591,7 +591,7 @@ echo. >> "%REPORT_MD%"
 
 set "SKEW_STATUS=ERROR"
 set "SKEW_DIFF=0"
-for /f "tokens=1,2 delims=|" %%a in ('powershell -Command "try { $res = Invoke-WebRequest -Uri 'http://google.com' -Method Head -UseBasicParsing -TimeoutSec 5; $dateStr = $res.Headers['Date']; $googleTime = [DateTime]::ParseExact($dateStr, 'r', [System.Globalization.CultureInfo]::InvariantCulture).ToUniversalTime(); $localTime = [DateTime]::UtcNow; $diff = [math]::Round([math]::Abs(($googleTime - $localTime).TotalSeconds)); if ($diff -gt 180) { Write-Output \"FAIL|$diff\" } else { Write-Output \"PASS|$diff\" } } catch { Write-Output 'ERROR|0' }" 2^>nul') do (
+for /f "tokens=1,2 delims=|" %%a in ('powershell -Command "try { $res = Invoke-WebRequest -Uri 'http://google.com' -Method Head -UseBasicParsing -TimeoutSec 5; $dateStr = $res.Headers['Date']; $googleTime = [DateTime]::ParseExact($dateStr, 'r', [System.Globalization.CultureInfo]::InvariantCulture).ToUniversalTime(); $localTime = [DateTime]::UtcNow; $diff = [math]::Round([math]::Abs(($googleTime - $localTime).TotalSeconds)); if ($diff -gt 180) { Write-Output \"FAIL^|$diff\" } else { Write-Output \"PASS^|$diff\" } } catch { Write-Output 'ERROR^|0' }" 2^>nul') do (
     set "SKEW_STATUS=%%a"
     set "SKEW_DIFF=%%b"
 )
