@@ -1,9 +1,14 @@
 import os
+import sys
 import socket
 import psutil
 import yaml
 from core.time_utils import get_fy_prefix
 from models.config import AppConfig, CONFIG_PATH
+
+# Force UTF-8 encoding for stdout to support emojis on Windows CMD
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 
 def get_network_info():
     interfaces = psutil.net_if_addrs()
