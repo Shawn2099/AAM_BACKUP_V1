@@ -36,6 +36,15 @@ def list_drives():
             drives.append(f"{partition.device} (Type: {partition.fstype}, Mount: {partition.mountpoint})")
     return drives
 
+import subprocess
+def is_firewall_open(port: int = 8080) -> bool:
+    try:
+        cmd = f"powershell -Command \"Get-NetFirewallRule | Where-Object {{ $_.Enabled -eq $true -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' }} | Get-NetFirewallPortFilter | Where-Object {{ $_.LocalPort -eq '{port}' }}\""
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
 def verify_with_pydantic(snippet_data: dict) -> bool:
     """Uses the existing Pydantic AppConfig model to verify the snippet is valid."""
     try:
@@ -140,6 +149,13 @@ def main():
     print("  - In paths, use double backslashes (\\\\) as shown in the snippets.")
     print("  - Make sure 'services.msc -> AAM Backup Agent' is running as an Administrator")
     print("    or a network user if you are writing to a LAN share.")
+    print("\n[ 4. SYSTEM CHECKS ]")
+    if is_firewall_open(8080):
+        print("  [✅] Windows Firewall: Port 8080 is OPEN (Dashboard accessible over network)")
+    else:
+        print("  [❌] Windows Firewall: Port 8080 is CLOSED")
+        print("      Run this in elevated Command Prompt to open it:")
+        print("      netsh advfirewall firewall add rule name=\"AAM Backup Dashboard\" dir=in action=allow protocol=TCP localport=8080")
     print("="*70)
     input("Press Enter to exit...")
 
