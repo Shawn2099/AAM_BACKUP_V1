@@ -67,7 +67,7 @@ def verify_cloud_integrity(
         }
 
     except subprocess.TimeoutExpired:
-        logger.error("Cloud verify timed out after 600s")
+        logger.error(f"Cloud verify timed out after {timeout}s")
         return {"verified": False, "exit_code": -1, "error": "Timeout"}
     except FileNotFoundError:
         logger.error("rclone not found")

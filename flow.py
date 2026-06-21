@@ -66,7 +66,14 @@ def _stable_run_id(mode: str) -> str:
 def health_check_task(config, mode: str):
     """Run pre-backup health checks. Fail fast — won't fix itself."""
     logger.info(f"Running health checks (mode={mode})")
-    pre_backup_health(config.paths.source_drive, mode, config.paths.gcs_key_path)
+    pre_backup_health(
+        config.paths.source_drive,
+        mode,
+        config.paths.gcs_key_path,
+        min_free_source_gb=config.health.min_free_source_gb,
+        max_clock_skew_seconds=config.health.max_clock_skew_seconds,
+        clock_check_timeout_seconds=config.health.clock_check_timeout_seconds,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -75,8 +82,15 @@ def health_check_task(config, mode: str):
 
 @task(name="cloud-preflight")
 def cloud_preflight_task(config, fy_prefix: str):
-    """Run rclone check --one-way dry-run before sync."""
-    logger.info(f"Cloud preflight: checking {config.paths.source_drive} ↔ {config.cloud.bucket}/{fy_prefix}")
+    """Two-probe preflight: source drive alive + GCS auth/bucket probe.
+
+    Probe A (Python): confirms source drive is mounted and readable.
+    Probe B (rclone lsjson --max-depth 0): validates GCS credentials,
+    bucket existence, and network reachability in ~1-3 seconds.
+
+    No HDD scan. No file comparison. Fails fast before committing to sync.
+    """
+    logger.info(f"Cloud preflight: source={config.paths.source_drive}, dest={config.cloud.bucket}/{fy_prefix}")
     result = run_cloud_dry_run(
         source=config.paths.source_drive,
         bucket=config.cloud.bucket,
@@ -85,6 +99,7 @@ def cloud_preflight_task(config, fy_prefix: str):
         project_number=config.cloud.project_number,
         storage_class=config.cloud.storage_class,
         location=config.cloud.location,
+        timeout=config.cloud.preflight_timeout_seconds,
     )
     if not result["ok"]:
         raise RuntimeError(f"Cloud preflight failed: {result['error']}")
@@ -134,13 +149,20 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
         )
 
         logger.info("Gathering cloud report data")
-        size = get_cloud_size(config.cloud.bucket, fy_prefix, rclone_cfg)
-        manifest = get_cloud_manifest(config.cloud.bucket, fy_prefix, rclone_cfg)
+        size = get_cloud_size(
+            config.cloud.bucket, fy_prefix, rclone_cfg,
+            timeout=config.cloud.cloud_size_timeout_seconds,
+        )
+        manifest = get_cloud_manifest(
+            config.cloud.bucket, fy_prefix, rclone_cfg,
+            timeout=config.cloud.manifest_timeout_seconds,
+        )
         cloud_diff = get_cloud_diff(
             config.paths.source_drive,
             config.cloud.bucket,
             fy_prefix,
             rclone_cfg,
+            timeout=config.cloud.diff_timeout_seconds,
         )
 
         logger.info(
@@ -157,9 +179,19 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
 
 
 @task(name="cloud-record")
-def cloud_record_task(db_path: str, verify_data: dict, sync_result: dict):
+def cloud_record_task(
+    db_path: str,
+    verify_data: dict,
+    sync_result: dict,
+    busy_timeout_ms: int = 30000,
+    vacuum_freelist_threshold: int = 1000,
+):
     """Record cloud sync results to ManifestDB."""
-    db = ManifestDB(db_path)
+    db = ManifestDB(
+        db_path,
+        busy_timeout_ms=busy_timeout_ms,
+        vacuum_freelist_threshold=vacuum_freelist_threshold,
+    )
     try:
         manifest = verify_data.get("manifest", [])
         removed = verify_data.get("diff", {}).get("removed", [])
@@ -230,11 +262,22 @@ def lan_sync_task(config):
 
 
 @task(name="lan-record")
-def lan_record_task(db_path: str, sync_result: dict, before_dict: dict, after_dict: dict):
+def lan_record_task(
+    db_path: str,
+    sync_result: dict,
+    before_dict: dict,
+    after_dict: dict,
+    busy_timeout_ms: int = 30000,
+    vacuum_freelist_threshold: int = 1000,
+):
     """Compute diff from before/after snapshots, record to ManifestDB."""
     diff = diff_snapshots(before_dict, after_dict)
 
-    db = ManifestDB(db_path)
+    db = ManifestDB(
+        db_path,
+        busy_timeout_ms=busy_timeout_ms,
+        vacuum_freelist_threshold=vacuum_freelist_threshold,
+    )
     try:
         # snapshot_to_dict returns {path: (size, mtime)} tuples
         files_list = [{"path": k, "size": v[0], "mtime": v[1]}
@@ -352,7 +395,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
     )
 
     # Fetch database state before sync to calculate differential transfers
-    db = ManifestDB(db_path)
+    db = ManifestDB(
+        db_path,
+        busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+        vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+    )
     before_dict = {}
     try:
         before_dict = db.get_cloud_synced_entries()
@@ -374,7 +421,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         sync_result = sync(config, fy_prefix)
         status = sync_result["status"]
         verify_data = verify_report(config, fy_prefix)
-        cloud_record_task(db_path, verify_data, sync_result)
+        cloud_record_task(
+            db_path, verify_data, sync_result,
+            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+        )
 
         # Calculate files and bytes copied by comparing old database state with new live GCS manifest
         manifest = verify_data.get("manifest", [])
@@ -427,9 +478,13 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         error_msg = str(e)
         raise
     finally:
-        _record_run(db_path, run_id, "cloud", started_at, status,
-                     sync_result.get("exit_code", -1), error_msg,
-                     files_copied, bytes_copied, extended_metrics)
+        _record_run(
+            db_path, run_id, "cloud", started_at, status,
+            sync_result.get("exit_code", -1), error_msg,
+            files_copied, bytes_copied, extended_metrics,
+            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -464,7 +519,11 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         sync_result = sync(config)
         status = sync_result["status"]
         after_dict = lan_snapshot_after_task(config)
-        lan_record_task(db_path, sync_result, before_dict, after_dict)
+        lan_record_task(
+            db_path, sync_result, before_dict, after_dict,
+            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+        )
 
         # Calculate files and bytes copied
         diff = diff_snapshots(before_dict, after_dict)
@@ -495,23 +554,41 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         error_msg = str(e)
         raise
     finally:
-        _record_run(db_path, run_id, "lan", started_at, status,
-                     sync_result.get("exit_code", -1), error_msg,
-                     files_copied, bytes_copied, extended_metrics)
+        _record_run(
+            db_path, run_id, "lan", started_at, status,
+            sync_result.get("exit_code", -1), error_msg,
+            files_copied, bytes_copied, extended_metrics,
+            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════
 
-def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
-                status: str, exit_code: int, error_msg: str | None,
-                files_copied: int = 0, bytes_copied: int = 0,
-                extended_metrics: str | None = None):
+def _record_run(
+    db_path: str,
+    run_id: str,
+    mode: str,
+    started_at: str,
+    status: str,
+    exit_code: int,
+    error_msg: str | None,
+    files_copied: int = 0,
+    bytes_copied: int = 0,
+    extended_metrics: str | None = None,
+    busy_timeout_ms: int = 30000,
+    vacuum_freelist_threshold: int = 1000,
+):
     """Record run history to ManifestDB."""
     ended_at = utcnow_iso()
     duration = time.time() - pendulum.parse(started_at).timestamp()
-    db = ManifestDB(db_path)
+    db = ManifestDB(
+        db_path,
+        busy_timeout_ms=busy_timeout_ms,
+        vacuum_freelist_threshold=vacuum_freelist_threshold,
+    )
     try:
         if not record_run_history(
             db,
@@ -535,7 +612,7 @@ def _record_run(db_path: str, run_id: str, mode: str, started_at: str,
 def weekly_report_flow(config_path: str = CONFIG_PATH):
     """Send weekly backup summary report."""
     config = load_config(config_path)
-    configure_logging(config.paths.log_directory)
+    configure_logging(config.paths.log_directory, log_retention_days=config.maintenance.log_retention_days)
     try:
         configure_prefect_bridge()
     except Exception:
@@ -555,7 +632,7 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
 def monthly_report_flow(config_path: str = CONFIG_PATH):
     """Send monthly backup summary report."""
     config = load_config(config_path)
-    configure_logging(config.paths.log_directory)
+    configure_logging(config.paths.log_directory, log_retention_days=config.maintenance.log_retention_days)
     try:
         configure_prefect_bridge()
     except Exception:
@@ -593,7 +670,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         raise ValueError(f"Invalid mode '{mode}'. Must be one of: {sorted(valid_modes)}")
 
     config = load_config(config_path)
-    configure_logging(config.paths.log_directory)
+    configure_logging(config.paths.log_directory, log_retention_days=config.maintenance.log_retention_days)
     try:
         configure_prefect_bridge()
     except Exception as e:

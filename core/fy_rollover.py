@@ -227,7 +227,13 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
         raise
 
 
-def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
+def run_archive_transition(
+    bucket: str,
+    old_fy: str,
+    gcs_key_path: str,
+    auth_timeout: int = 30,       # override via config.health.rollover_auth_timeout_seconds
+    archive_timeout: int = 600,   # override via config.health.rollover_archive_timeout_seconds
+) -> bool:
     """Transition all GCS objects under old_fy/ to ARCHIVE storage class.
 
     Executes the official ``gcloud storage objects update --recursive`` command
@@ -277,7 +283,7 @@ def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,
+                timeout=auth_timeout,
                 env=env,
             )
             if auth_result.returncode != 0:
@@ -303,7 +309,7 @@ def run_archive_transition(bucket: str, old_fy: str, gcs_key_path: str) -> bool:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=600,   # 10 min — metadata-only rewrite; no data transfer
+            timeout=archive_timeout,   # metadata-only rewrite; no data transfer
             env=env,
         )
         if result.returncode == 0:
@@ -399,6 +405,8 @@ def rollover(config_path: str = "config.yaml") -> bool:
             bucket=config.cloud.bucket,
             old_fy=old_fy,
             gcs_key_path=config.paths.gcs_key_path,
+            auth_timeout=config.health.rollover_auth_timeout_seconds,
+            archive_timeout=config.health.rollover_archive_timeout_seconds,
         )
 
     create_new_fy_folders(src_root, lan_root, new_fy)

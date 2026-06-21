@@ -15,7 +15,6 @@ from core.time_utils import cutoff_iso, utcnow_iso
 DDL = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
-PRAGMA busy_timeout=30000;
 
 CREATE TABLE IF NOT EXISTS file_entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,8 +65,24 @@ INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 class ManifestDB:
     """SQLite manifest with WAL mode, thread-safe writes."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(
+        self,
+        db_path: str | Path,
+        busy_timeout_ms: int = 30000,
+        vacuum_freelist_threshold: int = 1000,
+    ):
+        """Create or open the manifest database.
+
+        Args:
+            db_path: Path to the SQLite file.
+            busy_timeout_ms: PRAGMA busy_timeout value in milliseconds.
+                             Override via config.maintenance.sqlite_busy_timeout_ms.
+            vacuum_freelist_threshold: Trigger VACUUM when freelist page count exceeds
+                                       this value. Override via config.maintenance.sqlite_vacuum_freelist_threshold.
+        """
         self.db_path = str(db_path)
+        self.busy_timeout_ms = busy_timeout_ms
+        self.vacuum_freelist_threshold = vacuum_freelist_threshold
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = None
@@ -96,6 +111,7 @@ class ManifestDB:
             except Exception as e:
                 logger.debug(f"Pre-migration dedup skipped: {e}")
 
+            conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
             conn.executescript(DDL)
             
             # Safe schema migration for extended_metrics
@@ -490,9 +506,9 @@ class ManifestDB:
         Keeps file_entries intact — only purges the run log to prevent
         unbounded DB growth over years of daily runs.
 
-        Conditionally VACUUMs when the freelist exceeds 1000 pages (~4 MB),
-        per SQLite best practices: VACUUM is expensive and should only run
-        when the space savings justify the cost.
+        Conditionally VACUUMs when the freelist exceeds self.vacuum_freelist_threshold
+        pages (~4 MB at default of 1000), per SQLite best practices.
+        Override via config.maintenance.sqlite_vacuum_freelist_threshold.
         """
         with self._lock:
             conn = self._get_conn()
@@ -504,7 +520,7 @@ class ManifestDB:
             conn.execute("PRAGMA optimize")
             conn.execute("ANALYZE")
             freelist = conn.execute("PRAGMA freelist_count").fetchone()
-            if freelist and freelist[0] > 1000:
+            if freelist and freelist[0] > self.vacuum_freelist_threshold:
                 page_size = conn.execute("PRAGMA page_size").fetchone()[0]
                 conn.commit()
                 conn.execute("VACUUM")

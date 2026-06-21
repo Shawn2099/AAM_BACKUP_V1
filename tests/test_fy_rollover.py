@@ -654,6 +654,8 @@ class TestRolloverArchiveIntegration:
             bucket="aam-backup-bucket",
             old_fy="FY25-26",
             gcs_key_path="key.json",
+            auth_timeout=30,
+            archive_timeout=600,
         )
 
     def test_rollover_succeeds_even_when_archive_fails(self, tmp_path):

@@ -19,7 +19,7 @@ def _base_args(config_path: str) -> list[str]:
     return ["--config", config_path, "--gcs-no-check-bucket", "--fast-list"]
 
 
-def get_cloud_size(bucket: str, fy_prefix: str, config_path: str) -> dict:
+def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int = 30) -> dict:
     """rclone size → {"count": int, "bytes": int, "sizeless": str}.
 
     Instant — GCS returns pre-computed object counts.
@@ -29,7 +29,7 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str) -> dict:
     cmd = [rclone_exe, "size", dest, "--json", *_base_args(config_path)]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         data = json.loads(result.stdout.strip())
         logger.info(f"Cloud size: {data['count']} files, {data['bytes']} bytes")
         return data
@@ -38,7 +38,7 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str) -> dict:
         return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
 
 
-def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str) -> list[dict]:
+def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: int = 300) -> list[dict]:
     """rclone lsjson -R → [{Path, Size, ModTime, MimeType, IsDir}, ...].
 
     Files only — directory entries filtered out.
@@ -48,7 +48,7 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str) -> list[di
     cmd = [rclone_exe, "lsjson", dest, "-R", *_base_args(config_path)]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         data = json.loads(result.stdout)
         files = [f for f in data if not f.get("IsDir")]
         logger.info(f"Cloud manifest: {len(files)} files")
@@ -63,6 +63,7 @@ def get_cloud_diff(
     bucket: str,
     fy_prefix: str,
     config_path: str,
+    timeout: int = 600,  # override via config.cloud.diff_timeout_seconds
 ) -> dict:
     """rclone check --combined → {added, removed, modified, unchanged}.
 

@@ -11,11 +11,13 @@ LOG_FORMAT = (
 )
 
 
-def configure(log_dir: str | Path) -> None:
+def configure(log_dir: str | Path, log_retention_days: int = 30) -> None:
     """Configure Loguru with daily rotating file + stderr output.
 
     Args:
         log_dir: Directory for log files. Created if missing.
+        log_retention_days: Days before log files are auto-deleted.
+                            Override via config.maintenance.log_retention_days.
     """
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -32,7 +34,7 @@ def configure(log_dir: str | Path) -> None:
     logger.add(
         log_dir / "backup_{time:YYYY-MM-DD}.log",
         rotation="1 day",
-        retention="30 days",
+        retention=f"{log_retention_days} days",
         encoding="utf-8",
         level="DEBUG",
         format=LOG_FORMAT,

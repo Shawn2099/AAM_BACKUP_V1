@@ -144,7 +144,11 @@ class CloudConfig(BaseModel):
     subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
     max_attempts: int = Field(default=3, ge=1, le=10, description="Flow-level retry attempts for cloud backup orchestration")
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
-    verify_timeout_seconds: int = Field(default=600, ge=60, le=7200, description="Timeout for post-sync rclone check verify step")
+    verify_timeout_seconds: int = Field(default=600, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Increase to 7200+ for large datasets on HDD.")
+    preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
+    diff_timeout_seconds: int = Field(default=600, ge=30, le=3600, description="Timeout for rclone check --combined diff report (seconds)")
+    manifest_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for rclone lsjson manifest listing (seconds)")
+    cloud_size_timeout_seconds: int = Field(default=30, ge=10, le=300, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=4, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=16, ge=1, le=64, description="rclone --checkers concurrent file checkers")
     max_delete_percent: int = Field(
@@ -230,6 +234,58 @@ class MaintenanceConfig(BaseModel):
         le=3650,
         description="Days of run history to keep in ManifestDB (7–3650)",
     )
+    log_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Days of log files to retain before Loguru auto-deletion (1–365)",
+    )
+    sqlite_busy_timeout_ms: int = Field(
+        default=30000,
+        ge=1000,
+        le=120000,
+        description="SQLite PRAGMA busy_timeout in milliseconds — how long to wait on a locked DB (1000–120000)",
+    )
+    sqlite_vacuum_freelist_threshold: int = Field(
+        default=1000,
+        ge=100,
+        le=50000,
+        description="VACUUM triggers when SQLite freelist page count exceeds this value (~4 MB at default). Lower = more frequent VACUUM.",
+    )
+
+
+class HealthConfig(BaseModel):
+    """Pre-backup health check tuning."""
+    max_clock_skew_seconds: int = Field(
+        default=600,
+        ge=60,
+        le=3600,
+        description="Maximum acceptable clock skew vs Google time for GCS JWT auth (60–3600). GCS rejects tokens if skew >600s.",
+    )
+    clock_check_timeout_seconds: int = Field(
+        default=10,
+        ge=5,
+        le=60,
+        description="Timeout for the HTTPS connection to googleapis.com during clock skew check (seconds)",
+    )
+    min_free_source_gb: int = Field(
+        default=1,
+        ge=1,
+        le=500,
+        description="Minimum free space required on the source drive before backup proceeds (GB)",
+    )
+    rollover_auth_timeout_seconds: int = Field(
+        default=30,
+        ge=10,
+        le=120,
+        description="Timeout for gcloud auth activate-service-account during FY rollover (seconds)",
+    )
+    rollover_archive_timeout_seconds: int = Field(
+        default=600,
+        ge=60,
+        le=7200,
+        description="Timeout for gcloud storage objects update --storage-class=ARCHIVE during FY rollover (seconds)",
+    )
 
 
 class DashboardConfig(BaseModel):
@@ -278,6 +334,7 @@ class AppConfig(BaseModel):
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
+    health: HealthConfig = Field(default_factory=HealthConfig)
 
     @model_validator(mode="after")
     def cross_field_validation(self) -> "AppConfig":

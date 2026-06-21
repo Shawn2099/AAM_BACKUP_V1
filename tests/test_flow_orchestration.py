@@ -85,13 +85,13 @@ class TestHealthCheckTask:
 # ═══════════════════════════════════════════════════════════════
 
 class TestCloudPreflightTask:
-    @patch("flow.run_cloud_dry_run", return_value={"ok": True, "matched": True, "exit_code": 0, "error": None})
+    @patch("flow.run_cloud_dry_run", return_value={"ok": True, "exit_code": 0, "error": None})
     def test_success_returns_result(self, mock_dry):
         config = MagicMock()
         result = cloud_preflight_task.fn(config, "FY26-27")
         assert result["ok"] is True
 
-    @patch("flow.run_cloud_dry_run", return_value={"ok": False, "matched": False, "exit_code": 2, "error": "auth failed"})
+    @patch("flow.run_cloud_dry_run", return_value={"ok": False, "exit_code": 2, "error": "auth failed"})
     def test_failure_raises(self, mock_dry):
         config = MagicMock()
         with pytest.raises(RuntimeError, match="Cloud preflight failed"):

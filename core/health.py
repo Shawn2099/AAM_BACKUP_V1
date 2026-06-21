@@ -18,6 +18,9 @@ class HealthError(RuntimeError):
 def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, str]:
     """Verify source drive exists, has files, and has free space.
 
+    Args:
+        min_free_gb: Minimum free space required (GB). Override via config.health.min_free_source_gb.
+
     Returns:
         (True, "") if healthy.
         (False, "reason") if check failed.
@@ -68,14 +71,21 @@ def check_gcs_key(key_path: str) -> tuple[bool, str]:
     return True, ""
 
 
-def check_clock_skew(max_skew_seconds: int = 600) -> tuple[bool, str]:
+def check_clock_skew(
+    max_skew_seconds: int = 600,
+    connection_timeout: int = 10,
+) -> tuple[bool, str]:
     """Verify system clock is within acceptable skew for GCS JWT auth.
 
     Compares local UTC time against Google's HTTP Date header.
     GCS OAuth JWT tokens are rejected if clock skew >10 minutes.
+
+    Args:
+        max_skew_seconds: Override via config.health.max_clock_skew_seconds.
+        connection_timeout: Override via config.health.clock_check_timeout_seconds.
     """
     try:
-        conn = http.client.HTTPSConnection("www.googleapis.com", timeout=10)
+        conn = http.client.HTTPSConnection("www.googleapis.com", timeout=connection_timeout)
         conn.request("HEAD", "/")
         resp = conn.getresponse()
         google_date_str = resp.getheader("Date") or resp.getheader("date")
@@ -104,19 +114,29 @@ def check_clock_skew(max_skew_seconds: int = 600) -> tuple[bool, str]:
         return True, ""
 
 
-def pre_backup_health(source_path: str, mode: str, gcs_key_path: str | None = None) -> None:
+def pre_backup_health(
+    source_path: str,
+    mode: str,
+    gcs_key_path: str | None = None,
+    min_free_source_gb: int = 1,
+    max_clock_skew_seconds: int = 600,
+    clock_check_timeout_seconds: int = 10,
+) -> None:
     """Run all pre-backup health checks. Raises HealthError on failure.
 
     Args:
         source_path: Source drive root path.
         mode: "cloud", "lan", or "all"
         gcs_key_path: Path to GCS service account key. Required for cloud mode.
+        min_free_source_gb: Override via config.health.min_free_source_gb.
+        max_clock_skew_seconds: Override via config.health.max_clock_skew_seconds.
+        clock_check_timeout_seconds: Override via config.health.clock_check_timeout_seconds.
 
     Raises:
         HealthError: If any critical check fails — key missing, clock skewed,
             rclone/robocopy not found, or source drive inaccessible.
     """
-    ok, reason = check_source_drive(source_path)
+    ok, reason = check_source_drive(source_path, min_free_gb=min_free_source_gb)
     if not ok:
         raise HealthError(reason)
 
@@ -127,7 +147,10 @@ def pre_backup_health(source_path: str, mode: str, gcs_key_path: str | None = No
             key_ok, key_reason = check_gcs_key(gcs_key_path)
             if not key_ok:
                 raise HealthError(f"GCS key check failed: {key_reason}")
-        clock_ok, clock_reason = check_clock_skew()
+        clock_ok, clock_reason = check_clock_skew(
+            max_skew_seconds=max_clock_skew_seconds,
+            connection_timeout=clock_check_timeout_seconds,
+        )
         if not clock_ok:
             # Clock skew >10 min causes GCS JWT authentication to be rejected
             raise HealthError(f"Clock skew exceeds limit: {clock_reason}")
