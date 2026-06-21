@@ -67,5 +67,18 @@
 - **`shutdown.py`**: Sends `shutdown.exe` commands to power down the NAS after the backup is complete to save electricity and isolate it from ransomware.
 - **`process.py`**: Safely wraps `subprocess` and resolves binary paths (like checking if `rclone.exe` is in the system PATH).
 
+## Data Models (`models/config.py`)
+The system strictly parses `config.yaml` into Pydantic v2 models. Key models:
+- **`PathsConfig`**: `source_drive`, `lan_destination`, `database_path`, `gcs_key_path`.
+- **`LanConfig`**: Retries, timeouts, multi-threading (`mt_threads`).
+- **`CloudConfig`**: GCS-specific settings, bandwidth limits, `max_delete_percent` kill-switch.
+- **`WolConfig`**: MAC address, IP, and ping intervals for Wake-on-LAN.
+- **`MaintenanceConfig`**: SQLite tuning (e.g., `sqlite_vacuum_freelist_threshold`).
+
+## Database Schema (`ManifestDB`)
+Located in `core/manifest.py`. Uses SQLite in WAL (Write-Ahead Log) mode.
+1. **`file_entries` table**: Tracks every file (`relative_path`, `file_size`, `mtime`, `md5_checksum`, `lan_status`, `cloud_status`).
+2. **`run_history` table**: Tracks every Prefect execution (`run_id`, `mode`, `started_at`, `status`, `exit_code`, `files_copied`, `bytes_copied`).
+
 ---
 *End of Dictionary*
