@@ -228,6 +228,34 @@ echo "mydatabase.db" >> .gitignore
 
 ---
 
+### ISSUE-008 — Hardcoded Timeout in `shutdown.py` Violates Config-Driven Rule
+
+**File:** `core/shutdown.py` (line 33)
+**Severity:** Medium
+**Type:** Architectural Violation
+
+**Problem:**
+The `shutdown.exe` subprocess call has a hardcoded `timeout=30`. The architecture rule states that all timeouts should be driven by `config.yaml` and validated in `models/config.py`.
+
+**Fix:**
+Add `shutdown_timeout_seconds` to `LanConfig` in `models/config.py` and pass it to `shutdown_server` in `flow.py`.
+
+---
+
+### ISSUE-009 — Hardcoded Timeout in `report.py` Violates Config-Driven Rule
+
+**File:** `core/report.py` (line 43, 45)
+**Severity:** Medium
+**Type:** Architectural Violation
+
+**Problem:**
+The SMTP connection functions `smtplib.SMTP_SSL` and `smtplib.SMTP` use a hardcoded `timeout=30`. This violates the config-driven rule.
+
+**Fix:**
+Add `smtp_timeout_seconds` to `NotificationConfig` in `models/config.py` and pass it to the SMTP calls.
+
+---
+
 ## Summary
 
 | ID | Severity | File | Description |
@@ -237,9 +265,11 @@ echo "mydatabase.db" >> .gitignore
 | ISSUE-003 | 🔴 HIGH | `flow.py` | Stale `vacuum_freelist_threshold=1000` in 3 function defaults |
 | ISSUE-004 | 🟡 MEDIUM | `core/cloud_verify.py` | Re-hashes 500GB nightly; should use `--size-only` |
 | ISSUE-005 | 🟡 MEDIUM | `flow.py` | No sanity check on LAN before-snapshot (silent empty mount) |
+| ISSUE-008 | 🟡 MEDIUM | `core/shutdown.py` | Hardcoded `timeout=30` violates config-driven rule |
+| ISSUE-009 | 🟡 MEDIUM | `core/report.py` | Hardcoded `timeout=30` violates config-driven rule |
 | ISSUE-006 | 🟢 LOW | `core/cloud_verify.py` | Function default timeout (600s) misaligned with config (14400s) |
 | ISSUE-007 | 🟢 LOW | project root | Stray `mydatabase.db` development artifact |
 
 ---
 
-*Fix order recommendation: ISSUE-003 → ISSUE-002 → ISSUE-001 cleanup → ISSUE-004 → ISSUE-005*
+*Fix order recommendation: ISSUE-003 → ISSUE-002 → ISSUE-001 cleanup → ISSUE-004 → ISSUE-005 → ISSUE-008 → ISSUE-009*
