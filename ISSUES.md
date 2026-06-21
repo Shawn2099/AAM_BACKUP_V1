@@ -169,20 +169,13 @@ the run history in the database will show completely wrong statistics.
 **Worse:** If the NAS has a partial mount, robocopy `/MIR` against an empty
 apparent destination could mirror 0 files and treat the NAS as in-sync.
 
-**Fix:**
-Add a minimum file count guard after the before-snapshot:
-```python
-before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
-if len(before) == 0:
-    logger.warning(
-        "LAN before-snapshot returned 0 files. "
-        "NAS may not be mounted or destination is empty. "
-        "Diff statistics will be unreliable this run."
-    )
-```
+**Fix (V1 Architecture - Canary File):**
+Implement a "Canary File" pattern to validate the NAS mount before syncing:
+1. When `core/fy_rollover.py` creates the new LAN folder on April 1st, it must immediately write an empty file named `.AAM_TARGET_MOUNTED` into it.
+2. In `core/lan_preflight.py`, explicitly check for the existence of `Path(config.paths.lan_destination) / ".AAM_TARGET_MOUNTED"`.
+3. If the file is missing, immediately raise a `HealthError` and abort the backup to prevent `robocopy /MIR` from deleting the destination or filling up the local drive due to a phantom mount.
 
-For a known 500GB dataset, a count of 0 before sync is almost certainly a mount
-failure, not a legitimate empty state.
+This is robust against network drops and seamlessly handles the natural 0GB -> 500GB growth throughout the fiscal year.
 
 ---
 
