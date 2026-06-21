@@ -66,7 +66,7 @@ class LanConfig(BaseModel):
     shutdown_after_backup: bool = True
     max_attempts: int = Field(default=2, ge=1, le=10, description="Flow-level retry attempts for LAN backup orchestration")
     retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
-    mt_threads: int = Field(default=8, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
+    mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
 
 
 class WolConfig(BaseModel):
@@ -144,13 +144,13 @@ class CloudConfig(BaseModel):
     subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
     max_attempts: int = Field(default=3, ge=1, le=10, description="Flow-level retry attempts for cloud backup orchestration")
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
-    verify_timeout_seconds: int = Field(default=600, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Increase to 7200+ for large datasets on HDD.")
+    verify_timeout_seconds: int = Field(default=14400, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Increase to 14400+ for large datasets on HDD.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
     diff_timeout_seconds: int = Field(default=600, ge=30, le=3600, description="Timeout for rclone check --combined diff report (seconds)")
     manifest_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for rclone lsjson manifest listing (seconds)")
     cloud_size_timeout_seconds: int = Field(default=30, ge=10, le=300, description="Timeout for rclone size GCS object count query (seconds)")
-    transfers: int = Field(default=4, ge=1, le=64, description="rclone --transfers concurrent file transfers")
-    checkers: int = Field(default=16, ge=1, le=64, description="rclone --checkers concurrent file checkers")
+    transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
+    checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
     max_delete_percent: int = Field(
         default=45,
         ge=1,
@@ -247,10 +247,10 @@ class MaintenanceConfig(BaseModel):
         description="SQLite PRAGMA busy_timeout in milliseconds — how long to wait on a locked DB (1000–120000)",
     )
     sqlite_vacuum_freelist_threshold: int = Field(
-        default=1000,
+        default=10000,
         ge=100,
         le=50000,
-        description="VACUUM triggers when SQLite freelist page count exceeds this value (~4 MB at default). Lower = more frequent VACUUM.",
+        description="VACUUM triggers when SQLite freelist page count exceeds this value (~40 MB at default). Lower = more frequent VACUUM.",
     )
 
 

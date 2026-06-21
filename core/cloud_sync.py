@@ -80,6 +80,8 @@ def build_rclone_sync_command(
         "--retries-sleep", "30s",
         "--track-renames",
         "--max-delete", str(max_delete_percent),
+        "--buffer-size", "256M",
+        "--use-mmap",
         "--use-json-log",
         "--log-level", "INFO",
         "--stats", "60s",

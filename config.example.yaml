@@ -40,7 +40,7 @@ lan:
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 600
   # Robocopy /MT — parallel copy threads
-  mt_threads: 8
+  mt_threads: 4
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
@@ -87,11 +87,11 @@ cloud:
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 300
   # Timeout for post-sync rclone check/verify step (seconds)
-  verify_timeout_seconds: 600
+  verify_timeout_seconds: 14400
   # rclone --transfers: concurrent file uploads
-  transfers: 4
+  transfers: 2
   # rclone --checkers: concurrent file comparison workers
-  checkers: 16
+  checkers: 4
   # Ransomware kill-switch: rclone aborts if >N% of cloud files would be deleted in one run.
   # 20% is safe for normal daily backups. Raise only if bulk deletions are legitimate.
   max_delete_percent: 20
