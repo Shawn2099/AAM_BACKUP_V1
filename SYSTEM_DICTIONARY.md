@@ -80,5 +80,39 @@ Located in `core/manifest.py`. Uses SQLite in WAL (Write-Ahead Log) mode.
 1. **`file_entries` table**: Tracks every file (`relative_path`, `file_size`, `mtime`, `md5_checksum`, `lan_status`, `cloud_status`).
 2. **`run_history` table**: Tracks every Prefect execution (`run_id`, `mode`, `started_at`, `status`, `exit_code`, `files_copied`, `bytes_copied`).
 
+## Execution Constraints & CLI Flags
+The Python code generates highly optimized CLI strings to protect the mechanical HDD.
+
+**1. Rclone (Cloud Sync)**
+```bash
+rclone sync D:\ aam_gcs:bucket/FY26-27 --fast-list --gcs-no-check-bucket --error-on-no-transfer \
+  --transfers 2 --checkers 4 \
+  --max-delete 45 \
+  --check-first \
+  --buffer-size 64M
+```
+* **`--transfers 2 --checkers 4`**: Throttled to prevent HDD thrashing.
+* **`--max-delete 45`**: Ransomware kill-switch. Aborts if >45% of files are deleted.
+* **`--check-first`**: Forces metadata comparisons to finish before uploads start, cleanly separating random-seek I/O from sequential-read I/O.
+* **Exit Codes**: `6` = `CLOUD_FAILED` (NoRetry errors), `9` = `CLOUD_PARTIAL` (No files transferred).
+
+**2. Robocopy (LAN Sync)**
+```bash
+robocopy D:\ \\192.168.10.10\share$ /MIR /Z /ZB /XJ /MT:4 /R:3 /W:10 /V /TS /FP /NJH /NJS /NDL /NP
+```
+* **`/MIR`**: Mirrors source to destination (purging extras).
+* **`/MT:4`**: Limits multi-threading to 4 to protect the HDD read head.
+* **`/Z /ZB`**: Restartable mode in case the LAN drops.
+* **Exit Codes**: Bitmask mapping. `0-3` = `LAN_COMPLETE` (Success). `4-7` = `LAN_PARTIAL` (Mismatches/Extras). `8+` = `LAN_FAILED` (Fatal errors).
+
+## Execution Sequence (`flow.py`)
+1. `validate_preconditions`: Checks disk space, binary paths, clock skew (`core/health.py`).
+2. `wake_lan_target`: Sends Magic Packet (`core/wol.py`).
+3. `lan_preflight` / `cloud_preflight`: Checks network reachability via Two-Probe method.
+4. `lan_sync_task` / `cloud_sync_task`: Executes the CLI binaries.
+5. `verify_cloud_integrity_task`: Runs `rclone check`.
+6. `shutdown_lan_target`: Sends WoL shutdown command.
+7. `generate_and_send_report`: Compiles `ManifestDB` stats into HTML and emails the admin.
+
 ---
 *End of Dictionary*
