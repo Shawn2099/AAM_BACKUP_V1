@@ -78,7 +78,7 @@ class TestLanConfig:
         cfg = LanConfig()
         assert cfg.enabled is True
         assert cfg.retry_count == 3
-        assert cfg.mt_threads == 8
+        assert cfg.mt_threads == 4  # HDD-optimized: matches 4 hardware threads
 
     def test_max_attempts_default(self):
         cfg = LanConfig()
@@ -114,9 +114,9 @@ class TestCloudConfig:
         cfg = CloudConfig()
         assert cfg.storage_class == "STANDARD"
         assert cfg.bandwidth_limit == "10M"
-        assert cfg.transfers == 4
-        assert cfg.checkers == 16
-        assert cfg.verify_timeout_seconds == 600
+        assert cfg.transfers == 2    # HDD-optimized: 2 concurrent upload slots
+        assert cfg.checkers == 4    # HDD-optimized: 4 checkers = 4 CPU threads
+        assert cfg.verify_timeout_seconds == 14400  # 4h: covers cold HDD reads on 500GB
         assert cfg.max_attempts == 3
         assert cfg.retry_delay_seconds == 300
 
@@ -190,10 +190,10 @@ class TestAppConfig:
         cfg = load_config(str(yaml_path))
         assert cfg.firm_name == "TestFirm"
         assert cfg.cloud.bucket == "test-bucket"
-        assert cfg.lan.mt_threads == 8
+        assert cfg.lan.mt_threads == 8  # yaml fixture still sets 8 explicitly
         assert cfg.lan.max_attempts == 2
-        assert cfg.cloud.transfers == 4
-        assert cfg.cloud.verify_timeout_seconds == 600
+        assert cfg.cloud.transfers == 4  # yaml fixture still sets 4 explicitly
+        assert cfg.cloud.verify_timeout_seconds == 600  # yaml fixture still sets 600
         assert cfg.schedule.cloud_cron == "0 18 * * *"
         assert cfg.dashboard.api_key == "test-key-123"
 

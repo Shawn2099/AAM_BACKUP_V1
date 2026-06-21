@@ -52,8 +52,8 @@ def build_rclone_sync_command(
     storage_class: str,
     bwlimit: str = "10M",
     retries: int = 3,
-    transfers: int = 4,
-    checkers: int = 16,
+    transfers: int = 2,
+    checkers: int = 4,
     max_delete_percent: int = 45,
 ) -> list[str]:
     """Build rclone sync command with GCS-optimized flags.
@@ -80,8 +80,13 @@ def build_rclone_sync_command(
         "--retries-sleep", "30s",
         "--track-renames",
         "--max-delete", str(max_delete_percent),
-        "--buffer-size", "256M",
-        "--use-mmap",
+        "--check-first",         # Finish all stat/hash checks before any upload starts.
+                                  # Separates random-seek metadata phase from sequential
+                                  # read-for-upload phase — critical for HDD head efficiency.
+        "--buffer-size", "64M",  # Upload read buffer per transfer slot.
+                                  # 2 transfers × 64M = 128M total. Matches GCS multipart
+                                  # chunk sizing without wasting RAM. (256M was too large;
+                                  # --use-mmap removed — documented as unstable on Windows.)
         "--use-json-log",
         "--log-level", "INFO",
         "--stats", "60s",
@@ -98,8 +103,8 @@ def run_cloud_sync(
     location: str = "asia-south1",
     bwlimit: str = "10M",
     retries: int = 3,
-    transfers: int = 4,
-    checkers: int = 16,
+    transfers: int = 2,
+    checkers: int = 4,
     max_delete_percent: int = 45,
     timeout: int = 21600,
 ) -> dict:

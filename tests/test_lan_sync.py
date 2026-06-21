@@ -74,10 +74,11 @@ class TestBuildRobocopyCommand:
         cmd = build_robocopy_command("D:\\", "\\\\server\\share", cfg)
         assert "/MT:16" in cmd
 
-    def test_mt_default_is_8(self):
+    def test_mt_default_is_4(self):
+        """Default /MT is 4 — matches 4 hardware threads on the target HDD server."""
         cfg = LanConfig()
         cmd = build_robocopy_command("D:\\", "\\\\server\\share", cfg)
-        assert "/MT:8" in cmd
+        assert "/MT:4" in cmd
 
     def test_retry_count_included(self):
         cfg = LanConfig(retry_count=5)
