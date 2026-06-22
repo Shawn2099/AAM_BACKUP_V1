@@ -22,6 +22,42 @@ from core.time_utils import get_fy_prefix
 
 FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
 
+# Project root (two levels up from this file: core/ → project root)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_gcloud() -> str | None:
+    """Resolve the gcloud executable using multi-path fallback.
+
+    Resolution order (most specific → most generic):
+    1. deploy/bin/gcloud.cmd or gcloud.exe  — bundled/pinned version
+    2. Known Windows all-users SDK install   — GoogleCloudSDKInstaller /allusers
+    3. Known Windows per-user SDK install    — GoogleCloudSDKInstaller default
+    4. System PATH                           — shutil.which fallback
+
+    Returns the first path that exists, or None if gcloud is not found anywhere.
+    """
+    candidates: list[Path] = [
+        # 1. deploy/bin (checked first — bundled copy takes priority)
+        _PROJECT_ROOT / "deploy" / "bin" / "gcloud.cmd",
+        _PROJECT_ROOT / "deploy" / "bin" / "gcloud.exe",
+
+        # 2. All-users install (GoogleCloudSDKInstaller.exe /S /allusers)
+        Path(r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"),
+        Path(r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"),
+
+        # 3. Per-user install (default GoogleCloudSDKInstaller.exe /S)
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Cloud SDK" / "google-cloud-sdk" / "bin" / "gcloud.cmd",
+        Path(os.environ.get("USERPROFILE", "")) / "AppData" / "Local" / "Google" / "Cloud SDK" / "google-cloud-sdk" / "bin" / "gcloud.cmd",
+    ]
+
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return str(path)
+
+    # 4. Final fallback — system PATH (handles Linux/WSL and custom installs)
+    return shutil.which("gcloud")
+
 
 class RolloverError(Exception):
     """FY rollover could not complete — config unchanged, retry next run."""
@@ -267,10 +303,11 @@ def run_archive_transition(
     env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcs_key_path)
 
     try:
-        # Resolve gcloud dynamically (essential for Windows to pick up gcloud.cmd)
-        gcloud_exe = shutil.which("gcloud")
+        # Resolve gcloud via multi-path fallback (deploy/bin → known SDK paths → system PATH)
+        gcloud_exe = _resolve_gcloud()
         if not gcloud_exe:
             raise FileNotFoundError("gcloud")
+        logger.debug(f"FY rollover: using gcloud at {gcloud_exe}")
 
         # Explicitly authenticate the service account if a key file is provided.
         # If no key file exists (e.g. using Windows Credential Manager or
@@ -332,7 +369,8 @@ def run_archive_transition(
     except FileNotFoundError:
         logger.warning(
             "FY rollover: 'gcloud' CLI not found — archive transition skipped. "
-            "Install the Google Cloud SDK and ensure 'gcloud' is on the system PATH."
+            "Searched: deploy/bin/, Program Files, LOCALAPPDATA, and system PATH. "
+            "Run install_services.bat to install the Google Cloud SDK automatically."
         )
         return False
     except subprocess.TimeoutExpired:

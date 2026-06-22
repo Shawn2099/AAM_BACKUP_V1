@@ -153,7 +153,50 @@ if %ERRORLEVEL% equ 0 (
 
 
 :: ════════════════════════════════════════════════════════════════════
-:: SERVICE 1: AamPrefectServer
+:: GOOGLE CLOUD SDK (required for FY rollover archive transition)
+:: Installs gcloud CLI system-wide so the Windows service can find it.
+:: /S = silent, /allusers = install to Program Files (not per-user).
+:: This ensures services running as SYSTEM or Administrator can run gcloud.
+:: Skipped automatically if already installed.
+:: ════════════════════════════════════════════════════════════════════
+
+set "GCLOUD_CMD=C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+if not exist "%GCLOUD_CMD%" (
+    set "GCLOUD_CMD=C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+)
+
+if not exist "%GCLOUD_CMD%" (
+    echo [setup] Google Cloud SDK not found. Downloading installer...
+    set "GCLOUD_INSTALLER=%TEMP%\GoogleCloudSDKInstaller.exe"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "Invoke-WebRequest -Uri 'https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe' -OutFile '%TEMP%\GoogleCloudSDKInstaller.exe' -UseBasicParsing"
+    if not exist "%TEMP%\GoogleCloudSDKInstaller.exe" (
+        echo [WARN] Failed to download Google Cloud SDK installer.
+        echo [WARN] FY rollover archive transition will be skipped on April 1.
+        echo [WARN] Install manually: https://cloud.google.com/sdk/docs/install
+        goto :gcloud_done
+    )
+    echo [setup] Installing Google Cloud SDK silently (all users)...
+    "%TEMP%\GoogleCloudSDKInstaller.exe" /S /allusers
+    if exist "%GCLOUD_CMD%" (
+        echo [OK]   Google Cloud SDK installed to Program Files.
+    ) else (
+        :: Fallback: check Program Files (x86) after installer runs
+        set "GCLOUD_CMD=C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+        if not exist "%GCLOUD_CMD%" (
+            echo [WARN] Google Cloud SDK installed but gcloud.cmd not found at expected path.
+            echo [WARN] FY rollover archive transition may require manual gcloud setup.
+        ) else (
+            echo [OK]   Google Cloud SDK installed.
+        )
+    )
+    del /f /q "%TEMP%\GoogleCloudSDKInstaller.exe" 2>nul
+) else (
+    echo [OK]   Google Cloud SDK already installed: %GCLOUD_CMD%
+)
+
+:gcloud_done
+
 :: ════════════════════════════════════════════════════════════════════
 echo.
 echo [setup] Installing %SVC_SERVER%...
