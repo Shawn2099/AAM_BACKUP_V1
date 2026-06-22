@@ -12,12 +12,16 @@ def verify_cloud_integrity(
     bucket: str,
     fy_prefix: str,
     config_path: str,
-    timeout: int = 600,
+    timeout: int = 14400,
 ) -> dict:
-    """Run rclone check --one-way to verify source matches GCS.
+    """Run rclone check --one-way --size-only to verify source matches GCS.
 
-    Exit 0 = everything matches. Source and GCS are byte-identical.
-    Exit 1 = differences found (something didn't sync).
+    Uses size-only comparison (not MD5 hash) for nightly runs to avoid
+    2-hour HDD re-hashing of 500GB. rclone sync already verifies integrity
+    during transfer, so re-hashing unchanged files nightly is redundant.
+
+    Exit 0 = everything matches. Source and GCS file counts and sizes agree.
+    Exit 1 = differences found (something didn't sync or sizes diverged).
     Exit 2+ = error.
 
     Args:
@@ -25,7 +29,7 @@ def verify_cloud_integrity(
         bucket: GCS bucket name.
         fy_prefix: Fiscal year folder prefix.
         config_path: Path to rclone config file.
-        timeout: Max seconds for the check (default 600).
+        timeout: Max seconds for the check (default 14400 — 4 hours for large HDD datasets).
 
     Returns:
         {"verified": bool, "exit_code": int, "error": str | None}
@@ -38,6 +42,8 @@ def verify_cloud_integrity(
         source, dest,
         "--one-way",
         "--fast-list",
+        "--size-only",
+        "--check-first",
         "--config", config_path,
         "--gcs-no-check-bucket",
     ]

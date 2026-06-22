@@ -190,8 +190,9 @@ def main():
     dash_thread.start()
 
     # Check for FY rollover before starting normal operations.
-    # On April 1, this runs a final backup of the closing FY, creates new
-    # FY folders, locks the old FY read-only, and updates config.yaml.
+    # On April 1, this runs a final backup of the closing FY, transitions
+    # old GCS data to ARCHIVE storage, creates new FY folders, and
+    # atomically updates config.yaml to point to the new FY paths.
     # Backup flows load config fresh on every run, so they pick up the
     # new paths without a restart.
     from core.fy_rollover import RolloverError, rollover

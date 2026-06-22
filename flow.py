@@ -184,7 +184,7 @@ def cloud_record_task(
     verify_data: dict,
     sync_result: dict,
     busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 1000,
+    vacuum_freelist_threshold: int = 10000,
 ):
     """Record cloud sync results to ManifestDB."""
     db = ManifestDB(
@@ -268,7 +268,7 @@ def lan_record_task(
     before_dict: dict,
     after_dict: dict,
     busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 1000,
+    vacuum_freelist_threshold: int = 10000,
 ):
     """Compute diff from before/after snapshots, record to ManifestDB."""
     diff = diff_snapshots(before_dict, after_dict)
@@ -579,7 +579,7 @@ def _record_run(
     bytes_copied: int = 0,
     extended_metrics: str | None = None,
     busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 1000,
+    vacuum_freelist_threshold: int = 10000,
 ):
     """Record run history to ManifestDB."""
     ended_at = utcnow_iso()

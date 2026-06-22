@@ -16,6 +16,7 @@ from pathlib import Path
 from loguru import logger
 
 from core.cloud_sync import run_cloud_sync
+from core.lan_sync import classify_exit_code as classify_lan_exit
 from core.lan_sync import run_lan_sync
 from core.time_utils import get_fy_prefix
 
@@ -127,11 +128,12 @@ def run_final_backup(source_drive: str, lan_destination: str,
                 lan_config=lan_config,
             )
             exit_code = result.get("exit_code", -1)
-            if exit_code in range(0, 8):
+            lan_status = classify_lan_exit(exit_code)
+            if lan_status in ("LAN_COMPLETE", "LAN_PARTIAL"):
                 lan_ok = True
-                logger.info(f"FY rollover: final LAN backup OK (exit {exit_code})")
+                logger.info(f"FY rollover: final LAN backup OK (exit {exit_code} → {lan_status})")
             else:
-                logger.error(f"FY rollover: final LAN backup failed (exit {exit_code})")
+                logger.error(f"FY rollover: final LAN backup failed (exit {exit_code} → {lan_status})")
 
             if config.wol.enabled and config.lan.shutdown_after_backup:
                 try:
