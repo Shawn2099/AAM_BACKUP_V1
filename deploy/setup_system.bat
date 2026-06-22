@@ -37,7 +37,7 @@ set "GCLOUD_CMD=%PROJECT_DIR%\deploy\bin\google-cloud-sdk\bin\gcloud.cmd"
 
 :: Set zip path HERE (outside all if-blocks) so %GCLOUD_ZIP% expands correctly
 :: inside nested blocks with EnableDelayedExpansion.
-set "GCLOUD_ZIP=%TEMP%\google-cloud-sdk.zip"
+set "GCLOUD_ZIP=%PROJECT_DIR%\deploy\bin\google-cloud-sdk.zip"
 
 echo.
 echo ===================================================================
@@ -45,6 +45,59 @@ echo   AAM Backup Automation V1 — SYSTEM SETUP
 echo ===================================================================
 echo   Project:  %PROJECT_DIR%
 echo ===================================================================
+
+:: ════════════════════════════════════════════════════════════════════
+:: STEP 0: Install uv (Python package and runtime manager)
+:: uv is the ONLY external dependency. It auto-downloads and manages
+:: the correct Python version — no manual Python install needed.
+:: ════════════════════════════════════════════════════════════════════
+echo.
+echo [0/3] Checking uv package manager...
+
+:: Check all known install locations
+set "UV_EXE="
+for /f "delims=" %%I in ('where uv 2^>nul') do (
+    set "UV_EXE=%%I"
+    goto :uv_check_done
+)
+:: uv v0.4+ default install location
+if exist "%USERPROFILE%\.local\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
+if "%UV_EXE%"=="" if exist "%USERPROFILE%\.cargo\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
+if "%UV_EXE%"=="" if exist "C:\Program Files\Python312\Scripts\uv.exe" set "UV_EXE=C:\Program Files\Python312\Scripts\uv.exe"
+:uv_check_done
+
+if not "%UV_EXE%"=="" (
+    echo [OK]   uv found: %UV_EXE%
+    goto :uv_done
+)
+
+:: uv not found — download and install it
+echo [....] uv not found. Downloading and installing uv...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://astral.sh/uv/install.ps1' -UseBasicParsing | Invoke-Expression"
+
+:: Re-check known paths after install (new shell session needed for PATH,
+:: so we explicitly check the paths the installer uses)
+if exist "%USERPROFILE%\.local\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
+if "%UV_EXE%"=="" if exist "%USERPROFILE%\.cargo\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
+if "%UV_EXE%"=="" for /f "delims=" %%I in ('where uv 2^>nul') do set "UV_EXE=%%I"
+
+if "%UV_EXE%"=="" (
+    echo [ERROR] uv installation failed. Cannot continue.
+    echo [ERROR] Install manually: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+    echo [ERROR] Then re-run setup_system.bat.
+    pause
+    exit /b 1
+)
+echo [OK]   uv installed: %UV_EXE%
+
+:: Pre-cache Python 3.12 so first backup run is instant
+echo [....] Pre-caching Python 3.12 via uv ^(one-time download^)...
+"%UV_EXE%" python install 3.12 >nul 2>&1
+echo [OK]   Python 3.12 ready.
+
+:uv_done
+
 
 :: ════════════════════════════════════════════════════════════════════
 :: STEP 1: Windows Long Path Support
@@ -108,29 +161,15 @@ if not exist "%GCLOUD_ZIP%" (
 
 echo [OK]   Download complete.
 
-:: Extract — use bundled 7za.exe (fast) or fall back to Expand-Archive (slow)
-echo [....] Extracting SDK to deploy\bin\google-cloud-sdk...
-if exist "%SEVENZIP%" (
-    echo [OK]   Using 7za.exe for fast extraction...
-    "%SEVENZIP%" x "%GCLOUD_ZIP%" -o"%PROJECT_DIR%\deploy\bin" -y >nul
-) else (
-    echo [WARN] 7za.exe not found. Falling back to Expand-Archive ^(~10 min^)...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "Expand-Archive -Path '%GCLOUD_ZIP%' -DestinationPath '%PROJECT_DIR%\deploy\bin' -Force"
-)
-
-:: Delete zip immediately to free disk space
-del /f /q "%GCLOUD_ZIP%" 2>nul
-
-:: Verify extraction succeeded
-if exist "%GCLOUD_CMD%" (
-    echo [OK]   Google Cloud SDK extracted successfully.
-    echo [OK]   Location: %GCLOUD_CMD%
-) else (
-    echo [WARN] Extraction completed but gcloud.cmd not found at expected path:
-    echo [WARN]   %GCLOUD_CMD%
-    echo [WARN] FY rollover archive transition will be skipped on April 1.
-)
+:: Instruct user to manually extract to avoid Antivirus hang
+echo.
+echo [!]    ACTION REQUIRED: Antivirus makes auto-extraction very slow.
+echo [!]    Please manually extract the downloaded file:
+echo [!]    %GCLOUD_ZIP%
+echo [!]    Extract it so the folder is: %PROJECT_DIR%\deploy\bin\google-cloud-sdk
+echo.
+echo [....] Opening the folder for you now...
+explorer "%PROJECT_DIR%\deploy\bin"
 
 :gcloud_done
 
