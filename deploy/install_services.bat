@@ -154,45 +154,42 @@ if %ERRORLEVEL% equ 0 (
 
 :: ════════════════════════════════════════════════════════════════════
 :: GOOGLE CLOUD SDK (required for FY rollover archive transition)
-:: Installs gcloud CLI system-wide so the Windows service can find it.
-:: /S = silent, /allusers = install to Program Files (not per-user).
-:: This ensures services running as SYSTEM or Administrator can run gcloud.
+:: Downloads the standalone zip archive and extracts it to deploy/bin.
+:: This completely isolates gcloud from the system, preventing Windows
+:: updates or global SDK updates from breaking the backup service.
 :: Skipped automatically if already installed.
 :: ════════════════════════════════════════════════════════════════════
 
-set "GCLOUD_CMD=C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
-if not exist "%GCLOUD_CMD%" (
-    set "GCLOUD_CMD=C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
-)
+set "GCLOUD_CMD=%PROJECT_DIR%\deploy\bin\google-cloud-sdk\bin\gcloud.cmd"
 
 if not exist "%GCLOUD_CMD%" (
-    echo [setup] Google Cloud SDK not found. Downloading installer...
-    set "GCLOUD_INSTALLER=%TEMP%\GoogleCloudSDKInstaller.exe"
+    echo [setup] Isolated Google Cloud SDK not found in deploy/bin.
+    echo [setup] Downloading standalone SDK archive (~120MB, this may take a minute)...
+    
+    set "GCLOUD_ZIP=%TEMP%\google-cloud-sdk.zip"
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "Invoke-WebRequest -Uri 'https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe' -OutFile '%TEMP%\GoogleCloudSDKInstaller.exe' -UseBasicParsing"
-    if not exist "%TEMP%\GoogleCloudSDKInstaller.exe" (
-        echo [WARN] Failed to download Google Cloud SDK installer.
+        "Invoke-WebRequest -Uri 'https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-windows-x86_64.zip' -OutFile '%TEMP%\google-cloud-sdk.zip' -UseBasicParsing"
+    
+    if not exist "%TEMP%\google-cloud-sdk.zip" (
+        echo [WARN] Failed to download Google Cloud SDK zip.
         echo [WARN] FY rollover archive transition will be skipped on April 1.
-        echo [WARN] Install manually: https://cloud.google.com/sdk/docs/install
         goto :gcloud_done
     )
-    echo [setup] Installing Google Cloud SDK silently (all users)...
-    "%TEMP%\GoogleCloudSDKInstaller.exe" /S /allusers
+
+    echo [setup] Extracting SDK to deploy/bin/google-cloud-sdk...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "Expand-Archive -Path '%TEMP%\google-cloud-sdk.zip' -DestinationPath '%PROJECT_DIR%\deploy\bin' -Force"
+    
     if exist "%GCLOUD_CMD%" (
-        echo [OK]   Google Cloud SDK installed to Program Files.
+        echo [OK]   Isolated Google Cloud SDK successfully extracted to deploy/bin.
     ) else (
-        :: Fallback: check Program Files (x86) after installer runs
-        set "GCLOUD_CMD=C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
-        if not exist "%GCLOUD_CMD%" (
-            echo [WARN] Google Cloud SDK installed but gcloud.cmd not found at expected path.
-            echo [WARN] FY rollover archive transition may require manual gcloud setup.
-        ) else (
-            echo [OK]   Google Cloud SDK installed.
-        )
+        echo [WARN] Extraction failed. Missing %GCLOUD_CMD%.
+        echo [WARN] FY rollover archive transition will be skipped.
     )
-    del /f /q "%TEMP%\GoogleCloudSDKInstaller.exe" 2>nul
+    
+    del /f /q "%TEMP%\google-cloud-sdk.zip" 2>nul
 ) else (
-    echo [OK]   Google Cloud SDK already installed: %GCLOUD_CMD%
+    echo [OK]   Isolated Google Cloud SDK found at: %GCLOUD_CMD%
 )
 
 :gcloud_done

@@ -39,6 +39,7 @@ def _resolve_gcloud() -> str | None:
     """
     candidates: list[Path] = [
         # 1. deploy/bin (checked first — bundled copy takes priority)
+        _PROJECT_ROOT / "deploy" / "bin" / "google-cloud-sdk" / "bin" / "gcloud.cmd",
         _PROJECT_ROOT / "deploy" / "bin" / "gcloud.cmd",
         _PROJECT_ROOT / "deploy" / "bin" / "gcloud.exe",
 
