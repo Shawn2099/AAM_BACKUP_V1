@@ -51,6 +51,24 @@ if not exist "%GCLOUD_CMD%" (
     echo.
 )
 
+:: ── Validate rclone ──────────────────────────────────────────────────
+set "RCLONE_EXE="
+if exist "%PROJECT_DIR%\deploy\bin\rclone.exe" set "RCLONE_EXE=%PROJECT_DIR%\deploy\bin\rclone.exe"
+if "%RCLONE_EXE%"=="" (
+    for /f "delims=" %%I in ('where rclone 2^>nul') do (
+        set "RCLONE_EXE=%%I"
+    )
+)
+if "%RCLONE_EXE%"=="" (
+    echo.
+    echo  ERROR: 'rclone' executable not found in deploy\bin or system PATH.
+    echo  Please place rclone.exe in deploy\bin\ per the Deployment Guide.
+    echo.
+    pause
+    exit /b 1
+)
+
+
 :: ── Find uv executable ───────────────────────────────────────────────
 set "UV_EXE="
 for /f "delims=" %%I in ('where uv 2^>nul') do (
@@ -60,7 +78,10 @@ for /f "delims=" %%I in ('where uv 2^>nul') do (
 :uv_found
 
 if "%UV_EXE%"=="" (
-    if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
+    if exist "%USERPROFILE%\.local\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
+)
+if "%UV_EXE%"=="" (
+    if exist "%USERPROFILE%\.cargo\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
 )
 if "%UV_EXE%"=="" (
     if exist "C:\Program Files\Python312\Scripts\uv.exe" set "UV_EXE=C:\Program Files\Python312\Scripts\uv.exe"
