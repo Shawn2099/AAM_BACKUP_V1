@@ -164,7 +164,7 @@ set "GCLOUD_CMD=%PROJECT_DIR%\deploy\bin\google-cloud-sdk\bin\gcloud.cmd"
 
 if not exist "%GCLOUD_CMD%" (
     echo [setup] Isolated Google Cloud SDK not found in deploy/bin.
-    echo [setup] Downloading standalone SDK archive (~120MB, this may take a minute)...
+    echo [setup] Downloading standalone SDK archive ^(~120MB, this may take a minute^)...
     
     set "GCLOUD_ZIP=%TEMP%\google-cloud-sdk.zip"
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -194,6 +194,8 @@ if not exist "%GCLOUD_CMD%" (
 
 :gcloud_done
 
+:: ════════════════════════════════════════════════════════════════════
+:: SERVICE 1: AamPrefectServer
 :: ════════════════════════════════════════════════════════════════════
 echo.
 echo [setup] Installing %SVC_SERVER%...
