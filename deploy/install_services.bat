@@ -41,14 +41,15 @@ set SVC_SERVER=AamPrefectServer
 set SVC_AGENT=AamBackupAgent
 set SVC_WATCHDOG=AamWatchdog
 
-:: ── Warn if setup_system.bat has not been run ─────────────────────
+:: ── Validate Google Cloud SDK ────────────────────────────────────────
 set "GCLOUD_CMD=%PROJECT_DIR%\deploy\bin\google-cloud-sdk\bin\gcloud.cmd"
 if not exist "%GCLOUD_CMD%" (
     echo.
-    echo [WARN] Google Cloud SDK not found in deploy\bin.
-    echo [WARN] FY rollover archive transition will not work.
-    echo [WARN] Run setup_system.bat first if this is a fresh server.
+    echo  ERROR: Google Cloud SDK not found in deploy\bin.
+    echo  Please run setup_system.bat first to download and set up the SDK.
     echo.
+    pause
+    exit /b 1
 )
 
 :: ── Validate rclone ──────────────────────────────────────────────────
