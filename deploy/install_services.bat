@@ -30,15 +30,6 @@ if %errorlevel% neq 0 (
 set SCRIPT_DIR=%~dp0
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
-:: 3. Configure Windows Long Path Support
-echo [INFO] Enabling Windows Long Path support (MaxPath > 260 chars)...
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    echo [OK] Long paths enabled in Registry.
-    echo [WARN] A REBOOT may be required before long-path support takes effect.
-) else (
-    echo [WARN] Failed to enable Long Paths. You may need to enable it via Group Policy.
-)
 
 :: Resolve the parent directory as the project root (e.g. C:\AAM_BACKUP_V1)
 for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
@@ -132,6 +123,33 @@ echo [setup] Stopping and removing any existing services...
 
 :: Small pause to let Windows SCM release file handles completely
 timeout /t 3 /nobreak >nul
+
+:: ════════════════════════════════════════════════════════════════════
+:: SYSTEM HARDENING (required for 24x7 unattended operation)
+:: ════════════════════════════════════════════════════════════════════
+
+:: Enable Long Path support — without this, files with paths >260 chars
+:: are silently skipped by robocopy and rclone. Essential for deep
+:: accounting folder structures on the source drive.
+echo [setup] Enabling Windows Long Path support (paths ^> 260 chars)...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo [OK]   Long paths enabled.
+) else (
+    echo [WARN] Long paths: registry write failed. Enable via Group Policy if needed.
+)
+
+:: Suppress Windows Update automatic reboots — prevents Windows from
+:: rebooting the server mid-backup at 1 AM or 6 PM without warning.
+:: Updates will still download and install; only the automatic reboot
+:: is deferred until an Administrator logs in and approves it.
+echo [setup] Suppressing Windows Update automatic reboots...
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo [OK]   Auto-reboot suppressed. Updates install but server will NOT reboot automatically.
+) else (
+    echo [WARN] Auto-reboot suppression: registry write failed. Configure via Group Policy if needed.
+)
 
 
 :: ════════════════════════════════════════════════════════════════════
