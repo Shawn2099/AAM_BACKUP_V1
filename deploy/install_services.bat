@@ -1,15 +1,17 @@
 @echo off
 :: ═══════════════════════════════════════════════════════════════════════
-:: AAM Backup Automation V1 — THE ULTIMATE NSSM SERVICE INSTALLER
-:: Run as Administrator from any directory.
+:: AAM Backup Automation V1 — SERVICE INSTALLER
+:: Run as Administrator. Re-runnable on every upgrade/config change.
 ::
-:: Features:
-::   - Auto-detects project root directory based on script location
-::   - Auto-detects `uv.exe` path from system PATH or common locations
-::   - Auto-downloads NSSM if missing (using uv and download_nssm.py)
-::   - Cleans up orphaned prefect/python processes before reinstalling
-::   - Sets explicit NSSM shutdown timeouts to prevent STOP_PENDING errors
-::   - Sets up resilient restart delays and log rotations for 3 services
+:: PRE-REQUISITE: Run setup_system.bat ONCE before this on a fresh server.
+::
+:: What it does:
+::   1. Validates uv and NSSM are available
+::   2. Stops and removes any existing AAM services cleanly
+::   3. Installs AamPrefectServer, AamBackupAgent, AamWatchdog via NSSM
+::   4. Starts all services in the correct dependency order
+::
+:: Runtime: ~30 seconds
 :: ═══════════════════════════════════════════════════════════════════════
 
 setlocal EnableDelayedExpansion
@@ -25,13 +27,9 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: ── Dynamic Path Resolution ─────────────────────────────────────────
-:: Get the directory of the current script (e.g. C:\AAM_BACKUP_V1\deploy)
+:: ── Resolve paths ────────────────────────────────────────────────────
 set SCRIPT_DIR=%~dp0
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
-
-
-:: Resolve the parent directory as the project root (e.g. C:\AAM_BACKUP_V1)
 for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
 
 set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
@@ -43,7 +41,17 @@ set SVC_SERVER=AamPrefectServer
 set SVC_AGENT=AamBackupAgent
 set SVC_WATCHDOG=AamWatchdog
 
-:: ── Find uv executable dynamically ──────────────────────────────────
+:: ── Warn if setup_system.bat has not been run ─────────────────────
+set "GCLOUD_CMD=%PROJECT_DIR%\deploy\bin\google-cloud-sdk\bin\gcloud.cmd"
+if not exist "%GCLOUD_CMD%" (
+    echo.
+    echo [WARN] Google Cloud SDK not found in deploy\bin.
+    echo [WARN] FY rollover archive transition will not work.
+    echo [WARN] Run setup_system.bat first if this is a fresh server.
+    echo.
+)
+
+:: ── Find uv executable ───────────────────────────────────────────────
 set "UV_EXE="
 for /f "delims=" %%I in ('where uv 2^>nul') do (
     set "UV_EXE=%%I"
@@ -61,27 +69,26 @@ if "%UV_EXE%"=="" (
 if "%UV_EXE%"=="" (
     echo.
     echo  ERROR: 'uv' package manager not found.
-    echo  Please install it: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+    echo  Install it: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
     echo.
     pause
     exit /b 1
 )
 
-:: ── Guard: Auto-download NSSM if missing ─────────────────────────────
+:: ── Auto-download NSSM if missing ────────────────────────────────────
 if not exist "%NSSM%" (
-    echo.
-    echo [setup] NSSM not found at %NSSM%. Attempting to auto-download...
+    echo [setup] NSSM not found. Attempting to auto-download...
     cd /d "%PROJECT_DIR%"
     "%UV_EXE%" run python "%PROJECT_DIR%\deploy\download_nssm.py"
     if not exist "%NSSM%" (
-        echo  ERROR: Failed to automatically download NSSM.
+        echo  ERROR: Failed to download NSSM.
         pause
         exit /b 1
     )
-    echo [setup] NSSM successfully downloaded.
+    echo [OK]   NSSM downloaded.
 )
 
-:: ── Guard: project directory validation ──────────────────────────────
+:: ── Validate project ─────────────────────────────────────────────────
 if not exist "%PROJECT_DIR%\launch.py" (
     echo.
     echo  ERROR: launch.py not found in %PROJECT_DIR%.
@@ -91,13 +98,13 @@ if not exist "%PROJECT_DIR%\launch.py" (
     exit /b 1
 )
 
-:: ── Create required directories ──────────────────────────────────────
+:: ── Create required directories ───────────────────────────────────────
 if not exist "%LOG_DIR%"      mkdir "%LOG_DIR%"
 if not exist "%PREFECT_HOME%" mkdir "%PREFECT_HOME%"
 
 echo.
 echo ===================================================================
-echo   AAM Backup Automation V1 — ULTIMATE INSTALLER
+echo   AAM Backup Automation V1 — SERVICE INSTALLER
 echo ===================================================================
 echo   NSSM:         %NSSM%
 echo   uv:           %UV_EXE%
@@ -106,13 +113,12 @@ echo   Logs:         %LOG_DIR%
 echo   Prefect home: %PREFECT_HOME%
 echo ===================================================================
 
-:: ── Remove old services (clean reinstall) ────────────────────────────
+:: ── Stop and remove old services ─────────────────────────────────────
 echo.
-echo [setup] Force-killing Python and Prefect processes to prevent hanging...
+echo [setup] Stopping any running AAM services...
 taskkill /F /IM python.exe /T 2>nul
 taskkill /F /IM prefect.exe /T 2>nul
 
-echo [setup] Stopping and removing any existing services...
 "%NSSM%" stop  %SVC_WATCHDOG% 2>nul
 "%NSSM%" stop  %SVC_AGENT%   2>nul
 "%NSSM%" stop  %SVC_SERVER%  2>nul
@@ -121,78 +127,8 @@ echo [setup] Stopping and removing any existing services...
 "%NSSM%" remove %SVC_AGENT%   confirm 2>nul
 "%NSSM%" remove %SVC_SERVER%  confirm 2>nul
 
-:: Small pause to let Windows SCM release file handles completely
+:: Small pause to let Windows SCM release file handles
 timeout /t 3 /nobreak >nul
-
-:: ════════════════════════════════════════════════════════════════════
-:: SYSTEM HARDENING (required for 24x7 unattended operation)
-:: ════════════════════════════════════════════════════════════════════
-
-:: Enable Long Path support — without this, files with paths >260 chars
-:: are silently skipped by robocopy and rclone. Essential for deep
-:: accounting folder structures on the source drive.
-echo [setup] Enabling Windows Long Path support (paths ^> 260 chars)...
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    echo [OK]   Long paths enabled.
-) else (
-    echo [WARN] Long paths: registry write failed. Enable via Group Policy if needed.
-)
-
-:: Suppress Windows Update automatic reboots — prevents Windows from
-:: rebooting the server mid-backup at 1 AM or 6 PM without warning.
-:: Updates will still download and install; only the automatic reboot
-:: is deferred until an Administrator logs in and approves it.
-echo [setup] Suppressing Windows Update automatic reboots...
-reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    echo [OK]   Auto-reboot suppressed. Updates install but server will NOT reboot automatically.
-) else (
-    echo [WARN] Auto-reboot suppression: registry write failed. Configure via Group Policy if needed.
-)
-
-
-:: ════════════════════════════════════════════════════════════════════
-:: GOOGLE CLOUD SDK (required for FY rollover archive transition)
-:: Downloads the standalone zip archive and extracts it to deploy/bin.
-:: This completely isolates gcloud from the system, preventing Windows
-:: updates or global SDK updates from breaking the backup service.
-:: Skipped automatically if already installed.
-:: ════════════════════════════════════════════════════════════════════
-
-set "GCLOUD_CMD=%PROJECT_DIR%\deploy\bin\google-cloud-sdk\bin\gcloud.cmd"
-
-if not exist "%GCLOUD_CMD%" (
-    echo [setup] Isolated Google Cloud SDK not found in deploy/bin.
-    echo [setup] Downloading standalone SDK archive ^(~120MB, this may take a minute^)...
-    
-    set "GCLOUD_ZIP=%TEMP%\google-cloud-sdk.zip"
-    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "Invoke-WebRequest -Uri 'https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-windows-x86_64.zip' -OutFile '%TEMP%\google-cloud-sdk.zip' -UseBasicParsing"
-    
-    if not exist "%TEMP%\google-cloud-sdk.zip" (
-        echo [WARN] Failed to download Google Cloud SDK zip.
-        echo [WARN] FY rollover archive transition will be skipped on April 1.
-        goto :gcloud_done
-    )
-
-    echo [setup] Extracting SDK to deploy/bin/google-cloud-sdk...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "Expand-Archive -Path '%TEMP%\google-cloud-sdk.zip' -DestinationPath '%PROJECT_DIR%\deploy\bin' -Force"
-    
-    if exist "%GCLOUD_CMD%" (
-        echo [OK]   Isolated Google Cloud SDK successfully extracted to deploy/bin.
-    ) else (
-        echo [WARN] Extraction failed. Missing %GCLOUD_CMD%.
-        echo [WARN] FY rollover archive transition will be skipped.
-    )
-    
-    del /f /q "%TEMP%\google-cloud-sdk.zip" 2>nul
-) else (
-    echo [OK]   Isolated Google Cloud SDK found at: %GCLOUD_CMD%
-)
-
-:gcloud_done
 
 :: ════════════════════════════════════════════════════════════════════
 :: SERVICE 1: AamPrefectServer
@@ -216,23 +152,19 @@ echo [setup] Installing %SVC_SERVER%...
 "%NSSM%" set %SVC_SERVER% AppRotateOnline       1
 "%NSSM%" set %SVC_SERVER% AppRotateBytes        10485760
 
-:: NSSM graceful shutdown settings
+:: Graceful shutdown timeouts
 "%NSSM%" set %SVC_SERVER% AppStopMethodSkip     0
 "%NSSM%" set %SVC_SERVER% AppStopMethodConsole  15000
 "%NSSM%" set %SVC_SERVER% AppStopMethodWindow   15000
 "%NSSM%" set %SVC_SERVER% AppStopMethodThreads  15000
 
-:: Restart delay after crash: 30 seconds
 "%NSSM%" set %SVC_SERVER% AppRestartDelay       30000
-
-:: Fixed Prefect home and Database Timeout (critical for HDD)
 "%NSSM%" set %SVC_SERVER% AppEnvironmentExtra   "PREFECT_HOME=%PREFECT_HOME%" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
 
-:: Windows SCM recovery actions
 sc failure %SVC_SERVER% reset= 86400 actions= restart/30000/restart/60000/restart/60000 >nul
 sc failureflag %SVC_SERVER% 1 >nul
 
-echo [setup] %SVC_SERVER% installed successfully.
+echo [OK]   %SVC_SERVER% installed.
 
 
 :: ════════════════════════════════════════════════════════════════════
@@ -248,7 +180,7 @@ echo [setup] Installing %SVC_AGENT%...
 "%NSSM%" set %SVC_AGENT% Description            "AAM Backup dashboard (port 8080) and Prefect scheduler"
 "%NSSM%" set %SVC_AGENT% Start                  SERVICE_AUTO_START
 
-:: Depend on Prefect server being Running first
+:: Depends on Prefect server being up first
 "%NSSM%" set %SVC_AGENT% DependOnService        %SVC_SERVER%
 
 "%NSSM%" set %SVC_AGENT% AppStdout              "%LOG_DIR%\agent_svc.log"
@@ -259,7 +191,7 @@ echo [setup] Installing %SVC_AGENT%...
 "%NSSM%" set %SVC_AGENT% AppRotateOnline        1
 "%NSSM%" set %SVC_AGENT% AppRotateBytes         10485760
 
-:: Graceful shutdown - allowing sub-processes (rclone) to finish closing
+:: Graceful shutdown — allow rclone/robocopy subprocesses to finish
 "%NSSM%" set %SVC_AGENT% AppStopMethodConsole   120000
 "%NSSM%" set %SVC_AGENT% AppStopMethodWindow    120000
 "%NSSM%" set %SVC_AGENT% AppStopMethodThreads   120000
@@ -270,7 +202,7 @@ echo [setup] Installing %SVC_AGENT%...
 sc failure %SVC_AGENT% reset= 86400 actions= restart/60000/restart/90000/restart/120000 >nul
 sc failureflag %SVC_AGENT% 1 >nul
 
-echo [setup] %SVC_AGENT% installed successfully.
+echo [OK]   %SVC_AGENT% installed.
 
 
 :: ════════════════════════════════════════════════════════════════════
@@ -300,11 +232,11 @@ echo [setup] Installing %SVC_WATCHDOG%...
 sc failure %SVC_WATCHDOG% reset= 86400 actions= restart/15000/restart/30000/restart/30000 >nul
 sc failureflag %SVC_WATCHDOG% 1 >nul
 
-echo [setup] %SVC_WATCHDOG% installed successfully.
+echo [OK]   %SVC_WATCHDOG% installed.
 
 
 :: ════════════════════════════════════════════════════════════════════
-:: Start all services
+:: Start all services in dependency order
 :: ════════════════════════════════════════════════════════════════════
 echo.
 echo [setup] Starting %SVC_SERVER%...
@@ -330,7 +262,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ===================================================================
-echo   ULTIMATE INSTALLATION COMPLETE
+echo   INSTALLATION COMPLETE
 echo ===================================================================
 echo   Services:    Open services.msc to verify status
 echo   Prefect UI:  http://localhost:4200
@@ -339,7 +271,7 @@ echo   Logs:        %LOG_DIR%
 echo ===================================================================
 echo.
 echo   NOTE: If LAN backup fails with access denied, the services
-echo   must run as a local/domain user with network share access.
-echo   Configure this via services.msc -^> Log On tab.
+echo   must run as a domain user with network share access.
+echo   Configure via services.msc -^> Log On tab.
 echo.
 pause
