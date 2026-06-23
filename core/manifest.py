@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from core.time_utils import cutoff_iso, utcnow_iso
+from core.time_utils import cutoff_iso, now_iso
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -151,7 +151,7 @@ class ManifestDB:
         relative_path = relative_path.replace("\\", "/")
         with self._lock:
             conn = self._get_conn()
-            now = utcnow_iso()
+            now = now_iso()
             conn.execute(
                 """INSERT INTO file_entries
                    (relative_path, file_size, mtime, md5_checksum,
@@ -218,7 +218,7 @@ class ManifestDB:
 
         with self._lock:
             conn = self._get_conn()
-            now = utcnow_iso()
+            now = now_iso()
             # Chunk at 100 rows (700 params) to stay under SQLite's variable limit
             # on older builds (SQLITE_MAX_VARIABLE_NUMBER=999).
             for i in range(0, len(entries), 100):
@@ -264,7 +264,7 @@ class ManifestDB:
         normalized = [p.replace("\\", "/") for p in paths]
         with self._lock:
             conn = self._get_conn()
-            now = utcnow_iso()
+            now = now_iso()
             conn.executemany(
                 """UPDATE file_entries
                    SET lan_status = 'synced',
@@ -282,7 +282,7 @@ class ManifestDB:
         normalized = [p.replace("\\", "/") for p in paths]
         with self._lock:
             conn = self._get_conn()
-            now = utcnow_iso()
+            now = now_iso()
             conn.executemany(
                 """UPDATE file_entries
                    SET cloud_status = 'synced',
@@ -315,7 +315,7 @@ class ManifestDB:
             return
         with self._lock:
             conn = self._get_conn()
-            now = utcnow_iso()
+            now = now_iso()
             conn.executemany(
                 """UPDATE file_entries SET md5_checksum = ?, updated_at = ?
                    WHERE relative_path = ?""",

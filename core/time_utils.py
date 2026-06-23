@@ -3,6 +3,9 @@
 Uses pendulum (already a dependency). Every file in this project that touches
 datetime must import from here, not from datetime/zoneinfo directly. This
 eliminates parsing bugs, timezone mismatches, and duplicated helper functions.
+
+All timestamps are stored and displayed in IST (Asia/Kolkata, UTC+5:30).
+India does not observe DST, so IST is constant year-round.
 """
 
 from __future__ import annotations
@@ -11,76 +14,33 @@ from datetime import date
 
 import pendulum
 
-try:
-    from pendulum.parsing.exceptions import ParserError
-except ImportError:
-    # Fallback for some pendulum 3.x versions
-    try:
-        from pendulum.parsing.parser import ParserError
-    except ImportError:
-        class ParserError(Exception): pass  # Dummy fallback
+
+# ═══════════════════════════════════════════════════════════════
+# Timezone constant
+# ═══════════════════════════════════════════════════════════════
+
+IST = pendulum.timezone("Asia/Kolkata")
 
 
 # ═══════════════════════════════════════════════════════════════
-# Current UTC timestamps
+# Current IST timestamps
 # ═══════════════════════════════════════════════════════════════
 
-def utcnow_iso() -> str:
-    """Current UTC time as a timezone-aware ISO 8601 string.
+def now_iso() -> str:
+    """Current IST time as a timezone-aware ISO 8601 string.
 
-    Returns e.g. "2026-05-30T14:22:00+00:00" — always parseable,
+    Returns e.g. "2026-05-30T19:52:00+05:30" — always parseable,
     always carries explicit offset.
     """
-    return pendulum.now("UTC").isoformat()
+    return pendulum.now(IST).isoformat()
 
 
-def utcnow_formatted(fmt: str = "YYYY-MM-DD HH:mm z") -> str:
-    """Current UTC time as a human-readable string with timezone label.
+def now_formatted(fmt: str = "YYYY-MM-DD HH:mm z") -> str:
+    """Current IST time as a human-readable string with timezone label.
 
-    Default: "2026-05-30 14:22 UTC"
+    Default: "2026-05-30 19:52 IST"
     """
-    return pendulum.now("UTC").format(fmt)
-
-
-# ═══════════════════════════════════════════════════════════════
-# ISO 8601 parsing → local display
-# ═══════════════════════════════════════════════════════════════
-
-def parse_iso_to_local(iso_str: str | None, tz: str = "Asia/Kolkata") -> str:
-    """Parse any ISO 8601 string and format for local-timezone display.
-
-    Handles Z suffix, ±HH:MM offsets, naive datetimes (treated as UTC).
-    Returns "YYYY-MM-DD HH:MM:SS" in the server's local timezone.
-    Returns "-" for None/empty/unparseable input.
-    """
-    if not iso_str:
-        return "-"
-
-    try:
-        dt = pendulum.parse(str(iso_str).strip())
-        if dt is None:
-            return "-"
-        return dt.in_timezone(tz).format("YYYY-MM-DD HH:mm:ss")
-    except (ValueError, ParserError):
-        s = str(iso_str).strip()
-        return s[:19].replace("T", " ") if s else "-"
-
-
-def format_iso_for_js(iso_str: str | None) -> str | None:
-    """Convert a stored ISO string into a form JS `new Date()` parses reliably.
-
-    Pendulum's isoformat() always includes the timezone offset, so JS gets
-    a proper ISO 8601 string every time. Returns None if input is None.
-    """
-    if not iso_str:
-        return None
-    try:
-        dt = pendulum.parse(str(iso_str).strip())
-        if dt is None:
-            return None
-        return dt.isoformat()
-    except (ValueError, ParserError):
-        return None
+    return pendulum.now(IST).format(fmt)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -88,19 +48,16 @@ def format_iso_for_js(iso_str: str | None) -> str | None:
 # ═══════════════════════════════════════════════════════════════
 
 def cutoff_iso(days: int) -> str:
-    """Return the ISO timestamp for `days` ago from now in UTC.
+    """Return the ISO timestamp for `days` ago from now in IST.
 
-    e.g. cutoff_iso(7) → "2026-05-23T14:22:00+00:00"
+    e.g. cutoff_iso(7) → "2026-05-23T19:52:00+05:30"
     """
-    return pendulum.now("UTC").subtract(days=days).isoformat()
+    return pendulum.now(IST).subtract(days=days).isoformat()
 
 
 # ═══════════════════════════════════════════════════════════════
 # Fiscal year routing
 # ═══════════════════════════════════════════════════════════════
-
-IST = pendulum.timezone("Asia/Kolkata")
-
 
 def get_fy_prefix(today: date | None = None) -> str:
     """Compute GCS fiscal year folder prefix from IST date.

@@ -57,14 +57,14 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
         )
 
         code = result.returncode
-        # Bit 4 (16) = fatal error. Bit 3 (8) = copy errors — treat as preflight
-        # failure since source files can't be read. Bits 0-7 only = OK.
+        # Exit codes 0-7: success (various file-change combinations).
+        # Exit codes 8+: error (copy failures, fatal errors).
         ok = code < 8
 
         if not ok:
             # Robocopy writes errors to stdout, not stderr.
             out_err = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
-            error_output = out_err[-2000:] if len(out_err) > 2000 else (out_err or "no output")
+            error_output = out_err or "no output"
             logger.error(f"LAN dry-run failed (exit {code}): {error_output}")
             return {"ok": False, "exit_code": code, "error": f"Robocopy /L failed with exit {code}\nOutput: {error_output}"}
 

@@ -88,7 +88,7 @@ def check_clock_skew(
         conn = http.client.HTTPSConnection("www.googleapis.com", timeout=connection_timeout)
         conn.request("HEAD", "/")
         resp = conn.getresponse()
-        google_date_str = resp.getheader("Date") or resp.getheader("date")
+        google_date_str = resp.getheader("Date")
         conn.close()
 
         if not google_date_str:
@@ -136,6 +136,10 @@ def pre_backup_health(
         HealthError: If any critical check fails — key missing, clock skewed,
             rclone/robocopy not found, or source drive inaccessible.
     """
+    valid_modes = {"cloud", "lan", "all"}
+    if mode not in valid_modes:
+        raise HealthError(f"Invalid mode '{mode}' — expected one of: {', '.join(sorted(valid_modes))}")
+
     ok, reason = check_source_drive(source_path, min_free_gb=min_free_source_gb)
     if not ok:
         raise HealthError(reason)

@@ -62,7 +62,7 @@
 
 ### 5. Infrastructure & State
 - **`manifest.py`**: `ManifestDB`. A SQLite WAL-mode database that tracks backup histories, bytes transferred, and exit codes. 
-- **`time_utils.py`**: Standardized `pendulum` wrapper for calculating UTC timestamps and the `FY26-27` string.
+- **`time_utils.py`**: Standardized `pendulum` wrapper for calculating IST timestamps and the `FY26-27` string.
 - **`wol.py`**: Wake-on-LAN. Sends Magic Packets to wake the physical LAN NAS from sleep before `lan_sync.py` runs.
 - **`shutdown.py`**: Sends `shutdown.exe` commands to power down the NAS after the backup is complete to save electricity and isolate it from ransomware.
 - **`process.py`**: Safely wraps `subprocess` and resolves binary paths (like checking if `rclone.exe` is in the system PATH).

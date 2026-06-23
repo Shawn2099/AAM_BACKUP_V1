@@ -27,7 +27,7 @@ from prefect.client.schemas.objects import StateType
 from prefect.deployments import run_deployment
 
 
-from core.time_utils import cron_to_human, format_iso_for_js, get_fy_prefix, parse_iso_to_local
+from core.time_utils import IST, cron_to_human, get_fy_prefix
 from core.manifest import ManifestDB
 
 
@@ -287,7 +287,7 @@ async def status(request: Request):
         recent_runs.append({
             "mode": r.get("mode", "?"),
             "status": r.get("status", "?"),
-            "started_at": parse_iso_to_local(r.get("started_at", "")),
+            "started_at": (r.get("started_at") or "-")[:19].replace("T", " "),
             "files": r.get("files_copied", 0),
             "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
             "error": r.get("error_message", ""),
@@ -307,14 +307,14 @@ async def status(request: Request):
         "cloud": {
             "running": await _is_running("cloud"),
             "last_run": cloud_last_run,
-            "last_success": format_iso_for_js(_get_last_success(db, "cloud")),
-            "last_run_formatted": f"{cloud_last_run['status']} — {parse_iso_to_local(cloud_last_run['started_at'])}" if cloud_last_run else "No data",
+            "last_success": _get_last_success(db, "cloud"),
+            "last_run_formatted": f"{cloud_last_run['status']} — {(cloud_last_run['started_at'] or '-')[:19].replace('T', ' ')}" if cloud_last_run else "No data",
         },
         "lan": {
             "running": await _is_running("lan"),
             "last_run": lan_last_run,
-            "last_success": format_iso_for_js(_get_last_success(db, "lan")),
-            "last_run_formatted": f"{lan_last_run['status']} — {parse_iso_to_local(lan_last_run['started_at'])}" if lan_last_run else "No data",
+            "last_success": _get_last_success(db, "lan"),
+            "last_run_formatted": f"{lan_last_run['status']} — {(lan_last_run['started_at'] or '-')[:19].replace('T', ' ')}" if lan_last_run else "No data",
         },
         "manifest": {
             "lan_files": db.file_count("lan_status"),
@@ -502,7 +502,7 @@ th {{ background: #f3f4f6; font-size: 0.85rem; }}
 </body>
 </html>"""
 
-    filename = f"{cfg.firm_name}_{period}_Report_{pendulum.now().format('YYYY-MM-DD')}.html"
+    filename = f"{cfg.firm_name}_{period}_Report_{pendulum.now(IST).format('YYYY-MM-DD')}.html"
     return Response(
         content=full_html,
         media_type="text/html",
@@ -578,12 +578,12 @@ async def _render_dashboard(flash: str = "") -> str:
             cr = _last_run_summary(db, "cloud")
             lr = _last_run_summary(db, "lan")
             if cr:
-                cloud_last = f"{cr['status']} — {parse_iso_to_local(cr['started_at'])}"
+                cloud_last = f"{cr['status']} — {(cr['started_at'] or '-')[:19].replace('T', ' ')}"
                 cloud_run = f"{cr['status']} ({cr['files']} changed)"
                 if cr.get("error"):
                     cloud_run += f" — {html.escape(cr['error'][:60])}"
             if lr:
-                lan_last = f"{lr['status']} — {parse_iso_to_local(lr['started_at'])}"
+                lan_last = f"{lr['status']} — {(lr['started_at'] or '-')[:19].replace('T', ' ')}"
                 lan_run = f"{lr['status']} ({lr['files']} changed)"
                 if lr.get("error"):
                     lan_run += f" — {html.escape(lr['error'][:60])}"
@@ -627,7 +627,7 @@ async def _render_dashboard(flash: str = "") -> str:
                     s_tag = '<span class="tag failed">FAILED</span>'
                 else:
                     s_tag = f'<span class="tag">{html.escape(s[:10])}</span>'
-                ts = parse_iso_to_local(r.get("started_at", ""))
+                ts = (r.get("started_at") or "-")[:19].replace("T", " ")
                 files = r.get("files_copied", 0)
                 err = r.get("error_message", "")
                 dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"

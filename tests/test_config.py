@@ -150,10 +150,10 @@ class TestScheduleConfig:
         cfg = ScheduleConfig(
             cloud_cron="30 22 * * *",
             lan_cron="0 3 * * *",
-            timezone="UTC",
+            timezone="America/New_York",
         )
         assert cfg.cloud_cron == "30 22 * * *"
-        assert cfg.timezone == "UTC"
+        assert cfg.timezone == "America/New_York"
 
 
 class TestDashboardConfig:

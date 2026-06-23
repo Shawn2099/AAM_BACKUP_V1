@@ -255,7 +255,7 @@ class TestMaintenanceWorkflow:
         # Insert recent run
         db.insert_run({
             "run_id": "recent-run", "mode": "cloud",
-            "started_at": pendulum.now("UTC").isoformat(), "status": "CLOUD_COMPLETE",
+            "started_at": pendulum.now("Asia/Kolkata").isoformat(), "status": "CLOUD_COMPLETE",
         })
 
         assert len(db.get_recent_runs(10)) == 2

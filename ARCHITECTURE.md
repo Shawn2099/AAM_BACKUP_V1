@@ -261,7 +261,7 @@ AppConfig
 
 ## Database Schema
 
-Single SQLite database (`manifest.db`) in WAL mode. Thread-safe via `threading.Lock`. All timestamps are stored as timezone-aware ISO 8601 strings in UTC.
+Single SQLite database (`manifest.db`) in WAL mode. Thread-safe via `threading.Lock`. All timestamps are stored as timezone-aware ISO 8601 strings in IST.
 
 ### Table: file_entries
 ```sql
@@ -403,18 +403,18 @@ Cloud backups are organized into GCS folders by fiscal year. The fiscal year sta
 
 ## Time Handling
 
-All datetime operations are centralized in `core/time_utils.py`, using the **pendulum** library. No file in the project imports `datetime.now(UTC)` or `zoneinfo` directly.
+All datetime operations are centralized in `core/time_utils.py`, using the **pendulum** library. No file in the project imports `datetime.now(IST)` or `zoneinfo` directly.
 
 **Key functions:**
 | Function | Returns | Used by |
 |----------|---------|---------|
-| `utcnow_iso()` | `"2026-05-30T14:22:00+00:00"` | manifest.py, flow.py |
+| `now_iso()` | `"2026-05-30T19:52:00+05:30"` | manifest.py, flow.py |
 | `parse_iso_to_local(iso)` | `"2026-05-30 19:52:00"` | ui.py, dashboard rendering |
-| `format_iso_for_js(iso)` | `"2026-05-30T14:22:00+00:00"` | ui.py `/status` endpoint |
-| `cutoff_iso(days)` | N days ago in UTC | manifest.py queries |
+| `format_iso_for_js(iso)` | `"2026-05-30T19:52:00+05:30"` | ui.py `/status` endpoint |
+| `cutoff_iso(days)` | N days ago in IST | manifest.py queries |
 | `get_fy_prefix(date)` | `"FY26-27"` | flow.py, ui.py |
 | `cron_to_human(cron, tz)` | `"Daily at 18:00 Kolkata"` | ui.py dashboard |
-| `utcnow_formatted()` | `"2026-05-30 14:22 UTC"` | report.py |
+| `now_formatted()` | `"2026-05-30 19:52 IST"` | report.py |
 
 The JS dashboard receives pendulum-formatted ISO strings (always with explicit `+00:00` offset), so `new Date(isoStr)` parses reliably without client-side timezone hacks.
 

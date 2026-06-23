@@ -2,7 +2,8 @@
 
 import uuid
 
-from flow import _stable_run_id, utcnow_iso
+from flow import _stable_run_id
+from core.time_utils import now_iso
 
 
 class TestStableRunId:
@@ -32,11 +33,11 @@ class TestStableRunId:
         assert len(ids) == 10
 
 
-class TestUtcnow:
+class TestNowIso:
     def test_returns_iso_format(self):
-        result = utcnow_iso()
+        result = now_iso()
         assert "T" in result
-        assert "+" in result or "Z" in result
+        assert "+" in result
 
     def test_returns_string(self):
-        assert isinstance(utcnow_iso(), str)
+        assert isinstance(now_iso(), str)

@@ -41,7 +41,7 @@ from core.manifest import ManifestDB
 from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
 from core.shutdown import shutdown_server
-from core.time_utils import utcnow_iso
+from core.time_utils import now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
 
@@ -582,7 +582,7 @@ def _record_run(
     vacuum_freelist_threshold: int = 10000,
 ):
     """Record run history to ManifestDB."""
-    ended_at = utcnow_iso()
+    ended_at = now_iso()
     duration = time.time() - pendulum.parse(started_at).timestamp()
     db = ManifestDB(
         db_path,
@@ -701,7 +701,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
             if mode in ("cloud", "all") and config.cloud.enabled:
                 logger.info("Starting cloud backup pipeline")
                 try:
-                    _run_cloud_pipeline(config, _stable_run_id("cloud"), utcnow_iso())
+                    _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso())
                 except Exception as e:
                     excs.append(e)
 
@@ -709,7 +709,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
             if mode in ("lan", "all") and config.lan.enabled:
                 logger.info("Starting LAN backup pipeline")
                 try:
-                    _run_lan_pipeline(config, _stable_run_id("lan"), utcnow_iso())
+                    _run_lan_pipeline(config, _stable_run_id("lan"), now_iso())
                 except Exception as e:
                     excs.append(e)
 

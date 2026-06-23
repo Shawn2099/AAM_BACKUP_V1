@@ -13,7 +13,7 @@ from loguru import logger
 
 import humanize
 from core.manifest import ManifestDB
-from core.time_utils import utcnow_formatted
+from core.time_utils import now_formatted
 from models.config import NotificationConfig
 
 
@@ -125,17 +125,15 @@ def generate_report_html(
 
     success_rate = (successes / total * 100) if total > 0 else 0
 
-    from core.time_utils import parse_iso_to_local
-
     rows = ""
     for r in runs[:10]:
-        start = parse_iso_to_local(r.get("started_at"))
+        start = (r.get("started_at") or "-")[:19].replace("T", " ")
         mode = r["mode"].upper()
         status = r["status"]
         files = r["files_copied"] or 0
         rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td></tr>"
 
-    now = utcnow_formatted("YYYY-MM-DD HH:mm z")
+    now = now_formatted("YYYY-MM-DD HH:mm z")
 
     return f"""<html><body>
 <h2>{html.escape(period)} Backup Report — {html.escape(firm_name)}</h2>

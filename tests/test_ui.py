@@ -180,10 +180,10 @@ class TestCronToHuman:
         assert cron_to_human("0 8 1 * *", "Asia/Kolkata") == "1st of month at 08:00 Kolkata"
 
     def test_short_cron_returns_raw(self):
-        assert cron_to_human("invalid", "UTC") == "invalid"
+        assert cron_to_human("invalid", "America/New_York") == "invalid"
 
     def test_tuesday(self):
-        assert "Tuesday" in cron_to_human("0 9 * * TUE", "UTC")
+        assert "Tuesday" in cron_to_human("0 9 * * TUE", "America/New_York")
 
 
 class TestGetLastSuccess:
