@@ -77,6 +77,10 @@ def read_lock_alive(lock_path: Path) -> tuple[bool, int | None]:
 
     try:
         raw = lock_path.read_text(encoding="utf-8").strip()
+    except PermissionError:
+        # File is exclusively locked (e.g. by Antivirus).
+        # Fail safe and assume the backup process is still actively writing/locking it.
+        return True, -1
     except OSError:
         return False, None
 

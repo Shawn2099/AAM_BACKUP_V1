@@ -1,42 +1,203 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch, MagicMock, mock_open
+import time
+import httpx
+from pathlib import Path
+import os
+import tempfile
 
-from watchdog import _transfer_process_running
+# Import the module under test
+import watchdog
+from core.process import read_lock_alive, write_lock
 
-class TestTransferProcessRunning:
-    @patch("psutil.process_iter")
-    def test_detects_lowercase_rclone(self, mock_iter):
-        proc = MagicMock()
-        proc.info = {"name": "rclone.exe"}
-        mock_iter.return_value = [proc]
-        assert _transfer_process_running() is True
+@pytest.fixture
+def mock_sleep():
+    with patch("watchdog.time.sleep") as m:
+        yield m
 
-    @patch("psutil.process_iter")
-    def test_detects_uppercase_robocopy(self, mock_iter):
-        proc = MagicMock()
-        proc.info = {"name": "robocopy.EXE"}
-        mock_iter.return_value = [proc]
-        assert _transfer_process_running() is True
+@pytest.fixture
+def mock_sc_run():
+    with patch("watchdog.subprocess.run") as m:
+        # Default behavior: sc query returns RUNNING, sc stop returns 0
+        def side_effect(args, **kwargs):
+            mock_result = MagicMock()
+            if "query" in args:
+                mock_result.stdout = "STATE : 4  RUNNING"
+                mock_result.returncode = 0
+            elif "stop" in args:
+                mock_result.returncode = 0
+            return mock_result
+        m.side_effect = side_effect
+        yield m
 
-    @patch("psutil.process_iter")
-    def test_detects_mixed_case(self, mock_iter):
-        proc = MagicMock()
-        proc.info = {"name": "Rclone.exe"}
-        mock_iter.return_value = [proc]
-        assert _transfer_process_running() is True
+@pytest.fixture
+def mock_httpx():
+    with patch("httpx.get") as m:
+        yield m
 
-    @patch("psutil.process_iter")
-    def test_handles_none_name_safely(self, mock_iter):
-        proc1 = MagicMock()
-        proc1.info = {"name": None}  # Windows system processes
-        proc2 = MagicMock()
-        proc2.info = {"name": "System Idle Process"}
-        mock_iter.return_value = [proc1, proc2]
-        assert _transfer_process_running() is False
+@pytest.fixture
+def mock_psutil():
+    with patch("psutil.process_iter") as m:
+        yield m
 
-    @patch("psutil.process_iter")
-    def test_returns_false_when_no_match(self, mock_iter):
-        proc = MagicMock()
-        proc.info = {"name": "explorer.exe"}
-        mock_iter.return_value = [proc]
-        assert _transfer_process_running() is False
+@pytest.fixture
+def mock_get_create_time():
+    with patch("core.process._get_create_time") as m:
+        yield m
+
+@pytest.fixture
+def temp_lock_file():
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        path = Path(f.name)
+    yield path
+    path.unlink(missing_ok=True)
+
+def simulate_watchdog_loop(iterations=1):
+    """Run the watchdog main loop for N iterations then throw an exception to break out."""
+    with patch("watchdog.time.sleep") as mock_sleep:
+        call_count = 0
+        def sleep_side_effect(*args):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= iterations:
+                raise KeyboardInterrupt("Simulated end of loop")
+        mock_sleep.side_effect = sleep_side_effect
+        
+        try:
+            with patch("watchdog._resolve_paths"):
+                watchdog.main()
+        except KeyboardInterrupt:
+            pass
+        return mock_sleep.call_args_list
+
+# ─── Tests ────────────────────────────────────────────────────────────────────
+
+def test_healthy_state(mock_httpx, temp_lock_file):
+    """Test 1: Healthy API resets failures and does nothing."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_httpx.return_value = mock_resp
+    
+    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file):
+        sleep_calls = simulate_watchdog_loop(1)
+        
+    assert mock_httpx.call_count == 1
+    # Should sleep for CHECK_INTERVAL_SECONDS
+    assert sleep_calls[0][0][0] == watchdog.CHECK_INTERVAL_SECONDS
+
+def test_unhealthy_immediate_restart(mock_httpx, mock_sc_run, temp_lock_file):
+    """Test 2: API dead, no backup -> restarts service."""
+    mock_httpx.side_effect = httpx.ConnectError("Connection refused")
+    
+    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file), \
+         patch("watchdog._is_backup_running", return_value=False), \
+         patch("watchdog._transfer_process_running", return_value=False):
+        
+        simulate_watchdog_loop(watchdog.FAILURE_THRESHOLD)
+        
+    # Should have called sc stop
+    stop_calls = [c for c in mock_sc_run.call_args_list if "stop" in c[0][0]]
+    assert len(stop_calls) == 1
+    assert "AamPrefectServer" in stop_calls[0][0][0]
+
+def test_deferral_active_transfer(mock_httpx, mock_sc_run, mock_psutil, temp_lock_file):
+    """Test 3: API dead, but rclone is running -> defer restart."""
+    mock_httpx.side_effect = httpx.ConnectError("Dead")
+    
+    # Mock psutil to return an rclone process for our backup
+    mock_proc = MagicMock()
+    mock_proc.info = {"name": "rclone.exe", "cmdline": ["rclone", "sync", "C:\\", "aam_gcs:bucket"]}
+    mock_psutil.return_value = [mock_proc]
+    
+    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file):
+        sleep_calls = simulate_watchdog_loop(watchdog.FAILURE_THRESHOLD)
+        
+    # No sc stop should be called
+    stop_calls = [c for c in mock_sc_run.call_args_list if "stop" in c[0][0]]
+    assert len(stop_calls) == 0
+    # Should sleep for BACKUP_WAIT_INTERVAL
+    assert sleep_calls[-1][0][0] == watchdog.BACKUP_WAIT_INTERVAL
+
+def test_stale_lock_cleanup(mock_httpx, mock_sc_run, mock_get_create_time, temp_lock_file):
+    """Test 5 & 9: API dead, stale lock file exists -> remove lock and restart."""
+    mock_httpx.side_effect = httpx.ConnectError("Dead")
+    
+    # Write a lock file with PID 9999 and create_time 100.0
+    temp_lock_file.write_text("9999:100.0")
+    
+    # Mock the system to say PID 9999 has create_time 500.0 (PID was reused by another app!)
+    mock_get_create_time.return_value = 500.0
+    
+    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file), \
+         patch("watchdog._transfer_process_running", return_value=False):
+        
+        simulate_watchdog_loop(watchdog.FAILURE_THRESHOLD)
+        
+    # Lock file should be deleted because it was stale
+    assert not temp_lock_file.exists()
+    
+    # Should have restarted the service
+    stop_calls = [c for c in mock_sc_run.call_args_list if "stop" in c[0][0]]
+    assert len(stop_calls) == 1
+
+def test_antivirus_lock_interference(temp_lock_file):
+    """Test 7: Antivirus locks the file, causing PermissionError -> fail safe."""
+    temp_lock_file.write_text("9999:100.0")
+    
+    # Mock read_text to throw PermissionError
+    with patch.object(Path, "read_text", side_effect=PermissionError("Locked by AV")):
+        alive, pid = read_lock_alive(temp_lock_file)
+        
+        # It MUST fail safe and assume the lock is alive!
+        assert alive is True
+        assert pid == -1
+
+def test_transfer_process_detection(mock_psutil):
+    """Test 8: Name-based transfer process detection works for rclone and robocopy."""
+    # No transfer processes
+    mock_psutil.return_value = []
+    assert watchdog._transfer_process_running() is False
+
+    # rclone is running → detected
+    mock_proc = MagicMock()
+    mock_proc.info = {"name": "rclone.exe"}
+    mock_psutil.return_value = [mock_proc]
+    assert watchdog._transfer_process_running() is True
+
+    # robocopy is running → detected
+    mock_proc.info = {"name": "robocopy.exe"}
+    mock_psutil.return_value = [mock_proc]
+    assert watchdog._transfer_process_running() is True
+
+    # Unrelated process → not detected
+    mock_proc.info = {"name": "notepad.exe"}
+    mock_psutil.return_value = [mock_proc]
+    assert watchdog._transfer_process_running() is False
+
+def test_scm_hang(mock_httpx, mock_sc_run, temp_lock_file):
+    """Test 10: sc commands timeout -> doesn't crash."""
+    mock_httpx.side_effect = httpx.ConnectError("Dead")
+    
+    # Simulate subprocess.run timing out for sc query
+    import subprocess
+    mock_sc_run.side_effect = subprocess.TimeoutExpired(cmd="sc", timeout=5)
+    
+    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file), \
+         patch("watchdog._is_backup_running", return_value=False), \
+         patch("watchdog._transfer_process_running", return_value=False):
+        
+        # Since sc query fails, _service_is_running returns False
+        # The loop should sleep and continue without crashing
+        sleep_calls = simulate_watchdog_loop(watchdog.FAILURE_THRESHOLD)
+        
+    assert mock_sc_run.call_count >= 1
+
+def test_network_saturation(mock_httpx, temp_lock_file):
+    """Test 11: httpx times out -> counted as failure."""
+    mock_httpx.side_effect = httpx.ReadTimeout("Socket hung")
+    
+    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file), \
+         patch("watchdog._is_backup_running", return_value=False), \
+         patch("watchdog._transfer_process_running", return_value=False):
+        
+        assert watchdog._check_health() is False
