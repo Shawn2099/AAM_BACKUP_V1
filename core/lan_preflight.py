@@ -44,6 +44,8 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
         dest,
         "/L", "/MIR", "/XJ",
         "/NJH", "/NJS", "/NP",
+        "/XF", ".AAM_TARGET_MOUNTED",
+        "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
 
     logger.info(f"LAN dry-run: validating {source} → {dest}")

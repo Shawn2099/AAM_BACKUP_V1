@@ -129,7 +129,8 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         f"/W:{lan_config.retry_wait_seconds}",
         "/V", "/TS", "/FP",
         "/NJH", "/NJS", "/NDL", "/NP",
-        "/XD", "System Volume Information",
+        "/XF", ".AAM_TARGET_MOUNTED",
+        "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
 
     _validate_required_flags(flags)
