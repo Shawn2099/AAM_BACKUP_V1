@@ -14,19 +14,15 @@ def _mock_temp_config(*args, **kwargs):
     yield "/tmp/rclone_test.conf"
 
 
-def _with_real_stderr_log():
-    """Create a real temp file so os.close(fd) and Path.unlink() work."""
-    fd, path = tempfile.mkstemp(suffix=".log", prefix="cloud_sync_test_")
-    os.close(fd)
-    return path
-
+# ---------------------------------------------------------------------------
+# classify_rclone_exit
+# ---------------------------------------------------------------------------
 
 class TestClassifyRcloneExit:
     def test_zero_is_complete(self):
         assert classify_rclone_exit(0) == "CLOUD_COMPLETE"
 
     def test_nine_is_no_changes(self):
-        """Exit 9 = 'no files transferred' with --error-on-no-transfer."""
         assert classify_rclone_exit(9) == "CLOUD_NO_CHANGES_COMPLETE"
 
     def test_one_is_failed(self):
@@ -45,7 +41,6 @@ class TestClassifyRcloneExit:
         assert classify_rclone_exit(5) == "CLOUD_PARTIAL"
 
     def test_six_is_failed(self):
-        """Exit 6 = 'NoRetry errors' — retries won't help."""
         assert classify_rclone_exit(6) == "CLOUD_FAILED"
 
     def test_seven_is_failed(self):
@@ -63,6 +58,10 @@ class TestClassifyRcloneExit:
     def test_negative_defaults_to_failed(self):
         assert classify_rclone_exit(-1) == "CLOUD_FAILED"
 
+
+# ---------------------------------------------------------------------------
+# build_rclone_sync_command
+# ---------------------------------------------------------------------------
 
 class TestBuildRcloneSyncCommand:
     def test_basic_structure(self):
@@ -84,92 +83,142 @@ class TestBuildRcloneSyncCommand:
             config_path="/tmp/myconfig.conf",
             storage_class="COLDLINE",
         )
-        assert "--config" in cmd
-        cfg_idx = cmd.index("--config")
-        assert cmd[cfg_idx + 1] == "/tmp/myconfig.conf"
+        idx = cmd.index("--config")
+        assert cmd[idx + 1] == "/tmp/myconfig.conf"
 
     def test_custom_transfers(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE", transfers=8,
         )
-        assert "--transfers" in cmd
-        t_idx = cmd.index("--transfers")
-        assert cmd[t_idx + 1] == "8"
+        idx = cmd.index("--transfers")
+        assert cmd[idx + 1] == "8"
 
     def test_custom_checkers(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE", checkers=32,
         )
-        assert "--checkers" in cmd
-        c_idx = cmd.index("--checkers")
-        assert cmd[c_idx + 1] == "32"
+        idx = cmd.index("--checkers")
+        assert cmd[idx + 1] == "32"
 
     def test_custom_storage_class(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="ARCHIVE",
         )
-        sc_idx = cmd.index("--gcs-storage-class")
-        assert cmd[sc_idx + 1] == "ARCHIVE"
+        idx = cmd.index("--gcs-storage-class")
+        assert cmd[idx + 1] == "ARCHIVE"
 
     def test_custom_bandwidth(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE", bwlimit="50M",
         )
-        assert "--bwlimit" in cmd
-        b_idx = cmd.index("--bwlimit")
-        assert cmd[b_idx + 1] == "50M"
+        idx = cmd.index("--bwlimit")
+        assert cmd[idx + 1] == "50M"
 
     def test_retry_count(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE", retries=5,
         )
-        r_idx = cmd.index("--retries")
-        assert cmd[r_idx + 1] == "5"
+        idx = cmd.index("--retries")
+        assert cmd[idx + 1] == "5"
 
-    def test_gcs_no_check_bucket_present(self):
+    def test_gcs_flags_present(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf",
-            storage_class="COLDLINE",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
         )
         assert "--gcs-no-check-bucket" in cmd
-
-    def test_fast_list_present(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf",
-            storage_class="COLDLINE",
-        )
         assert "--fast-list" in cmd
 
-    def test_max_delete_default_present(self):
-        """Ransomware kill-switch: --max-delete 45 present by default."""
+    def test_check_first_present(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE",
         )
-        assert "--max-delete" in cmd
-        md_idx = cmd.index("--max-delete")
-        assert cmd[md_idx + 1] == "45"
+        assert "--check-first" in cmd
 
-    def test_max_delete_custom_value(self):
-        """Custom max_delete_percent is correctly reflected in the command."""
+    def test_error_on_no_transfer_present(self):
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE",
-            max_delete_percent=20,
         )
-        md_idx = cmd.index("--max-delete")
-        assert cmd[md_idx + 1] == "20"
+        assert "--error-on-no-transfer" in cmd
+
+    def test_modify_window_2s(self):
+        """Must be 2s to match NTFS timestamp granularity."""
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+        )
+        idx = cmd.index("--modify-window")
+        assert cmd[idx + 1] == "2s"
+
+    def test_buffer_size_default(self):
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+        )
+        idx = cmd.index("--buffer-size")
+        assert cmd[idx + 1] == "64M"
+
+    def test_buffer_size_custom(self):
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+            buffer_size="128M",
+        )
+        idx = cmd.index("--buffer-size")
+        assert cmd[idx + 1] == "128M"
+
+    def test_no_max_delete(self):
+        """--max-delete removed — GCS versioning provides this protection."""
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+        )
+        assert "--max-delete" not in cmd
+
+    def test_no_track_renames(self):
+        """--track-renames removed — hash computation cost > bandwidth savings."""
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+        )
+        assert "--track-renames" not in cmd
+
+    def test_use_json_log_present(self):
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+        )
+        assert "--use-json-log" in cmd
+
+    def test_log_level_info(self):
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+        )
+        idx = cmd.index("--log-level")
+        assert cmd[idx + 1] == "INFO"
+
+    def test_stats_60s(self):
+        cmd = build_rclone_sync_command(
+            source="D:\\", bucket="b", fy_prefix="FY",
+            config_path="/tmp/c.conf", storage_class="COLDLINE",
+        )
+        idx = cmd.index("--stats")
+        assert cmd[idx + 1] == "60s"
+
+
+# ---------------------------------------------------------------------------
+# run_cloud_sync — subprocess orchestration
+# ---------------------------------------------------------------------------
 
 class TestRunCloudSync:
-    """Unit tests for the run_cloud_sync subprocess orchestration."""
-
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
     @patch("core.cloud_sync.subprocess.run")
@@ -293,3 +342,19 @@ class TestRunCloudSync:
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         assert result["status"] == "CLOUD_FAILED"
         mock_path_instance.unlink.assert_called_once()
+
+    @patch("core.cloud_sync.os.close")
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.subprocess.run")
+    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
+    def test_buffer_size_passed_to_command(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
+        """buffer_size config flows through to rclone command."""
+        mock_run.return_value = MagicMock(returncode=0)
+        result = run_cloud_sync(
+            "/src", "bucket", "FY", "/key", "123", "COLDLINE",
+            buffer_size="128M",
+        )
+        assert result["status"] == "CLOUD_COMPLETE"
+        cmd = mock_run.call_args[0][0]
+        idx = cmd.index("--buffer-size")
+        assert cmd[idx + 1] == "128M"

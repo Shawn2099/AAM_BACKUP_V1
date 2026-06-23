@@ -87,7 +87,7 @@ def get_cloud_diff(
             *_base_args(config_path),
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
         diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
 

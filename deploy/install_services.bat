@@ -138,9 +138,6 @@ echo ===================================================================
 :: ── Stop and remove old services ─────────────────────────────────────
 echo.
 echo [setup] Stopping any running AAM services...
-taskkill /F /IM python.exe /T 2>nul
-taskkill /F /IM prefect.exe /T 2>nul
-
 "%NSSM%" stop  %SVC_WATCHDOG% 2>nul
 "%NSSM%" stop  %SVC_AGENT%   2>nul
 "%NSSM%" stop  %SVC_SERVER%  2>nul

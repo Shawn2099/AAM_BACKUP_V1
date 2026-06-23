@@ -54,13 +54,11 @@ def build_rclone_sync_command(
     retries: int = 3,
     transfers: int = 2,
     checkers: int = 4,
-    max_delete_percent: int = 45,
+    buffer_size: str = "64M",
 ) -> list[str]:
     """Build rclone sync command with GCS-optimized flags.
 
-    max_delete_percent: ransomware kill-switch — rclone aborts the entire sync
-    (exit code 8, CLOUD_FAILED) if deletions would exceed this % of destination
-    file count. Nothing is written or deleted when it triggers.
+    All tunable values are passed as parameters — caller draws them from config.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
@@ -72,21 +70,21 @@ def build_rclone_sync_command(
         "--gcs-no-check-bucket",
         "--gcs-storage-class", storage_class,
         "--error-on-no-transfer",
-        "--modify-window", "1s",
+        "--modify-window", "2s",    # NTFS mtime granularity is 2 seconds.
+                                     # Prevents false-positive re-uploads when a file
+                                     # is saved twice within the same NTFS tick.
         "--bwlimit", bwlimit,
         "--transfers", str(transfers),
         "--checkers", str(checkers),
         "--retries", str(retries),
         "--retries-sleep", "30s",
-        "--track-renames",
-        "--max-delete", str(max_delete_percent),
-        "--check-first",         # Finish all stat/hash checks before any upload starts.
-                                  # Separates random-seek metadata phase from sequential
-                                  # read-for-upload phase — critical for HDD head efficiency.
-        "--buffer-size", "64M",  # Upload read buffer per transfer slot.
-                                  # 2 transfers × 64M = 128M total. Matches GCS multipart
-                                  # chunk sizing without wasting RAM. (256M was too large;
-                                  # --use-mmap removed — documented as unstable on Windows.)
+        "--check-first",            # Finish all stat/hash checks before any upload starts.
+                                     # Separates random-seek metadata phase from sequential
+                                     # read-for-upload phase — critical for HDD head efficiency.
+        "--buffer-size", buffer_size,  # Upload read buffer per transfer slot.
+                                       # 2 transfers × 64M = 128M total. Matches GCS multipart
+                                       # chunk sizing without wasting RAM. (256M was too large;
+                                       # --use-mmap removed — documented as unstable on Windows.)
         "--use-json-log",
         "--log-level", "INFO",
         "--stats", "60s",
@@ -105,16 +103,12 @@ def run_cloud_sync(
     retries: int = 3,
     transfers: int = 2,
     checkers: int = 4,
-    max_delete_percent: int = 45,
+    buffer_size: str = "64M",
     timeout: int = 21600,
 ) -> dict:
     """Execute rclone sync to mirror source → GCS.
 
     Creates temp config, executes sync, cleans up in finally.
-
-    max_delete_percent: ransomware kill-switch threshold. If rclone would delete
-    more than this % of destination files it aborts with exit code 8 (CLOUD_FAILED)
-    and leaves the bucket untouched.
 
     Returns:
         {"status": str, "exit_code": int, "error": str | None}
@@ -127,7 +121,7 @@ def run_cloud_sync(
         cmd = build_rclone_sync_command(
             source, bucket, fy_prefix, config_path, storage_class,
             bwlimit, retries, transfers, checkers,
-            max_delete_percent=max_delete_percent,
+            buffer_size=buffer_size,
         )
 
         logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")
@@ -148,10 +142,11 @@ def run_cloud_sync(
             logger.info(f"Cloud sync exit {result.returncode} → {status}")
 
             error_msg = None
-            if result.returncode != 0 and result.returncode != 9:
+            if result.returncode == 9:
+                logger.info("Cloud sync: no changes to transfer")
+            elif result.returncode != 0:
                 try:
-                    stderr_text = Path(stderr_path).read_text(encoding="utf-8")
-                    error_msg = stderr_text[:100000] if len(stderr_text) > 100000 else stderr_text
+                    error_msg = Path(stderr_path).read_text(encoding="utf-8")[:100000]
                     logger.error(f"rclone error: {error_msg}")
                 except OSError:
                     error_msg = f"rclone exit {result.returncode} (stderr unreadable)"

@@ -26,7 +26,7 @@ def write_temp_config(
     project_number = project_number.strip()
     
     # Validate storage class (GCS valid values)
-    valid_storage_classes = {"", "STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE", "MULTI_REGIONAL", "REGIONAL", "DURABLE_REDUCED_AVAILABILITY"}
+    valid_storage_classes = {"", "STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE"}
     if storage_class and storage_class.upper() not in valid_storage_classes:
         raise ValueError(f"Invalid storage_class: {storage_class!r}. Must be one of {valid_storage_classes}")
     

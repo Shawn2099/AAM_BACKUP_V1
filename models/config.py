@@ -151,16 +151,7 @@ class CloudConfig(BaseModel):
     cloud_size_timeout_seconds: int = Field(default=30, ge=10, le=300, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
-    max_delete_percent: int = Field(
-        default=45,
-        ge=1,
-        le=99,
-        description=(
-            "Ransomware kill-switch: abort rclone sync if more than this percentage "
-            "of destination files would be deleted in a single run. "
-            "Default 45%. Set to 99 to effectively disable. Range: 1–99."
-        ),
-    )
+    buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
 
     @field_validator("bucket")
     @classmethod
@@ -182,16 +173,6 @@ class CloudConfig(BaseModel):
     def valid_bandwidth(cls, v: str) -> str:
         if not re.match(r"^\d+[kMG]$", v):
             raise ValueError(f"Invalid bandwidth_limit '{v}'. Format: 10M, 500k, 1G")
-        return v
-
-    @field_validator("max_delete_percent")
-    @classmethod
-    def valid_max_delete(cls, v: int) -> int:
-        if not 1 <= v <= 99:
-            raise ValueError(
-                f"max_delete_percent must be between 1 and 99, got {v}. "
-                "Use 99 to effectively disable the ransomware kill-switch."
-            )
         return v
 
 

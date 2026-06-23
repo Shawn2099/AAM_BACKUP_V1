@@ -245,14 +245,55 @@ class TestRecordRun:
         mock_db.close.assert_called_once()
 
     @patch("flow.ManifestDB")
-    @patch("flow.record_run_history", side_effect=Exception("db error"))
-    def test_handles_db_error(self, mock_record, mock_db_cls):
+    @patch("flow.logger")
+    @patch("flow.record_run_history", return_value=False)
+    def test_logs_critical_when_run_history_not_persisted(self, mock_record, mock_logger, mock_db_cls):
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
-        # Should raise — error is no longer silently swallowed
-        with pytest.raises(Exception, match="db error"):
-            _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
-                         "CLOUD_COMPLETE", 0, None)
+        _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
+                    "CLOUD_COMPLETE", 0, None)
+        mock_logger.critical.assert_called_once()
+        mock_db.close.assert_called_once()
+
+
+class TestBackupMaintenance:
+    @patch("flow.ManifestDB")
+    @patch("flow.concurrency")
+    @patch("flow.configure_prefect_bridge")
+    @patch("flow.configure_logging")
+    @patch("flow.load_config")
+    def test_maintenance_uses_configured_sqlite_tuning(
+        self,
+        mock_load_config,
+        mock_log,
+        mock_bridge,
+        mock_concurrency,
+        mock_db_cls,
+    ):
+        config = MagicMock()
+        config.firm_name = "Test Firm"
+        config.cloud.enabled = False
+        config.lan.enabled = False
+        config.paths.database_path = "/tmp/test.db"
+        config.paths.log_directory = "/tmp/logs"
+        config.maintenance.db_retention_days = 30
+        config.maintenance.log_retention_days = 7
+        config.maintenance.sqlite_busy_timeout_ms = 45000
+        config.maintenance.sqlite_vacuum_freelist_threshold = 12345
+        mock_load_config.return_value = config
+
+        concurrency_cm = MagicMock()
+        concurrency_cm.__enter__.return_value = None
+        concurrency_cm.__exit__.return_value = False
+        mock_concurrency.return_value = concurrency_cm
+
+        backup.fn("config.yaml", "all")
+
+        mock_db_cls.assert_called_with(
+            "/tmp/test.db",
+            busy_timeout_ms=45000,
+            vacuum_freelist_threshold=12345,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════

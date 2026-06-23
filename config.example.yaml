@@ -92,9 +92,9 @@ cloud:
   transfers: 2
   # rclone --checkers: concurrent file comparison workers
   checkers: 4
-  # Ransomware kill-switch: rclone aborts if >N% of cloud files would be deleted in one run.
-  # 20% is safe for normal daily backups. Raise only if bulk deletions are legitimate.
-  max_delete_percent: 20
+  # rclone --buffer-size: upload read buffer per transfer slot
+  # 2 transfers × 64M = 128M total. Matches GCS multipart chunk sizing.
+  buffer_size: "64M"
 
 # ═══════════════════════════════════════════════════
 # SCHEDULES (cron, all times in timezone below)

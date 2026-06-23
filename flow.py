@@ -122,7 +122,7 @@ def cloud_sync_task(config, fy_prefix: str):
         storage_class=config.cloud.storage_class,
         transfers=config.cloud.transfers,
         checkers=config.cloud.checkers,
-        max_delete_percent=config.cloud.max_delete_percent,
+        buffer_size=config.cloud.buffer_size,
         timeout=config.cloud.subprocess_timeout_seconds,
     )
     if result["status"] == "CLOUD_FAILED":
@@ -599,6 +599,10 @@ def _record_run(
             files_copied=files_copied, bytes_copied=bytes_copied,
             extended_metrics=extended_metrics,
         ):
+            logger.critical(
+                f"Run history persistence failed for run_id={run_id} mode={mode} "
+                f"status={status} exit_code={exit_code}"
+            )
             logger.warning(f"Run {run_id} ({mode}) was not recorded to database — check logs above for details")
     finally:
         db.close()
@@ -726,7 +730,11 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
 
         # ── Maintenance ──
         try:
-            db = ManifestDB(config.paths.database_path)
+            db = ManifestDB(
+                config.paths.database_path,
+                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+            )
             db.purge_old_runs(retention_days=config.maintenance.db_retention_days)
             db.close()
         except Exception as e:

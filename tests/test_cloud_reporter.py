@@ -78,3 +78,16 @@ class TestGetCloudDiff:
         result = get_cloud_diff("/src", "bucket", "FY26-27", "/cfg")
         assert result["added"] == []
         assert result["removed"] == []
+
+    @patch("core.cloud_reporter.subprocess.run")
+    @patch("core.cloud_reporter.tempfile.mkstemp", return_value=(1, "/tmp/diff.txt"))
+    @patch("core.cloud_reporter.os.close")
+    def test_uses_passed_timeout(self, mock_close, mock_mkstemp, mock_run):
+        mock_run.return_value = _mock_result(0)
+        with patch("core.cloud_reporter.open", create=True) as mock_open:
+            mock_open.return_value.__enter__ = lambda s: iter([])
+            mock_open.return_value.__exit__ = MagicMock(return_value=False)
+            with patch("core.cloud_reporter.Path") as mock_path:
+                mock_path.return_value.unlink = MagicMock()
+                get_cloud_diff("/src", "bucket", "FY26-27", "/cfg", timeout=123)
+        assert mock_run.call_args.kwargs["timeout"] == 123

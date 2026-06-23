@@ -1,5 +1,7 @@
 """Tests for backup_repository — DB write operations."""
 
+from unittest.mock import MagicMock
+
 from core.backup_repository import record_run_history, record_sync_results
 from core.manifest import ManifestDB
 
@@ -52,13 +54,14 @@ class TestRecordSyncResults:
 class TestRecordRunHistory:
     def test_records_run_and_checkpoints(self, temp_db_path):
         db = ManifestDB(temp_db_path)
-        record_run_history(
+        ok = record_run_history(
             db,
             run_id="test-123", mode="cloud",
             started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T01:00:00Z",
             status="CLOUD_COMPLETE", exit_code=0,
             duration_seconds=3600.0, error_message=None,
         )
+        assert ok is True
         run = db.last_run("cloud")
         assert run is not None
         assert run["run_id"] == "test-123"
@@ -68,13 +71,44 @@ class TestRecordRunHistory:
 
     def test_records_error_message(self, temp_db_path):
         db = ManifestDB(temp_db_path)
-        record_run_history(
+        ok = record_run_history(
             db,
             run_id="err-1", mode="lan",
             started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T00:05:00Z",
             status="LAN_FAILED", exit_code=16,
             duration_seconds=300.0, error_message="Fatal error",
         )
+        assert ok is True
         run = db.last_run("lan")
         assert run["error_message"] == "Fatal error"
         db.close()
+
+    def test_returns_false_on_insert_failure(self):
+        db = MagicMock()
+        db.insert_run.side_effect = RuntimeError("insert failed")
+
+        ok = record_run_history(
+            db,
+            run_id="err-2", mode="cloud",
+            started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T00:05:00Z",
+            status="CLOUD_FAILED", exit_code=1,
+            duration_seconds=300.0, error_message="db down",
+        )
+
+        assert ok is False
+        db.wal_checkpoint.assert_not_called()
+
+    def test_returns_false_on_checkpoint_failure(self):
+        db = MagicMock()
+        db.wal_checkpoint.side_effect = RuntimeError("checkpoint failed")
+
+        ok = record_run_history(
+            db,
+            run_id="err-3", mode="cloud",
+            started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T00:05:00Z",
+            status="CLOUD_COMPLETE", exit_code=0,
+            duration_seconds=300.0, error_message=None,
+        )
+
+        assert ok is False
+        db.insert_run.assert_called_once()
