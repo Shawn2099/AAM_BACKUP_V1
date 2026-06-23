@@ -50,9 +50,11 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
         ok = code < 8
 
         if not ok:
-            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
-            logger.error(f"LAN dry-run failed (exit {code}): {stderr_output}")
-            return {"ok": False, "exit_code": code, "error": f"Robocopy /L failed with exit {code}"}
+            # Robocopy writes errors to stdout, not stderr.
+            out_err = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
+            error_output = out_err[-2000:] if len(out_err) > 2000 else (out_err or "no output")
+            logger.error(f"LAN dry-run failed (exit {code}): {error_output}")
+            return {"ok": False, "exit_code": code, "error": f"Robocopy /L failed with exit {code}\nOutput: {error_output}"}
 
         logger.info(f"LAN dry-run passed (exit {code})")
         return {"ok": True, "exit_code": code, "error": None}

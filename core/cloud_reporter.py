@@ -37,9 +37,8 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int =
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
-            logger.warning(
-                f"Cloud size rclone exited {result.returncode}: {result.stderr[:300] or 'no stderr'}"
-            )
+            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
+            logger.warning(f"Cloud size rclone exited {result.returncode}: {stderr_output}")
         data = json.loads(result.stdout.strip())
         # Use .get() so a malformed-but-valid JSON response (e.g. {}) doesn't escape as KeyError
         count = data.get("count", 0)
@@ -64,9 +63,8 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: i
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
-            logger.warning(
-                f"Cloud manifest rclone exited {result.returncode}: {result.stderr[:300] or 'no stderr'}"
-            )
+            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
+            logger.warning(f"Cloud manifest rclone exited {result.returncode}: {stderr_output}")
         data = json.loads(result.stdout)
         files = [f for f in data if not f.get("IsDir")]
         logger.info(f"Cloud manifest: {len(files)} files")
@@ -125,8 +123,8 @@ def get_cloud_diff(
         partial = False
         if result.returncode >= 2:
             partial = True
-            stderr_snippet = result.stderr[:500] if result.stderr else "no stderr"
-            logger.warning(f"Cloud diff rclone failed (exit {result.returncode}): {stderr_snippet}")
+            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
+            logger.warning(f"Cloud diff rclone failed (exit {result.returncode}): {stderr_output}")
 
         diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
 
