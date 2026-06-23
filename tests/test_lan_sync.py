@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.lan_sync import _validate_required_flags, build_robocopy_command, classify_exit_code, run_lan_sync
+from core.lan_sync import _validate_required_flags, _read_log_tail, build_robocopy_command, classify_exit_code, run_lan_sync
 from models.config import LanConfig
 
 
@@ -117,6 +117,7 @@ class TestRunLanSync:
         assert result["status"] == "LAN_COMPLETE"
         assert result["exit_code"] == 0
         assert result["error"] is None
+        assert result["anomaly_details"] is None
 
     @patch("core.lan_sync.os.close")
     @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
@@ -133,12 +134,34 @@ class TestRunLanSync:
     @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
     @patch("core.lan_sync.Path")
     @patch("core.lan_sync.subprocess.run")
-    def test_partial_with_errors(self, mock_run, mock_path, mock_mkstemp, mock_close):
+    def test_exit_4_anomalies_no_error_field(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        """Code 4 (mismatches) — sync completed. error must be None (no alert).
+        anomaly_details must be populated so operators can investigate."""
         cfg = LanConfig()
-        mock_run.return_value = MagicMock(returncode=9)
+        mock_run.return_value = MagicMock(returncode=4)
         mock_path.return_value.exists.return_value = True
+        mock_path.return_value.read_text.return_value = "Mismatch: file.bak size differs"
         result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert result["status"] == "LAN_PARTIAL"
+        assert result["error"] is None, "code 4 must not trigger alerts"
+        assert result["anomaly_details"] is not None, "anomaly context must be captured"
+        assert "Mismatch" in result["anomaly_details"]
+
+    @patch("core.lan_sync.os.close")
+    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
+    @patch("core.lan_sync.Path")
+    @patch("core.lan_sync.subprocess.run")
+    def test_exit_8_copy_errors_has_error_field(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        """Code 8 (copy errors) — sync failed. error must contain log for triage.
+        anomaly_details must be None (error field already carries the context)."""
+        cfg = LanConfig()
+        mock_run.return_value = MagicMock(returncode=8)
+        mock_path.return_value.exists.return_value = True
+        mock_path.return_value.read_text.return_value = "ERROR: File in use"
+        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        assert result["status"] == "LAN_PARTIAL"
+        assert "File in use" in result["error"]
+        assert result["anomaly_details"] is None, "real errors must not populate anomaly_details"
 
     @patch("core.lan_sync.os.close")
     @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
@@ -165,6 +188,7 @@ class TestRunLanSync:
         mock_path.return_value.read_text.return_value = long_log
         result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert len(result["error"]) == 100000
+        assert result["anomaly_details"] is None
 
     @patch("core.lan_sync.os.close")
     @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
@@ -190,6 +214,7 @@ class TestRunLanSync:
         assert result["status"] == "LAN_FAILED"
         assert result["exit_code"] == -1
         assert "Timeout after 3600s" in result["error"]
+        assert result["anomaly_details"] is None
 
     @patch("core.lan_sync.os.close")
     @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
@@ -226,3 +251,41 @@ class TestRunLanSync:
         result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert result["status"] == "LAN_COMPLETE"
         mock_path.return_value.unlink.assert_called_once()
+
+
+class TestReadLogTail:
+    """Unit tests for the _read_log_tail helper — tested independently of run_lan_sync."""
+
+    def test_short_log_returned_in_full(self, tmp_path):
+        log = tmp_path / "robocopy.log"
+        log.write_text("short log", encoding="utf-8")
+        assert _read_log_tail(log, 100) == "short log"
+
+    def test_long_log_truncated_to_max_bytes(self, tmp_path):
+        log = tmp_path / "robocopy.log"
+        log.write_text("x" * 200, encoding="utf-8")
+        tail = _read_log_tail(log, 100)
+        assert len(tail) == 100
+        assert tail == "x" * 100
+
+    def test_missing_file_returns_fallback_message(self, tmp_path):
+        missing = tmp_path / "does_not_exist.log"
+        result = _read_log_tail(missing, 1000)
+        assert "log unreadable" in result
+
+    def test_anomaly_tail_limited_to_5kb(self, tmp_path):
+        """Anomaly log tail must be capped at _ANOMALY_LOG_TAIL (5000 bytes) so the
+        return dict doesn't bloat on verbose mismatched-file listings."""
+        from core.lan_sync import _ANOMALY_LOG_TAIL
+        log = tmp_path / "robocopy.log"
+        log.write_text("a" * 10_000, encoding="utf-8")
+        tail = _read_log_tail(log, _ANOMALY_LOG_TAIL)
+        assert len(tail) == _ANOMALY_LOG_TAIL
+
+    def test_error_tail_limited_to_100kb(self, tmp_path):
+        """Error log tail must be capped at _ERROR_LOG_TAIL (100000 bytes)."""
+        from core.lan_sync import _ERROR_LOG_TAIL
+        log = tmp_path / "robocopy.log"
+        log.write_text("e" * 200_000, encoding="utf-8")
+        tail = _read_log_tail(log, _ERROR_LOG_TAIL)
+        assert len(tail) == _ERROR_LOG_TAIL
