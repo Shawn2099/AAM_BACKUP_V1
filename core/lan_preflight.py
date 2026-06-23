@@ -5,10 +5,15 @@ before committing to a multi-hour copy.
 """
 
 import subprocess
+from pathlib import Path
 
 from loguru import logger
 
 from core.process import resolve_binary
+
+class HealthError(Exception):
+    """Raised when a preflight health check fails."""
+
 def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
 
@@ -25,6 +30,13 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     Returns:
         {"ok": bool, "exit_code": int, "error": str | None}
     """
+    dest_path = Path(dest)
+    canary_file = dest_path / ".AAM_TARGET_MOUNTED"
+    if not canary_file.exists():
+        msg = f"Canary file {canary_file} missing! Target is unmounted or empty."
+        logger.error(msg)
+        raise HealthError(msg)
+
     robocopy_exe = resolve_binary("robocopy") or "robocopy"
     cmd = [
         robocopy_exe,

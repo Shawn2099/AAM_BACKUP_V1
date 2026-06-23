@@ -208,6 +208,7 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str) -> dict[
     # LAN folder: network path — may fail if NAS is offline at rollover time
     try:
         new_lan.mkdir(parents=True, exist_ok=True)
+        (new_lan / ".AAM_TARGET_MOUNTED").touch(exist_ok=True)
         created["lan"] = new_lan
         logger.info(f"FY rollover: created LAN folder {new_lan}")
     except OSError as e:

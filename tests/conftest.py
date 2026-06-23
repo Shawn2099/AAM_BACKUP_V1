@@ -103,3 +103,18 @@ def prefect_harness():
         yield
 
 
+@pytest.fixture(autouse=True)
+def prevent_mock_db_leaks(monkeypatch):
+    """Prevent ManifestDB from creating SQLite files named after MagicMock objects."""
+    try:
+        from core.manifest import ManifestDB
+        original_init = ManifestDB.__init__
+        
+        def patched_init(self, db_path, *args, **kwargs):
+            if "MagicMock" in str(db_path):
+                db_path = ":memory:"
+            return original_init(self, db_path, *args, **kwargs)
+            
+        monkeypatch.setattr("core.manifest.ManifestDB.__init__", patched_init)
+    except ImportError:
+        pass
