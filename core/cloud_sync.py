@@ -25,7 +25,7 @@ def classify_rclone_exit(code: int) -> str:
     6  → CLOUD_FAILED     (less serious — NoRetry errors)
     7  → CLOUD_FAILED     (fatal — auth, bucket, critical)
     8  → CLOUD_FAILED     (transfer limit exceeded)
-    9  → CLOUD_PARTIAL    (no files transferred — requires --error-on-no-transfer)
+    9  → CLOUD_NO_CHANGES_COMPLETE (no files transferred — requires --error-on-no-transfer)
     10 → CLOUD_PARTIAL    (duration limit hit)
     """
     mapping = {
@@ -38,7 +38,7 @@ def classify_rclone_exit(code: int) -> str:
         6: "CLOUD_FAILED",
         7: "CLOUD_FAILED",
         8: "CLOUD_FAILED",
-        9: "CLOUD_PARTIAL",
+        9: "CLOUD_NO_CHANGES_COMPLETE",
         10: "CLOUD_PARTIAL",
     }
     return mapping.get(code, "CLOUD_FAILED")
@@ -148,10 +148,10 @@ def run_cloud_sync(
             logger.info(f"Cloud sync exit {result.returncode} → {status}")
 
             error_msg = None
-            if result.returncode != 0:
+            if result.returncode != 0 and result.returncode != 9:
                 try:
                     stderr_text = Path(stderr_path).read_text(encoding="utf-8")
-                    error_msg = stderr_text[:2000] if len(stderr_text) > 2000 else stderr_text
+                    error_msg = stderr_text[:100000] if len(stderr_text) > 100000 else stderr_text
                     logger.error(f"rclone error: {error_msg}")
                 except OSError:
                     error_msg = f"rclone exit {result.returncode} (stderr unreadable)"

@@ -235,7 +235,7 @@ class MaintenanceConfig(BaseModel):
         description="Days of run history to keep in ManifestDB (7–3650)",
     )
     log_retention_days: int = Field(
-        default=30,
+        default=90,
         ge=1,
         le=365,
         description="Days of log files to retain before Loguru auto-deletion (1–365)",

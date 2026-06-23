@@ -161,10 +161,10 @@ class TestRunLanSync:
         cfg = LanConfig()
         mock_run.return_value = MagicMock(returncode=16)
         mock_path.return_value.exists.return_value = True
-        long_log = "x" * 1000
+        long_log = "x" * 150000
         mock_path.return_value.read_text.return_value = long_log
         result = run_lan_sync("/src", "\\\\server\\share", cfg)
-        assert len(result["error"]) == 500
+        assert len(result["error"]) == 100000
 
     @patch("core.lan_sync.os.close")
     @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))

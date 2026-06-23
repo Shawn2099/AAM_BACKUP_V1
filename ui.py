@@ -617,7 +617,9 @@ async def _render_dashboard(flash: str = "") -> str:
                 mode_escaped = html.escape(mode) if mode in ("cloud", "lan") else "unknown"
                 mode_tag = f'<span class="tag {mode_escaped}">{mode_escaped.upper()}</span>'
                 s = r.get("status", "?")
-                if "COMPLETE" in s or s == "CLOUD_COMPLETE" or s == "LAN_COMPLETE":
+                if s == "CLOUD_NO_CHANGES_COMPLETE":
+                    s_tag = '<span class="tag success">NO CHANGES</span>'
+                elif "COMPLETE" in s or s == "CLOUD_COMPLETE" or s == "LAN_COMPLETE":
                     s_tag = '<span class="tag success">OK</span>'
                 elif "PARTIAL" in s:
                     s_tag = '<span class="tag partial">PARTIAL</span>'

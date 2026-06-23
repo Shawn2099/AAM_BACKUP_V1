@@ -25,9 +25,9 @@ class TestClassifyRcloneExit:
     def test_zero_is_complete(self):
         assert classify_rclone_exit(0) == "CLOUD_COMPLETE"
 
-    def test_nine_is_partial(self):
+    def test_nine_is_no_changes(self):
         """Exit 9 = 'no files transferred' with --error-on-no-transfer."""
-        assert classify_rclone_exit(9) == "CLOUD_PARTIAL"
+        assert classify_rclone_exit(9) == "CLOUD_NO_CHANGES_COMPLETE"
 
     def test_one_is_failed(self):
         assert classify_rclone_exit(1) == "CLOUD_FAILED"
@@ -188,8 +188,9 @@ class TestRunCloudSync:
     def test_no_files_to_transfer_exit_9(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
         mock_run.return_value = MagicMock(returncode=9)
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_PARTIAL"
+        assert result["status"] == "CLOUD_NO_CHANGES_COMPLETE"
         assert result["exit_code"] == 9
+        assert result["error"] is None
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
@@ -221,9 +222,9 @@ class TestRunCloudSync:
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_truncation(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
         mock_run.return_value = MagicMock(returncode=1)
-        mock_path.return_value.read_text.return_value = "x" * 3000
+        mock_path.return_value.read_text.return_value = "x" * 150000
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert len(result["error"]) == 2000
+        assert len(result["error"]) == 100000
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))

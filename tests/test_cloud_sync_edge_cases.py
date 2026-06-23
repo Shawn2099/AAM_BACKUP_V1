@@ -71,7 +71,7 @@ class TestClassifyRcloneExitComprehensive:
 
     def test_9_no_files_transferred(self):
         """Exit 9: No files transferred (requires --error-on-no-transfer)."""
-        assert classify_rclone_exit(9) == "CLOUD_PARTIAL"
+        assert classify_rclone_exit(9) == "CLOUD_NO_CHANGES_COMPLETE"
 
     def test_10_duration_exceeded(self):
         """Exit 10: Duration exceeded — --max-duration reached."""
@@ -117,8 +117,7 @@ class TestClassifyRcloneExitComprehensive:
         assert classify_rclone_exit(5) == "CLOUD_PARTIAL"
 
     def test_limit_codes_are_partial(self):
-        """Exit codes 9,10 (limits/status) must be CLOUD_PARTIAL."""
-        assert classify_rclone_exit(9) == "CLOUD_PARTIAL"
+        """Exit code 10 (limits/status) must be CLOUD_PARTIAL."""
         assert classify_rclone_exit(10) == "CLOUD_PARTIAL"
 
 
@@ -347,7 +346,7 @@ class TestRunCloudSyncComprehensive:
         (6, "CLOUD_FAILED"),
         (7, "CLOUD_FAILED"),
         (8, "CLOUD_FAILED"),
-        (9, "CLOUD_PARTIAL"),
+        (9, "CLOUD_NO_CHANGES_COMPLETE"),
         (10, "CLOUD_PARTIAL"),
     ])
     def test_exit_code_classification(self, exit_code, expected_status):
@@ -369,11 +368,11 @@ class TestRunCloudSyncComprehensive:
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_truncation(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """Stderr > 2000 chars should be truncated."""
+        """Stderr > 100000 chars should be truncated."""
         mock_run.return_value = MagicMock(returncode=1)
-        mock_path.return_value.read_text.return_value = "x" * 3000
+        mock_path.return_value.read_text.return_value = "x" * 150000
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert len(result["error"]) == 2000
+        assert len(result["error"]) == 100000
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))

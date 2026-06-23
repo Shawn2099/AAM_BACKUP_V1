@@ -116,7 +116,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
         if status in ("LAN_FAILED", "LAN_PARTIAL"):
             try:
                 log_text = log_path.read_text(encoding="utf-8", errors="replace")
-                error_msg = log_text[-500:] if len(log_text) > 500 else log_text
+                error_msg = log_text[-100000:] if len(log_text) > 100000 else log_text
             except OSError:
                 error_msg = f"robocopy exit {result.returncode} (log unreadable)"
 

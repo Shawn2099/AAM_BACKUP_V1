@@ -194,7 +194,7 @@ async function updateStatus() {
                 const escapeHtml = function(text) { return (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
                 const safeMode = ['cloud', 'lan'].includes(r.mode) ? r.mode : 'unknown';
                 const modeTag = '<span class="tag ' + safeMode + '">' + escapeHtml(safeMode.toUpperCase()) + '</span>';
-                let sTag = ''; if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">OK</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">PARTIAL</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">FAILED</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
+                let sTag = ''; if (r.status === 'CLOUD_NO_CHANGES_COMPLETE') { sTag = '<span class="tag success">NO CHANGES</span>'; } else if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">OK</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">PARTIAL</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">FAILED</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
                 const errCell = r.error ? '<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.error.substring(0, 60)) + '</td>' : '<td>-</td>';
                 
                 let expandableClass = '';
