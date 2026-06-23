@@ -36,10 +36,17 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int =
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            logger.warning(
+                f"Cloud size rclone exited {result.returncode}: {result.stderr[:300] or 'no stderr'}"
+            )
         data = json.loads(result.stdout.strip())
-        logger.info(f"Cloud size: {data['count']} files, {data['bytes']} bytes")
+        # Use .get() so a malformed-but-valid JSON response (e.g. {}) doesn't escape as KeyError
+        count = data.get("count", 0)
+        size_bytes = data.get("bytes", 0)
+        logger.info(f"Cloud size: {count} files, {size_bytes} bytes")
         return data
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError) as e:
+    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
         logger.warning(f"Cloud size query failed: {e}")
         return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
 
@@ -56,11 +63,15 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: i
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            logger.warning(
+                f"Cloud manifest rclone exited {result.returncode}: {result.stderr[:300] or 'no stderr'}"
+            )
         data = json.loads(result.stdout)
         files = [f for f in data if not f.get("IsDir")]
         logger.info(f"Cloud manifest: {len(files)} files")
         return files
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError) as e:
+    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
         logger.warning(f"Cloud manifest query failed: {e}")
         return []
 
@@ -98,9 +109,9 @@ def get_cloud_diff(
             "--combined", diff_file,   # Write unified diff to file (not stderr)
             "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
             "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
-            "--check-first",           # Metadata comparison before any I/O — separates random from sequential
-            "--transfers", "2",        # Throttled for mechanical HDD
-            "--checkers", "4",         # Throttled for mechanical HDD
+            # NOTE: --check-first and --transfers are intentionally omitted here.
+            # rclone check does no file transfers, so both flags are no-ops.
+            "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits
             "--retries", "3",          # Retry transient network errors
             "--retries-sleep", "10s",  # Back off between retries
             *_base_args(config_path),
@@ -111,7 +122,9 @@ def get_cloud_diff(
         # rclone check exits 0 on match, 1 on mismatch, 2+ on error.
         # Even on mismatch (exit 1), the --combined file is valid and useful.
         # On error (exit 2+), the file might be empty or incomplete.
+        partial = False
         if result.returncode >= 2:
+            partial = True
             stderr_snippet = result.stderr[:500] if result.stderr else "no stderr"
             logger.warning(f"Cloud diff rclone failed (exit {result.returncode}): {stderr_snippet}")
 
@@ -137,9 +150,13 @@ def get_cloud_diff(
             # Diff file missing — rclone failed to create it
             logger.warning("Cloud diff file not found after rclone check — rclone may have failed")
 
+        if partial:
+            diff["_partial"] = True
+
         logger.info(
             f"Cloud diff: +{len(diff['added'])} -{len(diff['removed'])} "
             f"*{len(diff['modified'])} ={len(diff['unchanged'])}"
+            + (" [PARTIAL — rclone exited with error]" if partial else "")
         )
         return diff
 

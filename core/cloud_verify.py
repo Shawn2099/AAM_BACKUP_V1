@@ -50,9 +50,9 @@ def verify_cloud_integrity(
         "--fast-list",             # Fewer GCS API calls (uses more memory but faster)
         "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
         "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
-        "--check-first",           # Metadata comparison before any I/O — separates random from sequential
-        "--transfers", "2",        # Throttled for mechanical HDD (matches cloud_sync)
-        "--checkers", "4",         # Throttled for mechanical HDD (matches cloud_sync)
+        # NOTE: --check-first and --transfers are intentionally omitted here.
+        # rclone check does no file transfers, so both flags are no-ops on this command.
+        "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits
         "--config", config_path,
         "--gcs-no-check-bucket",   # Bucket already verified by preflight; skip redundant check
     ]
@@ -77,9 +77,9 @@ def verify_cloud_integrity(
                 label = "mismatch"
             else:
                 label = "error"
-            # 500 chars gives enough context for connection/auth issues
-            stderr_snippet = result.stderr[:500] if result.stderr else "no stderr"
-            logger.warning(f"Cloud verify {label} (exit {result.returncode}): {stderr_snippet}")
+            # Log full stderr — truncating hides the actual error in production
+            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
+            logger.warning(f"Cloud verify {label} (exit {result.returncode}): {stderr_output}")
 
         return {
             "verified": verified,
