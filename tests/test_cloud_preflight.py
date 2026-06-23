@@ -293,6 +293,32 @@ class TestCommandShape:
         cmd = mock_run.call_args[0][0]
         assert "--one-way" not in cmd
 
+    @patch("core.cloud_preflight.subprocess.run")
+    @patch("core.cloud_preflight.temp_rclone_config", side_effect=_mock_cfg)
+    def test_retries_present(self, mock_cfg, mock_run):
+        """Retry transient network errors during preflight probe."""
+        mock_run.return_value = _mock_result(0)
+        with patch("core.cloud_preflight.Path") as mock_path_cls:
+            mock_path_cls.return_value = _make_accessible_path_mock()
+            run_cloud_dry_run(*_CALL_ARGS)
+        cmd = mock_run.call_args[0][0]
+        assert "--retries" in cmd
+        retries_idx = cmd.index("--retries")
+        assert cmd[retries_idx + 1] == "2"
+
+    @patch("core.cloud_preflight.subprocess.run")
+    @patch("core.cloud_preflight.temp_rclone_config", side_effect=_mock_cfg)
+    def test_retries_sleep_present(self, mock_cfg, mock_run):
+        """Short backoff between retries — this is a fast probe."""
+        mock_run.return_value = _mock_result(0)
+        with patch("core.cloud_preflight.Path") as mock_path_cls:
+            mock_path_cls.return_value = _make_accessible_path_mock()
+            run_cloud_dry_run(*_CALL_ARGS)
+        cmd = mock_run.call_args[0][0]
+        assert "--retries-sleep" in cmd
+        sleep_idx = cmd.index("--retries-sleep")
+        assert cmd[sleep_idx + 1] == "5s"
+
 
 # ── Return dict contract ───────────────────────────────────────────────────
 

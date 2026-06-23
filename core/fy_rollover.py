@@ -329,7 +329,7 @@ def run_archive_transition(
             if auth_result.returncode != 0:
                 logger.warning(
                     f"FY rollover: gcloud authentication failed (exit {auth_result.returncode}). "
-                    f"Stderr: {(auth_result.stderr or '').strip()[:1000]}"
+                    f"Stderr: {(auth_result.stderr or '').strip()}"
                 )
                 return False
         else:
@@ -358,12 +358,11 @@ def run_archive_transition(
             )
             return True
 
-        # Truncate stderr to avoid multi-megabyte log entries on large buckets.
-        stderr_snippet = (result.stderr or "").strip()[:2000]
+        stderr_output = (result.stderr or "").strip()
         logger.warning(
             f"FY rollover: archive transition failed "
             f"(exit {result.returncode}) for gs://{bucket}/{old_fy}/. "
-            f"Stderr: {stderr_snippet}"
+            f"Stderr: {stderr_output}"
         )
         return False
 

@@ -269,11 +269,13 @@ class TestRunCloudSync:
     @patch("core.cloud_sync.Path")
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_truncation(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
+    def test_stderr_not_truncated(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
+        """Full stderr is returned — no truncation, proper debugging in production."""
         mock_run.return_value = MagicMock(returncode=1)
-        mock_path.return_value.read_text.return_value = "x" * 150000
+        large_stderr = "x" * 150000
+        mock_path.return_value.read_text.return_value = large_stderr
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert len(result["error"]) == 100000
+        assert result["error"] == large_stderr
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))

@@ -90,10 +90,14 @@ def run_cloud_dry_run(
         #
         # --max-depth 0: single GCS API call (one page, no pagination).
         # Returns exit 0 with [] on empty prefix (correct on first run).
+        #
+        # --retries 2: retry transient network errors (DNS flake, TCP reset).
         cmd = [
             rclone_exe, "lsjson",
             dest,
             "--max-depth", "0",
+            "--retries", "2",           # Retry transient network errors
+            "--retries-sleep", "5s",    # Short backoff — this is a fast probe
             "--config", config_path,
         ]
 
@@ -122,8 +126,9 @@ def run_cloud_dry_run(
         code = result.returncode
 
         if code != 0:
-            stderr_snippet = result.stderr[:300] if result.stderr else "no stderr"
-            msg = f"Exit {code}: {stderr_snippet}"
+            # Log full stderr — truncating hides the actual error in production
+            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
+            msg = f"Exit {code}: {stderr_output}"
             logger.error(f"Cloud preflight [B] FAILED — {msg}")
             return {"ok": False, "exit_code": code, "error": msg}
 

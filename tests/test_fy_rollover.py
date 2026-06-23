@@ -551,23 +551,19 @@ class TestRunArchiveTransition:
 
         assert result is False
 
-    def test_large_stderr_is_truncated(self):
-        """stderr exceeding 2000 chars must be truncated before logging.
-
-        Verifies memory safety on large bucket failures.
-        """
+    def test_large_stderr_not_truncated(self):
+        """Full stderr is logged — no truncation, proper debugging in production."""
         huge_stderr = "E" * 10_000
         captured_logs: list[str] = []
 
         with patch("subprocess.run", return_value=self._make_completed(1, huge_stderr)):
             with patch("core.fy_rollover.logger") as mock_logger:
                 run_archive_transition(self.BUCKET, self.OLD_FY, self.KEY_PATH)
-                # Collect all warning messages emitted
                 for call in mock_logger.warning.call_args_list:
                     captured_logs.append(str(call))
 
-        # Full 10 000-char string must not appear in any log call
-        assert not any(len(s) > 3000 for s in captured_logs)
+        # Full stderr should appear in at least one log call
+        assert any(huge_stderr in s for s in captured_logs)
 
     def test_returns_false_when_gcloud_not_installed(self):
         """gcloud missing from PATH (shutil.which returns None) → returns False, no raise."""

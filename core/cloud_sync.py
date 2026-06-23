@@ -146,7 +146,7 @@ def run_cloud_sync(
                 logger.info("Cloud sync: no changes to transfer")
             elif result.returncode != 0:
                 try:
-                    error_msg = Path(stderr_path).read_text(encoding="utf-8")[:100000]
+                    error_msg = Path(stderr_path).read_text(encoding="utf-8")
                     logger.error(f"rclone error: {error_msg}")
                 except OSError:
                     error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
