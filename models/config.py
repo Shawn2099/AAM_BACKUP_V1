@@ -151,14 +151,13 @@ class CloudConfig(BaseModel):
     cloud_size_timeout_seconds: int = Field(default=30, ge=10, le=300, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
-    max_delete_percent: int = Field(
-        default=45,
+    max_delete_files: int = Field(
+        default=5000,
         ge=1,
-        le=99,
         description=(
-            "Ransomware kill-switch: abort rclone sync if more than this percentage "
-            "of destination files would be deleted in a single run. "
-            "Default 45%. Set to 99 to effectively disable. Range: 1–99."
+            "Ransomware kill-switch: abort rclone sync if more than this many "
+            "destination files would be deleted in a single run. "
+            "Default 5000. Set to a very high number to effectively disable."
         ),
     )
 
@@ -184,13 +183,13 @@ class CloudConfig(BaseModel):
             raise ValueError(f"Invalid bandwidth_limit '{v}'. Format: 10M, 500k, 1G")
         return v
 
-    @field_validator("max_delete_percent")
+    @field_validator("max_delete_files")
     @classmethod
     def valid_max_delete(cls, v: int) -> int:
-        if not 1 <= v <= 99:
+        if v < 1:
             raise ValueError(
-                f"max_delete_percent must be between 1 and 99, got {v}. "
-                "Use 99 to effectively disable the ransomware kill-switch."
+                f"max_delete_files must be >= 1, got {v}. "
+                "Use a very large number to effectively disable the ransomware kill-switch."
             )
         return v
 
@@ -251,6 +250,16 @@ class MaintenanceConfig(BaseModel):
         ge=100,
         le=50000,
         description="VACUUM triggers when SQLite freelist page count exceeds this value (~40 MB at default). Lower = more frequent VACUUM.",
+    )
+    backup_lock_timeout_seconds: int = Field(
+        default=86400,
+        ge=3600,
+        le=172800,
+        description=(
+            "Max seconds the Prefect concurrency lock is held for a single backup run (3600–172800). "
+            "Default 86400 = 24 h — covers the longest possible HDD + LAN run. "
+            "Raise this only if you see the lock unexpectedly released mid-run."
+        ),
     )
 
 

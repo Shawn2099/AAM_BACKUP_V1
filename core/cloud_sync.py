@@ -54,12 +54,12 @@ def build_rclone_sync_command(
     retries: int = 3,
     transfers: int = 2,
     checkers: int = 4,
-    max_delete_percent: int = 45,
+    max_delete_files: int = 5000,
 ) -> list[str]:
     """Build rclone sync command with GCS-optimized flags.
 
-    max_delete_percent: ransomware kill-switch — rclone aborts the entire sync
-    (exit code 8, CLOUD_FAILED) if deletions would exceed this % of destination
+    max_delete_files: ransomware kill-switch — rclone aborts the entire sync
+    (exit code 8, CLOUD_FAILED) if deletions would exceed this absolute
     file count. Nothing is written or deleted when it triggers.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
@@ -79,7 +79,7 @@ def build_rclone_sync_command(
         "--retries", str(retries),
         "--retries-sleep", "30s",
         "--track-renames",
-        "--max-delete", str(max_delete_percent),
+        "--max-delete", str(max_delete_files),
         "--check-first",         # Finish all stat/hash checks before any upload starts.
                                   # Separates random-seek metadata phase from sequential
                                   # read-for-upload phase — critical for HDD head efficiency.
@@ -105,15 +105,15 @@ def run_cloud_sync(
     retries: int = 3,
     transfers: int = 2,
     checkers: int = 4,
-    max_delete_percent: int = 45,
+    max_delete_files: int = 5000,
     timeout: int = 21600,
 ) -> dict:
     """Execute rclone sync to mirror source → GCS.
 
     Creates temp config, executes sync, cleans up in finally.
 
-    max_delete_percent: ransomware kill-switch threshold. If rclone would delete
-    more than this % of destination files it aborts with exit code 8 (CLOUD_FAILED)
+    max_delete_files: ransomware kill-switch threshold. If rclone would delete
+    more than this absolute count of destination files it aborts with exit code 8 (CLOUD_FAILED)
     and leaves the bucket untouched.
 
     Returns:
@@ -127,7 +127,7 @@ def run_cloud_sync(
         cmd = build_rclone_sync_command(
             source, bucket, fy_prefix, config_path, storage_class,
             bwlimit, retries, transfers, checkers,
-            max_delete_percent=max_delete_percent,
+            max_delete_files=max_delete_files,
         )
 
         logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")

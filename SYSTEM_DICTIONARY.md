@@ -38,7 +38,7 @@
 ## Core Modules (`core/`)
 
 ### 1. Synchronization & Data Movement
-- **`cloud_sync.py`**: Executes `rclone sync`. Injects the `max_delete_percent` kill-switch to protect against ransomware. Appends the Fiscal Year prefix to the destination.
+- **`cloud_sync.py`**: Executes `rclone sync`. Injects the `max_delete_files` kill-switch to protect against ransomware. Appends the Fiscal Year prefix to the destination.
 - **`lan_sync.py`**: Executes `robocopy /MIR`. Parses 25-year-old robocopy exit codes (0-7 are success/partial, >8 is failure) to determine sync health.
 - **`rclone_config.py`**: Dynamically generates a temporary `rclone.conf` file containing GCS service account credentials so they aren't stored globally on the server.
 
@@ -71,7 +71,7 @@
 The system strictly parses `config.yaml` into Pydantic v2 models. Key models:
 - **`PathsConfig`**: `source_drive`, `lan_destination`, `database_path`, `gcs_key_path`.
 - **`LanConfig`**: Retries, timeouts, multi-threading (`mt_threads`).
-- **`CloudConfig`**: GCS-specific settings, bandwidth limits, `max_delete_percent` kill-switch.
+- **`CloudConfig`**: GCS-specific settings, bandwidth limits, `max_delete_files` kill-switch.
 - **`WolConfig`**: MAC address, IP, and ping intervals for Wake-on-LAN.
 - **`MaintenanceConfig`**: SQLite tuning (e.g., `sqlite_vacuum_freelist_threshold`).
 
@@ -87,12 +87,12 @@ The Python code generates highly optimized CLI strings to protect the mechanical
 ```bash
 rclone sync D:\ aam_gcs:bucket/FY26-27 --fast-list --gcs-no-check-bucket --error-on-no-transfer \
   --transfers 2 --checkers 4 \
-  --max-delete 45 \
+  --max-delete 5000 \
   --check-first \
   --buffer-size 64M
 ```
 * **`--transfers 2 --checkers 4`**: Throttled to prevent HDD thrashing.
-* **`--max-delete 45`**: Ransomware kill-switch. Aborts if >45% of files are deleted.
+* **`--max-delete 5000`**: Ransomware kill-switch. Aborts if >5000 files are deleted.
 * **`--check-first`**: Forces metadata comparisons to finish before uploads start, cleanly separating random-seek I/O from sequential-read I/O.
 * **Exit Codes**: `6` = `CLOUD_FAILED` (NoRetry errors), `9` = `CLOUD_PARTIAL` (No files transferred).
 

@@ -25,7 +25,7 @@ from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
 from core.backup_repository import record_run_history, record_sync_results
-from core.process import write_lock
+from core.process import backup_lock
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
 from core.cloud_sync import run_cloud_sync
@@ -33,7 +33,6 @@ from core.cloud_verify import verify_cloud_integrity
 from core.fy_router import get_fy_prefix
 from core.health import pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
-from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
@@ -53,8 +52,8 @@ def _stable_run_id(mode: str) -> str:
         ctx = FlowRunContext.get()
         if ctx:
             return f"{ctx.flow_run.id}-{mode}"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Could not fetch flow run id from context: {e}")
     return f"{uuid.uuid4()}-{mode}"
 
 
@@ -106,6 +105,32 @@ def cloud_preflight_task(config, fy_prefix: str):
     return result
 
 
+@task(name="cloud-snapshot-before", retries=3, retry_delay_seconds=10)
+def cloud_snapshot_before_task(
+    db_path: str,
+    busy_timeout_ms: int,
+    vacuum_freelist_threshold: int,
+) -> dict:
+    """Fetch current cloud manifest from ManifestDB before sync.
+
+    Used to compute differential file/byte counts after sync completes.
+    Wrapped in a @task so Prefect retries on transient SQLite locks
+    instead of crashing the entire pipeline.
+    """
+    db = ManifestDB(
+        db_path,
+        busy_timeout_ms=busy_timeout_ms,
+        vacuum_freelist_threshold=vacuum_freelist_threshold,
+    )
+    try:
+        return db.get_cloud_synced_entries()
+    except Exception as e:
+        logger.warning(f"Could not fetch pre-sync DB state: {e}")
+        return {}
+    finally:
+        db.close()
+
+
 @task(name="cloud-sync")
 def cloud_sync_task(config, fy_prefix: str):
     """Run rclone sync to mirror source → GCS."""
@@ -122,7 +147,7 @@ def cloud_sync_task(config, fy_prefix: str):
         storage_class=config.cloud.storage_class,
         transfers=config.cloud.transfers,
         checkers=config.cloud.checkers,
-        max_delete_percent=config.cloud.max_delete_percent,
+        max_delete_files=config.cloud.max_delete_files,
         timeout=config.cloud.subprocess_timeout_seconds,
     )
     if result["status"] == "CLOUD_FAILED":
@@ -215,19 +240,6 @@ def wol_check_task(config):
     ensure_server_online(config)
 
 
-@task(name="lan-preflight")
-def lan_preflight_task(config):
-    """Run robocopy /L dry-run before real sync."""
-    logger.info(f"LAN preflight: validating {config.paths.source_drive} → {config.paths.lan_destination}")
-    result = run_lan_dry_run(
-        source=config.paths.source_drive,
-        dest=config.paths.lan_destination,
-    )
-    if not result["ok"]:
-        raise RuntimeError(f"LAN preflight failed: {result['error']}")
-    return result
-
-
 @task(name="lan-snapshot-before")
 def lan_snapshot_before_task(config):
     """Snapshot LAN destination before sync for diff comparison."""
@@ -280,8 +292,8 @@ def lan_record_task(
     )
     try:
         # snapshot_to_dict returns {path: (size, mtime)} tuples
-        files_list = [{"path": k, "size": v[0], "mtime": v[1]}
-                      for k, v in after_dict.items()]
+        files_list = ({"path": k, "size": v[0], "mtime": v[1]}
+                      for k, v in after_dict.items())
         record_sync_results(db, "lan", files_list, diff.get("removed"))
         logger.info(
             f"LAN recorded: {len(after_dict)} files, "
@@ -290,6 +302,7 @@ def lan_record_task(
         )
     finally:
         db.close()
+
 
 
 @task(name="lan-shutdown")
@@ -377,7 +390,7 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
-def _run_cloud_pipeline(config, run_id: str, started_at: str):
+def _run_cloud_pipeline(config, run_id: str, started_at: str, start_ts: float):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
     db_path = config.paths.database_path
     fy_prefix = get_fy_prefix()
@@ -394,19 +407,12 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         retries=1, retry_delay_seconds=60,
     )
 
-    # Fetch database state before sync to calculate differential transfers
-    db = ManifestDB(
+    # Fetch database state before sync — wrapped in @task for SQLite lock retries
+    before_dict = cloud_snapshot_before_task(
         db_path,
         busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
         vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
     )
-    before_dict = {}
-    try:
-        before_dict = db.get_cloud_synced_entries()
-    except Exception as e:
-        logger.warning(f"Could not fetch database state before cloud sync: {e}")
-    finally:
-        db.close()
 
     status = "CLOUD_SKIPPED"
     sync_result = {"exit_code": -1}
@@ -427,39 +433,17 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
         )
 
-        # Calculate files and bytes copied by comparing old database state with new live GCS manifest
-        manifest = verify_data.get("manifest", [])
-        copied_files_list = []
-        for item in manifest:
-            path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
-            size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
-            mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
-            
-            if path not in before_dict:
-                copied_files_list.append((path, size))
-            else:
-                old_size, old_mtime = before_dict[path]
-                # 0.01-byte threshold: guards against float representation noise
-                # in rclone's size reporting. Accurate for all real file sizes
-                # since actual byte counts are always whole numbers.
-                if abs(float(size) - float(old_size)) > 0.01:
-                    copied_files_list.append((path, size))
-                else:
-                    try:
-                        if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
-                            # Numeric Unix timestamps — compare directly
-                            t1, t2 = float(mtime), float(old_mtime)
-                        else:
-                            t1 = pendulum.parse(str(mtime)).timestamp()
-                            t2 = pendulum.parse(str(old_mtime)).timestamp()
-                        if abs(t1 - t2) > 1.1:
-                            copied_files_list.append((path, size))
-                    except Exception:
-                        if str(mtime) != str(old_mtime):
-                            copied_files_list.append((path, size))
-
-        files_copied = len(copied_files_list)
-        bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
+        # Calculate files and bytes copied using the rclone diff we already have.
+        # rclone check --combined is the authoritative source — avoids reinventing
+        # mtime/size comparison that rclone already performed to build this diff.
+        diff = verify_data.get("diff", {})
+        copied_paths = diff.get("added", []) + diff.get("modified", [])
+        manifest_size: dict[str, int] = {
+            item.get("Path", ""): int(item.get("Size", 0))
+            for item in verify_data.get("manifest", [])
+        }
+        files_copied = len(copied_paths)
+        bytes_copied = sum(manifest_size.get(p, 0) for p in copied_paths)
 
         extended_metrics = json.dumps({
             "verified": verify_data.get("verified", False),
@@ -468,8 +452,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         })
         try:
             cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to publish artifact: {e}")
 
         logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
@@ -479,7 +463,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
         raise
     finally:
         _record_run(
-            db_path, run_id, "cloud", started_at, status,
+            db_path, run_id, "cloud", started_at, start_ts, status,
             sync_result.get("exit_code", -1), error_msg,
             files_copied, bytes_copied, extended_metrics,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
@@ -491,14 +475,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
 # LAN pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
-def _run_lan_pipeline(config, run_id: str, started_at: str):
+def _run_lan_pipeline(config, run_id: str, started_at: str, start_ts: float):
     """Execute LAN backup tasks sequentially. Each task is independently tracked."""
     db_path = config.paths.database_path
 
     # Apply config-driven retries to tasks that benefit from retrying
-    preflight = lan_preflight_task.with_options(
-        retries=1, retry_delay_seconds=30,
-    )
     sync = lan_sync_task.with_options(
         retries=config.lan.max_attempts - 1,
         retry_delay_seconds=config.lan.retry_delay_seconds,
@@ -514,7 +495,6 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
     try:
         health_check_task(config, "lan")
         wol_check_task(config)
-        preflight(config)
         before_dict = lan_snapshot_before_task(config)
         sync_result = sync(config)
         status = sync_result["status"]
@@ -539,8 +519,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         })
         try:
             lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to publish artifact: {e}")
 
         logger.info("LAN pipeline completed successfully")
         # Shut down the backup server after a successful sync.
@@ -555,7 +535,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         raise
     finally:
         _record_run(
-            db_path, run_id, "lan", started_at, status,
+            db_path, run_id, "lan", started_at, start_ts, status,
             sync_result.get("exit_code", -1), error_msg,
             files_copied, bytes_copied, extended_metrics,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
@@ -572,6 +552,7 @@ def _record_run(
     run_id: str,
     mode: str,
     started_at: str,
+    start_ts: float,
     status: str,
     exit_code: int,
     error_msg: str | None,
@@ -583,7 +564,7 @@ def _record_run(
 ):
     """Record run history to ManifestDB."""
     ended_at = utcnow_iso()
-    duration = time.time() - pendulum.parse(started_at).timestamp()
+    duration = time.monotonic() - start_ts
     db = ManifestDB(
         db_path,
         busy_timeout_ms=busy_timeout_ms,
@@ -615,8 +596,8 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     configure_logging(config.paths.log_directory, log_retention_days=config.maintenance.log_retention_days)
     try:
         configure_prefect_bridge()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"configure_prefect_bridge skipped: {e}")
     if not config.notifications.weekly_enabled:
         logger.info("Weekly backup report email is disabled in configuration — skipping")
         return
@@ -635,8 +616,8 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     configure_logging(config.paths.log_directory, log_retention_days=config.maintenance.log_retention_days)
     try:
         configure_prefect_bridge()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"configure_prefect_bridge skipped: {e}")
     if not config.notifications.monthly_enabled:
         logger.info("Monthly backup report email is disabled in configuration — skipping")
         return
@@ -683,21 +664,19 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     # until it disappears.  Format: "PID:create_time" — the process creation
     # timestamp makes PID-reuse detection mathematically exact (see core/process.py).
     _lock_path = Path(config.paths.database_path).parent / "backup.lock"
-    try:
-        write_lock(_lock_path)
-        logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
-    except OSError as e:
-        logger.warning(f"Could not write backup lock file: {e}")
-
+    
     excs = []
 
-    try:
-        with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
+    with backup_lock(_lock_path):
+        with concurrency("aam-backup", occupy=1,
+                         timeout_seconds=config.maintenance.backup_lock_timeout_seconds):
             # ── Cloud ──
             if mode in ("cloud", "all") and config.cloud.enabled:
                 logger.info("Starting cloud backup pipeline")
                 try:
-                    _run_cloud_pipeline(config, _stable_run_id("cloud"), utcnow_iso())
+                    started_at = utcnow_iso()
+                    start_ts = time.monotonic()
+                    _run_cloud_pipeline(config, _stable_run_id("cloud"), started_at, start_ts)
                 except Exception as e:
                     excs.append(e)
 
@@ -705,7 +684,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
             if mode in ("lan", "all") and config.lan.enabled:
                 logger.info("Starting LAN backup pipeline")
                 try:
-                    _run_lan_pipeline(config, _stable_run_id("lan"), utcnow_iso())
+                    started_at = utcnow_iso()
+                    start_ts = time.monotonic()
+                    _run_lan_pipeline(config, _stable_run_id("lan"), started_at, start_ts)
                 except Exception as e:
                     excs.append(e)
 
@@ -720,8 +701,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
                     error_summary,
                     {"mode": mode},
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to send failure alert: {e}")
             raise ExceptionGroup("Backup completed with errors", excs)
 
         # ── Maintenance ──
@@ -733,11 +714,3 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
             logger.warning(f"DB maintenance failed (non-critical): {e}")
 
         logger.info("AAM Backup completed successfully")
-
-    finally:
-        # Always release the watchdog lock — even on crash or ExceptionGroup raise
-        try:
-            _lock_path.unlink(missing_ok=True)
-            logger.info("Backup lock released")
-        except OSError:
-            pass

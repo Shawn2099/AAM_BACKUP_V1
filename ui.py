@@ -279,8 +279,9 @@ async def status(request: Request):
     db = get_db()
     try:
         runs = db.get_recent_runs(10)
-    except Exception:
-        return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
+    except Exception as e:
+        logger.error(f"Failed to read from ManifestDB: {e}")
+        return JSONResponse({"error": "ManifestDB unavailable (missing or locked)"}, status_code=503)
 
     recent_runs = []
     for r in runs:

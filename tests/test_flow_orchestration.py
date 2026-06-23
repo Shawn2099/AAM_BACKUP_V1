@@ -9,7 +9,7 @@ from flow import (
     backup, weekly_report_flow, monthly_report_flow,
     health_check_task, cloud_preflight_task, cloud_sync_task,
     cloud_verify_and_report_task, cloud_record_task,
-    wol_check_task, lan_preflight_task, lan_snapshot_before_task,
+    wol_check_task, lan_snapshot_before_task,
     lan_snapshot_after_task,
     lan_sync_task, lan_record_task, lan_shutdown_task,
     _run_cloud_pipeline, _run_lan_pipeline, _record_run,
@@ -33,6 +33,7 @@ class TestBackupModeRouting:
     @patch("flow.configure_prefect_bridge")
     def test_valid_modes_accepted(self, mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_config.cloud.enabled = False
         mock_config.lan.enabled = False
         mock_cfg.return_value = mock_config
@@ -44,6 +45,7 @@ class TestBackupModeRouting:
     @patch("flow.configure_prefect_bridge")
     def test_mode_case_insensitive(self, mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_config.cloud.enabled = False
         mock_config.lan.enabled = False
         mock_cfg.return_value = mock_config
@@ -56,6 +58,7 @@ class TestBackupDisabledPipelines:
     @patch("flow.configure_prefect_bridge")
     def test_both_disabled_completes(self, mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_config.cloud.enabled = False
         mock_config.lan.enabled = False
         mock_cfg.return_value = mock_config
@@ -145,20 +148,6 @@ class TestWolCheckTask:
         mock_wol.assert_called_once()
 
 
-class TestLanPreflightTask:
-    @patch("flow.run_lan_dry_run", return_value={"ok": True, "exit_code": 0, "error": None})
-    def test_success_returns_result(self, mock_dry):
-        config = MagicMock()
-        result = lan_preflight_task.fn(config)
-        assert result["ok"] is True
-
-    @patch("flow.run_lan_dry_run", return_value={"ok": False, "exit_code": 16, "error": "path not found"})
-    def test_failure_raises(self, mock_dry):
-        config = MagicMock()
-        with pytest.raises(RuntimeError, match="LAN preflight failed"):
-            lan_preflight_task.fn(config)
-
-
 class TestLanSyncTask:
     @patch("flow.run_lan_sync", return_value={"status": "LAN_COMPLETE", "exit_code": 0, "error": None})
     def test_success_returns_result(self, mock_sync):
@@ -240,7 +229,7 @@ class TestRecordRun:
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
         _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
-                     "CLOUD_COMPLETE", 0, None)
+                     0.0, "CLOUD_COMPLETE", 0, None)
         mock_record.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -252,7 +241,7 @@ class TestRecordRun:
         # Should raise — error is no longer silently swallowed
         with pytest.raises(Exception, match="db error"):
             _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
-                         "CLOUD_COMPLETE", 0, None)
+                         0.0, "CLOUD_COMPLETE", 0, None)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -267,6 +256,7 @@ class TestWeeklyReportFlow:
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_cfg.return_value = mock_config
         with patch("core.report.send_weekly_report") as mock_send:
             weekly_report_flow.fn("config.yaml")
@@ -282,6 +272,7 @@ class TestMonthlyReportFlow:
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_cfg.return_value = mock_config
         with patch("core.report.send_monthly_report") as mock_send:
             monthly_report_flow.fn("config.yaml")
@@ -301,6 +292,7 @@ class TestFailureAlertPath:
     @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud: auth failed"))
     def test_single_failure_sends_alert(self, mock_pipeline, mock_alert, mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = False
         mock_config.firm_name = "Test Firm"
@@ -323,6 +315,7 @@ class TestFailureAlertPath:
     @patch("flow._run_lan_pipeline", side_effect=RuntimeError("lan error"))
     def test_both_failures_join_messages(self, mock_lan, mock_cloud, mock_alert, mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = True
         mock_config.firm_name = "Test Firm"
@@ -345,6 +338,7 @@ class TestFailureAlertPath:
     @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud error"))
     def test_alert_failure_does_not_suppress_backup_exception(self, mock_pipeline, mock_alert, mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
+        mock_config.maintenance.backup_lock_timeout_seconds = 10
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = False
         mock_config.firm_name = "Test Firm"

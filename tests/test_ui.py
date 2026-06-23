@@ -255,7 +255,7 @@ class TestEndpointStatus:
             response = client.get("/status")
             assert response.status_code == 503
             data = response.json()
-            assert "ManifestDB not found" in data["error"]
+            assert "ManifestDB unavailable" in data["error"]
 
     def test_status_returns_data_when_db_exists(self):
         client = TestClient(ui.app)

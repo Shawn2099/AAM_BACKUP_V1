@@ -148,24 +148,24 @@ class TestBuildRcloneSyncCommand:
         assert "--fast-list" in cmd
 
     def test_max_delete_default_present(self):
-        """Ransomware kill-switch: --max-delete 45 present by default."""
+        """Ransomware kill-switch: --max-delete 5000 present by default."""
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE",
         )
         assert "--max-delete" in cmd
         md_idx = cmd.index("--max-delete")
-        assert cmd[md_idx + 1] == "45"
+        assert cmd[md_idx + 1] == "5000"
 
     def test_max_delete_custom_value(self):
-        """Custom max_delete_percent is correctly reflected in the command."""
+        """Custom max_delete_files is correctly reflected in the command."""
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE",
-            max_delete_percent=20,
+            max_delete_files=2000,
         )
         md_idx = cmd.index("--max-delete")
-        assert cmd[md_idx + 1] == "20"
+        assert cmd[md_idx + 1] == "2000"
 
 class TestRunCloudSync:
     """Unit tests for the run_cloud_sync subprocess orchestration."""

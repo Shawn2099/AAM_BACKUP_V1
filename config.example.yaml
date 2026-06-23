@@ -92,9 +92,9 @@ cloud:
   transfers: 2
   # rclone --checkers: concurrent file comparison workers
   checkers: 4
-  # Ransomware kill-switch: rclone aborts if >N% of cloud files would be deleted in one run.
-  # 20% is safe for normal daily backups. Raise only if bulk deletions are legitimate.
-  max_delete_percent: 20
+  # Ransomware kill-switch: rclone aborts if more than this many cloud files would be deleted in one run.
+  # Set to a very high number (e.g. 500000) to effectively disable.
+  max_delete_files: 5000
 
 # ═══════════════════════════════════════════════════
 # SCHEDULES (cron, all times in timezone below)

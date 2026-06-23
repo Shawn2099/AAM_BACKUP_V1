@@ -14,10 +14,13 @@ used by nginx, gunicorn, supervisord, and systemd.
 import os
 import shutil
 import tempfile
+import logging
+from contextlib import contextmanager
 from pathlib import Path
 
 import psutil
 
+logger = logging.getLogger(__name__)
 
 def _get_create_time(pid: int) -> float | None:
     """Return the process creation time for *pid*, or None if the process is gone."""
@@ -28,6 +31,25 @@ def _get_create_time(pid: int) -> float | None:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+@contextmanager
+def backup_lock(lock_path: Path):
+    """Context manager for backup locking. Writes lock file on enter, removes on exit."""
+    try:
+        write_lock(lock_path)
+        logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
+    except OSError as e:
+        logger.warning(f"Could not write backup lock file: {e}")
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+            logger.info("Backup lock released")
+        except OSError as e:
+            pass # Usually fails if it wasn't written, which is fine to ignore
+
+
 
 def write_lock(lock_path: Path) -> None:
     """Atomically write 'PID:create_time' to *lock_path*.

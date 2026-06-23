@@ -55,42 +55,27 @@ def configure_prefect_bridge():
         return
     _bridge_configured = True
 
+    from prefect import get_run_logger
     from prefect.context import FlowRunContext, TaskRunContext
 
-    _cached_logger = None
-    _logger_initialized = False
-
-    def _get_prefect_logger():
-        nonlocal _cached_logger, _logger_initialized
-        if _logger_initialized:
-            return _cached_logger
-        _logger_initialized = True
-        from prefect import get_run_logger
-        try:
-            _cached_logger = get_run_logger()
-        except Exception:
-            _logger_initialized = False
-        return _cached_logger
-
     def prefect_sink(message):
-        if FlowRunContext.get() or TaskRunContext.get():
-            try:
-                prefect_logger = _get_prefect_logger()
-                if prefect_logger is None:
-                    return
-                msg_str = message.record["message"]
-                level = message.record["level"].name
-                if level == "INFO":
-                    prefect_logger.info(msg_str)
-                elif level == "WARNING":
-                    prefect_logger.warning(msg_str)
-                elif level == "ERROR":
-                    prefect_logger.error(msg_str)
-                elif level == "CRITICAL":
-                    prefect_logger.critical(msg_str)
-                else:
-                    prefect_logger.debug(msg_str)
-            except Exception:
-                logger.opt(depth=1, exception=False).debug("Prefect bridge failed to forward message")
+        if not (TaskRunContext.get() or FlowRunContext.get()):
+            return
+        try:
+            prefect_logger = get_run_logger()
+            msg_str = message.record["message"]
+            level = message.record["level"].name
+            if level == "INFO":
+                prefect_logger.info(msg_str)
+            elif level == "WARNING":
+                prefect_logger.warning(msg_str)
+            elif level == "ERROR":
+                prefect_logger.error(msg_str)
+            elif level == "CRITICAL":
+                prefect_logger.critical(msg_str)
+            else:
+                prefect_logger.debug(msg_str)
+        except Exception:
+            logger.opt(depth=1, exception=False).debug("Prefect bridge failed to forward message")
 
     logger.add(prefect_sink, level="INFO")

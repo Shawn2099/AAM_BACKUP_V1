@@ -1,14 +1,9 @@
-"""Cloud preflight — two-probe auth & source check before sync.
+"""Cloud preflight — single-probe auth & bucket check before sync.
 
-Replaces the old rclone check --one-way (full HDD scan) with two fast probes
-that together validate every failure mode the old preflight covered, but in
-~2 seconds with zero HDD traversal.
+Replaces the old rclone check --one-way (full HDD scan) with a fast probe
+that validates GCS accessibility in ~1-3s with zero HDD traversal.
 
-Probe A (Python, ~0ms):
-    os.stat + iterdir on the source drive root — confirms the drive is
-    mounted and the filesystem is readable without touching any file contents.
-
-Probe B (rclone, ~1-3s):
+Probe (rclone, ~1-3s):
     rclone lsjson --max-depth 0 on the GCS destination — one API call that
     validates:
         - Service Account JSON key is valid and not expired
@@ -39,7 +34,7 @@ def run_cloud_dry_run(
     location: str = "asia-south1",
     timeout: int = 30,  # Network-only probe — 30s is more than sufficient
 ) -> dict:
-    """Two-probe preflight: source drive alive + GCS auth/bucket probe.
+    """Preflight: GCS auth + bucket probe.
 
     Does NOT scan the source HDD. Does NOT compare files. Purely confirms
     both ends of the backup pipeline are reachable and accessible before
@@ -58,28 +53,6 @@ def run_cloud_dry_run(
     Returns:
         {"ok": bool, "exit_code": int, "error": str | None}
     """
-    # ── Probe A: Source drive alive (Python, zero HDD IO) ──────────────────
-    source_path = Path(source)
-
-    if not source_path.exists():
-        msg = f"Source drive not accessible: {source}"
-        logger.error(f"Cloud preflight [A] FAILED — {msg}")
-        return {"ok": False, "exit_code": -1, "error": msg}
-
-    try:
-        # One iterdir() call: forces kernel to open the directory and prove
-        # the filesystem is readable. Not a traversal — stops after one entry.
-        next(source_path.iterdir())
-    except StopIteration:
-        # Empty source drive — valid on first use. rclone sync handles it.
-        pass
-    except OSError as exc:
-        msg = f"Source drive read error ({source}): {exc}"
-        logger.error(f"Cloud preflight [A] FAILED — {msg}")
-        return {"ok": False, "exit_code": -1, "error": msg}
-
-    logger.info(f"Cloud preflight [A] OK — source drive accessible: {source}")
-
     # ── Probe B: GCS auth + bucket probe (rclone lsjson, zero HDD IO) ──────
     with temp_rclone_config(gcs_key_path, location, project_number, storage_class) as config_path:
         dest = f"aam_gcs:{bucket}/{fy_prefix}"
