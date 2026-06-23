@@ -100,6 +100,11 @@ Create the matching folder on the network share:
 ```
 The service account user (set in Step 5 below) must have **Read/Write** access to this share.
 
+**CRITICAL: The Canary File**
+Inside this new LAN folder, you **MUST** create a blank, empty file named exactly `.AAM_TARGET_MOUNTED` (with the leading dot, and no `.txt` extension). 
+The backup system uses this "canary file" as a safety check to guarantee the NAS volume is actually mounted before it starts mirroring data. If this file is missing, the backup will immediately abort to prevent accidentally overwriting data or filling up the OS drive if the NAS drops offline.
+*(Note: Future fiscal years created by the system's auto-rollover will have this file created automatically.)*
+
 ### For Old FY Data (Historical Migration)
 Move old years to a separate folder **outside** the automation path so they are never touched:
 ```
