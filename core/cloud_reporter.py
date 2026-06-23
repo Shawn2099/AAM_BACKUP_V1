@@ -16,13 +16,19 @@ from core.process import resolve_binary
 
 
 def _base_args(config_path: str) -> list[str]:
+    """Shared rclone flags for all reporter functions.
+
+    --config: rclone config with GCS credentials.
+    --gcs-no-check-bucket: Skip bucket existence check (already verified by preflight).
+    --fast-list: Use recursive listing — fewer GCS API calls, faster for large buckets.
+    """
     return ["--config", config_path, "--gcs-no-check-bucket", "--fast-list"]
 
 
 def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int = 30) -> dict:
-    """rclone size → {"count": int, "bytes": int, "sizeless": str}.
+    """rclone size --json → {"count": int, "bytes": int, "sizeless": str}.
 
-    Instant — GCS returns pre-computed object counts.
+    Instant — GCS returns pre-computed object counts. No file traversal.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
     rclone_exe = resolve_binary("rclone") or "rclone"
@@ -41,7 +47,8 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int =
 def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: int = 300) -> list[dict]:
     """rclone lsjson -R → [{Path, Size, ModTime, MimeType, IsDir}, ...].
 
-    Files only — directory entries filtered out.
+    Files only — directory entries filtered out. No file content read,
+    just metadata from GCS listing API.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
     rclone_exe = resolve_binary("rclone") or "rclone"
@@ -53,7 +60,7 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: i
         files = [f for f in data if not f.get("IsDir")]
         logger.info(f"Cloud manifest: {len(files)} files")
         return files
-    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Cloud manifest query failed: {e}")
         return []
 
@@ -65,7 +72,12 @@ def get_cloud_diff(
     config_path: str,
     timeout: int = 600,  # override via config.cloud.diff_timeout_seconds
 ) -> dict:
-    """rclone check --combined → {added, removed, modified, unchanged}.
+    """rclone check --combined --size-only → {added, removed, modified, unchanged}.
+
+    Compares source and GCS by file SIZE only (not MD5 hash) to avoid
+    2+ hour re-hashing of 500GB on mechanical HDD. Size comparison is
+    sufficient for accounting documents — content changes almost always
+    change file size.
 
     Writes diff to temp file, parses +/-/*/= prefixes, cleans up in finally.
 
@@ -83,11 +95,25 @@ def get_cloud_diff(
         cmd = [
             rclone_exe, "check",
             source, dest,
-            "--combined", diff_file,
+            "--combined", diff_file,   # Write unified diff to file (not stderr)
+            "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
+            "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
+            "--check-first",           # Metadata comparison before any I/O — separates random from sequential
+            "--transfers", "2",        # Throttled for mechanical HDD
+            "--checkers", "4",         # Throttled for mechanical HDD
+            "--retries", "3",          # Retry transient network errors
+            "--retries-sleep", "10s",  # Back off between retries
             *_base_args(config_path),
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+        # rclone check exits 0 on match, 1 on mismatch, 2+ on error.
+        # Even on mismatch (exit 1), the --combined file is valid and useful.
+        # On error (exit 2+), the file might be empty or incomplete.
+        if result.returncode >= 2:
+            stderr_snippet = result.stderr[:500] if result.stderr else "no stderr"
+            logger.warning(f"Cloud diff rclone failed (exit {result.returncode}): {stderr_snippet}")
 
         diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
 
@@ -97,6 +123,8 @@ def get_cloud_diff(
                     line = line.strip()
                     if not line:
                         continue
+                    # rclone check --combined format: <prefix> <filename>
+                    # Prefix: + (added to dest), - (removed from dest), * (modified), = (unchanged)
                     if line[0] == "+":
                         diff["added"].append(line[2:])
                     elif line[0] == "-":
@@ -106,7 +134,8 @@ def get_cloud_diff(
                     elif line[0] == "=":
                         diff["unchanged"].append(line[2:])
         except FileNotFoundError:
-            pass
+            # Diff file missing — rclone failed to create it
+            logger.warning("Cloud diff file not found after rclone check — rclone may have failed")
 
         logger.info(
             f"Cloud diff: +{len(diff['added'])} -{len(diff['removed'])} "

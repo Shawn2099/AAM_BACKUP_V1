@@ -1,10 +1,24 @@
-"""Cloud verification — rclone check --one-way post-sync integrity."""
+"""Cloud verification — rclone check --one-way post-sync integrity.
+
+Runs after cloud_sync to confirm source matches GCS. Uses size-only
+comparison (not MD5 hash) to avoid 2-hour HDD re-hashing of 500GB.
+
+Exit codes (rclone check):
+    0 = verified — source and GCS file counts and sizes agree
+    1 = mismatch — something didn't sync or sizes diverged
+    2+ = error — connection failure, invalid config, etc.
+"""
 
 import subprocess
 
 from loguru import logger
 
 from core.process import resolve_binary
+
+
+# rclone check exit codes
+_EXIT_VERIFIED = 0
+_EXIT_MISMATCH = 1
 
 
 def verify_cloud_integrity(
@@ -15,14 +29,6 @@ def verify_cloud_integrity(
     timeout: int = 14400,
 ) -> dict:
     """Run rclone check --one-way --size-only to verify source matches GCS.
-
-    Uses size-only comparison (not MD5 hash) for nightly runs to avoid
-    2-hour HDD re-hashing of 500GB. rclone sync already verifies integrity
-    during transfer, so re-hashing unchanged files nightly is redundant.
-
-    Exit 0 = everything matches. Source and GCS file counts and sizes agree.
-    Exit 1 = differences found (something didn't sync or sizes diverged).
-    Exit 2+ = error.
 
     Args:
         source: Source drive path.
@@ -40,15 +46,18 @@ def verify_cloud_integrity(
     cmd = [
         rclone_exe, "check",
         source, dest,
-        "--one-way",
-        "--fast-list",
-        "--size-only",
-        "--check-first",
+        "--one-way",               # Only check source→GCS, not reverse
+        "--fast-list",             # Fewer GCS API calls (uses more memory but faster)
+        "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
+        "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
+        "--check-first",           # Metadata comparison before any I/O — separates random from sequential
+        "--transfers", "2",        # Throttled for mechanical HDD (matches cloud_sync)
+        "--checkers", "4",         # Throttled for mechanical HDD (matches cloud_sync)
         "--config", config_path,
-        "--gcs-no-check-bucket",
+        "--gcs-no-check-bucket",   # Bucket already verified by preflight; skip redundant check
     ]
 
-    logger.info(f"Cloud verify: checking {source} ↔ {bucket}/{fy_prefix}")
+    logger.info(f"Cloud verify: checking {source} <-> {bucket}/{fy_prefix}")
 
     try:
         result = subprocess.run(
@@ -58,26 +67,46 @@ def verify_cloud_integrity(
             timeout=timeout,
         )
 
-        verified = result.returncode == 0
+        verified = result.returncode == _EXIT_VERIFIED
 
         if verified:
             logger.info("Cloud integrity verified — source matches GCS")
         else:
-            stderr_snippet = result.stderr[:200] if result.stderr else "no stderr"
-            logger.warning(f"Cloud integrity mismatch (exit {result.returncode}): {stderr_snippet}")
+            # Distinguish mismatch (exit 1) from error (exit 2+)
+            if result.returncode == _EXIT_MISMATCH:
+                label = "mismatch"
+            else:
+                label = "error"
+            # 500 chars gives enough context for connection/auth issues
+            stderr_snippet = result.stderr[:500] if result.stderr else "no stderr"
+            logger.warning(f"Cloud verify {label} (exit {result.returncode}): {stderr_snippet}")
 
         return {
             "verified": verified,
             "exit_code": result.returncode,
-            "error": None if verified else f"Exit {result.returncode}: mismatch detected",
+            "error": _build_error_message(result.returncode),
         }
 
     except subprocess.TimeoutExpired:
         logger.error(f"Cloud verify timed out after {timeout}s")
-        return {"verified": False, "exit_code": -1, "error": "Timeout"}
+        return {"verified": False, "exit_code": -1, "error": f"Timeout after {timeout}s"}
     except FileNotFoundError:
         logger.error("rclone not found")
         return {"verified": False, "exit_code": -1, "error": "rclone not found"}
     except OSError as e:
         logger.error(f"Cloud verify error: {e}")
         return {"verified": False, "exit_code": -1, "error": str(e)}
+
+
+def _build_error_message(exit_code: int) -> str | None:
+    """Build a human-readable error message from rclone exit code.
+
+    Exit 0 = no error.
+    Exit 1 = mismatch (source and GCS diverged).
+    Exit 2+ = rclone error (connection, auth, invalid config, etc.).
+    """
+    if exit_code == _EXIT_VERIFIED:
+        return None
+    if exit_code == _EXIT_MISMATCH:
+        return "Integrity mismatch — source and GCS file counts or sizes differ"
+    return f"Rclone check failed with exit code {exit_code} — check rclone logs for details"
