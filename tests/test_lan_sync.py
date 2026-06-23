@@ -273,12 +273,12 @@ class TestReadLogTail:
         result = _read_log_tail(missing, 1000)
         assert "log unreadable" in result
 
-    def test_anomaly_tail_limited_to_5kb(self, tmp_path):
-        """Anomaly log tail must be capped at _ANOMALY_LOG_TAIL (5000 bytes) so the
-        return dict doesn't bloat on verbose mismatched-file listings."""
+    def test_anomaly_tail_limited_to_100kb(self, tmp_path):
+        """Anomaly log tail must be capped at _ANOMALY_LOG_TAIL (100000 bytes),
+        matching the error log tail — full context preserved for forensics."""
         from core.lan_sync import _ANOMALY_LOG_TAIL
         log = tmp_path / "robocopy.log"
-        log.write_text("a" * 10_000, encoding="utf-8")
+        log.write_text("a" * 200_000, encoding="utf-8")
         tail = _read_log_tail(log, _ANOMALY_LOG_TAIL)
         assert len(tail) == _ANOMALY_LOG_TAIL
 

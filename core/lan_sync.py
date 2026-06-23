@@ -24,7 +24,7 @@ from core.process import resolve_binary
 # Tail sizes for log capture — enough for full context, bounded to prevent
 # oversized payloads in the result dict.
 _ERROR_LOG_TAIL = 100_000   # bytes — full error context for real failures (codes 8-15, 16+)
-_ANOMALY_LOG_TAIL = 5_000   # bytes — limited context for anomalies (codes 4-7); no alert, just forensics
+_ANOMALY_LOG_TAIL = 100_000 # bytes — full context for anomalies (codes 4-7); no alert, but complete forensics
 
 
 def _validate_required_flags(flags: list[str]) -> None:
