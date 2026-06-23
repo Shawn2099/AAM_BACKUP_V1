@@ -112,7 +112,8 @@ def _transfer_process_running() -> bool:
         import psutil
         transfer_procs = {"rclone.exe", "robocopy.exe"}
         for proc in psutil.process_iter(["name"]):
-            if proc.info["name"] in transfer_procs:
+            p_name = proc.info.get("name")
+            if p_name and p_name.lower() in transfer_procs:
                 return True
     except Exception as exc:
         logger.warning(f"Transfer process check failed: {exc}")

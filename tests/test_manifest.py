@@ -16,6 +16,23 @@ class TestManifestDB:
         assert entry["file_size"] == 1024
         assert entry["lan_status"] == "synced"
         db.close()
+    def test_pragmas_applied(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        conn = db._get_conn()
+        
+        # Verify WAL mode
+        cursor = conn.execute("PRAGMA journal_mode;")
+        assert cursor.fetchone()[0].upper() == "WAL"
+        
+        # Verify HDD optimized synchronous mode (NORMAL == 1)
+        cursor = conn.execute("PRAGMA synchronous;")
+        assert cursor.fetchone()[0] == 1
+        
+        # Verify Foreign Keys
+        cursor = conn.execute("PRAGMA foreign_keys;")
+        assert cursor.fetchone()[0] == 1
+        
+        db.close()
 
     def test_upsert_with_cloud_status(self, temp_db_path):
         db = ManifestDB(temp_db_path)

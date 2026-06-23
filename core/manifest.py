@@ -14,6 +14,7 @@ from core.time_utils import cutoff_iso, utcnow_iso
 
 DDL = """
 PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS file_entries (
