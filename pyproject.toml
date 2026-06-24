@@ -2,7 +2,7 @@
 name = "aam-backup-automation"
 version = "1.0.0"
 description = "AAM Backup Automation — nightly backup via Robocopy (LAN) and Rclone (GCS), orchestrated by Prefect 3"
-readme = "IMPLEMENTATION_PLAN.md"
+readme = "DEPLOYMENT_GUIDE.md"
 requires-python = ">=3.12"
 authors = [{ name = "AAM Associates" }]
 classifiers = ["Operating System :: Microsoft Windows"]
