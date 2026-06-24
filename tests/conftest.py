@@ -4,7 +4,12 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import os
 
+# Disable Prefect result persistence at import time so @flow decorators don't fail
+os.environ["PREFECT_TEST_MODE"] = "1"
+os.environ["PREFECT_RESULTS_PERSIST_BY_DEFAULT"] = "false"
+os.environ.pop("PREFECT_RESULTS_DEFAULT_STORAGE_BLOCK", None)
 
 def pytest_configure(config):
     """Global pytest configuration."""
@@ -104,7 +109,15 @@ def prefect_harness():
     """
     try:
         from prefect.testing.utilities import prefect_test_harness
+        from prefect.filesystems import LocalFileSystem
+        import tempfile
+        
         with prefect_test_harness():
+            try:
+                # Create the block expected by the production profile inside the ephemeral DB
+                LocalFileSystem(basepath=tempfile.gettempdir()).save("backup-storage", overwrite=True)
+            except Exception:
+                pass
             yield
     except Exception:
         # Prefect server unavailable — tests that mock Prefect will still work

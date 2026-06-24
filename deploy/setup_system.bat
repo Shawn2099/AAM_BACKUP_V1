@@ -163,10 +163,10 @@ echo [OK]   Download complete.
 
 :: Instruct user to manually extract to avoid Antivirus hang
 echo.
-echo [!]    ACTION REQUIRED: Antivirus makes auto-extraction very slow.
-echo [!]    Please manually extract the downloaded file:
-echo [!]    %GCLOUD_ZIP%
-echo [!]    Extract it so the folder is: %PROJECT_DIR%\deploy\bin\google-cloud-sdk
+echo [*]    ACTION REQUIRED: Antivirus makes auto-extraction very slow.
+echo [*]    Please manually extract the downloaded file:
+echo [*]    %GCLOUD_ZIP%
+echo [*]    Extract it so the folder is: %PROJECT_DIR%\deploy\bin\google-cloud-sdk
 echo.
 echo [....] Opening the folder for you now...
 explorer "%PROJECT_DIR%\deploy\bin"

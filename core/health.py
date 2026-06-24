@@ -148,9 +148,9 @@ def pre_backup_health(
         if not check_binary_exists("rclone"):
             raise HealthError("rclone not found in PATH")
         if gcs_key_path:
-            key_ok, key_reason = check_gcs_key(gcs_key_path)
-            if not key_ok:
-                raise HealthError(f"GCS key check failed: {key_reason}")
+            ok, reason = check_gcs_key(gcs_key_path)
+            if not ok:
+                raise HealthError(reason)
         clock_ok, clock_reason = check_clock_skew(
             max_skew_seconds=max_clock_skew_seconds,
             connection_timeout=clock_check_timeout_seconds,
