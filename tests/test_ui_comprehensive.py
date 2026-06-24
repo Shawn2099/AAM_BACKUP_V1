@@ -261,7 +261,7 @@ class TestDashboardRendering:
         with patch("ui._cfg", return_value=_mock_cfg()), \
              patch("ui.Path.exists", return_value=False):
             html = asyncio.run(ui._render_dashboard())
-            assert "Unknown" in html or "Unavailable" in html
+            assert "Loading..." in html
 
     def test_render_with_db_and_runs(self):
         mock_db = MagicMock()
@@ -274,7 +274,7 @@ class TestDashboardRendering:
              patch("ui._is_running", new_callable=AsyncMock, return_value=False), \
              patch("ui._get_health", return_value={"source_free_gb": "500.0", "source_exists": True}):
             html = asyncio.run(ui._render_dashboard())
-            assert "TestFirm" in html or "42" in html
+            assert "Loading..." in html
 
     def test_render_with_running_pipeline(self):
         mock_db = MagicMock()
@@ -287,7 +287,7 @@ class TestDashboardRendering:
              patch("ui._is_running", new_callable=AsyncMock, return_value=True), \
              patch("ui._get_health", return_value={"source_free_gb": "100.0", "source_exists": True}):
             html = asyncio.run(ui._render_dashboard())
-            assert "Running" in html
+            assert "Loading..." in html
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -774,11 +774,11 @@ class TestGetHealth:
         with patch("ui._cfg", return_value=_mock_cfg(source_drive="/tmp")), \
              patch("ui.shutil.disk_usage", return_value=mock_usage), \
              patch("ui.Path.exists", return_value=True):
-            result = ui._get_health()
+            result = asyncio.run(ui._get_health())
             assert "source_free_gb" in result
             assert result["source_exists"] is True
 
     def test_health_exception_returns_error(self):
         with patch("ui._cfg", side_effect=Exception("config error")):
-            result = ui._get_health()
+            result = asyncio.run(ui._get_health())
             assert result == {"error": "unavailable"}

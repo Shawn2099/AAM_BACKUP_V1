@@ -462,33 +462,18 @@ class TestTemplateWorkflow:
         from templates.dashboard import render_dashboard
 
         html = render_dashboard(
-            lan_files=15000,
-            cloud_files=25000,
             fy_prefix="FY26-27",
-            cloud_class="success",
-            cloud_running="Idle",
-            cloud_run="CLOUD_COMPLETE (25000 files)",
-            cloud_last="CLOUD_COMPLETE — 2026-01-01 06:00:00",
-            cloud_btn="",
-            lan_class="running",
-            lan_running="Running",
-            lan_run="LAN_IN_PROGRESS",
-            lan_last="LAN_COMPLETE — 2026-01-01 01:00:00",
-            lan_btn="disabled",
-            health_info="Source: 500.0 GB free | FY: FY26-27",
             flash_html='<div class="flash success">Backup started</div>',
-            history_rows="<tr><td>2026-01-01</td><td>CLOUD</td><td>OK</td><td>25000</td><td>3600s</td><td>-</td></tr>",
             auth_enabled=True,
+            cloud_schedule="Daily at 6:00 PM",
+            lan_schedule="Daily at 1:00 AM",
         )
 
-        assert "15,000" in html
-        assert "25,000" in html
         assert "FY26-27" in html
-        assert "Running" in html
-        assert "Idle" in html
-        assert "disabled" in html
         assert "/logout" in html
         assert "Backup started" in html
+        assert "Daily at 6:00 PM" in html
+        assert "Daily at 1:00 AM" in html
 
     def test_render_with_no_data(self):
         """Template should render correctly with default/empty data."""
@@ -496,5 +481,5 @@ class TestTemplateWorkflow:
 
         html = render_dashboard()
         assert "<!DOCTYPE html>" in html
-        assert "No runs recorded yet" in html
+        assert "Loading data..." in html
         assert "/logout" not in html  # auth disabled by default
