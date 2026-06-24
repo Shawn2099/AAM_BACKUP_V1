@@ -6,7 +6,8 @@ No imports from ui.py, core/, or models/. Accepts all data as keyword arguments.
 CSS = """<style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; padding: 2rem; }
-h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #f9fafb; }
+h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #f9fafb; }
+.subtitle { color: #9ca3af; margin-bottom: 1.5rem; }
 .flash { padding: 0.75rem 1rem; border-radius: 0.375rem; margin-bottom: 1rem; font-weight: 600; }
 .flash.success { background: #065f46; color: #6ee7b7; }
 .flash.warning { background: #78350f; color: #fcd34d; }
@@ -38,6 +39,7 @@ tr:hover { background: #1f2937; }
 .tag.cloud { background: #1e3a5f; color: #93c5fd; }
 .tag.lan { background: #14532d; color: #86efac; }
 .tag.success { background: #065f46; color: #6ee7b7; }
+.tag.no-changes { background: #374151; color: #9ca3af; }
 .tag.partial { background: #78350f; color: #fcd34d; }
 .tag.failed { background: #7f1d1d; color: #fca5a5; }
 .success-ago { color: #6ee7b7; }
@@ -57,6 +59,8 @@ tr:hover { background: #1f2937; }
 .metrics-badge.size { color: #a78bfa; }
 tr.expandable { cursor: pointer; transition: background 0.2s; }
 tr.expandable:hover { background: #374151; }
+.expand-icon { display: inline-block; transition: transform 0.2s; margin-right: 0.3rem; font-size: 0.7rem; color: #6b7280; }
+.expand-icon.open { transform: rotate(90deg); }
 </style>"""
 
 JS = """<script>
@@ -166,7 +170,7 @@ async function updateStatus() {
             badgeCloud.innerText = isCloudRunning ? 'Running' : 'Idle';
             if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
             else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
-            if (data.cloud.last_run) { descCloud.innerText = statusDescription(data.cloud.last_run.status, data.cloud.last_run.files, data.cloud.last_run.files_failed || 0); lastCloud.innerText = 'Last successful backup: ' + data.cloud.last_run_formatted; }
+            if (data.cloud.last_run) { descCloud.innerText = statusDescription(data.cloud.last_run.status, data.cloud.last_run.files, data.cloud.last_run.files_failed || 0); lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
             const cloudClass = isCloudRunning ? 'running' : ((data.cloud.last_run && data.cloud.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
             showLastSuccess('cloud', data.cloud.last_success);
@@ -181,7 +185,7 @@ async function updateStatus() {
             badgeLan.innerText = isLanRunning ? 'Running' : 'Idle';
             if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
             else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
-            if (data.lan.last_run) { descLan.innerText = statusDescription(data.lan.last_run.status, data.lan.last_run.files, data.lan.last_run.files_failed || 0); lastLan.innerText = 'Last successful backup: ' + data.lan.last_run_formatted; }
+            if (data.lan.last_run) { descLan.innerText = statusDescription(data.lan.last_run.status, data.lan.last_run.files, data.lan.last_run.files_failed || 0); lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
             const lanClass = isLanRunning ? 'running' : ((data.lan.last_run && data.lan.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
             showLastSuccess('lan', data.lan.last_success);
@@ -195,19 +199,22 @@ async function updateStatus() {
                 if (el && el.classList.contains('open')) openRows.add(i);
             }
             let rowsHtml = '';
+            const escapeHtml = function(text) { return (String(text) || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
             data.recent_runs.forEach((r, idx) => {
-                const escapeHtml = function(text) { return (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
                 const safeMode = ['cloud', 'lan'].includes(r.mode) ? r.mode : 'unknown';
                 const modeTag = '<span class="tag ' + safeMode + '">' + escapeHtml(safeMode.toUpperCase()) + '</span>';
-                let sTag = ''; if (r.status === 'CLOUD_NO_CHANGES_COMPLETE') { sTag = '<span class="tag success">No Changes</span>'; } else if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">Complete</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">Partial</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">Failed</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
+                let sTag = ''; if (r.status === 'CLOUD_NO_CHANGES_COMPLETE') { sTag = '<span class="tag no-changes">No Changes</span>'; } else if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">Complete</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">Partial</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">Failed</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
                 const errCell = r.error ? '<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.error.substring(0, 80)) + '</td>' : '<td>-</td>';
                 
                 let expandableClass = '';
+                let expandIcon = '';
                 let extraRowHtml = '';
                 if (r.extended_metrics) {
                     try {
                         const metrics = JSON.parse(r.extended_metrics);
-                        expandableClass = ' class="expandable" onclick="document.getElementById(\\'metrics-container-' + idx + '\\').classList.toggle(\\'open\\')"';
+                        const iconCls = openRows.has(idx) ? ' expand-icon open' : ' expand-icon';
+                        expandIcon = '<span class="' + iconCls + '">\u25B8</span>';
+                        expandableClass = ' class="expandable" onclick="document.getElementById(\\'metrics-container-' + idx + '\\').classList.toggle(\\'open\\'); this.querySelector(\\'.expand-icon\\').classList.toggle(\\'open\\')"';
                         let badges = '';
                         if (r.mode === 'lan') {
                             badges += '<span class="metrics-badge added">➕ Added: ' + (metrics.added || 0) + '</span>';
@@ -224,10 +231,12 @@ async function updateStatus() {
                     } catch(e) { }
                 }
 
-                rowsHtml += '<tr' + expandableClass + '><td>' + escapeHtml(r.started_at) + '</td><td>' + modeTag + '</td><td>' + sTag + '</td><td>' + escapeHtml(String(r.files)) + '</td><td>' + escapeHtml(String(r.duration)) + '</td>' + errCell + '</tr>\\n';
+                rowsHtml += '<tr' + expandableClass + '><td>' + expandIcon + escapeHtml(r.started_at) + '</td><td>' + modeTag + '</td><td>' + sTag + '</td><td>' + escapeHtml(String(r.files)) + '</td><td>' + escapeHtml(String(r.duration)) + '</td>' + errCell + '</tr>\\n';
                 rowsHtml += extraRowHtml;
             });
             tbody.innerHTML = rowsHtml;
+        } else if (tbody && data.recent_runs && data.recent_runs.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="color:#6b7280; text-align: center;">No backup runs recorded yet</td></tr>';
         }
     } catch (err) { console.error('Failed to update status dynamically:', err); }
 }
@@ -258,7 +267,7 @@ async function emailReport(period) {
     } catch (err) {
         showToast('Network error: ' + err.message, 'error');
     } finally {
-        if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = '\u2709\ufe0f Email ' + label + ' Report'; }
+        if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Email ' + label + ' Report'; }
     }
 }
 </script>"""
@@ -266,31 +275,15 @@ async function emailReport(period) {
 
 def render_dashboard(
     *,
-    lan_files: int = 0,
-    cloud_files: int = 0,
     fy_prefix: str = "",
-    cloud_class: str = "unknown",
-    cloud_running: str = "Unknown",
-    cloud_run: str = "Unknown",
-    cloud_last: str = "No data",
-    cloud_btn: str = "",
-    lan_class: str = "unknown",
-    lan_running: str = "Unknown",
-    lan_run: str = "Unknown",
-    lan_last: str = "No data",
-    lan_btn: str = "",
-    health_info: str = "Unavailable",
     flash_html: str = "",
-    history_rows: str = "",
     auth_enabled: bool = False,
     cloud_schedule: str = "",
     lan_schedule: str = "",
-    cloud_last_success: str | None = None,
-    lan_last_success: str | None = None,
 ) -> str:
     """Render the dashboard HTML. Pure function — no I/O, no imports."""
     logout_link = " · <a href='/logout' style='color:#60a5fa'>Logout</a>" if auth_enabled else ""
-    no_runs_row = '<tr><td colspan="6" style="color:#6b7280">No runs recorded yet</td></tr>'
+    no_runs_row = '<tr><td colspan="6" style="color:#6b7280; text-align: center;">Loading data...</td></tr>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -304,49 +297,49 @@ def render_dashboard(
 <div id="toast-container" style="position: fixed; top: 1.5rem; right: 1.5rem; z-index: 10000; display: flex; flex-direction: column; gap: 0.75rem; max-width: 350px;"></div>
 <div class="container">
 <h1>AAM Backup Dashboard</h1>
-<div class="subtitle">Secure Automated Sequential Multi-Destination Backups</div>
+<p class="subtitle">Secure Automated Sequential Multi-Destination Backups</p>
 <div id="flash-container">{flash_html}</div>
 <div class="stats">
-    <div class="stat"><div class="num" id="stat-lan-files">{lan_files:,}</div><div class="label">Files on NAS</div></div>
-    <div class="stat"><div class="num" id="stat-cloud-files">{cloud_files:,}</div><div class="label">Files on Cloud</div></div>
+    <div class="stat"><div class="num" id="stat-lan-files">...</div><div class="label">Files on NAS</div></div>
+    <div class="stat"><div class="num" id="stat-cloud-files">...</div><div class="label">Files on Cloud</div></div>
     <div class="stat"><div class="num" id="stat-fy-prefix">{fy_prefix}</div><div class="label">Fiscal Year</div></div>
 </div>
 <div class="grid">
-    <div class="card {cloud_class}" id="card-cloud">
-        <h2>Cloud Backup <span class="status-badge {cloud_class}" id="badge-cloud">{cloud_running}</span></h2>
-        <p id="desc-cloud">{cloud_run}</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last successful backup: {cloud_last}</p>
+    <div class="card unknown" id="card-cloud">
+        <h2>Cloud Backup <span class="status-badge unknown" id="badge-cloud">Loading...</span></h2>
+        <p id="desc-cloud">Fetching status...</p>
+        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last backup: Loading...</p>
         <p class="schedule-line">Next scheduled backup: {cloud_schedule or 'Not configured'}</p>
-        <p style="font-size:0.75rem" id="cloud-last-success"></p>
+        <p style="font-size:0.75rem;color:#6b7280" id="cloud-last-success">Last success: Loading...</p>
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'cloud')">
-            <button class="btn-trigger btn-cloud" id="btn-cloud" {cloud_btn}>Run Cloud Backup</button>
+            <button class="btn-trigger btn-cloud" id="btn-cloud" disabled>Loading...</button>
         </form>
     </div>
-    <div class="card {lan_class}" id="card-lan">
-        <h2>LAN Backup <span class="status-badge {lan_class}" id="badge-lan">{lan_running}</span></h2>
-        <p id="desc-lan">{lan_run}</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last successful backup: {lan_last}</p>
+    <div class="card unknown" id="card-lan">
+        <h2>LAN Backup <span class="status-badge unknown" id="badge-lan">Loading...</span></h2>
+        <p id="desc-lan">Fetching status...</p>
+        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last backup: Loading...</p>
         <p class="schedule-line">Next scheduled backup: {lan_schedule or 'Not configured'}</p>
-        <p style="font-size:0.75rem" id="lan-last-success"></p>
+        <p style="font-size:0.75rem;color:#6b7280" id="lan-last-success">Last success: Loading...</p>
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'lan')">
-            <button class="btn-trigger btn-lan" id="btn-lan" {lan_btn}>Run LAN Backup</button>
+            <button class="btn-trigger btn-lan" id="btn-lan" disabled>Loading...</button>
         </form>
     </div>
 </div>
 <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
-    <button class="btn-trigger" onclick="generateReport('weekly')">&#8203;&#128196; Download Weekly Report</button>
-    <button class="btn-trigger" onclick="generateReport('monthly')">&#8203;&#128196; Download Monthly Report</button>
-    <button class="btn-trigger" id="btn-email-weekly" onclick="emailReport('weekly')" style="background:#0e7490">&#9993;&#65039; Email Weekly Report</button>
-    <button class="btn-trigger" id="btn-email-monthly" onclick="emailReport('monthly')" style="background:#0e7490">&#9993;&#65039; Email Monthly Report</button>
+    <button class="btn-trigger" onclick="generateReport('weekly')">Download Weekly Report</button>
+    <button class="btn-trigger" onclick="generateReport('monthly')">Download Monthly Report</button>
+    <button class="btn-trigger" id="btn-email-weekly" onclick="emailReport('weekly')" style="background:#0e7490">Email Weekly Report</button>
+    <button class="btn-trigger" id="btn-email-monthly" onclick="emailReport('monthly')" style="background:#0e7490">Email Monthly Report</button>
 </div>
 <h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Recent Backups</h2>
 <table>
 <thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
-<tbody id="history-tbody">{history_rows or no_runs_row}</tbody>
+<tbody id="history-tbody">{no_runs_row}</tbody>
 </table>
 <div class="info">
-    <p id="health-info">{health_info}</p>
-    <p style="margin-top:0.25rem">AAM Backup System — Auto-refreshes every 2 seconds{logout_link}</p>
+    <p id="health-info">Fetching health info...</p>
+    <p style="margin-top:0.25rem">AAM Backup System — Live, updates automatically{logout_link}</p>
 </div>
 </div>
 {JS}

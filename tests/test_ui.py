@@ -354,32 +354,11 @@ class TestTriggerEndpoints:
 
 
 class TestDashboardRendering:
-    def test_render_without_db_returns_no_data(self):
-        with patch("ui._cfg") as mock_cfg, \
-             patch("ui.Path.exists", return_value=False):
+    def test_render_dashboard_returns_html(self):
+        with patch("ui._cfg") as mock_cfg:
             mock_cfg.return_value = MagicMock(
-                paths=MagicMock(database_path="/tmp/missing.db"),
-            )
-            html = asyncio.run(_render_dashboard())
-            assert "Unknown" in html
-            assert "Unavailable" in html
-
-    def test_render_with_db_and_runs(self):
-        with patch("ui._cfg") as mock_cfg, \
-             patch("ui.Path.exists", return_value=True), \
-             patch("ui.get_db") as mock_get_db, \
-             patch("ui._is_running", return_value=False), \
-             patch("ui._get_health", return_value={"source_free_gb": "500.0", "source_exists": True}):
-            mock_cfg.return_value = MagicMock(
-                paths=MagicMock(database_path="/tmp/test.db"),
                 schedule=MagicMock(cloud_cron="0 18 * * *", lan_cron="0 1 * * *", timezone="Asia/Kolkata"),
-                firm_name="Test Firm",
             )
-            mock_db = MagicMock()
-            mock_db.file_count.return_value = 42
-            mock_db.get_recent_runs.return_value = []
-            mock_db.last_run.return_value = None
-            mock_get_db.return_value = mock_db
-
             html = asyncio.run(_render_dashboard())
-            assert "Test Firm" in html or "42" in html
+            assert "html" in html.lower()
+            assert "AAM Backup System" in html

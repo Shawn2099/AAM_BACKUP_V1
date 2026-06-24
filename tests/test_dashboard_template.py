@@ -21,11 +21,6 @@ class TestRenderDashboard:
         result = render_dashboard()
         assert "AAM Backup Dashboard" in result
 
-    def test_displays_file_counts(self):
-        result = render_dashboard(lan_files=1234, cloud_files=5678)
-        assert "1,234" in result
-        assert "5,678" in result
-
     def test_displays_fy_prefix(self):
         result = render_dashboard(fy_prefix="FY26-27")
         assert "FY26-27" in result
@@ -42,24 +37,9 @@ class TestRenderDashboard:
         result = render_dashboard(auth_enabled=False)
         assert "/logout" not in result
 
-    def test_displays_cloud_and_lan_status(self):
-        result = render_dashboard(
-            cloud_class="success", cloud_running="Idle",
-            lan_class="running", lan_running="Running",
-        )
-        assert "Idle" in result
-        assert "Running" in result
-
-    def test_empty_history_shows_placeholder(self):
-        result = render_dashboard(history_rows="")
-        assert "No runs recorded yet" in result
-
-    def test_custom_history_rows(self):
-        result = render_dashboard(history_rows="<tr><td>test</td></tr>")
-        assert "<tr><td>test</td></tr>" in result
-
     def test_css_and_js_constants_exist(self):
         assert len(CSS) > 100
         assert len(JS) > 100
         assert "<style>" in CSS
         assert "<script>" in JS
+

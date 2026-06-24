@@ -13,6 +13,8 @@ import secrets
 import shutil
 import threading
 import time
+import asyncio
+import re
 from datetime import timedelta
 from pathlib import Path
 
@@ -321,17 +323,17 @@ async def status(request: Request):
             "lan_files": db.file_count("lan_status"),
             "cloud_files": db.file_count("cloud_status"),
         },
-        "health": _get_health(),
+        "health": await _get_health(),
         "recent_runs": recent_runs
     })
 
 
 @app.get("/health")
-def health():
+async def health():
     """Unauthenticated health check for monitoring systems."""
     try:
         src = _cfg().paths.source_drive
-        source_ok = Path(src).exists()
+        source_ok = await asyncio.to_thread(Path(src).exists)
         return JSONResponse({
             "status": "healthy",
             "source_drive": str(src),
@@ -482,30 +484,10 @@ def _serve_report(days: int, period: str) -> Response:
             status_code=404,
         )
 
-    # Wrap in a proper HTML document with basic styling
-    full_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{html.escape(cfg.firm_name)} — {period} Backup Report</title>
-<style>
-body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 1rem; color: #1f2937; }}
-h2 {{ color: #1e3a5f; }}
-h3 {{ color: #374151; margin-top: 1.5rem; }}
-table {{ border-collapse: collapse; width: 100%; margin: 0.5rem 0; }}
-td, th {{ padding: 0.4rem 0.75rem; text-align: left; border: 1px solid #d1d5db; }}
-th {{ background: #f3f4f6; font-size: 0.85rem; }}
-@media print {{ body {{ margin: 0; }} }}
-</style>
-</head>
-<body>
-{html_body}
-</body>
-</html>"""
-
-    filename = f"{cfg.firm_name}_{period}_Report_{pendulum.now(IST).format('YYYY-MM-DD')}.html"
+    safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', cfg.firm_name)
+    filename = f"{safe_firm}_{period}_Report_{pendulum.now(IST).format('YYYY-MM-DD')}.html"
     return Response(
-        content=full_html,
+        content=html_body,
         media_type="text/html",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -538,153 +520,42 @@ def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
     }
 
 
-def _get_health() -> dict:
+async def _get_health() -> dict:
     try:
         src = _cfg().paths.source_drive
-        du = shutil.disk_usage(src)
+        du = await asyncio.to_thread(shutil.disk_usage, src)
         return {
             "source_free_gb": f"{du.free / (1024**3):.1f}",
-            "source_exists": Path(src).exists(),
+            "source_exists": await asyncio.to_thread(Path(src).exists),
         }
     except Exception:
         return {"error": "unavailable"}
-
-
-def _human_status(status: str, files: int, files_failed: int) -> str:
-    """Convert a raw status code to a human-readable description."""
-    if status in ("CLOUD_NO_CHANGES_COMPLETE", "LAN_NO_CHANGES_COMPLETE"):
-        return "Backup Complete — no changes detected"
-    if status.endswith("_COMPLETE"):
-        if files_failed > 0:
-            return f"Backup Complete — {files} files backed up, {files_failed} could not be copied"
-        return f"Backup Complete — {files} files backed up"
-    if "_PARTIAL" in status:
-        return f"Backup Complete — {files} files backed up, {files_failed} could not be copied"
-    if "_FAILED" in status:
-        return "Backup Failed — see issue below"
-    return status
 
 
 # ── Dashboard HTML ───────────────────────────────────────────
 
 async def _render_dashboard(flash: str = "") -> str:
     cfg = _cfg()
-    db_path = Path(cfg.paths.database_path)
-    db = get_db() if db_path.exists() else None
 
-    cloud_run = cloud_running = "Unknown"
-    lan_run = lan_running = "Unknown"
-    cloud_class = lan_class = "unknown"
-    cloud_btn = lan_btn = ""
-    cloud_last = lan_last = "No data"
-    lan_files = cloud_files = 0
-    health_info = "Unavailable"
-    flash_html = ""
-    history_rows = ""
-    cloud_schedule = lan_schedule = ""
-    cloud_last_success = lan_last_success = None
-    cr = lr = None
-
-    if db:
-        try:
-            cloud_active = await _is_running("cloud")
-            lan_active = await _is_running("lan")
-
-            cloud_running = "Running" if cloud_active else "Idle"
-            lan_running = "Running" if lan_active else "Idle"
-            cr = _last_run_summary(db, "cloud")
-            lr = _last_run_summary(db, "lan")
-            if cr:
-                cloud_last = f"{cr['status']} — {(cr['started_at'] or '-')[:19].replace('T', ' ')}"
-                cloud_run = _human_status(cr["status"], cr["files"], cr.get("files_failed", 0))
-                if cr.get("error"):
-                    cloud_run += f" — {html.escape(cr['error'][:80])}"
-            if lr:
-                lan_last = f"{lr['status']} — {(lr['started_at'] or '-')[:19].replace('T', ' ')}"
-                lan_run = _human_status(lr["status"], lr["files"], lr.get("files_failed", 0))
-                if lr.get("error"):
-                    lan_run += f" — {html.escape(lr['error'][:80])}"
-            cloud_files = db.file_count("cloud_status")
-            lan_files = db.file_count("lan_status")
-
-            cloud_last_success = _get_last_success(db, "cloud")
-            lan_last_success = _get_last_success(db, "lan")
-
-            cloud_class = "running" if cloud_active else (
-                "success" if cr and "COMPLETE" in cr["status"] else "failed"
-            )
-            lan_class = "running" if lan_active else (
-                "success" if lr and "COMPLETE" in lr["status"] else "failed"
-            )
-            cloud_btn = "disabled" if cloud_active else ""
-            lan_btn = "disabled" if lan_active else ""
-
-            h = _get_health()
-            if "error" not in h:
-                health_info = f"Source: {h['source_free_gb']} GB free | FY: {get_fy_prefix()}"
-
-            # Schedule info for template
-            cloud_schedule = cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
-            lan_schedule = cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
-
-            # Run history table
-            runs = db.get_recent_runs(10)
-            for r in runs:
-                mode = r.get("mode", "")
-                mode_escaped = html.escape(mode) if mode in ("cloud", "lan") else "unknown"
-                mode_tag = f'<span class="tag {mode_escaped}">{mode_escaped.upper()}</span>'
-                s = r.get("status", "?")
-                if s == "CLOUD_NO_CHANGES_COMPLETE":
-                    s_tag = '<span class="tag success">No Changes</span>'
-                elif "COMPLETE" in s or s == "CLOUD_COMPLETE" or s == "LAN_COMPLETE":
-                    s_tag = '<span class="tag success">Complete</span>'
-                elif "PARTIAL" in s:
-                    s_tag = '<span class="tag partial">Partial</span>'
-                elif "FAILED" in s:
-                    s_tag = '<span class="tag failed">Failed</span>'
-                else:
-                    s_tag = f'<span class="tag">{html.escape(s[:10])}</span>'
-                ts = (r.get("started_at") or "-")[:19].replace("T", " ")
-                files = r.get("files_copied", 0)
-                err = r.get("error_message", "")
-                dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
-                err_cell = f'<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">{html.escape(err[:80])}</td>' if err else "<td>-</td>"
-                history_rows += f"<tr><td>{ts}</td><td>{mode_tag}</td><td>{s_tag}</td><td>{files}</td><td>{dur}</td>{err_cell}</tr>\n"
-        finally:
-            pass  # singleton — do not close
-
-    # Flash messages
     flash_map = {
         "triggered_cloud": ("Cloud backup started. Check back in a few minutes.", "success"),
         "triggered_lan": ("LAN backup started (WoL + sync + shutdown).", "success"),
         "already_running_cloud": ("Cloud backup is already in progress.", "warning"),
         "already_running_lan": ("LAN backup is already in progress.", "warning"),
     }
+    flash_html = ""
     if flash in flash_map:
         msg, cls = flash_map[flash]
         flash_html = f'<div class="flash {cls}">{msg}</div>'
 
+    cloud_schedule = cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
+    lan_schedule = cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
+
     return render_dashboard(
-        lan_files=lan_files,
-        cloud_files=cloud_files,
         fy_prefix=get_fy_prefix(),
-        cloud_class=cloud_class,
-        cloud_running=cloud_running,
-        cloud_run=cloud_run,
-        cloud_last=cloud_last,
-        cloud_btn=cloud_btn,
-        lan_class=lan_class,
-        lan_running=lan_running,
-        lan_run=lan_run,
-        lan_last=lan_last,
-        lan_btn=lan_btn,
-        health_info=health_info,
         flash_html=flash_html,
-        history_rows=history_rows,
         auth_enabled=_auth_enabled(),
         cloud_schedule=cloud_schedule,
         lan_schedule=lan_schedule,
-        cloud_last_success=cloud_last_success if cr else None,
-        lan_last_success=lan_last_success if lr else None,
     )
 
