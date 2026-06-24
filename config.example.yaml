@@ -18,9 +18,10 @@ firm_name: "YourFirmName"
 paths:
   source_drive: "D:\\YOUR_DATA\\FY25-26"
   lan_destination: "\\\\NAS_IP\\share\\FY25-26"
-  database_path: "C:\\BackupAgent\\manifest.db"
-  log_directory: "C:\\BackupAgent\\logs"
-  gcs_key_path: "C:\\BackupAgent\\gcs-key.json"
+  # Runtime directory — all logs, database, lock file, and Prefect home live here.
+  # Separate from code installation so updates don't delete runtime data.
+  runtime_dir: "C:\\BackupAgent"
+  gcs_key_path: "C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json"
 
 # ═══════════════════════════════════════════════════
 # LAN BACKUP (Robocopy /MIR to NAS)

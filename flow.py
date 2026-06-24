@@ -686,7 +686,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     # watchdog.py and launch.py read this file and defer any service restart
     # until it disappears.  Format: "PID:create_time" — the process creation
     # timestamp makes PID-reuse detection mathematically exact (see core/process.py).
-    _lock_path = Path(config.paths.database_path).parent / "backup.lock"
+    _lock_path = config.paths.backup_lock_path
     try:
         write_lock(_lock_path)
         logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")

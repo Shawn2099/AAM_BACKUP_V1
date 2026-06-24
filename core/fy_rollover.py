@@ -371,7 +371,7 @@ def run_archive_transition(
         logger.warning(
             "FY rollover: 'gcloud' CLI not found — archive transition skipped. "
             "Searched: deploy/bin/, Program Files, LOCALAPPDATA, and system PATH. "
-            "Run install_services.bat to install the Google Cloud SDK automatically."
+            "Run setup_system.bat to install the Google Cloud SDK, then place nssm.exe in deploy\\bin\\."
         )
         return False
     except subprocess.TimeoutExpired:

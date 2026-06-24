@@ -13,10 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 CONFIG_PATH = "config.yaml"
 
-# Default log directory: use AAM_LOG_DIR env var, or project_root/logs
-_DEFAULT_LOG_DIR = os.environ.get(
-    "AAM_LOG_DIR",
-    str(Path(__file__).parent.parent / "logs"),
+_DEFAULT_RUNTIME_DIR = os.environ.get(
+    "AAM_RUNTIME_DIR",
+    r"C:\BackupAgent",
 )
 
 
@@ -25,9 +24,33 @@ class PathsConfig(BaseModel):
 
     source_drive: str = Field(..., description="Source drive root path, e.g. D:\\")
     lan_destination: str = Field(..., description="LAN UNC path, e.g. \\\\192.168.10.10\\share$")
-    database_path: str = Field(..., description="Path to SQLite manifest database")
-    log_directory: str = Field(default=_DEFAULT_LOG_DIR)
+    runtime_dir: str = Field(
+        default=_DEFAULT_RUNTIME_DIR,
+        description="Root directory for logs, database, lock file, and Prefect home. "
+                    "All runtime data lives here, separate from the code installation.",
+    )
+    database_path: str = Field(default="", description="Path to SQLite manifest database (auto-derived from runtime_dir if empty)")
+    log_directory: str = Field(default="", description="Log directory (auto-derived from runtime_dir if empty)")
     gcs_key_path: str = Field(..., description="Path to GCS service account JSON key file")
+
+    @model_validator(mode="after")
+    def derive_runtime_paths(self) -> "PathsConfig":
+        rt = Path(self.runtime_dir)
+        if not self.log_directory:
+            self.log_directory = str(rt / "logs")
+        if not self.database_path:
+            self.database_path = str(rt / "manifest.db")
+        return self
+
+    @property
+    def backup_lock_path(self) -> Path:
+        """Derive backup.lock path from the database_path parent directory."""
+        return Path(self.database_path).parent / "backup.lock"
+
+    @property
+    def prefect_home(self) -> Path:
+        """Prefect home directory inside runtime_dir."""
+        return Path(self.runtime_dir) / ".prefect"
 
     @field_validator("source_drive")
     @classmethod
@@ -41,13 +64,6 @@ class PathsConfig(BaseModel):
     def is_unc_path(cls, v: str) -> str:
         if not re.match(r"^\\\\.+\\", v):
             raise ValueError(f"LAN destination must be a UNC path (\\\\server\\share): {v}")
-        return v
-
-    @field_validator("database_path")
-    @classmethod
-    def db_path_ends_with_db(cls, v: str) -> str:
-        if not v.endswith(".db"):
-            raise ValueError(f"Database path must end with .db: {v}")
         return v
 
     @field_validator("gcs_key_path")

@@ -5,6 +5,11 @@ from pathlib import Path
 
 import pytest
 import os
+import sys
+from unittest.mock import MagicMock
+
+# Mock Windows-specific modules for cross-platform test execution
+sys.modules['msvcrt'] = MagicMock()
 
 # Disable Prefect result persistence at import time so @flow decorators don't fail
 os.environ["PREFECT_TEST_MODE"] = "1"

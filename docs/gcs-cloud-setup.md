@@ -311,7 +311,7 @@ After the GCS resources are created above, complete the deployment on the Window
      gcs_key_path: "C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json"
    ```
 3. Validate config: `deploy\test_config.bat`
-4. Install services: `deploy\install_services.bat` (Run as Admin)
+4. Install services: `powershell -ExecutionPolicy Bypass -File deploy\install_services.ps1` (Run as Admin)
 
 See `DEPLOYMENT_GUIDE.md` for full Windows server installation steps.
 

@@ -58,7 +58,6 @@ RESTART_COOLDOWN       = 120    # wait after triggering a restart before resumin
 WATCHED_SERVICE        = "AamPrefectServer"
 
 # Defaults — overwritten by _resolve_paths() at startup from config.yaml.
-# Kept as fallback so the service can still start if config is missing.
 BACKUP_LOCK_PATH: Path = Path(r"C:\BackupAgent\backup.lock")
 LOG_DIR: Path          = Path(r"C:\BackupAgent\logs")
 
@@ -73,7 +72,7 @@ def _resolve_paths() -> None:
     try:
         from models.config import CONFIG_PATH, load_config
         cfg = load_config(CONFIG_PATH)
-        BACKUP_LOCK_PATH = Path(cfg.paths.database_path).parent / "backup.lock"
+        BACKUP_LOCK_PATH = cfg.paths.backup_lock_path
         LOG_DIR = Path(cfg.paths.log_directory)
     except Exception:
         pass  # defaults already set at module level

@@ -102,7 +102,7 @@ def _cancel_orphaned_runs():
     try:
         from models.config import CONFIG_PATH, load_config
         cfg = load_config(CONFIG_PATH)
-        lock_path = Path(cfg.paths.database_path).parent / "backup.lock"
+        lock_path = cfg.paths.backup_lock_path
     except Exception:
         lock_path = None
 

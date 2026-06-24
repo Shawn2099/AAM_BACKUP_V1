@@ -16,6 +16,9 @@ for /f "delims=" %%I in ('where uv 2^>nul') do (
 :uv_found
 
 if "%UV_EXE%"=="" (
+    if exist "%USERPROFILE%\.local\bin\uv.exe" set "UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
+)
+if "%UV_EXE%"=="" (
     if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
 )
 if "%UV_EXE%"=="" (
