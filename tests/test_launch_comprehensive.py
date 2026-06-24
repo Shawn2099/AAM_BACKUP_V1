@@ -129,6 +129,7 @@ class TestCancelOrphanedRuns:
 
     def test_stale_lock_cleaned_up(self):
         from launch import _cancel_orphaned_runs
+        from pathlib import Path
         mock_client = AsyncMock()
         mock_client.read_flow_runs.return_value = []
         with patch("prefect.client.orchestration.get_client") as mock_get_client, \
@@ -138,6 +139,7 @@ class TestCancelOrphanedRuns:
              patch("pathlib.Path.unlink") as mock_unlink:
             mock_cfg = MagicMock()
             mock_cfg.paths.database_path = "/tmp/test.db"
+            mock_cfg.paths.backup_lock_path = Path("/tmp/backup.lock")
             mock_config.return_value = mock_cfg
             mock_get_client.return_value.__aenter__.return_value = mock_client
             _cancel_orphaned_runs()

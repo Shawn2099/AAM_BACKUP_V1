@@ -277,7 +277,7 @@ class TestPreBackupHealth:
             patch("core.health.check_binary_exists", return_value=True),
             patch("core.health.check_gcs_key", return_value=(False, "GCS key file not found")),
         ):
-            with pytest.raises(HealthError, match="GCS key check failed"):
+            with pytest.raises(HealthError, match="GCS key file not found"):
                 pre_backup_health(
                     source_path=str(tmp_path),
                     mode="cloud",

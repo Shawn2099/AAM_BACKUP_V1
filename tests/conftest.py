@@ -9,12 +9,14 @@ import sys
 from unittest.mock import MagicMock
 
 # Mock Windows-specific modules for cross-platform test execution
-sys.modules['msvcrt'] = MagicMock()
+if sys.platform != 'win32':
+    sys.modules['msvcrt'] = MagicMock()
 
 # Disable Prefect result persistence at import time so @flow decorators don't fail
 os.environ["PREFECT_TEST_MODE"] = "1"
 os.environ["PREFECT_RESULTS_PERSIST_BY_DEFAULT"] = "false"
 os.environ.pop("PREFECT_RESULTS_DEFAULT_STORAGE_BLOCK", None)
+os.environ["PREFECT_SERVER_ANALYTICS_ENABLED"] = "false"
 
 def pytest_configure(config):
     """Global pytest configuration."""

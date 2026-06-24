@@ -108,7 +108,7 @@ function statusDescription(status, files, filesFailed) {
         if (filesFailed > 0) return 'Backup Complete — ' + files + ' files backed up, ' + filesFailed + ' could not be copied';
         return 'Backup Complete — ' + files + ' files backed up';
     }
-    if (status.includes('_PARTIAL')) return 'Backup Complete — ' + files + ' files backed up, ' + filesFailed + ' could not be copied';
+    if (status.includes('_PARTIAL')) return 'Backup Partial — ' + files + ' files backed up, ' + filesFailed + ' could not be copied';
     if (status.includes('_FAILED')) return 'Backup Failed — see issue below';
     return status;
 }
@@ -171,7 +171,7 @@ async function updateStatus() {
             if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
             else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
             if (data.cloud.last_run) { descCloud.innerText = statusDescription(data.cloud.last_run.status, data.cloud.last_run.files, data.cloud.last_run.files_failed || 0); lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
-            const cloudClass = isCloudRunning ? 'running' : ((data.cloud.last_run && data.cloud.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
+            const cloudClass = isCloudRunning ? 'running' : (data.cloud.last_run ? (data.cloud.last_run.status.endsWith('_COMPLETE') ? 'success' : 'failed') : 'unknown');
             cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
             showLastSuccess('cloud', data.cloud.last_success);
         }
@@ -186,7 +186,7 @@ async function updateStatus() {
             if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
             else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
             if (data.lan.last_run) { descLan.innerText = statusDescription(data.lan.last_run.status, data.lan.last_run.files, data.lan.last_run.files_failed || 0); lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
-            const lanClass = isLanRunning ? 'running' : ((data.lan.last_run && data.lan.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
+            const lanClass = isLanRunning ? 'running' : (data.lan.last_run ? (data.lan.last_run.status.endsWith('_COMPLETE') ? 'success' : 'failed') : 'unknown');
             cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
             showLastSuccess('lan', data.lan.last_success);
         }
@@ -203,7 +203,7 @@ async function updateStatus() {
             data.recent_runs.forEach((r, idx) => {
                 const safeMode = ['cloud', 'lan'].includes(r.mode) ? r.mode : 'unknown';
                 const modeTag = '<span class="tag ' + safeMode + '">' + escapeHtml(safeMode.toUpperCase()) + '</span>';
-                let sTag = ''; if (r.status === 'CLOUD_NO_CHANGES_COMPLETE') { sTag = '<span class="tag no-changes">No Changes</span>'; } else if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">Complete</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">Partial</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">Failed</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
+                let sTag = ''; if (r.status === 'CLOUD_NO_CHANGES_COMPLETE' || r.status === 'LAN_NO_CHANGES_COMPLETE') { sTag = '<span class="tag no-changes">No Changes</span>'; } else if (r.status.endsWith('_COMPLETE') || r.status === 'SUCCESS') { sTag = '<span class="tag success">Complete</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">Partial</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">Failed</span>'; } else if (r.status.includes('_SKIPPED')) { sTag = '<span class="tag no-changes">Skipped</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
                 const errCell = r.error ? '<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.error.substring(0, 80)) + '</td>' : '<td>-</td>';
                 
                 let expandableClass = '';

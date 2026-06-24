@@ -280,7 +280,7 @@ async def status(request: Request):
 
     db = get_db()
     try:
-        runs = db.get_recent_runs(10)
+        runs = db.get_recent_runs(25)
     except Exception:
         return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
 
@@ -311,13 +311,13 @@ async def status(request: Request):
             "running": await _is_running("cloud"),
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
-            "last_run_formatted": f"{cloud_last_run['status']} — {(cloud_last_run['started_at'] or '-')[:19].replace('T', ' ')}" if cloud_last_run else "No data",
+            "last_run_formatted": (cloud_last_run["started_at"] or "-")[:19].replace("T", " ") if cloud_last_run else "No data",
         },
         "lan": {
             "running": await _is_running("lan"),
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
-            "last_run_formatted": f"{lan_last_run['status']} — {(lan_last_run['started_at'] or '-')[:19].replace('T', ' ')}" if lan_last_run else "No data",
+            "last_run_formatted": (lan_last_run["started_at"] or "-")[:19].replace("T", " ") if lan_last_run else "No data",
         },
         "manifest": {
             "lan_files": db.file_count("lan_status"),

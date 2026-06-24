@@ -174,7 +174,7 @@ class TestGenerateReportHtml:
             result = generate_report_html(mock_db, "F", 7, "W")
         assert "<html>" in result
 
-    def test_truncates_to_10_runs(self):
+    def test_shows_all_runs_in_period(self):
         mock_db = MagicMock()
         mock_db.get_runs_since.return_value = [
             {"started_at": f"2026-06-{24-i:02d}T10:00:00+05:30", "mode": "cloud", "status": "CLOUD_COMPLETE", "files_copied": 1, "bytes_copied": 1}
@@ -182,11 +182,11 @@ class TestGenerateReportHtml:
         ]
         with patch("core.report.now_formatted", return_value="2026-06-24 10:00 IST"):
             result = generate_report_html(mock_db, "F", 30, "Monthly")
-        # The runs table has a header row + up to 10 data rows.
-        # Each run row has exactly one <tr>, and the header has one <tr>.
+        # All 15 runs should be shown — no hard cap.
         runs_section = result.split("Recent Backups")[1]
         data_rows = runs_section.count("<td>") // 6  # 6 <td> per row
-        assert data_rows == 10
+        assert data_rows == 15
+        assert "All 15 backups shown" in result
 
 
 # ── send_failure_alert ───────────────────────────────────────────────────────

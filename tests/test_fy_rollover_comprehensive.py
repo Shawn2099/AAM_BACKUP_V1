@@ -311,10 +311,12 @@ class TestCreateNewFyFolders:
         assert "source" in result
 
     def test_lan_failure_does_not_block(self, tmp_path):
+        import sys
         src = tmp_path / "SOURCE"
         src.mkdir()
+        bad_lan = "Z:\\nonexistent\\path" if sys.platform == "win32" else "/nonexistent/path"
 
-        result = create_new_fy_folders(str(src), "/nonexistent/path", "FY27-28")
+        result = create_new_fy_folders(str(src), bad_lan, "FY27-28")
 
         assert "source" in result
         assert "lan" not in result

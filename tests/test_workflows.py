@@ -353,8 +353,10 @@ class TestHealthWorkflow:
 
     def test_health_fails_on_missing_source(self):
         """Health check should fail when source drive doesn't exist."""
+        import sys
+        bad_path = "Z:\\nonexistent\\path" if sys.platform == "win32" else "/nonexistent/path"
         with pytest.raises(HealthError):
-            pre_backup_health("/nonexistent/path", "cloud")
+            pre_backup_health(bad_path, "cloud")
 
     def test_health_fails_on_empty_source(self, tmp_path):
         """Health check should fail when source drive is empty."""

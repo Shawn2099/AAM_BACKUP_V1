@@ -93,17 +93,25 @@ def send_failure_alert(
     if timestamp:
         ts_display = f"<p><strong>Time:</strong> {html.escape(timestamp[:19].replace('T', ' '))}</p>"
 
+    status_code = html.escape(str(run_data.get("status") or ""))
+    exit_code = run_data.get("exit_code")
+    exit_code_display = html.escape(str(exit_code)) if exit_code is not None else "-"
+
     body = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
 <body style="font-family:system-ui,sans-serif;color:#1f2937;margin:0;padding:0">
 <div style="max-width:600px;margin:0 auto;padding:24px">
-<h2 style="color:#dc2626;margin:0 0 16px 0">Backup Failure Alert — {html.escape(firm_name)}</h2>
+<h2 style="color:#dc2626;margin:0 0 16px 0">Backup Failure Alert \u2014 {html.escape(firm_name)}</h2>
 <table style="width:100%;border-collapse:collapse;margin:16px 0">
 <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600;width:120px">Firm</td>
 <td style="padding:8px 12px;border:1px solid #e5e7eb">{html.escape(firm_name)}</td></tr>
 <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Pipeline</td>
 <td style="padding:8px 12px;border:1px solid #e5e7eb">{html.escape(mode)}</td></tr>
+<tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Status</td>
+<td style="padding:8px 12px;border:1px solid #e5e7eb">{status_code or '-'}</td></tr>
+<tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Exit Code</td>
+<td style="padding:8px 12px;border:1px solid #e5e7eb">{exit_code_display}</td></tr>
 <tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Error</td>
 <td style="padding:8px 12px;border:1px solid #e5e7eb;color:#dc2626">{html.escape(error_message)}</td></tr>
 </table>
@@ -133,38 +141,41 @@ def generate_report_html(
         return ""
 
     total = len(runs)
-    successes = sum(1 for r in runs if str(r.get("status", "")).endswith("_COMPLETE"))
+    successes = sum(1 for r in runs if str(r.get("status", "")).endswith("_COMPLETE") or r.get("status") == "SUCCESS")
     partials = sum(1 for r in runs if str(r.get("status", "")).endswith("_PARTIAL"))
-    failures = total - successes - partials
+    skipped = sum(1 for r in runs if str(r.get("status", "")).endswith("_SKIPPED"))
+    failures = total - successes - partials - skipped
 
-    total_files = sum(r["files_copied"] or 0 for r in runs)
-    total_bytes = sum(r["bytes_copied"] or 0 for r in runs)
+    total_files = sum(r.get("files_copied") or 0 for r in runs)
+    total_bytes = sum(r.get("bytes_copied") or 0 for r in runs)
 
     success_rate = (successes / total * 100) if total > 0 else 0
 
     def _status_display(status: str) -> str:
         if status in ("CLOUD_NO_CHANGES_COMPLETE", "LAN_NO_CHANGES_COMPLETE"):
             return "No Changes"
-        if status.endswith("_COMPLETE"):
+        if status.endswith("_COMPLETE") or status == "SUCCESS":
             return "Completed"
         if "_PARTIAL" in status:
             return "Partial"
         if "_FAILED" in status:
             return "Failed"
+        if "_SKIPPED" in status:
+            return "Skipped"
         return status
 
     rows = ""
-    shown = 0
-    for r in runs[:10]:
+    row_count = 0
+    for r in runs:
         start = (r.get("started_at") or "-")[:19].replace("T", " ")
-        mode = r["mode"].upper()
-        status = _status_display(r["status"])
-        files = r["files_copied"] or 0
+        mode = (r.get("mode") or "unknown").upper()
+        status = _status_display(r.get("status") or "")
+        files = r.get("files_copied") or 0
         dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
         err = r.get("error_message", "")
         err_display = html.escape(err[:80]) if err else "-"
         rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td><td>{html.escape(dur)}</td><td>{err_display}</td></tr>"
-        shown += 1
+        row_count += 1
 
     now = now_formatted("YYYY-MM-DD HH:mm z")
 
@@ -181,6 +192,7 @@ def generate_report_html(
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;width:180px">Total Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Successful Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{successes}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Partial Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{partials}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Skipped Runs</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{skipped}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Failed Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{failures}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Success Rate</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{success_rate:.1f}%</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Files Backed Up</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_files:,}</td></tr>
@@ -192,7 +204,7 @@ def generate_report_html(
 <tr><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Started</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Pipeline</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Status</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Files</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Duration</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Error</th></tr>
 {rows}
 </table>
-<p style="color:#6b7280;font-size:0.85rem;margin:0">Showing {shown} of {total} backups</p>
+<p style="color:#6b7280;font-size:0.85rem;margin:0">All {row_count} backups shown</p>
 </div>
 </body>
 </html>"""
