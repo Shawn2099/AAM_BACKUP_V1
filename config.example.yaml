@@ -88,6 +88,14 @@ cloud:
   retry_delay_seconds: 300
   # Timeout for post-sync rclone check/verify step (seconds)
   verify_timeout_seconds: 14400
+  # Timeout for pre-sync rclone check dry-run (seconds)
+  preflight_timeout_seconds: 300
+  # Timeout for rclone check --combined diff report (seconds)
+  diff_timeout_seconds: 600
+  # Timeout for rclone lsjson manifest listing (seconds)
+  manifest_timeout_seconds: 300
+  # Timeout for rclone size GCS object count query (seconds)
+  cloud_size_timeout_seconds: 30
   # rclone --transfers: concurrent file uploads
   transfers: 2
   # rclone --checkers: concurrent file comparison workers
@@ -147,3 +155,29 @@ notifications:
 maintenance:
   # Days of run history to keep in the SQLite database (7–3650)
   db_retention_days: 90
+  # Days of log files to keep before Loguru auto-deletion (1–365)
+  log_retention_days: 30
+  # SQLite PRAGMA busy_timeout in milliseconds (1000–120000)
+  # Higher values prevent "database is locked" errors under concurrent access
+  sqlite_busy_timeout_ms: 30000
+  # VACUUM triggers when SQLite freelist page count exceeds this value
+  # 10000 pages ≈ 40 MB. Higher threshold reduces HDD I/O overhead from frequent DB rewrites.
+  sqlite_vacuum_freelist_threshold: 10000
+
+# ═══════════════════════════════════════════════════
+# HEALTH CHECKS
+# ═══════════════════════════════════════════════════
+health:
+  # Maximum acceptable clock skew vs Google time for GCS JWT auth (seconds)
+  # GCS rejects tokens if skew >600s. Do not lower below 60.
+  max_clock_skew_seconds: 600
+  # Timeout for HTTPS connection to googleapis.com during clock check (seconds)
+  clock_check_timeout_seconds: 10
+  # Minimum free space required on source drive before backup starts (GB)
+  min_free_source_gb: 1
+  # Timeout for gcloud auth activate-service-account during FY rollover (seconds)
+  rollover_auth_timeout_seconds: 30
+  # Timeout for gcloud storage objects update --storage-class=ARCHIVE during FY rollover (seconds)
+  # HDD NOTE: metadata-only op — no data transfer, 600s is normally sufficient
+  rollover_archive_timeout_seconds: 600
+
