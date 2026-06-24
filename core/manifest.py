@@ -484,6 +484,16 @@ class ManifestDB:
                 ).fetchone()
             return dict(row) if row else None
 
+    def last_successful_run(self, mode: str) -> dict | None:
+        """Return the last successful run for this mode (status ends with _COMPLETE)."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT * FROM run_history WHERE mode = ? AND status LIKE '%_COMPLETE' ORDER BY started_at DESC LIMIT 1",
+                (mode,),
+            ).fetchone()
+            return dict(row) if row else None
+
     def get_recent_runs(self, limit: int = 10) -> list[dict]:
         with self._lock:
             conn = self._get_conn()

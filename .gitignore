@@ -10,14 +10,19 @@ rclone_temp/
 logs/
 .env
 .venv/
+.venv_311/
+.venv_test/
 .uv/
 config.yaml
 *.json
+# Allow tracked JSON config files in deploy/
+!deploy/*.json
 .pytest_cache/
 graphify-out/
 .commandcode/
+.planning/
+.cursor/
 <MagicMock*
 prefect_logs/.~lock*
 .gitnexus
-.venv_test/
 plan.md

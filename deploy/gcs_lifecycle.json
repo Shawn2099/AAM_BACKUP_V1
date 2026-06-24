@@ -1,0 +1,49 @@
+{
+  "rule": [
+    {
+      "action": {
+        "type": "SetStorageClass",
+        "storageClass": "COLDLINE"
+      },
+      "condition": {
+        "daysSinceNoncurrentTime": 1,
+        "matchesStorageClass": [
+          "STANDARD"
+        ]
+      }
+    },
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "numNewerVersions": 2
+      }
+    },
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "daysSinceNoncurrentTime": 90
+      }
+    },
+    {
+      "action": {
+        "type": "SetStorageClass",
+        "storageClass": "ARCHIVE"
+      },
+      "condition": {
+        "age": 365
+      }
+    },
+    {
+      "action": {
+        "type": "AbortIncompleteMultipartUpload"
+      },
+      "condition": {
+        "age": 7
+      }
+    }
+  ]
+}

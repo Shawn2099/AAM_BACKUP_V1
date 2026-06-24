@@ -515,8 +515,8 @@ th {{ background: #f3f4f6; font-size: 0.85rem; }}
 
 def _get_last_success(db: ManifestDB, mode: str) -> str | None:
     """Return ended_at timestamp of the last successful run for this mode."""
-    run = db.last_run(mode)
-    if run and run.get("status", "").endswith("_COMPLETE"):
+    run = db.last_successful_run(mode)
+    if run:
         return run.get("ended_at")
     return None
 
