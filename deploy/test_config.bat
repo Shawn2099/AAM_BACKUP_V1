@@ -26,7 +26,14 @@ if "%UV_EXE%"=="" (
 )
 
 if "%UV_EXE%"=="" (
-    echo ERROR: 'uv' package manager not found.
+    echo.
+    echo  ERROR: 'uv' package manager not found.
+    echo.
+    echo  Install it by running this in PowerShell:
+    echo    powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+    echo.
+    echo  Then re-run test_config.bat.
+    echo.
     pause
     exit /b 1
 )

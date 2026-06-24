@@ -98,24 +98,33 @@ async function triggerBackup(event, mode) {
     await updateStatus();
 }
 
+function statusDescription(status, files, filesFailed) {
+    if (status === 'CLOUD_NO_CHANGES_COMPLETE' || status === 'LAN_NO_CHANGES_COMPLETE') return 'Backup Complete — no changes detected';
+    if (status.endsWith('_COMPLETE')) {
+        if (filesFailed > 0) return 'Backup Complete — ' + files + ' files backed up, ' + filesFailed + ' could not be copied';
+        return 'Backup Complete — ' + files + ' files backed up';
+    }
+    if (status.includes('_PARTIAL')) return 'Backup Complete — ' + files + ' files backed up, ' + filesFailed + ' could not be copied';
+    if (status.includes('_FAILED')) return 'Backup Failed — see issue below';
+    return status;
+}
+
+function formatFullDate(isoStr) {
+    if (!isoStr) return '-';
+    var d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var hours = d.getHours(), ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12; if (hours === 0) hours = 12;
+    var mins = d.getMinutes(); if (mins < 10) mins = '0' + mins;
+    return d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear() + ' at ' + hours + ':' + mins + ' ' + ampm;
+}
+
 async function updateStatus() {
     try {
         const response = await fetch('/status');
         if (!response.ok) return;
         const data = await response.json();
-
-        function timeAgo(isoStr) {
-            if (!isoStr) return null;
-            var then = new Date(isoStr);
-            if (isNaN(then.getTime())) return null;
-            var diff = Math.floor((Date.now() - then) / 1000);
-            if (diff < 0) diff = 0;
-            if (diff < 60) return 'just now';
-            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-            if (diff < 172800) return '1d ago';
-            return Math.floor(diff / 86400) + 'd ago';
-        }
 
         function agoClass(diffDays) {
             if (diffDays < 1) return 'success-ago';
@@ -130,11 +139,6 @@ async function updateStatus() {
                 el.innerHTML = '<span class="critical-ago">\u26A0\uFE0F No successful backup yet</span>';
                 return;
             }
-            var ago = timeAgo(lastSuccess);
-            if (!ago) {
-                el.innerHTML = '<span class="critical-ago">\u26A0\uFE0F No successful backup yet</span>';
-                return;
-            }
             var then = new Date(lastSuccess);
             var now = new Date();
             var diffDays = (now - then) / 86400000;
@@ -144,7 +148,8 @@ async function updateStatus() {
             }
             var cls = agoClass(diffDays);
             var icon = diffDays < 1 ? '\u2705' : (diffDays < 2 ? '\u26A0\uFE0F' : '\u274C');
-            el.innerHTML = '<span class="' + cls + '">' + icon + ' Last success: ' + ago + '</span>';
+            var fullDate = formatFullDate(lastSuccess);
+            el.innerHTML = '<span class="' + cls + '">' + icon + ' Last success: ' + fullDate + '</span>';
         }
 
         document.getElementById('stat-lan-files').innerText = Number(data.manifest.lan_files).toLocaleString();
@@ -161,7 +166,7 @@ async function updateStatus() {
             badgeCloud.innerText = isCloudRunning ? 'Running' : 'Idle';
             if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
             else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
-            if (data.cloud.last_run) { let desc = data.cloud.last_run.status + ' (' + data.cloud.last_run.files + ' changed)'; if (data.cloud.last_run.error) { desc += ' — ' + data.cloud.last_run.error.substring(0, 60); } descCloud.innerText = desc; lastCloud.innerText = 'Last: ' + data.cloud.last_run_formatted; }
+            if (data.cloud.last_run) { descCloud.innerText = statusDescription(data.cloud.last_run.status, data.cloud.last_run.files, data.cloud.last_run.files_failed || 0); lastCloud.innerText = 'Last successful backup: ' + data.cloud.last_run_formatted; }
             const cloudClass = isCloudRunning ? 'running' : ((data.cloud.last_run && data.cloud.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
             showLastSuccess('cloud', data.cloud.last_success);
@@ -176,7 +181,7 @@ async function updateStatus() {
             badgeLan.innerText = isLanRunning ? 'Running' : 'Idle';
             if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
             else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
-            if (data.lan.last_run) { let desc = data.lan.last_run.status + ' (' + data.lan.last_run.files + ' changed)'; if (data.lan.last_run.error) { desc += ' — ' + data.lan.last_run.error.substring(0, 60); } descLan.innerText = desc; lastLan.innerText = 'Last: ' + data.lan.last_run_formatted; }
+            if (data.lan.last_run) { descLan.innerText = statusDescription(data.lan.last_run.status, data.lan.last_run.files, data.lan.last_run.files_failed || 0); lastLan.innerText = 'Last successful backup: ' + data.lan.last_run_formatted; }
             const lanClass = isLanRunning ? 'running' : ((data.lan.last_run && data.lan.last_run.status.endsWith('_COMPLETE')) ? 'success' : 'failed');
             cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
             showLastSuccess('lan', data.lan.last_success);
@@ -194,8 +199,8 @@ async function updateStatus() {
                 const escapeHtml = function(text) { return (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
                 const safeMode = ['cloud', 'lan'].includes(r.mode) ? r.mode : 'unknown';
                 const modeTag = '<span class="tag ' + safeMode + '">' + escapeHtml(safeMode.toUpperCase()) + '</span>';
-                let sTag = ''; if (r.status === 'CLOUD_NO_CHANGES_COMPLETE') { sTag = '<span class="tag success">NO CHANGES</span>'; } else if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">OK</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">PARTIAL</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">FAILED</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
-                const errCell = r.error ? '<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.error.substring(0, 60)) + '</td>' : '<td>-</td>';
+                let sTag = ''; if (r.status === 'CLOUD_NO_CHANGES_COMPLETE') { sTag = '<span class="tag success">No Changes</span>'; } else if (r.status.endsWith('_COMPLETE')) { sTag = '<span class="tag success">Complete</span>'; } else if (r.status.includes('_PARTIAL')) { sTag = '<span class="tag partial">Partial</span>'; } else if (r.status.includes('_FAILED')) { sTag = '<span class="tag failed">Failed</span>'; } else { sTag = '<span class="tag">' + escapeHtml(r.status.substring(0, 10)) + '</span>'; }
+                const errCell = r.error ? '<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.error.substring(0, 80)) + '</td>' : '<td>-</td>';
                 
                 let expandableClass = '';
                 let extraRowHtml = '';
@@ -302,16 +307,16 @@ def render_dashboard(
 <div class="subtitle">Secure Automated Sequential Multi-Destination Backups</div>
 <div id="flash-container">{flash_html}</div>
 <div class="stats">
-    <div class="stat"><div class="num" id="stat-lan-files">{lan_files:,}</div><div class="label">LAN Files</div></div>
-    <div class="stat"><div class="num" id="stat-cloud-files">{cloud_files:,}</div><div class="label">Cloud Files</div></div>
-    <div class="stat"><div class="num" id="stat-fy-prefix">{fy_prefix}</div><div class="label">FY Prefix</div></div>
+    <div class="stat"><div class="num" id="stat-lan-files">{lan_files:,}</div><div class="label">Files on NAS</div></div>
+    <div class="stat"><div class="num" id="stat-cloud-files">{cloud_files:,}</div><div class="label">Files on Cloud</div></div>
+    <div class="stat"><div class="num" id="stat-fy-prefix">{fy_prefix}</div><div class="label">Fiscal Year</div></div>
 </div>
 <div class="grid">
     <div class="card {cloud_class}" id="card-cloud">
         <h2>Cloud Backup <span class="status-badge {cloud_class}" id="badge-cloud">{cloud_running}</span></h2>
         <p id="desc-cloud">{cloud_run}</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last: {cloud_last}</p>
-        <p class="schedule-line">Next: {cloud_schedule or 'Not configured'}</p>
+        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last successful backup: {cloud_last}</p>
+        <p class="schedule-line">Next scheduled backup: {cloud_schedule or 'Not configured'}</p>
         <p style="font-size:0.75rem" id="cloud-last-success"></p>
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'cloud')">
             <button class="btn-trigger btn-cloud" id="btn-cloud" {cloud_btn}>Run Cloud Backup</button>
@@ -320,8 +325,8 @@ def render_dashboard(
     <div class="card {lan_class}" id="card-lan">
         <h2>LAN Backup <span class="status-badge {lan_class}" id="badge-lan">{lan_running}</span></h2>
         <p id="desc-lan">{lan_run}</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last: {lan_last}</p>
-        <p class="schedule-line">Next: {lan_schedule or 'Not configured'}</p>
+        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last successful backup: {lan_last}</p>
+        <p class="schedule-line">Next scheduled backup: {lan_schedule or 'Not configured'}</p>
         <p style="font-size:0.75rem" id="lan-last-success"></p>
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'lan')">
             <button class="btn-trigger btn-lan" id="btn-lan" {lan_btn}>Run LAN Backup</button>
@@ -334,14 +339,14 @@ def render_dashboard(
     <button class="btn-trigger" id="btn-email-weekly" onclick="emailReport('weekly')" style="background:#0e7490">&#9993;&#65039; Email Weekly Report</button>
     <button class="btn-trigger" id="btn-email-monthly" onclick="emailReport('monthly')" style="background:#0e7490">&#9993;&#65039; Email Monthly Report</button>
 </div>
-<h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Run History</h2>
+<h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Recent Backups</h2>
 <table>
-<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Changed</th><th>Duration</th><th>Error</th></tr></thead>
+<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
 <tbody id="history-tbody">{history_rows or no_runs_row}</tbody>
 </table>
 <div class="info">
     <p id="health-info">{health_info}</p>
-    <p style="margin-top:0.25rem">AAM Backup Automation V1 — Dynamic Real-Time Updates{logout_link}</p>
+    <p style="margin-top:0.25rem">AAM Backup System — Auto-refreshes every 2 seconds{logout_link}</p>
 </div>
 </div>
 {JS}

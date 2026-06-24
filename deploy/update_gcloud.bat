@@ -4,6 +4,16 @@
 :: Run this periodically or when archive transitions fail with API errors.
 :: ═══════════════════════════════════════════════════════════════════════
 
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo  ERROR: This script must be run as Administrator.
+    echo  Right-click update_gcloud.bat ^> "Run as administrator"
+    echo.
+    pause
+    exit /b 1
+)
+
 set "SCRIPT_DIR=%~dp0"
 set "GCLOUD=%SCRIPT_DIR%bin\google-cloud-sdk\bin\gcloud.cmd"
 

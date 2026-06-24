@@ -40,6 +40,8 @@ class PathsConfig(BaseModel):
             self.log_directory = str(rt / "logs")
         if not self.database_path:
             self.database_path = str(rt / "manifest.db")
+        if not self.database_path.endswith(".db"):
+            raise ValueError(f"database_path must end with .db: {self.database_path}")
         return self
 
     @property

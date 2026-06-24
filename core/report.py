@@ -67,6 +67,7 @@ def send_failure_alert(
     firm_name: str,
     error_message: str,
     run_data: dict,
+    timestamp: str = "",
 ) -> bool:
     """Send immediate email on backup failure.
 
@@ -74,7 +75,8 @@ def send_failure_alert(
         config: Notification configuration.
         firm_name: Firm name for subject/body.
         error_message: Error description.
-        run_data: Dict with mode, run_id, status, exit_code.
+        run_data: Dict with mode, status, exit_code.
+        timestamp: ISO timestamp of the failure (optional).
 
     Returns:
         True if email sent.
@@ -84,17 +86,32 @@ def send_failure_alert(
         return False
 
     mode = (run_data.get("mode") or "unknown").upper()
-    run_id = str(run_data.get("run_id") or "unknown")
 
-    subject = f"Backup FAILED — {firm_name} ({mode})"
-    body = f"""<html><body>
-<h2 style="color: red;">Backup Failure — {html.escape(firm_name)}</h2>
-<table>
-  <tr><td><strong>Mode:</strong></td><td>{html.escape(mode)}</td></tr>
-  <tr><td><strong>Run ID:</strong></td><td>{html.escape(run_id)}</td></tr>
-  <tr><td><strong>Error:</strong></td><td>{html.escape(error_message)}</td></tr>
+    subject = f"Backup Failure Alert — {firm_name} ({mode})"
+
+    ts_display = ""
+    if timestamp:
+        ts_display = f"<p><strong>Time:</strong> {html.escape(timestamp[:19].replace('T', ' '))}</p>"
+
+    body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family:system-ui,sans-serif;color:#1f2937;margin:0;padding:0">
+<div style="max-width:600px;margin:0 auto;padding:24px">
+<h2 style="color:#dc2626;margin:0 0 16px 0">Backup Failure Alert — {html.escape(firm_name)}</h2>
+<table style="width:100%;border-collapse:collapse;margin:16px 0">
+<tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600;width:120px">Firm</td>
+<td style="padding:8px 12px;border:1px solid #e5e7eb">{html.escape(firm_name)}</td></tr>
+<tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Pipeline</td>
+<td style="padding:8px 12px;border:1px solid #e5e7eb">{html.escape(mode)}</td></tr>
+<tr><td style="padding:8px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Error</td>
+<td style="padding:8px 12px;border:1px solid #e5e7eb;color:#dc2626">{html.escape(error_message)}</td></tr>
 </table>
-</body></html>"""
+{ts_display}
+<p style="color:#6b7280;font-size:13px;margin-top:24px">Review the server logs at the configured log directory for more details.</p>
+</div>
+</body>
+</html>"""
 
     return _send_email(config, subject, body)
 
@@ -125,37 +142,60 @@ def generate_report_html(
 
     success_rate = (successes / total * 100) if total > 0 else 0
 
+    def _status_display(status: str) -> str:
+        if status in ("CLOUD_NO_CHANGES_COMPLETE", "LAN_NO_CHANGES_COMPLETE"):
+            return "No Changes"
+        if status.endswith("_COMPLETE"):
+            return "Completed"
+        if "_PARTIAL" in status:
+            return "Partial"
+        if "_FAILED" in status:
+            return "Failed"
+        return status
+
     rows = ""
+    shown = 0
     for r in runs[:10]:
         start = (r.get("started_at") or "-")[:19].replace("T", " ")
         mode = r["mode"].upper()
-        status = r["status"]
+        status = _status_display(r["status"])
         files = r["files_copied"] or 0
-        rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td></tr>"
+        dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
+        err = r.get("error_message", "")
+        err_display = html.escape(err[:80]) if err else "-"
+        rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td><td>{html.escape(dur)}</td><td>{err_display}</td></tr>"
+        shown += 1
 
     now = now_formatted("YYYY-MM-DD HH:mm z")
 
-    return f"""<html><body>
-<h2>{html.escape(period)} Backup Report — {html.escape(firm_name)}</h2>
-<p><strong>Period:</strong> Last {days} days (generated {now})</p>
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family:system-ui,sans-serif;color:#1f2937;margin:0;padding:0">
+<div style="max-width:800px;margin:0 auto;padding:24px">
+<h2 style="color:#1e3a5f;margin:0 0 8px 0">{html.escape(period)} Backup Report — {html.escape(firm_name)}</h2>
+<p style="color:#6b7280;margin:0 0 24px 0">Period: Last {days} days (generated {now})</p>
 
-<h3>Summary</h3>
-<table>
-  <tr><td>Total runs</td><td>{total}</td></tr>
-  <tr><td>Successful</td><td>{successes}</td></tr>
-  <tr><td>Partial</td><td>{partials}</td></tr>
-  <tr><td>Failed</td><td>{failures}</td></tr>
-  <tr><td>Success rate</td><td>{success_rate:.1f}%</td></tr>
-  <tr><td>Files copied</td><td>{total_files:,}</td></tr>
-  <tr><td>Bytes copied</td><td>{total_bytes:,} ({humanize.naturalsize(total_bytes, binary=True)})</td></tr>
+<h3 style="color:#374151;margin:0 0 8px 0">Summary</h3>
+<table style="width:100%;border-collapse:collapse;margin:0 0 24px 0">
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;width:180px">Total Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Successful Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{successes}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Partial Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{partials}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Failed Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{failures}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Success Rate</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{success_rate:.1f}%</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Files Backed Up</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_files:,}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Data Transferred</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_bytes:,} ({humanize.naturalsize(total_bytes, binary=True)})</td></tr>
 </table>
 
-<h3>Recent Runs</h3>
-<table border="1" cellpadding="4" cellspacing="0">
-  <tr><th>Started</th><th>Mode</th><th>Status</th><th>Files</th></tr>
-  {rows}
+<h3 style="color:#374151;margin:0 0 8px 0">Recent Backups</h3>
+<table style="width:100%;border-collapse:collapse;margin:0 0 8px 0">
+<tr><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Started</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Pipeline</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Status</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Files</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Duration</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Error</th></tr>
+{rows}
 </table>
-</body></html>"""
+<p style="color:#6b7280;font-size:0.85rem;margin:0">Showing {shown} of {total} backups</p>
+</div>
+</body>
+</html>"""
 
 
 def send_summary_report(

@@ -723,6 +723,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
                     config.firm_name,
                     error_summary,
                     {"mode": mode},
+                    timestamp=now_iso(),
                 )
             except Exception:
                 pass

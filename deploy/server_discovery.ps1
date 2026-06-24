@@ -46,7 +46,7 @@ json "{"
 json "  `"generated`": `"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`","
 
 # ── 1. System Information ──────────────────────────────────────────
-Write-Host "[1/10] Gathering system information..."
+Write-Host "[1/11] Gathering system information..."
 md "## 1. System Information"
 md ""
 
@@ -74,7 +74,7 @@ json "    `"is_admin`": `"$(if ($isAdmin) {'yes'} else {'no'})`""
 json "  },"
 
 # ── 2. Storage Information ─────────────────────────────────────────
-Write-Host "[2/10] Gathering storage information..."
+Write-Host "[2/11] Gathering storage information..."
 md "## 2. Storage Information"
 md ""
 md "### Drives"
@@ -109,7 +109,7 @@ json "  ],"
 md ""
 
 # ── 3. Network Information ─────────────────────────────────────────
-Write-Host "[3/10] Gathering network information..."
+Write-Host "[3/11] Gathering network information..."
 md "## 3. Network Information"
 md ""
 md "### IP Configuration"
@@ -185,7 +185,7 @@ json "    `"target_server`": { `"ip`": `"$(if ($TargetIP) {$TargetIP} else {''})
 json "  },"
 
 # ── 4. Software & Tools ────────────────────────────────────────────
-Write-Host "[4/10] Checking software and tools..."
+Write-Host "[4/11] Checking software and tools..."
 md "## 4. Software & Tools"
 md ""
 
@@ -234,7 +234,7 @@ if ($nssmOK) {
 json "  },"
 
 # ── 5. Permissions & Access ────────────────────────────────────────
-Write-Host "[5/10] Checking permissions..."
+Write-Host "[5/11] Checking permissions..."
 md "## 5. Permissions & Access"
 md ""
 
@@ -254,6 +254,9 @@ if ($psPolicy -eq "Restricted") {
 $fwProfiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $true }
 if ($fwProfiles) {
     md "- **Windows Firewall:** Active (ports 4200, 8080 may need rules)"
+    md "  - To add firewall rules, run these as Administrator:"
+    md "    netsh advfirewall firewall add rule name=`"AAM Prefect 4200`" dir=in action=allow protocol=tcp localport=4200"
+    md "    netsh advfirewall firewall add rule name=`"AAM Dashboard 8080`" dir=in action=allow protocol=tcp localport=8080"
     json "    `"firewall`": `"active`","
 } else {
     md "- **Windows Firewall:** Inactive"
@@ -266,13 +269,15 @@ if ($longPaths -and $longPaths.LongPathsEnabled -eq 1) {
     md "- **Long Paths (>260 chars):** Enabled"
 } else {
     md "- **Long Paths (>260 chars):** Disabled (deep directory backups may fail)"
+    md "  - Fix: Run deploy\setup_system.bat, or enable via Group Policy:"
+    md "    Computer Config > Admin Templates > System > Filesystem > Enable Win32 long paths"
 }
 
 json "    `"long_paths`": `"$(if ($longPaths -and $longPaths.LongPathsEnabled -eq 1) {'enabled'} else {'disabled'})`""
 json "  },"
 
 # ── 6. Existing Installation ───────────────────────────────────────
-Write-Host "[6/10] Checking for existing installation..."
+Write-Host "[6/11] Checking for existing installation..."
 md "## 6. Existing Installation"
 md ""
 
@@ -310,7 +315,7 @@ json $json_install
 md ""
 
 # ── 7. Port Availability ───────────────────────────────────────────
-Write-Host "[7/10] Checking port availability..."
+Write-Host "[7/11] Checking port availability..."
 md "## 7. Port Availability"
 md ""
 
@@ -340,7 +345,7 @@ json $json_ports
 md ""
 
 # ── 8. System Resources ───────────────────────────────────────────
-Write-Host "[8/10] Checking system resources..."
+Write-Host "[8/11] Checking system resources..."
 md "## 8. System Resources"
 md ""
 
@@ -359,7 +364,7 @@ json "    `"cpu_cores`": $cpuCores"
 json "  },"
 
 # ── 9. Timezone & Power ────────────────────────────────────────────
-Write-Host "[9/10] Checking timezone and power settings..."
+Write-Host "[9/11] Checking timezone and power settings..."
 md "## 9. Timezone & Power"
 md ""
 
@@ -372,6 +377,7 @@ if ($noAutoUpdate -and $noAutoUpdate.NoAutoUpdate -eq 1) {
     md "- **Auto Updates:** Disabled (good for servers)"
 } else {
     md "- **Auto Updates:** Enabled (may cause unexpected reboots)"
+    md "  - Fix: Run deploy\setup_system.bat to suppress auto-reboots"
 }
 
 # Pending reboot
@@ -389,7 +395,7 @@ json "    `"timezone`": `"$tz`""
 json "  },"
 
 # ── 10. GCS Connectivity ──────────────────────────────────────────
-Write-Host "[10/10] Testing GCS connectivity..."
+Write-Host "[10/11] Testing GCS connectivity..."
 md "## 10. GCS Connectivity"
 md ""
 
@@ -398,6 +404,7 @@ if ($gcsPing) {
     md "- **storage.googleapis.com:** Reachable"
 } else {
     md "- **storage.googleapis.com:** NOT reachable (cloud backups will fail)"
+    md "  - Check: firewall rules, proxy settings, DNS resolution, internet connectivity"
 }
 
 # NTP
@@ -417,6 +424,7 @@ json "    `"reachable`": `"$(if ($gcsPing) {'yes'} else {'no'})`""
 json "  },"
 
 # ── 11. Windows Services ───────────────────────────────────────────
+Write-Host "[11/11] Checking Windows services..."
 md "## 11. Windows Services"
 md ""
 

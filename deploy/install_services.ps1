@@ -100,7 +100,8 @@ if (-not $RcloneExe) {
 if (-not $RcloneExe) {
     Write-Host ""
     Write-Host "  ERROR: 'rclone' executable not found in deploy\bin or system PATH." -ForegroundColor Red
-    Write-Host "  Please place rclone.exe in deploy\bin\ per the Deployment Guide."
+    Write-Host "  Download rclone from: https://rclone.org/downloads/"
+    Write-Host "  Place rclone.exe in:  $BinDir"
     Write-Host ""
     pause; exit 1
 }
@@ -264,7 +265,13 @@ Write-Host ""
 Write-Host "[setup] Starting $SVC_SERVER..."
 net start $SVC_SERVER
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "  ERROR: Failed to start $SVC_SERVER. Check: $LogDir\prefect_svc.log" -ForegroundColor Red
+    Write-Host "  ERROR: Failed to start $SVC_SERVER. This service must be running" -ForegroundColor Red
+    Write-Host "  before the others can start." -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "  Troubleshooting:" -ForegroundColor Yellow
+    Write-Host "    1. Check if port 4200 is already in use:  netstat -ano | findstr :4200" -ForegroundColor Yellow
+    Write-Host "    2. Check the log for errors:  $LogDir\prefect_svc.log" -ForegroundColor Yellow
+    Write-Host "    3. Verify config.yaml is valid:  deploy\test_config.bat" -ForegroundColor Yellow
 }
 
 Write-Host "[setup] Waiting 15 seconds for Prefect API to initialize..."
@@ -274,12 +281,14 @@ Write-Host "[setup] Starting $SVC_AGENT..."
 net start $SVC_AGENT
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: $SVC_AGENT failed to start. It will retry automatically." -ForegroundColor Yellow
+    Write-Host "  If it keeps failing, check the log: $LogDir\agent_svc.log" -ForegroundColor Yellow
 }
 
 Write-Host "[setup] Starting $SVC_WATCHDOG..."
 net start $SVC_WATCHDOG
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: $SVC_WATCHDOG failed to start. It will retry automatically." -ForegroundColor Yellow
+    Write-Host "  If it keeps failing, check the log: $LogDir\watchdog_svc.log" -ForegroundColor Yellow
 }
 
 Write-Host ""

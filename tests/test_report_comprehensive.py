@@ -184,8 +184,8 @@ class TestGenerateReportHtml:
             result = generate_report_html(mock_db, "F", 30, "Monthly")
         # The runs table has a header row + up to 10 data rows.
         # Each run row has exactly one <tr>, and the header has one <tr>.
-        runs_section = result.split("Recent Runs")[1]
-        data_rows = runs_section.count("<td>") // 4  # 4 <td> per row
+        runs_section = result.split("Recent Backups")[1]
+        data_rows = runs_section.count("<td>") // 6  # 6 <td> per row
         assert data_rows == 10
 
 
@@ -195,16 +195,16 @@ class TestGenerateReportHtml:
 class TestSendFailureAlert:
     def test_skips_when_disabled(self):
         config = _make_config(send_on_failure=False)
-        result = send_failure_alert(config, "firm", "err", {"mode": "cloud", "run_id": "r1"})
+        result = send_failure_alert(config, "firm", "err", {"mode": "cloud"})
         assert result is False
 
     def test_sends_when_enabled(self):
         config = _make_config(send_on_failure=True)
         with patch("core.report._send_email", return_value=True) as mock_send:
-            result = send_failure_alert(config, "MyFirm", "boom", {"mode": "cloud", "run_id": "r42"})
+            result = send_failure_alert(config, "MyFirm", "boom", {"mode": "cloud"}, timestamp="2026-06-24T10:00:00Z")
         assert result is True
         call_args = mock_send.call_args
-        assert "FAILED" in call_args[0][1]
+        assert "Failure" in call_args[0][1]
         assert "MyFirm" in call_args[0][1]
         assert "boom" in call_args[1] or "boom" in str(call_args)
 

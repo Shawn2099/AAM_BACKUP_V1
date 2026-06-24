@@ -76,8 +76,8 @@ class TestGenerateReportHtml:
         html = generate_report_html(db, "TestFirm", 7, "Weekly")
         assert "TestFirm" in html
         assert "Weekly Backup Report" in html
-        assert "CLOUD_COMPLETE" in html
-        assert "LAN_PARTIAL" in html
+        assert "Completed" in html
+        assert "Partial" in html
         assert "42" in html
         assert "50.0%" in html  # 1 success out of 2 = 50%
 
@@ -129,7 +129,7 @@ class TestSendFailureAlert:
         mock_server = MagicMock()
         with patch("core.report.smtplib.SMTP", return_value=mock_server):
             result = send_failure_alert(
-                cfg, "TestFirm", "disk full", {"mode": "cloud", "run_id": "r-001"}
+                cfg, "TestFirm", "disk full", {"mode": "cloud"}, timestamp="2026-05-27T10:00:00Z"
             )
             assert result is True
             mock_server.sendmail.assert_called_once()

@@ -59,7 +59,7 @@ $yaml += "# Example lan_destination:  `"\\NAS_IP\share\$currentFY`""
 $yaml += ""
 
 # ── GCS Bucket ───────────────────────────────────────────────────────
-Write-Host "[3/5] GCS bucket info..."
+Write-Host "[3/5] Reading GCS bucket configuration..."
 $yaml += "# ── GCS Bucket ──"
 $yaml += "gcs_bucket: `"aam-cloudbackup`""
 $yaml += "gcs_project: `"aam-backup-2026`""
@@ -79,7 +79,7 @@ $yaml += "server_ip: `"$localIP`""
 $yaml += ""
 
 # ── Ports ────────────────────────────────────────────────────────────
-Write-Host "[5/5] Checking port availability..."
+Write-Host "[5/5] Adding default port configuration..."
 $yaml += "# ── Ports ──"
 $yaml += "# Prefect server (default: 4200)"
 $yaml += "prefect_port: 4200"

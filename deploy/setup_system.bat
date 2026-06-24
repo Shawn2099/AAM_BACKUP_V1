@@ -110,7 +110,9 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Long paths enabled.
 ) else (
-    echo [WARN] Long paths: registry write failed. Enable via Group Policy if needed.
+    echo [WARN] Long paths: registry write failed. Enable manually:
+    echo        Group Policy: Computer Config ^> Admin Templates ^> System ^> Filesystem
+    echo        Enable "Win32 long paths" and reboot.
 )
 
 :: ════════════════════════════════════════════════════════════════════
@@ -125,7 +127,9 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoReb
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Auto-reboot suppressed. Server will NOT reboot automatically after updates.
 ) else (
-    echo [WARN] Auto-reboot suppression failed. Configure via Group Policy if needed.
+    echo [WARN] Auto-reboot suppression failed. Enable manually:
+    echo        Group Policy: Computer Config ^> Admin Templates ^> Windows Components
+    echo        ^> Windows Update ^> "No auto-restart with logged on users"
 )
 
 :: ════════════════════════════════════════════════════════════════════

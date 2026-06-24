@@ -289,6 +289,7 @@ async def status(request: Request):
             "status": r.get("status", "?"),
             "started_at": (r.get("started_at") or "-")[:19].replace("T", " "),
             "files": r.get("files_copied", 0),
+            "files_failed": r.get("files_failed", 0),
             "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
             "error": r.get("error_message", ""),
             "extended_metrics": r.get("extended_metrics", "")
@@ -529,6 +530,7 @@ def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
         "status": run.get("status", "unknown"),
         "started_at": run.get("started_at", ""),
         "files": run.get("files_copied", 0),
+        "files_failed": run.get("files_failed", 0),
         "bytes": run.get("bytes_copied", 0),
         "duration": f"{run.get('duration_seconds', 0):.0f}s" if run.get("duration_seconds") else "?",
         "error": run.get("error_message"),
@@ -546,6 +548,21 @@ def _get_health() -> dict:
         }
     except Exception:
         return {"error": "unavailable"}
+
+
+def _human_status(status: str, files: int, files_failed: int) -> str:
+    """Convert a raw status code to a human-readable description."""
+    if status in ("CLOUD_NO_CHANGES_COMPLETE", "LAN_NO_CHANGES_COMPLETE"):
+        return "Backup Complete — no changes detected"
+    if status.endswith("_COMPLETE"):
+        if files_failed > 0:
+            return f"Backup Complete — {files} files backed up, {files_failed} could not be copied"
+        return f"Backup Complete — {files} files backed up"
+    if "_PARTIAL" in status:
+        return f"Backup Complete — {files} files backed up, {files_failed} could not be copied"
+    if "_FAILED" in status:
+        return "Backup Failed — see issue below"
+    return status
 
 
 # ── Dashboard HTML ───────────────────────────────────────────
@@ -579,14 +596,14 @@ async def _render_dashboard(flash: str = "") -> str:
             lr = _last_run_summary(db, "lan")
             if cr:
                 cloud_last = f"{cr['status']} — {(cr['started_at'] or '-')[:19].replace('T', ' ')}"
-                cloud_run = f"{cr['status']} ({cr['files']} changed)"
+                cloud_run = _human_status(cr["status"], cr["files"], cr.get("files_failed", 0))
                 if cr.get("error"):
-                    cloud_run += f" — {html.escape(cr['error'][:60])}"
+                    cloud_run += f" — {html.escape(cr['error'][:80])}"
             if lr:
                 lan_last = f"{lr['status']} — {(lr['started_at'] or '-')[:19].replace('T', ' ')}"
-                lan_run = f"{lr['status']} ({lr['files']} changed)"
+                lan_run = _human_status(lr["status"], lr["files"], lr.get("files_failed", 0))
                 if lr.get("error"):
-                    lan_run += f" — {html.escape(lr['error'][:60])}"
+                    lan_run += f" — {html.escape(lr['error'][:80])}"
             cloud_files = db.file_count("cloud_status")
             lan_files = db.file_count("lan_status")
 
@@ -618,20 +635,20 @@ async def _render_dashboard(flash: str = "") -> str:
                 mode_tag = f'<span class="tag {mode_escaped}">{mode_escaped.upper()}</span>'
                 s = r.get("status", "?")
                 if s == "CLOUD_NO_CHANGES_COMPLETE":
-                    s_tag = '<span class="tag success">NO CHANGES</span>'
+                    s_tag = '<span class="tag success">No Changes</span>'
                 elif "COMPLETE" in s or s == "CLOUD_COMPLETE" or s == "LAN_COMPLETE":
-                    s_tag = '<span class="tag success">OK</span>'
+                    s_tag = '<span class="tag success">Complete</span>'
                 elif "PARTIAL" in s:
-                    s_tag = '<span class="tag partial">PARTIAL</span>'
+                    s_tag = '<span class="tag partial">Partial</span>'
                 elif "FAILED" in s:
-                    s_tag = '<span class="tag failed">FAILED</span>'
+                    s_tag = '<span class="tag failed">Failed</span>'
                 else:
                     s_tag = f'<span class="tag">{html.escape(s[:10])}</span>'
                 ts = (r.get("started_at") or "-")[:19].replace("T", " ")
                 files = r.get("files_copied", 0)
                 err = r.get("error_message", "")
                 dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
-                err_cell = f'<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">{html.escape(err[:60])}</td>' if err else "<td>-</td>"
+                err_cell = f'<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis">{html.escape(err[:80])}</td>' if err else "<td>-</td>"
                 history_rows += f"<tr><td>{ts}</td><td>{mode_tag}</td><td>{s_tag}</td><td>{files}</td><td>{dur}</td>{err_cell}</tr>\n"
         finally:
             pass  # singleton — do not close

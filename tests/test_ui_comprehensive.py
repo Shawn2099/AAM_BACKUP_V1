@@ -333,17 +333,17 @@ class TestLastRunSummary:
 class TestGetLastSuccess:
     def test_returns_none_when_not_complete(self):
         mock_db = MagicMock()
-        mock_db.last_run.return_value = {"status": "RUNNING"}
+        mock_db.last_successful_run.return_value = {"status": "RUNNING"}
         assert _get_last_success(mock_db, "cloud") is None
 
     def test_returns_ended_at_when_complete(self):
         mock_db = MagicMock()
-        mock_db.last_run.return_value = {"status": "CLOUD_COMPLETE", "ended_at": "2026-01-01T00:00:00Z"}
+        mock_db.last_successful_run.return_value = {"status": "CLOUD_COMPLETE", "ended_at": "2026-01-01T00:00:00Z"}
         assert _get_last_success(mock_db, "cloud") == "2026-01-01T00:00:00Z"
 
     def test_returns_none_when_failed(self):
         mock_db = MagicMock()
-        mock_db.last_run.return_value = {"status": "CLOUD_FAILED", "ended_at": "2026-01-01T00:00:00Z"}
+        mock_db.last_successful_run.return_value = None
         assert _get_last_success(mock_db, "cloud") is None
 
 
