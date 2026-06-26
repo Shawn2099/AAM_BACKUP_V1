@@ -28,7 +28,7 @@ from loguru import logger
 from prefect.client.orchestration import get_client
 from prefect.client.schemas.filters import FlowRunFilter
 from prefect.client.schemas.objects import StateType
-from prefect.deployments import run_deployment
+from prefect.deployments import run_deployment, arun_deployment
 
 
 from core.time_utils import IST, cron_to_human, get_fy_prefix
@@ -187,7 +187,7 @@ async def _run_in_background(pipeline: str):
 
     try:
         logger.info(f"Manual trigger: {pipeline}")
-        flow_run = await run_deployment(name=f"aam-backup/backup-{pipeline}")
+        flow_run = await arun_deployment(name=f"aam-backup/backup-{pipeline}")
         logger.info(f"Triggered {pipeline} — run ID: {flow_run.id}")
     except Exception as e:
         logger.error(f"Manual {pipeline} trigger failed: {e}")
