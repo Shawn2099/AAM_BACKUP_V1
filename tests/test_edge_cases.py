@@ -730,7 +730,12 @@ class TestReportEdgeCases:
                 smtp_username="user", smtp_password="pass",
                 sender="test@test.com", recipients=["r@test.com"],
             )
-            with patch("core.report._send_email", return_value=True):
+            # send_summary_report aborts early if no runs are found. Add a dummy run.
+            db.insert_run({
+                "run_id": "dummy", "mode": "cloud", "started_at": "2026-06-26T10:00:00Z",
+                "status": "SUCCESS"
+            })
+            with patch("core.report._send_email_with_attachments", return_value=True):
                 result = send_summary_report(
                     db, cfg, "Test Firm", 7, "Weekly",
                     body_html="<html>test</html>",

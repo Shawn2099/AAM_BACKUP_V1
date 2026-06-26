@@ -17,7 +17,7 @@ def main():
     config_path = os.path.join(project_root, "config.yaml")
     
     if not os.path.exists(config_path):
-        print(f"❌ ERROR: config.yaml not found at {config_path}")
+        print(f"ERROR: config.yaml not found at {config_path}")
         input("\nPress Enter to exit...")
         sys.exit(1)
         

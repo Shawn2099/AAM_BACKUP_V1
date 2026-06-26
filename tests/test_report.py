@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import humanize
-from core.report import _send_email, send_failure_alert, generate_report_html
+from core.report import _send_email_with_attachments, send_failure_alert, generate_report_html
 from models.config import NotificationConfig
 
 
@@ -30,7 +30,7 @@ class TestHumanBytes:
 class TestSendEmail:
     def test_skips_when_no_smtp_host(self):
         cfg = NotificationConfig(smtp_host="")
-        assert _send_email(cfg, "Subject", "<p>body</p>") is False
+        assert _send_email_with_attachments(cfg, "Subject", "<p>body</p>") is False
 
     def test_skips_when_no_credentials(self):
         cfg = NotificationConfig(
@@ -41,7 +41,7 @@ class TestSendEmail:
             smtp_username="",
             smtp_password="",
         )
-        assert _send_email(cfg, "Subject", "<p>body</p>") is False
+        assert _send_email_with_attachments(cfg, "Subject", "<p>body</p>") is False
 
     def test_sends_successfully_tls(self):
         cfg = NotificationConfig(
@@ -54,7 +54,7 @@ class TestSendEmail:
         )
         mock_server = MagicMock()
         with patch("core.report.smtplib.SMTP", return_value=mock_server):
-            assert _send_email(cfg, "Subject", "<p>body</p>") is True
+            assert _send_email_with_attachments(cfg, "Subject", "<p>body</p>") is True
             mock_server.login.assert_called_once_with("user", "pass")
             mock_server.sendmail.assert_called_once()
 
@@ -92,7 +92,7 @@ class TestGenerateReportHtml:
         )
         mock_server = MagicMock()
         with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server):
-            assert _send_email(cfg, "Subject", "<p>body</p>") is True
+            assert _send_email_with_attachments(cfg, "Subject", "<p>body</p>") is True
             mock_server.login.assert_called_once_with("user", "pass")
 
     def test_quits_on_sendmail_failure(self):
@@ -107,7 +107,7 @@ class TestGenerateReportHtml:
         mock_server = MagicMock()
         mock_server.sendmail.side_effect = ConnectionError("timeout")
         with patch("core.report.smtplib.SMTP", return_value=mock_server):
-            assert _send_email(cfg, "Subject", "<p>body</p>") is False
+            assert _send_email_with_attachments(cfg, "Subject", "<p>body</p>") is False
             mock_server.quit.assert_called_once()
 
 

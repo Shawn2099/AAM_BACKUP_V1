@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.report import (
-    _send_email,
+    _send_email_with_attachments,
     generate_report_html,
     send_failure_alert,
     send_monthly_report,
@@ -38,35 +38,35 @@ def _make_config(**overrides) -> NotificationConfig:
     return NotificationConfig(**defaults)
 
 
-# ── _send_email ──────────────────────────────────────────────────────────────
+# ── _send_email_with_attachments ──────────────────────────────────────────────────────────────
 
 
 class TestSendEmail:
     def test_returns_false_when_no_host(self):
         config = _make_config(smtp_host="")
-        assert _send_email(config, "subj", "<p>hi</p>") is False
+        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
 
     def test_returns_false_when_no_sender(self):
         config = _make_config(sender="")
-        assert _send_email(config, "subj", "<p>hi</p>") is False
+        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
 
     def test_returns_false_when_no_recipients(self):
         config = _make_config(recipients=[])
-        assert _send_email(config, "subj", "<p>hi</p>") is False
+        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
 
     def test_returns_false_when_no_username(self):
         config = _make_config(smtp_username="")
-        assert _send_email(config, "subj", "<p>hi</p>") is False
+        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
 
     def test_returns_false_when_no_password(self):
         config = _make_config(smtp_password="")
-        assert _send_email(config, "subj", "<p>hi</p>") is False
+        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
 
     def test_ssl_port_465(self):
         config = _make_config(smtp_port=465)
         mock_server = MagicMock()
         with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server) as mock_ssl:
-            result = _send_email(config, "subj", "<p>hi</p>")
+            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is True
         mock_ssl.assert_called_once_with("smtp.example.com", 465, timeout=30)
         mock_server.login.assert_called_once()
@@ -77,7 +77,7 @@ class TestSendEmail:
         config = _make_config(smtp_port=587)
         mock_server = MagicMock()
         with patch("core.report.smtplib.SMTP", return_value=mock_server) as mock_smtp:
-            result = _send_email(config, "subj", "<p>hi</p>")
+            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is True
         mock_smtp.assert_called_once_with("smtp.example.com", 587, timeout=30)
         mock_server.starttls.assert_called_once()
@@ -89,14 +89,14 @@ class TestSendEmail:
         config = _make_config(smtp_port=25)
         mock_server = MagicMock()
         with patch("core.report.smtplib.SMTP", return_value=mock_server):
-            result = _send_email(config, "subj", "<p>hi</p>")
+            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is True
         mock_server.starttls.assert_called_once()
 
     def test_returns_false_on_smtp_connection_error(self):
         config = _make_config()
         with patch("core.report.smtplib.SMTP_SSL", side_effect=ConnectionRefusedError("refused")):
-            result = _send_email(config, "subj", "<p>hi</p>")
+            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is False
 
     def test_returns_false_on_sendmail_failure(self):
@@ -105,7 +105,7 @@ class TestSendEmail:
         mock_server.sendmail.side_effect = smtplib.SMTPException("send failed")
         with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server):
             with patch("core.report.smtplib.SMTPException", SMTPException=type(mock_server.sendmail.side_effect)):
-                result = _send_email(config, "subj", "<p>hi</p>")
+                result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is False
 
     def test_quit_called_even_on_error(self):
@@ -113,7 +113,7 @@ class TestSendEmail:
         mock_server = MagicMock()
         mock_server.login.side_effect = Exception("login failed")
         with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server):
-            result = _send_email(config, "subj", "<p>hi</p>")
+            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is False
         mock_server.quit.assert_called()
 
@@ -182,11 +182,11 @@ class TestGenerateReportHtml:
         ]
         with patch("core.report.now_formatted", return_value="2026-06-24 10:00 IST"):
             result = generate_report_html(mock_db, "F", 30, "Monthly")
-        # All 15 runs should be shown — no hard cap.
+        # Only 10 runs should be shown (capped).
         runs_section = result.split("Recent Backups")[1]
         data_rows = runs_section.count("<td>") // 6  # 6 <td> per row
-        assert data_rows == 15
-        assert "All 15 backups shown" in result
+        assert data_rows == 10
+        assert "Showing 10 most recent backups" in result
 
 
 # ── send_failure_alert ───────────────────────────────────────────────────────
@@ -200,7 +200,7 @@ class TestSendFailureAlert:
 
     def test_sends_when_enabled(self):
         config = _make_config(send_on_failure=True)
-        with patch("core.report._send_email", return_value=True) as mock_send:
+        with patch("core.report._send_email_with_attachments", return_value=True) as mock_send:
             result = send_failure_alert(config, "MyFirm", "boom", {"mode": "cloud"}, timestamp="2026-06-24T10:00:00Z")
         assert result is True
         call_args = mock_send.call_args
@@ -260,7 +260,7 @@ class TestSendSummaryReport:
         config = _make_config()
         with (
             patch("core.report.generate_report_html", return_value="<p>report</p>"),
-            patch("core.report._send_email", return_value=True) as mock_send,
+            patch("core.report._send_email_with_attachments", return_value=True) as mock_send,
         ):
             result = send_summary_report(mock_db, config, "Firm", 7, "Weekly")
         assert result is True
@@ -269,7 +269,7 @@ class TestSendSummaryReport:
     def test_uses_provided_body_html(self):
         mock_db = MagicMock()
         config = _make_config()
-        with patch("core.report._send_email", return_value=True) as mock_send:
+        with patch("core.report._send_email_with_attachments", return_value=True) as mock_send:
             result = send_summary_report(mock_db, config, "Firm", 7, "Weekly", body_html="<p>override</p>")
         assert result is True
         assert "<p>override</p>" in str(mock_send.call_args)

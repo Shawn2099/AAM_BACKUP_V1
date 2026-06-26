@@ -21,6 +21,8 @@ from pathlib import Path
 import pendulum
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from loguru import logger
 
 from prefect.client.orchestration import get_client
@@ -60,9 +62,9 @@ def _check_rate_limit(client_ip: str, max_attempts: int) -> bool:
         _RATE_LIMITS[client_ip] = entries
         return True
 
-from templates.dashboard import render_dashboard
-
 app = FastAPI(title="AAM Backup Dashboard")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
 # ── In-memory session store ──────────────────────────
 
@@ -270,7 +272,36 @@ def _require_auth(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, status: str = ""):
     _require_auth(request)
-    return HTMLResponse(await _render_dashboard(status))
+    cfg = _cfg()
+
+    flash_map = {
+        "triggered_cloud": ("Cloud backup started. Check back in a few minutes.", "success"),
+        "triggered_lan": ("LAN backup started (WoL + sync + shutdown).", "success"),
+        "already_running_cloud": ("Cloud backup is already in progress.", "warning"),
+        "already_running_lan": ("LAN backup is already in progress.", "warning"),
+    }
+    flash_html = ""
+    if status in flash_map:
+        msg, cls = flash_map[status]
+        flash_html = f'<div class="flash {cls}">{msg}</div>'
+
+    cloud_schedule = cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
+    lan_schedule = cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
+
+    context = {
+        "request": request,
+        "fy_prefix": get_fy_prefix(),
+        "flash_html": flash_html,
+        "auth_enabled": _auth_enabled(),
+        "cloud_schedule": cloud_schedule,
+        "lan_schedule": lan_schedule,
+    }
+    try:
+        # Starlette >= 0.28
+        return templates.TemplateResponse(request=request, name="dashboard.html", context=context)
+    except TypeError:
+        # Starlette < 0.28
+        return templates.TemplateResponse("dashboard.html", context)
 
 
 @app.get("/status")
@@ -286,6 +317,9 @@ async def status(request: Request):
 
     recent_runs = []
     for r in runs:
+        err_msg = r.get("error_message") or ""
+        if len(err_msg) > 2000:
+            err_msg = err_msg[:2000] + "..."
         recent_runs.append({
             "mode": r.get("mode", "?"),
             "status": r.get("status", "?"),
@@ -293,7 +327,7 @@ async def status(request: Request):
             "files": r.get("files_copied", 0),
             "files_failed": r.get("files_failed", 0),
             "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
-            "error": r.get("error_message", ""),
+            "error": err_msg,
             "extended_metrics": r.get("extended_metrics", "")
         })
 
@@ -508,14 +542,16 @@ def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
     run = db.last_run(mode)
     if not run:
         return None
+    err_msg = run.get("error_message") or ""
+    if len(err_msg) > 2000:
+        err_msg = err_msg[:2000] + "..."
     return {
         "status": run.get("status", "unknown"),
         "started_at": run.get("started_at", ""),
         "files": run.get("files_copied", 0),
         "files_failed": run.get("files_failed", 0),
-        "bytes": run.get("bytes_copied", 0),
         "duration": f"{run.get('duration_seconds', 0):.0f}s" if run.get("duration_seconds") else "?",
-        "error": run.get("error_message"),
+        "error": err_msg,
         "ended_at": run.get("ended_at", ""),
     }
 
@@ -532,30 +568,4 @@ async def _get_health() -> dict:
         return {"error": "unavailable"}
 
 
-# ── Dashboard HTML ───────────────────────────────────────────
-
-async def _render_dashboard(flash: str = "") -> str:
-    cfg = _cfg()
-
-    flash_map = {
-        "triggered_cloud": ("Cloud backup started. Check back in a few minutes.", "success"),
-        "triggered_lan": ("LAN backup started (WoL + sync + shutdown).", "success"),
-        "already_running_cloud": ("Cloud backup is already in progress.", "warning"),
-        "already_running_lan": ("LAN backup is already in progress.", "warning"),
-    }
-    flash_html = ""
-    if flash in flash_map:
-        msg, cls = flash_map[flash]
-        flash_html = f'<div class="flash {cls}">{msg}</div>'
-
-    cloud_schedule = cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
-    lan_schedule = cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
-
-    return render_dashboard(
-        fy_prefix=get_fy_prefix(),
-        flash_html=flash_html,
-        auth_enabled=_auth_enabled(),
-        cloud_schedule=cloud_schedule,
-        lan_schedule=lan_schedule,
-    )
 

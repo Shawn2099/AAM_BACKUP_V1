@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AAM Backup Dashboard</title>
+<link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+<div id="toast-container" style="position: fixed; top: 1.5rem; right: 1.5rem; z-index: 10000; display: flex; flex-direction: column; gap: 0.75rem; max-width: 350px;"></div>
+<div class="container">
+<h1>AAM Backup Dashboard</h1>
+<p class="subtitle">Secure Automated Sequential Multi-Destination Backups</p>
+<div id="flash-container">
+    {% if flash_html %}
+    {{ flash_html | safe }}
+    {% endif %}
+</div>
+<div class="stats">
+    <div class="stat"><div class="num" id="stat-lan-files">...</div><div class="label">Files on NAS</div></div>
+    <div class="stat"><div class="num" id="stat-cloud-files">...</div><div class="label">Files on Cloud</div></div>
+    <div class="stat"><div class="num" id="stat-fy-prefix">{{ fy_prefix }}</div><div class="label">Fiscal Year</div></div>
+</div>
+<div class="grid">
+    <div class="card unknown" id="card-cloud">
+        <h2>Cloud Backup <span class="status-badge unknown" id="badge-cloud">Loading...</span></h2>
+        <p id="desc-cloud">Fetching status...</p>
+        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last backup: Loading...</p>
+        <p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p>
+        <p style="font-size:0.75rem;color:#6b7280" id="cloud-last-success">Last success: Loading...</p>
+        <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'cloud')">
+            <button class="btn-trigger btn-cloud" id="btn-cloud" disabled>Loading...</button>
+        </form>
+    </div>
+    <div class="card unknown" id="card-lan">
+        <h2>LAN Backup <span class="status-badge unknown" id="badge-lan">Loading...</span></h2>
+        <p id="desc-lan">Fetching status...</p>
+        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last backup: Loading...</p>
+        <p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p>
+        <p style="font-size:0.75rem;color:#6b7280" id="lan-last-success">Last success: Loading...</p>
+        <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'lan')">
+            <button class="btn-trigger btn-lan" id="btn-lan" disabled>Loading...</button>
+        </form>
+    </div>
+</div>
+<div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+    <button class="btn-trigger" onclick="generateReport('weekly')">Download Weekly Report</button>
+    <button class="btn-trigger" onclick="generateReport('monthly')">Download Monthly Report</button>
+    <button class="btn-trigger" id="btn-email-weekly" onclick="emailReport('weekly')" style="background:#0e7490">Email Weekly Report</button>
+    <button class="btn-trigger" id="btn-email-monthly" onclick="emailReport('monthly')" style="background:#0e7490">Email Monthly Report</button>
+</div>
+<h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Recent Backups</h2>
+<table>
+<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
+<tbody id="history-tbody"><tr><td colspan="6" style="color:#6b7280; text-align: center;">Loading data...</td></tr></tbody>
+</table>
+<div class="info">
+    <p id="health-info">Fetching health info...</p>
+    <p style="margin-top:0.25rem">AAM Backup System — Live, updates automatically{% if auth_enabled %} &middot; <a href='/logout' style='color:#60a5fa'>Logout</a>{% endif %}</p>
+</div>
+</div>
+<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/report.js"></script>
+</body>
+</html>

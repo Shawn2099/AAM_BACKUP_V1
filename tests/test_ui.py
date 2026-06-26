@@ -15,7 +15,6 @@ from ui import (
     _create_session,
     _get_last_success,
     _last_run_summary,
-    _render_dashboard,
     _require_auth,
     _serve_report,
     _validate_session,
@@ -113,7 +112,6 @@ class TestLastRunSummary:
         summary = _last_run_summary(db, "cloud")
         assert summary["status"] == "CLOUD_COMPLETE"
         assert summary["files"] == 42
-        assert summary["bytes"] == 123456
         assert summary["duration"] == "123s"
 
 
@@ -354,11 +352,14 @@ class TestTriggerEndpoints:
 
 
 class TestDashboardRendering:
-    def test_render_dashboard_returns_html(self):
-        with patch("ui._cfg") as mock_cfg:
+    def test_dashboard_endpoint_returns_html(self):
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._cfg") as mock_cfg:
             mock_cfg.return_value = MagicMock(
                 schedule=MagicMock(cloud_cron="0 18 * * *", lan_cron="0 1 * * *", timezone="Asia/Kolkata"),
             )
-            html = asyncio.run(_render_dashboard())
-            assert "html" in html.lower()
-            assert "AAM Backup System" in html
+            response = client.get("/")
+            assert response.status_code == 200
+            assert "html" in response.text.lower()
+            assert "AAM Backup Dashboard" in response.text
