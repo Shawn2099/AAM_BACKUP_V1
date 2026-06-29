@@ -1,0 +1,122 @@
+# ═══════════════════════════════════════════════════
+# AAM BACKUP AUTOMATION V1 — CONFIGURATION
+# Generated for Hostname: AAMBDC001 (caaam.com)
+# ═══════════════════════════════════════════════════
+
+firm_name: "AAM"
+
+# ═══════════════════════════════════════════════════
+# FILE SYSTEM PATHS
+# ═══════════════════════════════════════════════════
+paths:
+  # NOTE: I selected E: because it has the most free space (657.5 GB). 
+  # Please confirm if this is where the actual data resides.
+  source_drive: "E:\\YOUR_DATA\\FY25-26" 
+  
+  # I need the NAS details to complete this.
+  lan_destination: "\\\\NAS_IP\\share\\FY25-26" 
+  
+  runtime_dir: "C:\\BackupAgent"
+  gcs_key_path: "C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json"
+
+# ═══════════════════════════════════════════════════
+# LAN BACKUP
+# ═══════════════════════════════════════════════════
+lan:
+  enabled: true
+  retry_count: 3
+  retry_wait_seconds: 10
+  subprocess_timeout_seconds: 14400
+  shutdown_after_backup: true
+  max_attempts: 2
+  retry_delay_seconds: 600
+  # Set to 2 based on server having a 2-core Intel Xeon CPU
+  mt_threads: 2 
+
+# ═══════════════════════════════════════════════════
+# WAKE-ON-LAN
+# ═══════════════════════════════════════════════════
+wol:
+  enabled: true
+  mac_address: "AA:BB:CC:DD:EE:FF"  # NEED THIS
+  server_ip: "192.168.10.X"         # NEED THIS (Same subnet as 192.168.10.5)
+  broadcast_address: "192.168.10.255"
+  wake_timeout_seconds: 300
+  ping_interval_seconds: 15
+  stability_wait_seconds: 30
+
+# ═══════════════════════════════════════════════════
+# CLOUD BACKUP
+# ═══════════════════════════════════════════════════
+cloud:
+  enabled: true
+  bucket: "your-gcs-bucket-name"          # NEED THIS
+  project_number: "YOUR_GCP_PROJECT_NUMBER" # NEED THIS
+  location: "asia-south1"
+  storage_class: "STANDARD"
+  bandwidth_limit: "25M"
+  retry_count: 3
+  subprocess_timeout_seconds: 21600
+  max_attempts: 3
+  retry_delay_seconds: 300
+  verify_timeout_seconds: 14400
+  preflight_timeout_seconds: 300
+  diff_timeout_seconds: 600
+  manifest_timeout_seconds: 300
+  cloud_size_timeout_seconds: 30
+  transfers: 2
+  checkers: 2
+  buffer_size: "64M"
+
+# ═══════════════════════════════════════════════════
+# SCHEDULES
+# ═══════════════════════════════════════════════════
+schedule:
+  cloud_cron: "0 18 * * *"
+  lan_cron: "0 1 * * *"
+  weekly_cron: "0 8 * * MON"
+  monthly_cron: "0 8 1 * *"
+  timezone: "Asia/Kolkata"
+
+# ═══════════════════════════════════════════════════
+# DASHBOARD UI
+# ═══════════════════════════════════════════════════
+dashboard:
+  auth_enabled: true
+  api_key: "CHANGE_THIS_STRONG_KEY"
+  bind_address: "127.0.0.1"
+  port: 8080
+
+# ═══════════════════════════════════════════════════
+# EMAIL NOTIFICATIONS
+# ═══════════════════════════════════════════════════
+notifications:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_username: "your-smtp-user@gmail.com"  # NEED THIS
+  smtp_password: "YOUR_APP_PASSWORD"         # NEED THIS
+  sender: "your-smtp-user@gmail.com"         # NEED THIS
+  recipients:
+    - "recipient1_placeholder@example.com"
+    - "recipient2_placeholder@example.com"
+    - "recipient3_placeholder@example.com"
+  send_on_failure: true
+  send_on_success: false
+  weekly_enabled: false
+  monthly_enabled: true
+
+# ═══════════════════════════════════════════════════
+# MAINTENANCE & HEALTH CHECKS
+# ═══════════════════════════════════════════════════
+maintenance:
+  db_retention_days: 91
+  log_retention_days: 91
+  sqlite_busy_timeout_ms: 30000
+  sqlite_vacuum_freelist_threshold: 10000
+
+health:
+  max_clock_skew_seconds: 600
+  clock_check_timeout_seconds: 10
+  min_free_source_gb: 1
+  rollover_auth_timeout_seconds: 30
+  rollover_archive_timeout_seconds: 600
