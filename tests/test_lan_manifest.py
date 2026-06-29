@@ -1,8 +1,5 @@
 """Tests for lan_manifest — filesystem walk, snapshot, and diff logic."""
 
-import os
-import tempfile
-from pathlib import Path
 
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 

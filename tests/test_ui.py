@@ -1,6 +1,5 @@
 """Tests for dashboard UI — authentication, helpers, rendering, and reports."""
 
-import asyncio
 import time
 from unittest.mock import MagicMock, patch
 
@@ -208,28 +207,26 @@ from fastapi.testclient import TestClient
 
 class TestEndpointHealth:
     def test_health_returns_200(self):
-        with patch("ui.Path.exists", return_value=True):
-            with patch("ui._cfg") as mock_cfg:
-                mock_cfg.return_value = MagicMock(
-                    paths=MagicMock(source_drive="/tmp"),
-                )
-                client = TestClient(ui.app)
-                response = client.get("/health")
-                assert response.status_code == 200
-                data = response.json()
-                assert data["status"] == "healthy"
+        with patch("ui.Path.exists", return_value=True), patch("ui._cfg") as mock_cfg:
+            mock_cfg.return_value = MagicMock(
+                paths=MagicMock(source_drive="/tmp"),
+            )
+            client = TestClient(ui.app)
+            response = client.get("/health")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "healthy"
 
     def test_health_source_accessible_false(self):
-        with patch("ui.Path.exists", return_value=False):
-            with patch("ui._cfg") as mock_cfg:
-                mock_cfg.return_value = MagicMock(
-                    paths=MagicMock(source_drive="/nonexistent"),
-                )
-                client = TestClient(ui.app)
-                response = client.get("/health")
-                assert response.status_code == 200
-                data = response.json()
-                assert data["source_accessible"] is False
+        with patch("ui.Path.exists", return_value=False), patch("ui._cfg") as mock_cfg:
+            mock_cfg.return_value = MagicMock(
+                paths=MagicMock(source_drive="/nonexistent"),
+            )
+            client = TestClient(ui.app)
+            response = client.get("/health")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["source_accessible"] is False
 
 
 class TestEndpointLogin:

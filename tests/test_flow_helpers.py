@@ -1,9 +1,8 @@
 """Tests for flow.py helper functions — stable run_id, error handling."""
 
-import uuid
 
-from flow import _stable_run_id
 from core.time_utils import now_iso
+from flow import _stable_run_id
 
 
 class TestStableRunId:

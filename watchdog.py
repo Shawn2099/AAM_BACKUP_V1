@@ -39,6 +39,7 @@ Zero new dependencies: httpx and loguru are already project requirements.
 import subprocess
 import sys
 import time
+import contextlib
 from pathlib import Path
 
 from loguru import logger
@@ -254,10 +255,8 @@ def main() -> None:
                     f"(~{deferrals * BACKUP_WAIT_INTERVAL // 3600} h). "
                     f"Possible zombie rclone/robocopy. Forcing restart."
                 )
-                try:
+                with contextlib.suppress(OSError):
                     BACKUP_LOCK_PATH.unlink(missing_ok=True)
-                except OSError:
-                    pass
                 deferrals = 0
                 # Fall through to restart logic
             else:
@@ -284,10 +283,8 @@ def main() -> None:
                     f"Forcing restart."
                 )
                 # Force-remove the lock and fall through to restart logic
-                try:
+                with contextlib.suppress(OSError):
                     BACKUP_LOCK_PATH.unlink(missing_ok=True)
-                except OSError:
-                    pass
                 deferrals = 0
             else:
                 logger.warning(

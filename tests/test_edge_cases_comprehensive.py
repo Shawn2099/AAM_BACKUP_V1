@@ -1,9 +1,8 @@
 """Comprehensive edge case tests — lock files, PID validation, exit code classification."""
 
 import os
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -13,10 +12,9 @@ def prefect_harness():
     yield
 
 
-from core.process import read_lock_alive, write_lock, pid_alive
 from core.cloud_sync import classify_rclone_exit
 from core.lan_sync import classify_exit_code
-
+from core.process import pid_alive, read_lock_alive, write_lock
 
 # ═══════════════════════════════════════════════════════════════════
 # Lock File — PID:create_time Format (New)

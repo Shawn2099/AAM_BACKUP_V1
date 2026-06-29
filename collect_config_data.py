@@ -1,10 +1,12 @@
 import os
-import sys
 import socket
+import sys
+
 import psutil
 import yaml
+
 from core.time_utils import get_fy_prefix
-from models.config import AppConfig, CONFIG_PATH
+from models.config import CONFIG_PATH, AppConfig
 
 # Force UTF-8 encoding for stdout to support emojis on Windows CMD
 if hasattr(sys.stdout, 'reconfigure'):
@@ -42,6 +44,8 @@ def list_drives():
     return drives
 
 import subprocess
+
+
 def is_firewall_open(port: int = 8080) -> bool:
     try:
         cmd = f"powershell -Command \"Get-NetFirewallRule | Where-Object {{ $_.Enabled -eq $true -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' }} | Get-NetFirewallPortFilter | Where-Object {{ $_.LocalPort -eq '{port}' }}\""
@@ -54,7 +58,7 @@ def verify_with_pydantic(snippet_data: dict) -> bool:
     """Uses the existing Pydantic AppConfig model to verify the snippet is valid."""
     try:
         # Load the base config.yaml so we have all the required fields
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             full_config = yaml.safe_load(f)
             
         # Update with our snippet data
@@ -118,7 +122,7 @@ def main():
     print(f"  # ⚠️  FIRST DEPLOYMENT: Manually create \\\\<NAS_IP>\\share\\{fy}\\ on the NAS")
     print(f"  source_drive: \"D:\\\\{fy}\"  # <-- UPDATE drive letter if not D:")
     print(f"  lan_destination: \"\\\\\\\\192.168.1.100\\\\share\\\\{fy}\"  # <-- UPDATE IP and share name")
-    print(f"  # GCS key: place your .json key at deploy\\keys\\aam-gcs-key.json")
+    print("  # GCS key: place your .json key at deploy\\keys\\aam-gcs-key.json")
     print(f"  gcs_key_path: \"{key_path_yaml}\"")
     print()
     
@@ -139,12 +143,12 @@ def main():
             else:
                 print(f"# NETWORK INTERFACE: {name} [❌ Validation Failed]")
             print("# " + "-"*50)
-            print(f"# IF THIS IS THE TARGET (NAS) SERVER, use these in 'wol':")
+            print("# IF THIS IS THE TARGET (NAS) SERVER, use these in 'wol':")
             print("wol:")
             print(f"  mac_address: \"{mac}\"")
             print(f"  server_ip: \"{ip}\"")
             print()
-            print(f"# IF THIS IS THE SOURCE (BACKUP) SERVER, use this in 'dashboard':")
+            print("# IF THIS IS THE SOURCE (BACKUP) SERVER, use this in 'dashboard':")
             print("dashboard:")
             print(f"  bind_address: \"{ip}\"")
             print()

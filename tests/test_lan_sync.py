@@ -5,7 +5,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.lan_sync import _validate_required_flags, _read_log_tail, build_robocopy_command, classify_exit_code, run_lan_sync
+from core.lan_sync import (
+    _read_log_tail,
+    _validate_required_flags,
+    build_robocopy_command,
+    classify_exit_code,
+    run_lan_sync,
+)
 from models.config import LanConfig
 
 

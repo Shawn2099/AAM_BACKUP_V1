@@ -24,14 +24,11 @@ Test matrix:
         - temp config is always cleaned up (context manager respected)
 """
 
-from contextlib import contextmanager
-from unittest.mock import patch, MagicMock, call
 import subprocess
-
-import pytest
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 from core.cloud_preflight import run_cloud_dry_run
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

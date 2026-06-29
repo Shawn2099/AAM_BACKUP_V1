@@ -1,12 +1,11 @@
-import os
 import sqlite3
-import time
-import pytest
 import threading
+import time
 from pathlib import Path
 
 from core.manifest import ManifestDB
-from core.time_utils import now_iso, cutoff_iso
+from core.time_utils import cutoff_iso, now_iso
+
 
 def get_temp_db_path(tmp_path) -> Path:
     return tmp_path / "test_manifest.db"
@@ -145,7 +144,6 @@ def test_db_06_purge_old_runs(tmp_path):
     db = ManifestDB(db_path)
     
     try:
-        import pendulum
         old_time = cutoff_iso(200) # 200 days old
         now_time = now_iso()
         

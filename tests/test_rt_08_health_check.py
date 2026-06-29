@@ -1,23 +1,21 @@
-import os
+import json
 import shutil
 import time
-import json
+
 import pytest
-from pathlib import Path
 
 from core.health import (
-    check_source_drive,
-    check_binary_exists,
-    check_gcs_key,
-    check_clock_skew,
-    pre_backup_health,
     HealthError,
+    check_binary_exists,
+    check_clock_skew,
+    check_gcs_key,
+    check_source_drive,
+    pre_backup_health,
 )
-
 from tests.e2e_helpers import (
     cfg,
-    source_test_dir,
     make_file,
+    source_test_dir,
 )
 
 
@@ -65,7 +63,7 @@ def test_hc_04_gcs_key_check():
     assert reason == ""
     
     # Verify it's valid JSON
-    with open(key_path, "r", encoding="utf-8") as f:
+    with open(key_path, encoding="utf-8") as f:
         data = json.load(f)
         assert "type" in data
         assert data["type"] == "service_account"

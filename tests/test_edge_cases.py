@@ -3,14 +3,8 @@
 These tests catch real production bugs that unit tests masked.
 """
 
-import json
 import os
-import sqlite3
-import threading
-import time
-from datetime import date
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -387,8 +381,8 @@ class TestManifestDBEdgeCases:
 
     def test_wal_checkpoint_after_run(self, tmp_path):
         """WAL is checkpointed after run history write."""
-        from core.manifest import ManifestDB
         from core.backup_repository import record_run_history
+        from core.manifest import ManifestDB
 
         db = ManifestDB(str(tmp_path / "test.db"))
         try:
@@ -596,7 +590,7 @@ class TestWatchdogDeferral:
 
     def test_maximum_deferral_limit_exists(self):
         """Verify MAX_DEFERRALS constant is defined and reasonable."""
-        from watchdog import MAX_DEFERRALS, BACKUP_WAIT_INTERVAL
+        from watchdog import BACKUP_WAIT_INTERVAL, MAX_DEFERRALS
         assert MAX_DEFERRALS == 15
         assert BACKUP_WAIT_INTERVAL == 120
         # 15 deferrals × 120s = 30 minutes max wait
@@ -657,8 +651,9 @@ dashboard:
         assert p.lan_destination == "\\\\server\\share"
 
     def test_config_maintenance_bounds(self):
-        from models.config import MaintenanceConfig
         from pydantic import ValidationError
+
+        from models.config import MaintenanceConfig
 
         # Valid bounds
         assert MaintenanceConfig(db_retention_days=7).db_retention_days == 7
@@ -672,8 +667,9 @@ dashboard:
 
     def test_config_cross_validation_neither_enabled(self, tmp_path):
         """Neither destination enabled → error."""
-        from models.config import AppConfig
         from pydantic import ValidationError
+
+        from models.config import AppConfig
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text("""

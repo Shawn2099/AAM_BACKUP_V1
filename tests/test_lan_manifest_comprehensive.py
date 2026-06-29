@@ -3,13 +3,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from unittest.mock import patch
 
-import pytest
-
-from core.lan_manifest import walk_lan_destination, snapshot_to_dict, diff_snapshots
-
+from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 
 # ═══════════════════════════════════════════════════════════════
 # 1. walk_lan_destination

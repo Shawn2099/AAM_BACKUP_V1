@@ -5,10 +5,7 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from core.shutdown import shutdown_server
-
 
 # ═══════════════════════════════════════════════════════════════
 # 1. Success paths

@@ -1,12 +1,12 @@
 """Shared fixtures for AAM Backup Automation V1 tests."""
 
-import tempfile
-from pathlib import Path
-
-import pytest
 import os
 import sys
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 # Mock Windows-specific modules for cross-platform test execution
 if sys.platform != 'win32':
@@ -115,9 +115,10 @@ def prefect_harness():
     all Prefect dependencies will still pass.
     """
     try:
-        from prefect.testing.utilities import prefect_test_harness
-        from prefect.filesystems import LocalFileSystem
         import tempfile
+
+        from prefect.filesystems import LocalFileSystem
+        from prefect.testing.utilities import prefect_test_harness
         
         with prefect_test_harness():
             try:

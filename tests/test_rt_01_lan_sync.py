@@ -1,24 +1,22 @@
-import os
-import shutil
 import msvcrt
+import os
 import time
-import pytest
 from pathlib import Path
 
-from core.lan_preflight import run_lan_dry_run, HealthError as LanHealthError
-from core.lan_sync import run_lan_sync
-from core.health import HealthError
-from core.wol import ensure_server_online
-from core.lan_manifest import snapshot_to_dict, walk_lan_destination, diff_snapshots
+import pytest
 
+from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
+from core.lan_preflight import HealthError as LanHealthError
+from core.lan_preflight import run_lan_dry_run
+from core.lan_sync import run_lan_sync
+from core.wol import ensure_server_online
 from tests.e2e_helpers import (
-    cfg,
-    source_test_dir,
-    nas_test_dir,
-    make_file,
-    clean_test_dirs,
     assert_log_contains,
-    capture_logs,
+    cfg,
+    clean_test_dirs,
+    make_file,
+    nas_test_dir,
+    source_test_dir,
 )
 
 

@@ -238,7 +238,7 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
     yaml = YAML()
     yaml.preserve_quotes = True
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         cfg = yaml.load(f)
 
     new_source = _child_path(source_root, new_fy)

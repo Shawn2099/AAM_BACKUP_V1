@@ -12,8 +12,8 @@ from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from loguru import logger
 import humanize
+from loguru import logger
 
 from core.manifest import ManifestDB
 from core.time_utils import now_formatted

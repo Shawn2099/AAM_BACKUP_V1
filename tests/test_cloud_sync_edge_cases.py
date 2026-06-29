@@ -8,9 +8,7 @@ Tests cover:
 - Integration with subprocess orchestration
 """
 
-import os
 import subprocess
-import tempfile
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -189,7 +187,7 @@ class TestBuildRcloneSyncCommandFlags:
     def test_no_duplicate_flags(self):
         cmd = self._build_default()
         flags = [x for x in cmd if x.startswith("--")]
-        assert len(flags) == len(set(flags)), f"Duplicate flags found"
+        assert len(flags) == len(set(flags)), "Duplicate flags found"
 
     def test_no_max_delete(self):
         """--max-delete removed — GCS versioning covers this."""

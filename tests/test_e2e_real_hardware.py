@@ -1,18 +1,16 @@
+import msvcrt
 import os
 import shutil
 import time
-import subprocess
 from pathlib import Path
 
 from loguru import logger
-import msvcrt
 
-from models.config import load_config
+from core.cloud_sync import run_cloud_sync
 from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import run_lan_sync
-from core.cloud_sync import run_cloud_sync
 from core.wol import ensure_server_online
-from core.rclone_config import temp_rclone_config
+from models.config import load_config
 
 # ─── REAL WORLD HARDWARE END-TO-END TEST SUITE ────────────────────────────────
 # This script uses ZERO mocks. It writes real files to disk, executes real
@@ -103,7 +101,6 @@ def test_2_canary_missing_abort():
     # Run preflight
     logger.info("Running LAN Preflight without Canary...")
     try:
-        from core.lan_preflight import HealthError
         run_lan_dry_run(str(test_source), str(test_dest))
         assert False, "Preflight should have raised HealthError due to missing canary!"
     except Exception as exc: # Catching generic in case HealthError is not raised directly

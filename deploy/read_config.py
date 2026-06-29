@@ -8,8 +8,9 @@ Usage from PowerShell:
 
 Returns the value as a single line to stdout. Exits 1 on error.
 """
-import sys
 import os
+import sys
+
 
 def read_value(config_path: str, dotpath: str, default: str | None = None) -> str | None:
     """Read a value from a YAML config file using dot notation."""
@@ -19,7 +20,7 @@ def read_value(config_path: str, dotpath: str, default: str | None = None) -> st
         # Fallback: minimal YAML parser for simple key: value pairs
         return _read_yaml_fallback(config_path, dotpath, default)
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     keys = dotpath.split(".")
@@ -43,7 +44,7 @@ def _read_yaml_fallback(config_path: str, dotpath: str, default: str | None = No
     in_parent = parent_key is None  # if no parent, we're already in scope
     found_key = False
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         for line in f:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -84,7 +85,7 @@ def read_section(config_path: str, section: str) -> dict:
     except ImportError:
         return {}
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     if isinstance(data, dict) and section in data:

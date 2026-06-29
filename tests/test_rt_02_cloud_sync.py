@@ -1,21 +1,19 @@
-import os
 import shutil
 import time
-import pytest
 from pathlib import Path
 
+import pytest
+
+from core.cloud_preflight import run_cloud_dry_run
+from core.cloud_reporter import get_cloud_manifest, get_cloud_size
 from core.cloud_sync import run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
-from core.cloud_preflight import run_cloud_dry_run
-from core.cloud_reporter import get_cloud_size, get_cloud_manifest
 from core.rclone_config import temp_rclone_config
-
 from tests.e2e_helpers import (
-    cfg,
-    source_test_dir,
-    make_file,
     assert_log_contains,
-    capture_logs,
+    cfg,
+    make_file,
+    source_test_dir,
 )
 
 
@@ -36,6 +34,7 @@ def setup_teardown_cloud():
     
     # Purge from cloud
     import subprocess
+
     from core.process import resolve_binary
     
     with temp_rclone_config(
@@ -54,8 +53,9 @@ def setup_teardown_cloud():
 
 def get_cloud_files(config_path, bucket, prefix):
     """Helper to get files via rclone lsjson."""
-    import subprocess
     import json
+    import subprocess
+
     from core.process import resolve_binary
     
     rclone_exe = resolve_binary("rclone") or "rclone"

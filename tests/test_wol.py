@@ -1,10 +1,14 @@
 """Tests for wol — mock socket and wakeonlan."""
 
-from unittest.mock import patch, MagicMock
-import socket
+from unittest.mock import MagicMock, patch
 
-from core.wol import _smb_port_open, _send_magic_packet, wait_for_server, ensure_server_online, WolTimeout
-from models.config import AppConfig, WolConfig
+from core.wol import (
+    WolTimeout,
+    _send_magic_packet,
+    _smb_port_open,
+    ensure_server_online,
+    wait_for_server,
+)
 
 
 class TestSmbPortOpen:

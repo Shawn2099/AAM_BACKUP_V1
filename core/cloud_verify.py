@@ -15,7 +15,6 @@ from loguru import logger
 
 from core.process import resolve_binary
 
-
 # rclone check exit codes
 _EXIT_VERIFIED = 0
 _EXIT_MISMATCH = 1

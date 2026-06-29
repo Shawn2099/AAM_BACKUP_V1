@@ -1,20 +1,19 @@
+import msvcrt
 import os
 import subprocess
-import time
-import pytest
-from pathlib import Path
-import psutil
 import threading
-import msvcrt
+import time
+from pathlib import Path
 
-from core.process import write_lock, read_lock_alive, pid_alive
+import psutil
+
+from core.process import read_lock_alive, write_lock
+from tests.e2e_helpers import (
+    nas_test_dir,
+    source_test_dir,
+)
 from watchdog import _transfer_process_running
 
-from tests.e2e_helpers import (
-    cfg,
-    source_test_dir,
-    nas_test_dir,
-)
 
 def test_wd_01_lock_write_read():
     """WD-01: Lock Write and Read Round-Trip."""

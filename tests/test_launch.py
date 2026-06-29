@@ -1,7 +1,6 @@
 """Tests for launch.py — startup helpers and health checks."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
-import pytest
 
 from launch import _cancel_orphaned_runs, _check_prefect_api
 

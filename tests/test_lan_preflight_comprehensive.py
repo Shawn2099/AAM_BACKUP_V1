@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.lan_preflight import run_lan_dry_run, HealthError
-
+from core.lan_preflight import HealthError, run_lan_dry_run
 
 # ═══════════════════════════════════════════════════════════════
 # 1. Preflight check: ok=True

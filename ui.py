@@ -7,33 +7,30 @@ FastAPI server bound to configurable host:port. Safety-first:
   - API key auth via session cookie or X-API-Key header
 """
 
+import asyncio
 import hmac
 import html
+import re
 import secrets
 import shutil
 import threading
 import time
-import asyncio
-import re
 from datetime import timedelta
 from pathlib import Path
 
 import pendulum
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
-
 from prefect.client.orchestration import get_client
 from prefect.client.schemas.filters import FlowRunFilter
 from prefect.client.schemas.objects import StateType
-from prefect.deployments import run_deployment, arun_deployment
+from prefect.deployments import arun_deployment
 
-
-from core.time_utils import IST, cron_to_human, get_fy_prefix
 from core.manifest import ManifestDB
-
+from core.time_utils import IST, cron_to_human, get_fy_prefix
 
 # In-memory rate limiter for trigger and auth endpoints.
 # Tracks attempts per IP per window. Cleans up expired entries on access.
@@ -439,7 +436,7 @@ def trigger_weekly_email(request: Request):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     cfg = _cfg()
     db = get_db()
-    from core.report import send_weekly_report, generate_report_html
+    from core.report import generate_report_html, send_weekly_report
     html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly")
     if not html_body:
         return JSONResponse(
@@ -476,7 +473,7 @@ def trigger_monthly_email(request: Request):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     cfg = _cfg()
     db = get_db()
-    from core.report import send_monthly_report, generate_report_html
+    from core.report import generate_report_html, send_monthly_report
     html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly")
     if not html_body:
         return JSONResponse(

@@ -1,8 +1,6 @@
 """Tests for cloud_sync — rclone command building, exit classification, and orchestration."""
 
-import os
 import subprocess
-import tempfile
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 

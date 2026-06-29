@@ -11,8 +11,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from models.config import LanConfig
 from core.process import resolve_binary
+from models.config import LanConfig
 
 # ═══════════════════════════════════════════════════════════════
 # Flag validation — /NC is FORBIDDEN

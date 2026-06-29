@@ -1,22 +1,21 @@
 import os
 import shutil
-import pytest
 from pathlib import Path
 
-from core.fy_rollover import (
-    detect_rollover,
-    create_new_fy_folders,
-    update_config_yaml,
-    run_archive_transition,
-    rollover,
-)
+import pytest
 
+from core.fy_rollover import (
+    create_new_fy_folders,
+    detect_rollover,
+    rollover,
+    run_archive_transition,
+    update_config_yaml,
+)
 from tests.e2e_helpers import (
-    cfg,
-    source_test_dir,
-    nas_test_dir,
     assert_log_contains,
-    capture_logs,
+    cfg,
+    nas_test_dir,
+    source_test_dir,
 )
 
 CONFIG_TEMPLATE = Path("config.example.yaml") # Use example config as base to avoid corrupting real config
@@ -88,7 +87,7 @@ def test_fy_04_update_config_yaml(temp_config):
     
     update_config_yaml(str(temp_config), source_parent, nas_parent, new_fy)
     
-    with open(temp_config, "r", encoding="utf-8") as f:
+    with open(temp_config, encoding="utf-8") as f:
         new_cfg = yaml.load(f)
         
     assert new_cfg["paths"]["source_drive"].endswith("FY_E2E_TEST")
@@ -140,7 +139,7 @@ def test_fy_07_full_rollover(temp_config):
     yaml.preserve_quotes = True
     
     # Modify temp config to point to old FY
-    with open(temp_config, "r", encoding="utf-8") as f:
+    with open(temp_config, encoding="utf-8") as f:
         c = yaml.load(f)
         
     source_parent = str(source_test_dir().parent)
@@ -165,7 +164,7 @@ def test_fy_07_full_rollover(temp_config):
         assert result is True
         
         # Verify config was updated
-        with open(temp_config, "r", encoding="utf-8") as f:
+        with open(temp_config, encoding="utf-8") as f:
             new_c = yaml.load(f)
             
         assert not new_c["paths"]["source_drive"].endswith(old_fy)
@@ -182,7 +181,7 @@ def test_fy_07_full_rollover(temp_config):
         shutil.rmtree(Path(c["paths"]["lan_destination"]), ignore_errors=True)
         
         # Reload to get new paths
-        with open(temp_config, "r", encoding="utf-8") as f:
+        with open(temp_config, encoding="utf-8") as f:
             new_c = yaml.load(f)
         shutil.rmtree(Path(new_c["paths"]["source_drive"]), ignore_errors=True)
         shutil.rmtree(Path(new_c["paths"]["lan_destination"]), ignore_errors=True)

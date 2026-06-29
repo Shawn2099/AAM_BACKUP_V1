@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from core.manifest import ManifestDB
 from core.backup_repository import record_run_history, record_sync_results
+from core.manifest import ManifestDB
 
 
 @pytest.fixture(autouse=True, scope="session")

@@ -1,6 +1,6 @@
 """Tests for core/logging.py — configure_prefect_bridge idempotency."""
 
-from core.logging import configure_prefect_bridge, _bridge_configured
+from core.logging import configure_prefect_bridge
 
 
 class TestConfigurePrefectBridge:

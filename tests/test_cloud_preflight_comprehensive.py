@@ -2,12 +2,9 @@
 
 import subprocess
 from contextlib import contextmanager
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from core.cloud_preflight import run_cloud_dry_run
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

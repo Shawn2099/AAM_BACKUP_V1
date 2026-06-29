@@ -1,6 +1,5 @@
 """Tests for rclone_config — temporary config file writer."""
 
-import os
 from pathlib import Path
 
 from core.rclone_config import write_temp_config

@@ -1,23 +1,23 @@
 import os
 import shutil
-import time
-import pytest
 import threading
+import time
 from pathlib import Path
 
-from flow import _run_cloud_pipeline, _run_lan_pipeline, backup
-from core.manifest import ManifestDB
-from core.time_utils import now_iso
-from core.process import read_lock_alive
+import pytest
 
+from core.manifest import ManifestDB
+from core.process import read_lock_alive
+from core.time_utils import now_iso
+from flow import _run_cloud_pipeline, _run_lan_pipeline
 from tests.e2e_helpers import (
     cfg,
-    source_test_dir,
-    nas_test_dir,
-    make_file,
     clean_test_dirs,
-    assert_log_contains,
+    make_file,
+    nas_test_dir,
+    source_test_dir,
 )
+
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_teardown_pipeline():
@@ -42,6 +42,7 @@ def setup_teardown_pipeline():
     # Purge from cloud
     config = cfg()
     import subprocess
+
     from core.process import resolve_binary
     from core.rclone_config import temp_rclone_config
     
@@ -185,7 +186,7 @@ def test_pipe_05_backup_lock_lifecycle(tmp_path):
     temp_cfg_path = tmp_path / "config.yaml"
     shutil.copy2(real_config, temp_cfg_path)
     
-    with open(temp_cfg_path, "r", encoding="utf-8") as f:
+    with open(temp_cfg_path, encoding="utf-8") as f:
         c = yaml.load(f)
     
     db_path = tmp_path / "test_manifest.db"

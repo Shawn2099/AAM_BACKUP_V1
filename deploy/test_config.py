@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 # Add the project root to sys.path so we can import 'models'
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -7,6 +7,7 @@ project_root = os.path.abspath(os.path.join(current_dir, ".."))
 sys.path.insert(0, project_root)
 
 from models.config import load_config
+
 
 def main():
     print("="*60)
@@ -24,7 +25,7 @@ def main():
     try:
         config = load_config(config_path)
         print("[SUCCESS] config.yaml is fully valid!")
-        print(f"\nSummary:")
+        print("\nSummary:")
         print(f"  - Source: {config.paths.source_drive}")
         print(f"  - LAN Destination: {config.paths.lan_destination} (Enabled: {config.lan.enabled})")
         print(f"  - Cloud Bucket: {config.cloud.bucket} (Enabled: {config.cloud.enabled})")

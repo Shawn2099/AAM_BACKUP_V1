@@ -25,8 +25,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from core.rclone_config import temp_rclone_config
 from core.process import resolve_binary
+from core.rclone_config import temp_rclone_config
 
 
 def run_cloud_dry_run(

@@ -1,7 +1,7 @@
 """Tests for cloud_verify — mock subprocess calls."""
 
-from unittest.mock import patch, MagicMock
 import subprocess
+from unittest.mock import MagicMock, patch
 
 from core.cloud_verify import verify_cloud_integrity
 

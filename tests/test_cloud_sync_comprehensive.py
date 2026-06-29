@@ -1,18 +1,14 @@
 """Comprehensive tests for cloud_sync — full coverage of every public function and path."""
 
-import os
 import subprocess
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch, call
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from core.cloud_sync import (
-    classify_rclone_exit,
     build_rclone_sync_command,
+    classify_rclone_exit,
     run_cloud_sync,
 )
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

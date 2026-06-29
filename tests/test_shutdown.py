@@ -1,7 +1,7 @@
 """Tests for shutdown — mock subprocess calls."""
 
-from unittest.mock import patch, MagicMock
 import subprocess
+from unittest.mock import MagicMock, patch
 
 from core.shutdown import shutdown_server
 

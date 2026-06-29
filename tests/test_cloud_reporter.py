@@ -1,10 +1,10 @@
 """Tests for cloud_reporter — mock subprocess calls."""
 
 import json
-from unittest.mock import patch, MagicMock
 import subprocess
+from unittest.mock import MagicMock, patch
 
-from core.cloud_reporter import get_cloud_size, get_cloud_manifest, get_cloud_diff
+from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
 
 
 def _mock_result(returncode=0, stdout="", stderr=""):

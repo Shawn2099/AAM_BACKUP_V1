@@ -1,23 +1,24 @@
 import os
-import pytest
-from pathlib import Path
 from io import StringIO
+from pathlib import Path
+
+import pytest
 from loguru import logger
 
-from core.health import check_source_drive, pre_backup_health, HealthError
 from core.cloud_preflight import run_cloud_dry_run
-from core.lan_preflight import run_lan_dry_run
-from core.cloud_verify import verify_cloud_integrity
 from core.cloud_sync import run_cloud_sync
-from core.process import read_lock_alive
+from core.cloud_verify import verify_cloud_integrity
 from core.fy_rollover import update_config_yaml
-
+from core.health import HealthError, pre_backup_health
+from core.lan_preflight import run_lan_dry_run
+from core.process import read_lock_alive
 from tests.e2e_helpers import (
     cfg,
-    source_test_dir,
-    nas_test_dir,
     make_file,
+    nas_test_dir,
+    source_test_dir,
 )
+
 
 @pytest.fixture
 def capture_logs():
@@ -96,6 +97,7 @@ def test_log_03_canary_missing(capture_logs):
 def test_log_04_robocopy_locked_file_tail(capture_logs):
     """LOG-04: Robocopy Locked File → Log Contains Robocopy Log Tail."""
     import msvcrt
+
     from core.lan_sync import run_lan_sync
     
     source = source_test_dir()
@@ -197,7 +199,6 @@ def test_log_08_rclone_not_found_clean_error(monkeypatch):
     # returns a clean {status, error} dict — that is exactly what we are testing here.
     # (There is no resolve_binary call in cloud_sync — it relies on the OS to raise
     # FileNotFoundError when the executable name is not found.)
-    import subprocess as _subprocess
     from core import cloud_sync as _cloud_sync
     
     def _mock_run(*args, **kwargs):

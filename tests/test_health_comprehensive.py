@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import http.client
+from datetime import UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -136,9 +136,9 @@ class TestCheckClockSkew:
         return mock_resp
 
     def test_passes_when_skew_small(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime(2026, 6, 24, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 24, 12, 0, 0, tzinfo=UTC)
         google_time_str = "Tue, 24 Jun 2026 11:59:30 GMT"
         with patch("core.health.pendulum") as mock_pendulum:
             mock_pendulum.now.return_value = now
@@ -150,10 +150,10 @@ class TestCheckClockSkew:
         assert reason == ""
 
     def test_fails_when_skew_large(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         # Local time is 20 minutes ahead of Google
-        local = datetime(2026, 6, 24, 12, 20, 0, tzinfo=timezone.utc)
+        local = datetime(2026, 6, 24, 12, 20, 0, tzinfo=UTC)
         google_time_str = "Tue, 24 Jun 2026 12:00:00 GMT"
         with patch("core.health.pendulum") as mock_pendulum:
             mock_pendulum.now.return_value = local
@@ -191,9 +191,9 @@ class TestCheckClockSkew:
         assert reason == ""
 
     def test_uses_custom_timeout(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime(2026, 6, 24, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 24, 12, 0, 0, tzinfo=UTC)
         with patch("core.health.pendulum") as mock_pendulum:
             mock_pendulum.now.return_value = now
             mock_conn = MagicMock()

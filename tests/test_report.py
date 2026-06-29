@@ -3,7 +3,8 @@
 from unittest.mock import MagicMock, patch
 
 import humanize
-from core.report import _send_email_with_attachments, send_failure_alert, generate_report_html
+
+from core.report import _send_email_with_attachments, generate_report_html, send_failure_alert
 from models.config import NotificationConfig
 
 

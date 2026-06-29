@@ -1,6 +1,6 @@
 """Tests for serve.py — deployment creation."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from serve import _deployments
 

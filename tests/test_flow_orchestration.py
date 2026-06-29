@@ -1,20 +1,27 @@
 """Tests for flow.py — decomposed tasks, pipeline orchestration, and failure alerting."""
 
-from unittest.mock import patch, MagicMock
-import pytest
+from unittest.mock import MagicMock, patch
 
+import pytest
 from exceptiongroup import ExceptionGroup
 
 from flow import (
-    backup, weekly_report_flow, monthly_report_flow,
-    health_check_task, cloud_preflight_task, cloud_sync_task,
-    cloud_verify_and_report_task, cloud_record_task,
-    wol_check_task, lan_preflight_task, lan_snapshot_before_task,
+    _record_run,
+    backup,
+    cloud_preflight_task,
+    cloud_record_task,
+    cloud_sync_task,
+    health_check_task,
+    lan_preflight_task,
+    lan_record_task,
+    lan_shutdown_task,
     lan_snapshot_after_task,
-    lan_sync_task, lan_record_task, lan_shutdown_task,
-    _run_cloud_pipeline, _run_lan_pipeline, _record_run,
+    lan_snapshot_before_task,
+    lan_sync_task,
+    monthly_report_flow,
+    weekly_report_flow,
+    wol_check_task,
 )
-
 
 # ═══════════════════════════════════════════════════════════════
 # Mode routing

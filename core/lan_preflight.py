@@ -11,6 +11,7 @@ from loguru import logger
 
 from core.process import resolve_binary
 
+
 class HealthError(Exception):
     """Raised when a preflight health check fails."""
 

@@ -2,12 +2,9 @@
 
 import json
 import subprocess
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import MagicMock, mock_open, patch
 
-import pytest
-
-from core.cloud_reporter import get_cloud_diff, get_cloud_size, get_cloud_manifest, _base_args
-
+from core.cloud_reporter import _base_args, get_cloud_diff, get_cloud_manifest, get_cloud_size
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from core.rclone_config import write_temp_config, temp_rclone_config
-
+from core.rclone_config import temp_rclone_config, write_temp_config
 
 # ═══════════════════════════════════════════════════════════════
 # 1. write_temp_config

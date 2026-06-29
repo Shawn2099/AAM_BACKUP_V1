@@ -1,12 +1,9 @@
 """Tests for FY rollover — detection, final backup, folder creation, locking, config update."""
 
-import os
 import subprocess
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pendulum
 import pytest
 
 from core.fy_rollover import (
@@ -20,7 +17,7 @@ from core.fy_rollover import (
     run_archive_transition,
     update_config_yaml,
 )
-from core.time_utils import IST, get_fy_prefix
+from core.time_utils import get_fy_prefix
 
 
 def current_fy():

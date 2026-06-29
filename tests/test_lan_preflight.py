@@ -1,7 +1,7 @@
 """Tests for lan_preflight — mock subprocess calls."""
 
-from unittest.mock import patch, MagicMock
 import subprocess
+from unittest.mock import MagicMock, patch
 
 from core.lan_preflight import run_lan_dry_run
 

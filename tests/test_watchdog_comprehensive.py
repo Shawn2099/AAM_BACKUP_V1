@@ -1,8 +1,6 @@
 """Comprehensive tests for watchdog.py — PID checks, backup detection, service management, main loop."""
 
 import subprocess
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,7 +12,6 @@ def prefect_harness():
 
 
 import watchdog
-
 
 # ── Fixtures ────────────────────────────────────────────────────────
 
@@ -107,7 +104,7 @@ class TestIsBackupRunning:
             assert watchdog._is_backup_running() is False
 
     def test_lock_alive_pid_returns_true(self, temp_lock):
-        temp_lock.write_text(f"999999:1000000.0")
+        temp_lock.write_text("999999:1000000.0")
         with patch("watchdog.BACKUP_LOCK_PATH", temp_lock), \
              patch("core.process._get_create_time", return_value=1000000.0):
             assert watchdog._is_backup_running() is True

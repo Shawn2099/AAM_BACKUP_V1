@@ -12,7 +12,6 @@ Services managed by this script:
 Ctrl+C stops both cleanly. The Prefect server continues running independently.
 """
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -94,7 +93,6 @@ def _cancel_orphaned_runs():
     always cancelled (they haven't started work yet).
     """
     import asyncio
-    from pathlib import Path
 
     from core.process import read_lock_alive
 
@@ -119,7 +117,11 @@ def _cancel_orphaned_runs():
 
     async def _cancel():
         from prefect.client.orchestration import get_client
-        from prefect.client.schemas.filters import FlowRunFilter, FlowRunFilterState, FlowRunFilterStateType
+        from prefect.client.schemas.filters import (
+            FlowRunFilter,
+            FlowRunFilterState,
+            FlowRunFilterStateType,
+        )
         from prefect.client.schemas.objects import StateType
         from prefect.states import Cancelled
 
@@ -215,7 +217,8 @@ def main():
     # so it returns cleanly on Ctrl+C. With pause_on_shutdown=False,
     # deployment schedules stay active across restarts.
     print("[launch] Starting backup scheduler (main thread)...")
-    from models.config import CONFIG_PATH, load_config as _lc
+    from models.config import CONFIG_PATH
+    from models.config import load_config as _lc
     _cfg = _lc(CONFIG_PATH)
     print(f"[launch] Dashboard: http://{_cfg.dashboard.bind_address}:{_cfg.dashboard.port}")
     print("[launch] Prefect:   http://localhost:4200")

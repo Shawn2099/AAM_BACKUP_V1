@@ -1,8 +1,5 @@
 """Comprehensive tests for launch.py — Prefect API check, concurrency, orphan cleanup, main."""
 
-import subprocess
-import sys
-import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -128,8 +125,9 @@ class TestCancelOrphanedRuns:
             assert mock_client.set_flow_run_state.call_count == 1
 
     def test_stale_lock_cleaned_up(self):
-        from launch import _cancel_orphaned_runs
         from pathlib import Path
+
+        from launch import _cancel_orphaned_runs
         mock_client = AsyncMock()
         mock_client.read_flow_runs.return_value = []
         with patch("prefect.client.orchestration.get_client") as mock_get_client, \

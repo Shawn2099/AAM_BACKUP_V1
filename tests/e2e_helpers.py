@@ -1,11 +1,12 @@
 import os
 import shutil
-from pathlib import Path
-from loguru import logger
-import pytest
 from io import StringIO
+from pathlib import Path
 
-from models.config import load_config, CONFIG_PATH
+import pytest
+from loguru import logger
+
+from models.config import CONFIG_PATH, load_config
 
 
 @pytest.fixture(autouse=True)
@@ -45,7 +46,7 @@ def clean_test_dirs():
 
 
 import pytest
-from io import StringIO
+
 
 @pytest.fixture
 def capture_logs():

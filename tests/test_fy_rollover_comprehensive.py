@@ -2,26 +2,24 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.fy_rollover import (
+    RolloverError,
+    _child_path,
     _fy_name,
     _parent_path,
-    _child_path,
-    detect_rollover,
-    run_final_backup,
     create_new_fy_folders,
-    update_config_yaml,
-    run_archive_transition,
+    detect_rollover,
     rollover,
-    RolloverError,
+    run_archive_transition,
+    run_final_backup,
+    update_config_yaml,
 )
-
 
 # ═══════════════════════════════════════════════════════════════
 # 1. Helper functions
@@ -466,7 +464,7 @@ class TestResolveGcloud:
     """Resolve gcloud executable via multi-path fallback."""
 
     def test_found_in_deploy_bin(self, tmp_path):
-        from core.fy_rollover import _resolve_gcloud, _PROJECT_ROOT
+        from core.fy_rollover import _PROJECT_ROOT, _resolve_gcloud
 
         deploy_gcloud = _PROJECT_ROOT / "deploy" / "bin" / "gcloud.cmd"
         with patch.object(Path, "exists") as mock_exists:

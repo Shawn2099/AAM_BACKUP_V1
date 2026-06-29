@@ -1,14 +1,14 @@
-import pytest
-from unittest.mock import patch, MagicMock, mock_open
-import time
-import httpx
-from pathlib import Path
-import os
 import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import httpx
+import pytest
 
 # Import the module under test
 import watchdog
-from core.process import read_lock_alive, write_lock
+from core.process import read_lock_alive
+
 
 @pytest.fixture
 def mock_sleep():

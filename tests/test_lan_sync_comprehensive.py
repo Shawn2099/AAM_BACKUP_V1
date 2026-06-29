@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import subprocess
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.lan_sync import (
+    _read_log_tail,
+    _validate_required_flags,
     build_robocopy_command,
     classify_exit_code,
     run_lan_sync,
-    _read_log_tail,
-    _validate_required_flags,
 )
 from models.config import LanConfig
 

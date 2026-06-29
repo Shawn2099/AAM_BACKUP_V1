@@ -1,12 +1,9 @@
 """Comprehensive tests for cloud_verify — full coverage of every public function and path."""
 
 import subprocess
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-import pytest
-
-from core.cloud_verify import verify_cloud_integrity, _build_error_message
-
+from core.cloud_verify import _build_error_message, verify_cloud_integrity
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

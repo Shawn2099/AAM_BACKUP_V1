@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import socket
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.wol import (
-    _smb_port_open,
-    _send_magic_packet,
-    wait_for_server,
-    ensure_server_online,
     WolTimeout,
+    _send_magic_packet,
+    _smb_port_open,
+    ensure_server_online,
+    wait_for_server,
 )
-
 
 # ═══════════════════════════════════════════════════════════════
 # 1. _smb_port_open
