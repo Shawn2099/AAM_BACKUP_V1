@@ -261,9 +261,9 @@ D:\
 ```
 Upload old data directly to GCS as ARCHIVE class using this optimized rclone command (it uses the JSON key directly without needing a config file):
 ```cmd
-deploy\bin\rclone.exe copy "D:\_OLD_FY_DATA" :gcs:aam-cloudbackup/Archive --gcs-service-account-file="deploy\keys\aam-gcs-key.json" --gcs-object-storage-class=ARCHIVE --progress --transfers=16 --checkers=16
+deploy\bin\rclone.exe copy "D:\_OLD_FY_DATA" :gcs:aam-cloudbackup/Archive --gcs-service-account-file="deploy\keys\aam-gcs-key.json" --gcs-object-storage-class=ARCHIVE --progress --transfers=4 --checkers=4
 ```
-*(This command runs 16 parallel uploads and instantly tags them as ARCHIVE, so you don't need to change anything in the Google Console afterward).*
+*(This command limits transfers to 4 parallel threads to protect your dual-core server's CPU, and instantly tags them as ARCHIVE so you don't need to change anything in the Google Console afterward).*
 
 ---
 
