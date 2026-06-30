@@ -259,11 +259,11 @@ D:\
 │   └── FY25-26\
 └── FY26-27\          ← automation source_drive
 ```
-Upload old data to GCS manually using rclone (one-time):
+Upload old data directly to GCS as ARCHIVE class using this optimized rclone command (it uses the JSON key directly without needing a config file):
 ```cmd
-deploy\bin\rclone.exe copy "D:\_OLD_FY_DATA\FY25-26" gcs:aam-cloudbackup/FY25-26 --progress
+deploy\bin\rclone.exe copy "D:\_OLD_FY_DATA" :gcs:aam-cloudbackup/Archive --gcs-service-account-file="deploy\keys\aam-gcs-key.json" --gcs-object-storage-class=ARCHIVE --progress --transfers=16 --checkers=16
 ```
-Then manually set those GCS folders to ARCHIVE class via GCS Console.
+*(This command runs 16 parallel uploads and instantly tags them as ARCHIVE, so you don't need to change anything in the Google Console afterward).*
 
 ---
 
