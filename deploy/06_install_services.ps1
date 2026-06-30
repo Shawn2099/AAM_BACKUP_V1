@@ -184,8 +184,8 @@ Write-Host "[setup] Installing $SVC_SERVER..."
 & $NSSM set $SVC_SERVER AppRestartDelay 30000
 & $NSSM set $SVC_SERVER AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
 
-sc failure $SVC_SERVER reset= 86400 actions= restart/30000/restart/60000/restart/60000 2>$null
-sc failureflag $SVC_SERVER 1 2>$null
+sc.exe failure $SVC_SERVER reset= 86400 actions= restart/30000/restart/60000/restart/60000 2>$null
+sc.exe failureflag $SVC_SERVER 1 2>$null
 
 Write-Host "[OK]   $SVC_SERVER installed."
 
@@ -222,8 +222,8 @@ Write-Host "[setup] Installing $SVC_AGENT..."
 & $NSSM set $SVC_AGENT AppRestartDelay 30000
 & $NSSM set $SVC_AGENT AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
 
-sc failure $SVC_AGENT reset= 86400 actions= restart/60000/restart/90000/restart/120000 2>$null
-sc failureflag $SVC_AGENT 1 2>$null
+sc.exe failure $SVC_AGENT reset= 86400 actions= restart/60000/restart/90000/restart/120000 2>$null
+sc.exe failureflag $SVC_AGENT 1 2>$null
 
 Write-Host "[OK]   $SVC_AGENT installed."
 
@@ -252,8 +252,8 @@ Write-Host "[setup] Installing $SVC_WATCHDOG..."
 & $NSSM set $SVC_WATCHDOG AppRestartDelay 15000
 & $NSSM set $SVC_WATCHDOG AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
 
-sc failure $SVC_WATCHDOG reset= 86400 actions= restart/15000/restart/30000/restart/30000 2>$null
-sc failureflag $SVC_WATCHDOG 1 2>$null
+sc.exe failure $SVC_WATCHDOG reset= 86400 actions= restart/15000/restart/30000/restart/30000 2>$null
+sc.exe failureflag $SVC_WATCHDOG 1 2>$null
 
 Write-Host "[OK]   $SVC_WATCHDOG installed."
 
