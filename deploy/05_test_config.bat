@@ -32,7 +32,7 @@ if "%UV_EXE%"=="" (
     echo  Install it by running this in PowerShell:
     echo    powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
     echo.
-    echo  Then re-run test_config.bat.
+    echo  Then re-run 05_test_config.bat.
     echo.
     pause
     exit /b 1

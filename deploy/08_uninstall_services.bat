@@ -7,7 +7,7 @@ net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo  ERROR: This script must be run as Administrator.
-    echo  Right-click uninstall_services.bat ^> "Run as administrator"
+    echo  Right-click un06_install_services.ps1 ^> "Run as administrator"
     echo.
     pause
     exit /b 1
@@ -100,6 +100,6 @@ if %REMOVED% equ 0 (
     echo  Removed %REMOVED% service(s).
 )
 echo.
-echo  To reinstall, run:  deploy\install_services.ps1
+echo  To reinstall, run:  deploy\06_install_services.ps1
 echo.
 pause

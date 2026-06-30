@@ -39,7 +39,7 @@ lan:
 wol:
   enabled: true
   mac_address: "AA:BB:CC:DD:EE:FF"  # NEED THIS
-  server_ip: "192.168.10.X"         # NEED THIS (Same subnet as 192.168.10.5)
+  server_ip: "192.168.10.10"        # Updated from chat
   broadcast_address: "192.168.10.255"
   wake_timeout_seconds: 300
   ping_interval_seconds: 15

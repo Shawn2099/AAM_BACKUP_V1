@@ -2,7 +2,7 @@
 :: ═══════════════════════════════════════════════════════════════════════
 :: AAM Backup Automation V1 — SYSTEM SETUP (run ONCE per server)
 ::
-:: Run this BEFORE install_services.bat on a fresh server.
+:: Run this BEFORE 06_install_services.ps1 on a fresh server.
 :: All steps are idempotent — safe to re-run if needed.
 ::
 :: What it does:
@@ -21,7 +21,7 @@ net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo  ERROR: This script must be run as Administrator.
-    echo  Right-click setup_system.bat ^> "Run as administrator"
+    echo  Right-click 03_setup_system.bat ^> "Run as administrator"
     echo.
     pause
     exit /b 1
@@ -85,7 +85,7 @@ if "%UV_EXE%"=="" for /f "delims=" %%I in ('where uv 2^>nul') do set "UV_EXE=%%I
 if "%UV_EXE%"=="" (
     echo [ERROR] uv installation failed. Cannot continue.
     echo [ERROR] Install manually: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-    echo [ERROR] Then re-run setup_system.bat.
+    echo [ERROR] Then re-run 03_setup_system.bat.
     pause
     exit /b 1
 )
@@ -140,12 +140,25 @@ if %ERRORLEVEL% equ 0 (
 :: global gcloud SDK version changes.
 :: ════════════════════════════════════════════════════════════════════
 echo.
-echo [3/3] Checking isolated Google Cloud SDK...
+echo [3/3] Checking Google Cloud SDK...
 
-if exist "%GCLOUD_CMD%" (
-    echo [OK]   SDK already present. Skipping download.
-    echo [OK]   %GCLOUD_CMD%
+:: 1. Check if gcloud is already in PATH
+where gcloud >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo [OK]   'gcloud' found in system PATH. Skipping isolated SDK download.
     goto :gcloud_done
+)
+
+:: 2. Check if isolated SDK is already extracted
+if exist "%GCLOUD_CMD%" (
+    echo [OK]   Isolated SDK already present at %GCLOUD_CMD%.
+    goto :gcloud_done
+)
+
+:: 3. Check if isolated SDK zip is already downloaded but not extracted
+if exist "%GCLOUD_ZIP%" (
+    echo [OK]   SDK archive already downloaded at %GCLOUD_ZIP%.
+    goto :extract_instructions
 )
 
 echo [....] SDK not found. Downloading standalone archive ^(~120MB^)...
@@ -153,18 +166,18 @@ echo [....] This only happens ONCE. Subsequent runs skip this step.
 echo.
 
 :: Download — TLS 1.2 forced inside the PowerShell command itself
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-windows-x86_64.zip' -OutFile '%GCLOUD_ZIP%' -UseBasicParsing"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-windows-x86_64.zip' -OutFile '%GCLOUD_ZIP%' -UseBasicParsing"
 
 if not exist "%GCLOUD_ZIP%" (
     echo [WARN] Download failed. Check internet connectivity.
     echo [WARN] FY rollover archive transition will be skipped on April 1.
-    echo [WARN] Re-run setup_system.bat when internet is available.
+    echo [WARN] Re-run 03_setup_system.bat when internet is available.
     goto :gcloud_done
 )
 
 echo [OK]   Download complete.
 
+:extract_instructions
 :: Instruct user to manually extract to avoid Antivirus hang
 echo.
 echo [*]    ACTION REQUIRED: Antivirus makes auto-extraction very slow.
@@ -181,7 +194,7 @@ echo.
 echo ===================================================================
 echo   SYSTEM SETUP COMPLETE
 echo ===================================================================
-echo   Next step: Run install_services.bat to install the 3 services.
+echo   Next step: Run 06_install_services.ps1 to install the 3 services.
 echo ===================================================================
 echo.
 pause

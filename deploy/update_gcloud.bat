@@ -22,7 +22,7 @@ if not exist "%GCLOUD%" (
     echo  ERROR: Isolated gcloud SDK not found at:
     echo    %GCLOUD%
     echo.
-    echo  Run setup_system.bat to install it first.
+    echo  Run 03_setup_system.bat to install it first.
     pause
     exit /b 1
 )
@@ -39,7 +39,7 @@ if %errorlevel% neq 0 (
     echo.
     echo  WARNING: Update may have failed. Check the output above.
     echo  If API errors persist, try re-installing:
-    echo    deploy\setup_system.bat
+    echo    deploy\03_setup_system.bat
 ) else (
     echo.
     echo  gcloud SDK updated successfully.

@@ -534,7 +534,7 @@ class TestWatchdogBackupDetection:
     """Backup lock and process detection edge cases."""
 
     def test_stale_lock_detection(self, tmp_path):
-        """Dead PID → lock removed, backup not running."""
+        """Dead PID → backup not running (lock remains for main loop to clean up)."""
         lock_path = tmp_path / "backup.lock"
         lock_path.write_text("99999999")  # PID that doesn't exist
 
@@ -543,7 +543,7 @@ class TestWatchdogBackupDetection:
             result = _is_backup_running()
 
         assert result is False
-        assert not lock_path.exists()
+        assert lock_path.exists()  # Side-effect-free detection
 
     def test_alive_pid_lock_honored(self, tmp_path):
         """Alive PID → lock honored, backup detected."""

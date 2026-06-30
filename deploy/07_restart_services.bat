@@ -8,7 +8,7 @@ net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
     echo  ERROR: This script must be run as Administrator.
-    echo  Right-click restart_services.bat ^> "Run as administrator"
+    echo  Right-click 07_restart_services.bat ^> "Run as administrator"
     echo.
     pause
     exit /b 1
@@ -69,7 +69,7 @@ if %errorlevel% neq 0 (
     echo    2. Check the log for errors:
     echo       %LOG_DIR%\prefect_svc.log
     echo    3. Verify config.yaml is valid:
-    echo       deploy\test_config.bat
+    echo       deploy\05_test_config.bat
     echo.
     pause
     exit /b 1
@@ -118,6 +118,6 @@ echo  Dashboard:      http://localhost:8080
 echo  Logs:           %LOG_DIR%
 echo.
 echo  If services fail to start, check the logs above
-echo  and ensure config.yaml is valid (run test_config.bat).
+echo  and ensure config.yaml is valid (run 05_test_config.bat).
 echo.
 pause

@@ -1,4 +1,13 @@
-﻿# ═══════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════
+# Self-Elevate to Administrator
+# ═══════════════════════════════════════════════════════════════════════
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
+
+# ═══════════════════════════════════════════════════════════════════════
 # AAM Backup Automation — Server Discovery (PowerShell)
 #
 # Runs on Windows Server 2016+ without Python
@@ -269,7 +278,7 @@ if ($longPaths -and $longPaths.LongPathsEnabled -eq 1) {
     md "- **Long Paths (>260 chars):** Enabled"
 } else {
     md "- **Long Paths (>260 chars):** Disabled (deep directory backups may fail)"
-    md "  - Fix: Run deploy\setup_system.bat, or enable via Group Policy:"
+    md "  - Fix: Run deploy\03_setup_system.bat, or enable via Group Policy:"
     md "    Computer Config > Admin Templates > System > Filesystem > Enable Win32 long paths"
 }
 
@@ -286,26 +295,26 @@ $checks = @()
 
 if (Test-Path (Join-Path $ReportDir "..\config.yaml")) {
     md "- **config.yaml:** Found"
-    $checks += '`"config_yaml`": `"found`"'
+    $checks += '"config_yaml": "found"'
 } else {
     md "- **config.yaml:** Not found"
-    $checks += '`"config_yaml`": `"not found`"'
+    $checks += '"config_yaml": "not found"'
 }
 
 if (Test-Path (Join-Path $ReportDir "..\logs")) {
     md "- **logs directory:** Found"
-    $checks += '`"logs_dir`": `"found`"'
+    $checks += '"logs_dir": "found"'
 } else {
     md "- **logs directory:** Not found"
-    $checks += '`"logs_dir`": `"not found`"'
+    $checks += '"logs_dir": "not found"'
 }
 
 if (Test-Path (Join-Path $ReportDir "..\manifest.db")) {
     md "- **manifest.db:** Found"
-    $checks += '`"manifest_db`": `"found`"'
+    $checks += '"manifest_db": "found"'
 } else {
     md "- **manifest.db:** Not found (will be created on first run)"
-    $checks += '`"manifest_db`": `"not found`"'
+    $checks += '"manifest_db": "not found"'
 }
 
 $json_install += ($checks -join ", ")
@@ -326,18 +335,18 @@ $port8080 = netstat -an | Select-String ":8080 " | Select-String "LISTENING"
 
 if ($port4200) {
     md "- **Port 4200 (Prefect):** IN USE"
-    $json_ports += ' "`"prefect_4200`": "`"in_use`"'
+    $json_ports += ' "prefect_4200": "in_use"'
 } else {
     md "- **Port 4200 (Prefect):** Available"
-    $json_ports += ' "`"prefect_4200`": "`"available`"'
+    $json_ports += ' "prefect_4200": "available"'
 }
 
 if ($port8080) {
     md "- **Port 8080 (Dashboard):** IN USE"
-    $json_ports += ', "`"dashboard_8080`": "`"in_use`"'
+    $json_ports += ', "dashboard_8080": "in_use"'
 } else {
     md "- **Port 8080 (Dashboard):** Available"
-    $json_ports += ', "`"dashboard_8080`": "`"available`"'
+    $json_ports += ', "dashboard_8080": "available"'
 }
 
 $json_ports += " },"
@@ -377,7 +386,7 @@ if ($noAutoUpdate -and $noAutoUpdate.NoAutoUpdate -eq 1) {
     md "- **Auto Updates:** Disabled (good for servers)"
 } else {
     md "- **Auto Updates:** Enabled (may cause unexpected reboots)"
-    md "  - Fix: Run deploy\setup_system.bat to suppress auto-reboots"
+    md "  - Fix: Run deploy\03_setup_system.bat to suppress auto-reboots"
 }
 
 # Pending reboot

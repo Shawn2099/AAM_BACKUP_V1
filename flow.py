@@ -16,7 +16,7 @@ import time
 import uuid
 
 import pendulum
-from exceptiongroup import ExceptionGroup
+
 from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
@@ -680,35 +680,52 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
 
     # ── Watchdog lock — signals that a backup is in progress ──
-    # watchdog.py and launch.py read this file and defer any service restart
-    # until it disappears.  Format: "PID:create_time" — the process creation
-    # timestamp makes PID-reuse detection mathematically exact (see core/process.py).
+    # Written INSIDE the concurrency block so only the flow that actually
+    # holds the concurrency slot writes the lock.  This prevents a second
+    # flow from overwriting the first flow's PID, losing the slot, and then
+    # deleting the lock in its finally block — which would leave the active
+    # backup invisible to the watchdog.
+    # Format: "PID:create_time" — the process creation timestamp makes
+    # PID-reuse detection mathematically exact (see core/process.py).
     _lock_path = config.paths.backup_lock_path
-    try:
-        write_lock(_lock_path)
-        logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
-    except OSError as e:
-        logger.warning(f"Could not write backup lock file: {e}")
 
     excs = []
 
     try:
         with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
-            # ── Cloud ──
-            if mode in ("cloud", "all") and config.cloud.enabled:
-                logger.info("Starting cloud backup pipeline")
-                try:
-                    _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso())
-                except Exception as e:
-                    excs.append(e)
+            # ── Acquire watchdog lock now that we hold the concurrency slot ──
+            try:
+                write_lock(_lock_path)
+                logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
+            except OSError as e:
+                logger.warning(f"Could not write backup lock file: {e}")
 
-            # ── LAN ──
-            if mode in ("lan", "all") and config.lan.enabled:
-                logger.info("Starting LAN backup pipeline")
+            try:
+                # ── Cloud ──
+                if mode in ("cloud", "all") and config.cloud.enabled:
+                    logger.info("Starting cloud backup pipeline")
+                    try:
+                        _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso())
+                    except Exception as e:
+                        excs.append(e)
+
+                # ── LAN ──
+                if mode in ("lan", "all") and config.lan.enabled:
+                    logger.info("Starting LAN backup pipeline")
+                    try:
+                        _run_lan_pipeline(config, _stable_run_id("lan"), now_iso())
+                    except Exception as e:
+                        excs.append(e)
+
+            finally:
+                # Release the watchdog lock as soon as pipelines are done —
+                # inside the concurrency block so the lock lifetime is
+                # strictly bounded to the time we hold the concurrency slot.
                 try:
-                    _run_lan_pipeline(config, _stable_run_id("lan"), now_iso())
-                except Exception as e:
-                    excs.append(e)
+                    _lock_path.unlink(missing_ok=True)
+                    logger.info("Backup lock released")
+                except OSError:
+                    pass
 
         # ── Summary ──
         if excs:
@@ -740,10 +757,5 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
 
         logger.info("AAM Backup completed successfully")
 
-    finally:
-        # Always release the watchdog lock — even on crash or ExceptionGroup raise
-        try:
-            _lock_path.unlink(missing_ok=True)
-            logger.info("Backup lock released")
-        except OSError:
-            pass
+    except Exception:
+        raise

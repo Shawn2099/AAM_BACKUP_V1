@@ -8,20 +8,18 @@ authors = [{ name = "AAM Associates" }]
 classifiers = ["Operating System :: Microsoft Windows"]
 
 dependencies = [
-    "prefect>=3.4.0",
-    "pydantic>=2.0",
-    "loguru>=0.7.3",
-    "pyyaml>=6.0",
-    "wakeonlan>=3.1.0",
-    "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
-    "httpx>=0.27.0",
-    "pendulum>=3.0.0",
-    "psutil>=6.0.0",
-    "prefect-mcp>=0.0.1b10",
-    "ruamel.yaml>=0.18.0",
-    "humanize>=4.0",
-    "exceptiongroup>=1.0",
+    "prefect==3.7.2",
+    "pydantic==2.13.4",
+    "loguru==0.7.3",
+    "pyyaml==6.0.3",
+    "wakeonlan==3.3.0",
+    "fastapi==0.136.3",
+    "uvicorn==0.48.0",
+    "httpx==0.28.1",
+    "pendulum==3.2.0",
+    "psutil==7.2.2",
+    "ruamel.yaml==0.19.1",
+    "humanize==4.15.0",
 ]
 
 [tool.ruff]

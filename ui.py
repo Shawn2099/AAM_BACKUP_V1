@@ -114,15 +114,36 @@ def _check_api_key_header(request: Request) -> bool:
     return hmac.compare_digest(header_key, configured_key)
 
 # ── Lazy config (works on any OS, validates only on use) ─────
+# TTL-based refresh ensures the dashboard picks up config.yaml changes
+# (e.g. FY rollover) within _CONFIG_TTL seconds without a service restart.
 
 _config = None
+_config_loaded_at: float = 0.0
+_CONFIG_TTL: float = 300.0  # 5 minutes
 
 
 def _cfg():
-    global _config
-    if _config is None:
+    global _config, _config_loaded_at
+    now = time.time()
+    if _config is None or (now - _config_loaded_at) > _CONFIG_TTL:
         from models.config import CONFIG_PATH, load_config
-        _config = load_config(CONFIG_PATH)
+        new_cfg = load_config(CONFIG_PATH)
+        # If the database path changed (e.g. FY rollover), close and evict the
+        # cached DB connection so get_db() reconnects with the new path.
+        if _config is not None and _config.paths.database_path != new_cfg.paths.database_path:
+            global _DB_INSTANCE
+            if _DB_INSTANCE is not None:
+                try:
+                    _DB_INSTANCE.close()
+                except Exception:
+                    pass
+                _DB_INSTANCE = None
+            logger.info(
+                f"Config refreshed: database path changed from "
+                f"{_config.paths.database_path} to {new_cfg.paths.database_path}"
+            )
+        _config = new_cfg
+        _config_loaded_at = now
     return _config
 
 
@@ -133,6 +154,7 @@ def get_db():
     if _DB_INSTANCE is None:
         _DB_INSTANCE = ManifestDB(_cfg().paths.database_path)
     return _DB_INSTANCE
+
 
 
 # ── Pipeline status ──────────────────────────────────────────

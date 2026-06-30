@@ -8,7 +8,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from exceptiongroup import ExceptionGroup
+
 
 # ═══════════════════════════════════════════════════════════════
 # Mock the concurrency context manager before importing flow

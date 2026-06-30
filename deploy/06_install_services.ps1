@@ -1,8 +1,17 @@
+
+# ═══════════════════════════════════════════════════════════════════════
+# Self-Elevate to Administrator
+# ═══════════════════════════════════════════════════════════════════════
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
+
 ﻿# ═══════════════════════════════════════════════════════════════════════
 # AAM Backup Automation V1 — SERVICE INSTALLER (PowerShell)
 # Run as Administrator. Re-runnable on every upgrade/config change.
 #
-# PRE-REQUISITE: Run setup_system.bat ONCE before this on a fresh server.
+# PRE-REQUISITE: Run 03_setup_system.bat ONCE before this on a fresh server.
 #
 # What it does:
 #   1. Validates uv, NSSM, rclone, and gcloud are available
@@ -13,7 +22,6 @@
 # Runtime: ~30 seconds
 # ═══════════════════════════════════════════════════════════════════════
 
-#Requires -RunAsAdministrator
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -83,7 +91,7 @@ $GcloudCmd = Join-Path $BinDir "google-cloud-sdk\bin\gcloud.cmd"
 if (-not (Test-Path $GcloudCmd)) {
     Write-Host ""
     Write-Host "  ERROR: Google Cloud SDK not found in deploy\bin." -ForegroundColor Red
-    Write-Host "  Please run setup_system.bat first to download and set up the SDK."
+    Write-Host "  Please run 03_setup_system.bat first to download and set up the SDK."
     Write-Host ""
     pause; exit 1
 }
@@ -271,7 +279,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  Troubleshooting:" -ForegroundColor Yellow
     Write-Host "    1. Check if port 4200 is already in use:  netstat -ano | findstr :4200" -ForegroundColor Yellow
     Write-Host "    2. Check the log for errors:  $LogDir\prefect_svc.log" -ForegroundColor Yellow
-    Write-Host "    3. Verify config.yaml is valid:  deploy\test_config.bat" -ForegroundColor Yellow
+    Write-Host "    3. Verify config.yaml is valid:  deploy\05_test_config.bat" -ForegroundColor Yellow
 }
 
 Write-Host "[setup] Waiting 15 seconds for Prefect API to initialize..."

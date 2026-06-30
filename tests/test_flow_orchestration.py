@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from exceptiongroup import ExceptionGroup
+
 
 from flow import (
     _record_run,

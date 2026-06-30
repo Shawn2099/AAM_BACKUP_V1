@@ -127,6 +127,13 @@ def _is_backup_running() -> bool:
     (legacy).  The create_time check guarantees stale PID-reuse is detected
     correctly even if a different Python process inherited the same PID after
     a crash.
+
+    NOTE: This function is intentionally side-effect-free.  It does NOT
+    delete a stale lock file.  Stale lock cleanup is handled exclusively by
+    the main loop's MAX_DEFERRALS branch, which only acts after enough
+    deferral cycles to rule out a transient gap between rclone calls.  Doing
+    the cleanup here would bypass all deferral protection and could cause a
+    premature restart during an active backup.
     """
     if not BACKUP_LOCK_PATH.exists():
         return False
@@ -135,11 +142,12 @@ def _is_backup_running() -> bool:
         alive, pid = read_lock_alive(BACKUP_LOCK_PATH)
         if alive:
             return True
-        # Lock is stale — clean it up.
+        # Lock PID is gone or reused — report as not running.
+        # Main loop deferral logic will force-remove after MAX_DEFERRALS.
         logger.warning(
-            f"Stale backup lock detected (PID {pid} not running or reused) — removing"
+            f"Stale backup lock detected (PID {pid} not running or reused) "
+            f"— deferral counter in main loop will handle cleanup"
         )
-        BACKUP_LOCK_PATH.unlink(missing_ok=True)
     except OSError as exc:
         logger.warning(f"Could not read backup lock file: {exc}")
     return False
