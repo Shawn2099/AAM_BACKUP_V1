@@ -133,14 +133,30 @@ if %ERRORLEVEL% equ 0 (
 )
 
 :: ════════════════════════════════════════════════════════════════════
-:: STEP 3: Isolated Google Cloud SDK
+:: STEP 3: Microsoft Defender Antivirus Exclusion
+:: Prevents Defender from scanning the massive .venv Python folder during
+:: execution, which can cause severe CPU throttling and task timeouts.
+:: ════════════════════════════════════════════════════════════════════
+echo.
+echo [3/4] Adding Microsoft Defender exclusion for project directory...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath '%PROJECT_DIR%' -ErrorAction SilentlyContinue"
+if %ERRORLEVEL% equ 0 (
+    echo [OK]   Antivirus exclusion added for: %PROJECT_DIR%
+) else (
+    echo [WARN] Defender exclusion failed or another AV is in use.
+    echo        If using third-party AV, manually exclude:
+    echo        %PROJECT_DIR%
+)
+
+:: ════════════════════════════════════════════════════════════════════
+:: STEP 4: Isolated Google Cloud SDK
 :: Downloads the standalone SDK zip and extracts it to deploy/bin
 :: using the bundled 7za.exe (much faster than Expand-Archive).
 :: Completely isolated from system — immune to Windows Updates and
 :: global gcloud SDK version changes.
 :: ════════════════════════════════════════════════════════════════════
 echo.
-echo [3/3] Checking Google Cloud SDK...
+echo [4/4] Checking Google Cloud SDK...
 
 :: 1. Check if gcloud is already in PATH
 where gcloud >nul 2>&1
