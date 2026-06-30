@@ -1,7 +1,7 @@
 @echo off
-:: ═══════════════════════════════════════════════════════════════════════
+:: =======================================================================
 :: Test config.yaml for syntax and validation errors before restarting
-:: ═══════════════════════════════════════════════════════════════════════
+:: =======================================================================
 
 set SCRIPT_DIR=%~dp0
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
@@ -34,10 +34,10 @@ if "%UV_EXE%"=="" (
     echo.
     echo  Then re-run 05_test_config.bat.
     echo.
-    pause
+    :: pause
     exit /b 1
 )
 
 cd /d "%PROJECT_DIR%"
 "%UV_EXE%" run python "%SCRIPT_DIR%\test_config.py"
-pause
+:: pause

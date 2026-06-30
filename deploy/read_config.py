@@ -34,7 +34,7 @@ def read_value(config_path: str, dotpath: str, default: str | None = None) -> st
 
 
 def _read_yaml_fallback(config_path: str, dotpath: str, default: str | None = None) -> str | None:
-    """Minimal YAML fallback — handles flat and one-level nested keys only."""
+    """Minimal YAML fallback - handles flat and one-level nested keys only."""
     import re
 
     keys = dotpath.split(".")

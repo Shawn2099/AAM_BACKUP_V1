@@ -1,21 +1,22 @@
 
-# ═══════════════════════════════════════════════════════════════════════
+# =======================================================================
 # Self-Elevate to Administrator
-# ═══════════════════════════════════════════════════════════════════════
+# =======================================================================
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     exit
 }
 
-# ═══════════════════════════════════════════════════════════════════════
-# AAM Backup Automation — Server Discovery (PowerShell)
+# =======================================================================
+# AAM Backup Automation - Server Discovery (PowerShell)
 #
 # Runs on Windows Server 2016+ without Python
 # Generates: server_discovery_report.md + server_discovery_report.json
-# ═══════════════════════════════════════════════════════════════════════
+# =======================================================================
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "SilentlyContinue"
+if (Get-Alias md -ErrorAction SilentlyContinue) { Remove-Item alias:md -Force -ErrorAction SilentlyContinue }
 
 $ReportDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ReportMD  = Join-Path $ReportDir "server_discovery_report.md"
@@ -33,19 +34,19 @@ Write-Host ""
 
 $TargetIP = Read-Host "Enter Backup Server IP to test connectivity (or press Enter to skip)"
 
-# ── Helper: append to markdown ────────────────────────────────────────
+# -- Helper: append to markdown ----------------------------------------
 function md($line) {
     Add-Content -Path $ReportMD -Value $line -Encoding UTF8
 }
 
-# ── Helper: JSON object builder ──────────────────────────────────────
+# -- Helper: JSON object builder --------------------------------------
 $jsonParts = [System.Collections.Generic.List[string]]::new()
 
 function json($line) {
     $jsonParts.Add($line)
 }
 
-# ── Initialize Reports ──────────────────────────────────────────────
+# -- Initialize Reports ----------------------------------------------
 "# Server Discovery Report" | Out-File -FilePath $ReportMD -Encoding UTF8
 md ""
 md "**Generated:** $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
@@ -54,7 +55,7 @@ md ""
 json "{"
 json "  `"generated`": `"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`","
 
-# ── 1. System Information ──────────────────────────────────────────
+# -- 1. System Information ------------------------------------------
 Write-Host "[1/11] Gathering system information..."
 md "## 1. System Information"
 md ""
@@ -82,7 +83,7 @@ json "    `"current_user`": `"$env:USERNAME`","
 json "    `"is_admin`": `"$(if ($isAdmin) {'yes'} else {'no'})`""
 json "  },"
 
-# ── 2. Storage Information ─────────────────────────────────────────
+# -- 2. Storage Information -----------------------------------------
 Write-Host "[2/11] Gathering storage information..."
 md "## 2. Storage Information"
 md ""
@@ -117,7 +118,7 @@ foreach ($d in $drives) {
 json "  ],"
 md ""
 
-# ── 3. Network Information ─────────────────────────────────────────
+# -- 3. Network Information -----------------------------------------
 Write-Host "[3/11] Gathering network information..."
 md "## 3. Network Information"
 md ""
@@ -193,7 +194,7 @@ md ""
 json "    `"target_server`": { `"ip`": `"$(if ($TargetIP) {$TargetIP} else {''})`" }"
 json "  },"
 
-# ── 4. Software & Tools ────────────────────────────────────────────
+# -- 4. Software & Tools --------------------------------------------
 Write-Host "[4/11] Checking software and tools..."
 md "## 4. Software & Tools"
 md ""
@@ -242,7 +243,7 @@ if ($nssmOK) {
 
 json "  },"
 
-# ── 5. Permissions & Access ────────────────────────────────────────
+# -- 5. Permissions & Access ----------------------------------------
 Write-Host "[5/11] Checking permissions..."
 md "## 5. Permissions & Access"
 md ""
@@ -285,7 +286,7 @@ if ($longPaths -and $longPaths.LongPathsEnabled -eq 1) {
 json "    `"long_paths`": `"$(if ($longPaths -and $longPaths.LongPathsEnabled -eq 1) {'enabled'} else {'disabled'})`""
 json "  },"
 
-# ── 6. Existing Installation ───────────────────────────────────────
+# -- 6. Existing Installation ---------------------------------------
 Write-Host "[6/11] Checking for existing installation..."
 md "## 6. Existing Installation"
 md ""
@@ -323,7 +324,7 @@ $json_install += " },"
 json $json_install
 md ""
 
-# ── 7. Port Availability ───────────────────────────────────────────
+# -- 7. Port Availability -------------------------------------------
 Write-Host "[7/11] Checking port availability..."
 md "## 7. Port Availability"
 md ""
@@ -353,7 +354,7 @@ $json_ports += " },"
 json $json_ports
 md ""
 
-# ── 8. System Resources ───────────────────────────────────────────
+# -- 8. System Resources -------------------------------------------
 Write-Host "[8/11] Checking system resources..."
 md "## 8. System Resources"
 md ""
@@ -372,7 +373,7 @@ json "    `"cpu`": `"$cpuName`","
 json "    `"cpu_cores`": $cpuCores"
 json "  },"
 
-# ── 9. Timezone & Power ────────────────────────────────────────────
+# -- 9. Timezone & Power --------------------------------------------
 Write-Host "[9/11] Checking timezone and power settings..."
 md "## 9. Timezone & Power"
 md ""
@@ -403,7 +404,7 @@ json "  `"timezone_power`": {"
 json "    `"timezone`": `"$tz`""
 json "  },"
 
-# ── 10. GCS Connectivity ──────────────────────────────────────────
+# -- 10. GCS Connectivity ------------------------------------------
 Write-Host "[10/11] Testing GCS connectivity..."
 md "## 10. GCS Connectivity"
 md ""
@@ -432,7 +433,7 @@ json "  `"gcs_connectivity`": {"
 json "    `"reachable`": `"$(if ($gcsPing) {'yes'} else {'no'})`""
 json "  },"
 
-# ── 11. Windows Services ───────────────────────────────────────────
+# -- 11. Windows Services -------------------------------------------
 Write-Host "[11/11] Checking Windows services..."
 md "## 11. Windows Services"
 md ""
@@ -451,7 +452,7 @@ foreach ($svc in $aamServices) {
     if ($s) {
         md "- **$($s.Name):** $($s.Status)"
     } else {
-        md "- **$svc:** Not installed"
+        md "- **${svc}:** Not installed"
     }
 }
 
@@ -459,7 +460,7 @@ md ""
 md "---"
 md "*Report generated by AAM Backup Server Discovery Script (PowerShell)*"
 
-# ── Write JSON ──────────────────────────────────────────────────────
+# -- Write JSON ------------------------------------------------------
 $jsonParts.Add("}")
 $jsonContent = $jsonParts -join "`n"
 $jsonContent | Out-File -FilePath $ReportJSON -Encoding UTF8
@@ -475,4 +476,4 @@ Write-Host "    $ReportJSON"
 Write-Host ""
 Write-Host "  Please send both files to your deployment team."
 Write-Host ""
-pause
+# pause

@@ -1,14 +1,14 @@
 
-# ═══════════════════════════════════════════════════════════════════════
+# =======================================================================
 # Self-Elevate to Administrator
-# ═══════════════════════════════════════════════════════════════════════
+# =======================================================================
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     exit
 }
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue" # Prevent NativeCommandError from external tools
 
 $passed = $true
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -18,11 +18,11 @@ $BinDir = Join-Path $ScriptDir "bin"
 function Check-Item($Name, $Status, $IsError) {
     if ($IsError) {
         Write-Host "[FAIL] " -NoNewline -ForegroundColor Red
-        Write-Host "$Name: $Status"
+        Write-Host "$($Name): $Status"
         $script:passed = $false
     } else {
         Write-Host "[OK]   " -NoNewline -ForegroundColor Green
-        Write-Host "$Name: $Status"
+        Write-Host "$($Name): $Status"
     }
 }
 
@@ -59,7 +59,7 @@ if ($uvPath) {
     }
 
     Write-Host "       -> Installing required libraries (uv sync)... " -NoNewline
-    $sync = & $uvPath sync --directory $ProjectDir 2>&1
+    $sync = cmd /c "`"$uvPath`" sync --directory `"$ProjectDir`" 2>&1"
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK]" -ForegroundColor Green
     } else {
@@ -162,7 +162,8 @@ if ($lanman -and $lanman.Status -eq "Running") {
 $wd = Get-Service WinDefend -ErrorAction SilentlyContinue
 if ($wd -and $wd.Status -eq "Running") {
     Write-Host "[WARN] " -NoNewline -ForegroundColor Yellow
-    Write-Host "Windows Defender is running. Ensure exclusions are set for rclone.exe!"
+    Write-Host "Windows Defender is running. Ensure exclusions are set (run 03_setup_system.bat)."
+    Write-Host "       Exclusions needed: project folder, robocopy.exe, rclone.exe"
 }
 
 # 13. Directory Write-Access
@@ -203,4 +204,4 @@ if ($passed) {
     Write-Host ">>> ERROR: One or more checks failed. Fix the red items above before proceeding." -ForegroundColor Red
 }
 Write-Host ""
-pause
+# pause

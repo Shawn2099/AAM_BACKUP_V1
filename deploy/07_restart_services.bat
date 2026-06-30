@@ -1,8 +1,8 @@
 @echo off
-:: ═══════════════════════════════════════════════════════════════════════
+:: =======================================================================
 :: Restart Services for AAM Backup Automation
 :: Run this as Administrator after updating config.yaml
-:: ═══════════════════════════════════════════════════════════════════════
+:: =======================================================================
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (
@@ -14,12 +14,12 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: ── Resolve project directory ────────────────────────────────────────
+:: -- Resolve project directory ----------------------------------------
 set SCRIPT_DIR=%~dp0
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
 
-:: ── Read runtime_dir from config.yaml via Python ─────────────────────
+:: -- Read runtime_dir from config.yaml via Python ---------------------
 set "CONFIG_FILE=%PROJECT_DIR%\config.yaml"
 set "DEFAULT_RUNTIME=C:\BackupAgent"
 
@@ -47,7 +47,7 @@ set "LOG_DIR=%RUNTIME_DIR%\logs"
 
 echo.
 echo ===================================================
-echo  AAM Backup — Restarting Services
+echo  AAM Backup - Restarting Services
 echo ===================================================
 echo.
 echo  Stopping all AAM services...

@@ -48,7 +48,7 @@ from loguru import logger
 PREFECT_HEALTH_URL     = "http://127.0.0.1:4200/api/health"
 CHECK_INTERVAL_SECONDS = 60     # normal poll interval
 FAILURE_THRESHOLD      = 5      # consecutive failures before considering action
-REQUEST_TIMEOUT        = 10     # HTTP timeout per health check (seconds)
+REQUEST_TIMEOUT        = 30     # HTTP timeout per health check (seconds)
 BACKUP_WAIT_INTERVAL   = 120    # re-check interval while a backup is running
 MAX_DEFERRALS          = 15     # stale-lock cap: force restart after ~30 min (no transfer process seen)
 MAX_TRANSFER_DEFERRALS = 240    # real-transfer cap: force restart after 8 h (240 × 2 min)

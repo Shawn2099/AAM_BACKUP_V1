@@ -1,22 +1,24 @@
 @echo off
-:: ═══════════════════════════════════════════════════════════════════════
-:: AAM Backup Automation V1 — SYSTEM SETUP (run ONCE per server)
+:: =======================================================================
+:: AAM Backup Automation V1 - SYSTEM SETUP (run ONCE per server)
 ::
 :: Run this BEFORE 06_install_services.ps1 on a fresh server.
-:: All steps are idempotent — safe to re-run if needed.
+:: All steps are idempotent - safe to re-run if needed.
 ::
 :: What it does:
+::   0. Installs uv (Python runtime and package manager)
 ::   1. Enables Windows Long Path support (>260 chars)
 ::   2. Suppresses Windows Update auto-reboots during backup windows
-::   3. Downloads and extracts the isolated Google Cloud SDK to deploy/bin
-::      (required for FY rollover archive transition on April 1)
+::   3. Adds Microsoft Defender exclusions for project dir and transfer processes
+::   4. Opens Windows Firewall ports 4200 (Prefect) and 8080 (Dashboard)
+::   5. Downloads the isolated Google Cloud SDK to deploy/bin
 ::
 :: Runtime: ~1-2 minutes (most time is SDK download + extraction, first run only)
-:: ═══════════════════════════════════════════════════════════════════════
+:: =======================================================================
 
 setlocal EnableDelayedExpansion
 
-:: ── Guard: must run as Administrator ────────────────────────────────
+:: -- Guard: must run as Administrator ------------------------------
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
@@ -27,7 +29,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: ── Resolve paths ─────────────────────────────────────────────────────
+:: -- Resolve paths -------------------------------------------------
 set SCRIPT_DIR=%~dp0
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
@@ -41,16 +43,16 @@ set "GCLOUD_ZIP=%PROJECT_DIR%\deploy\bin\google-cloud-sdk.zip"
 
 echo.
 echo ===================================================================
-echo   AAM Backup Automation V1 — SYSTEM SETUP
+echo   AAM Backup Automation V1 - SYSTEM SETUP
 echo ===================================================================
 echo   Project:  %PROJECT_DIR%
 echo ===================================================================
 
-:: ════════════════════════════════════════════════════════════════════
+:: ====================================================================
 :: STEP 0: Install uv (Python package and runtime manager)
 :: uv is the ONLY external dependency. It auto-downloads and manages
-:: the correct Python version — no manual Python install needed.
-:: ════════════════════════════════════════════════════════════════════
+:: the correct Python version - no manual Python install needed.
+:: ====================================================================
 echo.
 echo [0/3] Checking uv package manager...
 
@@ -71,7 +73,7 @@ if not "%UV_EXE%"=="" (
     goto :uv_done
 )
 
-:: uv not found — download and install it
+:: uv not found - download and install it
 echo [....] uv not found. Downloading and installing uv...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://astral.sh/uv/install.ps1' -UseBasicParsing | Invoke-Expression"
@@ -99,11 +101,11 @@ echo [OK]   Python 3.12 ready.
 :uv_done
 
 
-:: ════════════════════════════════════════════════════════════════════
+:: ====================================================================
 :: STEP 1: Windows Long Path Support
 :: Files with paths >260 chars are silently skipped by robocopy and
 :: rclone without this. Essential for deep accounting folder trees.
-:: ════════════════════════════════════════════════════════════════════
+:: ====================================================================
 echo.
 echo [1/3] Enabling Windows Long Path support ^(paths ^> 260 chars^)...
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
@@ -115,12 +117,12 @@ if %ERRORLEVEL% equ 0 (
     echo        Enable "Win32 long paths" and reboot.
 )
 
-:: ════════════════════════════════════════════════════════════════════
+:: ====================================================================
 :: STEP 2: Suppress Windows Update Auto-Reboots
 :: Prevents Windows from rebooting the server mid-backup at 1 AM or
-:: 6 PM without warning. Updates still install — only auto-reboots
+:: 6 PM without warning. Updates still install - only auto-reboots
 :: are blocked until an Administrator manually approves.
-:: ════════════════════════════════════════════════════════════════════
+:: ====================================================================
 echo.
 echo [2/3] Suppressing Windows Update automatic reboots...
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f >nul 2>&1
@@ -132,31 +134,47 @@ if %ERRORLEVEL% equ 0 (
     echo        ^> Windows Update ^> "No auto-restart with logged on users"
 )
 
-:: ════════════════════════════════════════════════════════════════════
+:: ====================================================================
 :: STEP 3: Microsoft Defender Antivirus Exclusion
 :: Prevents Defender from scanning the massive .venv Python folder during
-:: execution, which can cause severe CPU throttling and task timeouts.
-:: ════════════════════════════════════════════════════════════════════
+:: execution, and excludes transfer processes (robocopy, rclone) from active
+:: monitoring to prevent CPU throttling and file locking.
+:: ====================================================================
 echo.
-echo [3/4] Adding Microsoft Defender exclusion for project directory...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath '%PROJECT_DIR%' -ErrorAction SilentlyContinue"
+echo [3/5] Adding Microsoft Defender exclusions for project directory and transfer processes...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath '%PROJECT_DIR%' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'robocopy.exe', 'rclone.exe' -ErrorAction SilentlyContinue"
 if %ERRORLEVEL% equ 0 (
-    echo [OK]   Antivirus exclusion added for: %PROJECT_DIR%
+    echo [OK]   Antivirus exclusions added for: %PROJECT_DIR% and transfer processes.
 ) else (
     echo [WARN] Defender exclusion failed or another AV is in use.
-    echo        If using third-party AV, manually exclude:
+    echo        If using third-party AV, manually exclude folder:
     echo        %PROJECT_DIR%
+    echo        And processes: robocopy.exe, rclone.exe
 )
 
-:: ════════════════════════════════════════════════════════════════════
-:: STEP 4: Isolated Google Cloud SDK
+:: ====================================================================
+:: STEP 4: Windows Firewall Rules
+:: Opens inbound ports for the Prefect Server and Backup Dashboard so
+:: they can be accessed over the LAN.
+:: ====================================================================
+echo.
+echo [4/5] Configuring Windows Firewall rules for Prefect and Dashboard...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "New-NetFirewallRule -DisplayName 'AAM Backup Prefect' -Direction Inbound -LocalPort 4200 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue; New-NetFirewallRule -DisplayName 'AAM Backup Dashboard' -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue"
+if %ERRORLEVEL% equ 0 (
+    echo [OK]   Firewall rules added for ports 4200 and 8080.
+) else (
+    echo [WARN] Firewall rule creation failed. Please open TCP 4200 and 8080 manually.
+)
+
+:: ====================================================================
+:: STEP 5: Isolated Google Cloud SDK
 :: Downloads the standalone SDK zip and extracts it to deploy/bin
 :: using the bundled 7za.exe (much faster than Expand-Archive).
-:: Completely isolated from system — immune to Windows Updates and
+:: Completely isolated from system - immune to Windows Updates and
 :: global gcloud SDK version changes.
-:: ════════════════════════════════════════════════════════════════════
+:: ====================================================================
 echo.
-echo [4/4] Checking Google Cloud SDK...
+echo [5/5] Checking Google Cloud SDK...
 
 :: 1. Check if gcloud is already in PATH
 where gcloud >nul 2>&1
@@ -181,7 +199,7 @@ echo [....] SDK not found. Downloading standalone archive ^(~120MB^)...
 echo [....] This only happens ONCE. Subsequent runs skip this step.
 echo.
 
-:: Download — TLS 1.2 forced inside the PowerShell command itself
+:: Download - TLS 1.2 forced inside the PowerShell command itself
 powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-windows-x86_64.zip' -OutFile '%GCLOUD_ZIP%' -UseBasicParsing"
 
 if not exist "%GCLOUD_ZIP%" (

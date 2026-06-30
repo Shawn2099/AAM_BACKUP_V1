@@ -20,6 +20,7 @@ dependencies = [
     "psutil==7.2.2",
     "ruamel.yaml==0.19.1",
     "humanize==4.15.0",
+    "python-multipart==0.0.32",
 ]
 
 [tool.ruff]
