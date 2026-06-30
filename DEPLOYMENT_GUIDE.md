@@ -286,7 +286,7 @@ Open `config.yaml` and update the following sections using the snippets from Ste
 | Key | What to set |
 |-----|-------------|
 | `paths.source_drive` | Local data path, e.g. `D:\\FY26-27` |
-| `paths.lan_destination` | UNC path, e.g. `\\\\192.168.1.100\\share\\FY26-27` |
+| `paths.lan_destination` | UNC path, e.g. `\\\\192.168.10.10\\share\\FY26-27` |
 | `paths.runtime_dir` | Runtime data folder (logs, DB, lock). Default: `C:\\BackupAgent` |
 | `paths.gcs_key_path` | `C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json` |
 | `cloud.enabled` | `true` |
