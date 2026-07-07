@@ -170,7 +170,7 @@ def main():
     # 90s total wait ensures zero sc failure recovery actions are consumed on a
     # normal restart cycle.
     print("[launch] Waiting for Prefect API server...")
-    _API_MAX_WAIT  = 90   # seconds
+    _API_MAX_WAIT  = 300  # seconds
     _API_INTERVAL  = 10   # seconds between attempts
     _api_ready     = False
     for _elapsed in range(0, _API_MAX_WAIT, _API_INTERVAL):
