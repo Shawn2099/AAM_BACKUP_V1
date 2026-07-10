@@ -37,8 +37,12 @@ def record_sync_results(
         ]
         db.bulk_upsert_synced(normalized, mode)
 
-        # Self-healing: prune stale entries that are marked synced in DB but no longer exist
-        active_paths = {item["path"] for item in normalized}
+        # Self-healing: prune stale entries that are marked synced in DB but no longer exist.
+        # Normalize to forward slashes to match what bulk_upsert_synced stores in the DB.
+        # On Windows, os.path.relpath() on a UNC share returns backslash-delimited paths,
+        # but bulk_upsert_synced converts them to forward slashes before INSERT.
+        # Without this, all subdirectory files compare unequal and are pruned every run.
+        active_paths = {item["path"].replace("\\", "/") for item in normalized}
         pruned = db.prune_stale_synced(mode, active_paths)
         if pruned:
             logger.info(f"Pruned {pruned} stale {mode} entries from manifest")

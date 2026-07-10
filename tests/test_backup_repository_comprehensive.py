@@ -97,6 +97,34 @@ class TestRecordSyncResults:
         record_sync_results(db, "lan", entries)
         assert db.get_entry("sub/file.txt") is not None
 
+    def test_backslash_subdir_paths_not_pruned_after_upsert(self, db):
+        """Regression: Windows backslash paths from os.walk on UNC shares must
+        not be pruned immediately after being upserted.
+
+        bulk_upsert_synced normalizes backslashes to forward slashes before
+        storing in DB. active_paths must use the same format so the prune
+        comparison does not incorrectly flag every subdirectory file as stale
+        on every LAN backup run on Windows.
+        """
+        entries = [
+            # Root-level files (no separator — unaffected baseline)
+            {"path": "root_a.txt",              "size": 100, "mtime": 1.0},
+            # Subdirectory files with Windows backslash separators
+            {"path": r"sub\file_a.txt",         "size": 200, "mtime": 2.0},
+            {"path": r"a\b\c\deep.pdf",         "size": 300, "mtime": 3.0},
+            {"path": r"folder\nested\img.png",  "size": 400, "mtime": 4.0},
+        ]
+        record_sync_results(db, "lan", entries)
+        # All 4 files must be synced — subdirectory ones must NOT be pruned
+        assert db.file_count("lan_status") == 4
+        assert db.get_entry("root_a.txt")["lan_status"] == "synced"
+        assert db.get_entry("sub/file_a.txt")["lan_status"] == "synced"
+        assert db.get_entry("a/b/c/deep.pdf")["lan_status"] == "synced"
+        assert db.get_entry("folder/nested/img.png")["lan_status"] == "synced"
+        # Re-run with identical data: count must stay stable (no spurious pruning)
+        record_sync_results(db, "lan", entries)
+        assert db.file_count("lan_status") == 4
+
     def test_defaults_missing_fields(self, db):
         entries = [{"Path": "minimal.txt"}]
         record_sync_results(db, "cloud", entries)
