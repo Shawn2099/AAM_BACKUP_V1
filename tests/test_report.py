@@ -96,7 +96,8 @@ class TestGenerateReportHtml:
             assert _send_email_with_attachments(cfg, "Subject", "<p>body</p>") is True
             mock_server.login.assert_called_once_with("user", "pass")
 
-    def test_quits_on_sendmail_failure(self):
+    @patch("core.report.time.sleep")
+    def test_quits_on_sendmail_failure(self, mock_sleep):
         cfg = NotificationConfig(
             smtp_host="smtp.example.com",
             smtp_port=587,
@@ -109,7 +110,7 @@ class TestGenerateReportHtml:
         mock_server.sendmail.side_effect = ConnectionError("timeout")
         with patch("core.report.smtplib.SMTP", return_value=mock_server):
             assert _send_email_with_attachments(cfg, "Subject", "<p>body</p>") is False
-            mock_server.quit.assert_called_once()
+            assert mock_server.quit.call_count == 3
 
 
 class TestSendFailureAlert:

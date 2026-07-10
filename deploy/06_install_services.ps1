@@ -182,7 +182,13 @@ Write-Host "[setup] Installing $SVC_SERVER..."
 & $NSSM set $SVC_SERVER AppStopMethodThreads 15000
 
 & $NSSM set $SVC_SERVER AppRestartDelay 30000
-& $NSSM set $SVC_SERVER AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
+& $NSSM set $SVC_SERVER AppEnvironmentExtra `
+  "PREFECT_HOME=$PrefectHome" `
+  "PREFECT_API_URL=http://127.0.0.1:4200/api" `
+  "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0" `
+  "PREFECT_SERVER_DATABASE_TIMEOUT=60.0" `
+  "PREFECT_SERVER_DATABASE_SQLALCHEMY_POOL_TIMEOUT=60.0" `
+  "PREFECT_SERVER_ANALYTICS_ENABLED=False"
 
 sc.exe failure $SVC_SERVER reset= 86400 actions= restart/30000/restart/60000/restart/60000 2>$null
 sc.exe failureflag $SVC_SERVER 1 2>$null

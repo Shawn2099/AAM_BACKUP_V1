@@ -7,7 +7,9 @@ generate_report_html() is shared between email delivery and UI download.
 import csv
 import html
 import io
+import random
 import smtplib
+import time
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -52,30 +54,54 @@ def _send_email_with_attachments(
             part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
             msg.attach(part)
 
-    server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
-    try:
-        if config.smtp_port == 465:
-            server = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=30)
-        else:
-            server = smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=30)
-            server.starttls()
+    _SMTP_MAX_ATTEMPTS = 3
+    _SMTP_BASE_DELAY_SECONDS = 10
+    _SMTP_JITTER_FACTOR = 0.2
 
-        server.login(config.smtp_username, config.smtp_password)
-        server.sendmail(config.sender, config.recipients, msg.as_string())
+    for attempt in range(1, _SMTP_MAX_ATTEMPTS + 1):
+        server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
+        try:
+            if config.smtp_port == 465:
+                server = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=30)
+            else:
+                server = smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=30)
+                server.starttls()
 
-        logger.info(f"Email sent: {subject}")
-        return True
+            server.login(config.smtp_username, config.smtp_password)
+            server.sendmail(config.sender, config.recipients, msg.as_string())
 
-    except Exception as e:
-        logger.error(f"Failed to send email '{subject}': {e}")
-        return False
+            logger.info(f"Email sent: {subject} (attempt {attempt}/{_SMTP_MAX_ATTEMPTS})")
+            return True
 
-    finally:
-        if server is not None:
-            try:
-                server.quit()
-            except Exception:
-                pass
+        except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as e:
+            # Auth failures or rejected senders/recipients are permanent — never retry
+            logger.error(f"Email failed (permanent SMTP error): {e}")
+            return False
+
+        except Exception as e:
+            if attempt < _SMTP_MAX_ATTEMPTS:
+                delay = _SMTP_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                jitter = delay * _SMTP_JITTER_FACTOR * (2 * random.random() - 1)
+                wait = max(0.0, delay + jitter)
+                logger.warning(
+                    f"Email attempt {attempt}/{_SMTP_MAX_ATTEMPTS} failed: {e} "
+                    f"— retrying in {wait:.1f}s"
+                )
+                time.sleep(wait)
+            else:
+                logger.error(
+                    f"Email failed after {_SMTP_MAX_ATTEMPTS} attempts "
+                    f"('{subject}'): {e}"
+                )
+
+        finally:
+            if server is not None:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
+
+    return False
 
 
 def send_failure_alert(
