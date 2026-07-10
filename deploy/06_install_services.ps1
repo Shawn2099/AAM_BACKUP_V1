@@ -220,10 +220,10 @@ Write-Host "[setup] Installing $SVC_AGENT..."
 & $NSSM set $SVC_AGENT AppRotateOnline 1
 & $NSSM set $SVC_AGENT AppRotateBytes 10485760
 
-# Graceful shutdown
-& $NSSM set $SVC_AGENT AppStopMethodConsole 120000
-& $NSSM set $SVC_AGENT AppStopMethodWindow 120000
-& $NSSM set $SVC_AGENT AppStopMethodThreads 120000
+# Graceful shutdown (reduced to 15s to bypass Prefect Ctrl+C hang)
+& $NSSM set $SVC_AGENT AppStopMethodConsole 15000
+& $NSSM set $SVC_AGENT AppStopMethodWindow 15000
+& $NSSM set $SVC_AGENT AppStopMethodThreads 15000
 
 & $NSSM set $SVC_AGENT AppRestartDelay 30000
 & $NSSM set $SVC_AGENT AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
@@ -254,6 +254,11 @@ Write-Host "[setup] Installing $SVC_WATCHDOG..."
 & $NSSM set $SVC_WATCHDOG AppRotateFiles 1
 & $NSSM set $SVC_WATCHDOG AppRotateOnline 1
 & $NSSM set $SVC_WATCHDOG AppRotateBytes 10485760
+
+# Graceful shutdown
+& $NSSM set $SVC_WATCHDOG AppStopMethodConsole 15000
+& $NSSM set $SVC_WATCHDOG AppStopMethodWindow 15000
+& $NSSM set $SVC_WATCHDOG AppStopMethodThreads 15000
 
 & $NSSM set $SVC_WATCHDOG AppRestartDelay 15000
 & $NSSM set $SVC_WATCHDOG AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
