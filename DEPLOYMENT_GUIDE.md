@@ -416,8 +416,40 @@ On **April 1st** each year, the system automatically:
 
 ---
 
+## Disaster Recovery & Data Restore Procedure
+
+In the event of a local hardware failure, ransomware wipe, or data corruption, data can be restored from GCS to local disk using any of the following 3 methods:
+
+### Method 1: Using Built-in Interactive Restore Tool (Recommended)
+
+1. Open Command Prompt and navigate to the project directory:
+   ```cmd
+   cd C:\AAM_BACKUP_V1
+   ```
+2. Double-click or run:
+   ```cmd
+   deploy\09_restore_from_gcs.bat
+   ```
+3. Enter the GCS folder name (e.g. `FY25-26`) and target local path (e.g. `D:\RESTORED_DATA`). The script will pull the data down with full progress reporting.
+
+### Method 2: Manual High-Speed CLI Restore Command
+
+Run directly from Command Prompt:
+```cmd
+deploy\bin\rclone.exe copy :gcs:aam-cloudbackup/FY25-26 "D:\RESTORED_DATA\FY25-26" --gcs-service-account-file="deploy\keys\aam-gcs-key.json" --progress --transfers=8 --checkers=16
+```
+
+### Method 3: Web Console Download (Single Files or Small Folders)
+
+1. Open [GCS Cloud Console](https://console.cloud.google.com/storage/browser/aam-cloudbackup).
+2. Browse to the desired folder or file.
+3. Click on the file/folder and select **Download**.
+
+---
+
 ## Uninstallation
 
 1. Right-click **`deploy\08_uninstall_services.bat`** → **"Run as Administrator"**.
 2. This stops and removes all 3 services and kills any orphaned background processes.
 3. Delete the project folder manually after uninstallation.
+
