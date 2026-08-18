@@ -9,7 +9,7 @@ Edit the `schedule:` section in config.yaml to change cron expressions and timez
 from prefect import serve
 from prefect.schedules import Cron
 
-from flow import backup, monthly_report_flow, weekly_report_flow
+from flow import backup, monthly_report_flow, rollover_check_flow, weekly_report_flow
 from models.config import CONFIG_PATH, load_config
 
 
@@ -55,7 +55,24 @@ def _deployments():
         description="Monthly backup summary email (1st of month)",
     )
 
-    return cloud_deployment, lan_deployment, report_deployment, monthly_deployment
+    # G10: scheduled FY-rollover check. A no-op except on the fiscal-year
+    # boundary; required because the boot-time check in launch.py only runs
+    # when the agent process starts (24x7 servers are rarely rebooted).
+    rollover_deployment = rollover_check_flow.to_deployment(
+        name="rollover-check",
+        parameters={"config_path": CONFIG_PATH},
+        schedules=[Cron(config.schedule.rollover_cron, tz)],
+        tags=["maintenance"],
+        description="Daily FY rollover check — idempotent; runs the real rollover on April 1",
+    )
+
+    return (
+        cloud_deployment,
+        lan_deployment,
+        report_deployment,
+        monthly_deployment,
+        rollover_deployment,
+    )
 
 
 if __name__ == "__main__":

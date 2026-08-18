@@ -411,18 +411,50 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
     files_copied = 0
     bytes_copied = 0
     extended_metrics = None
+    phase = "pre"
 
     try:
         health_check_task(config, "cloud")
         preflight(config, fy_prefix)
+        phase = "sync"
         sync_result = sync(config, fy_prefix)
         status = sync_result["status"]
+        phase = "verify"
         verify_data = verify_report(config, fy_prefix)
         cloud_record_task(
             db_path, verify_data, sync_result,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
         )
+
+        # F1: verification is part of the backup contract. A failed check must
+        # NOT be recorded as COMPLETE — alert with a distinct, non-skip status
+        # and fail the run so it is visible in the Prefect console.
+        if not verify_data.get("verified"):
+            diff = verify_data.get("diff") or {}
+            verify_err = (
+                "Cloud integrity verification FAILED after sync: rclone check found "
+                f"differences vs source (missing-from-cloud={len(diff.get('removed', []))}, "
+                f"unexpected-in-cloud={len(diff.get('added', []))}, "
+                f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
+                "incomplete or out of sync. rclone sync is resumable — the next "
+                "scheduled run will re-sync the differences."
+            )
+            status = "CLOUD_VERIFY_FAILED"
+            error_msg = verify_err
+            logger.error(verify_err)
+            try:
+                send_failure_alert(
+                    config.notifications, config.firm_name, verify_err,
+                    {"mode": "cloud", "status": status,
+                     "exit_code": sync_result.get("exit_code")},
+                    started_at,
+                )
+            except Exception as alert_err:
+                logger.warning(f"Could not send verify-failure alert: {alert_err}")
+            raise RuntimeError(verify_err)
+
+        phase = "post"
 
         # Calculate files and bytes copied by comparing old database state with new live GCS manifest
         manifest = verify_data.get("manifest", [])
@@ -473,6 +505,18 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
 
     except Exception as e:
         error_msg = str(e)
+        # F2: record the TRUE terminal status. Previously any exception after
+        # initialization left the run recorded as CLOUD_SKIPPED (initial value),
+        # so real failures were invisible in reports and the dashboard.
+        if phase == "sync":
+            status = "CLOUD_FAILED"
+        elif phase == "verify" and status == "CLOUD_COMPLETE":
+            status = "CLOUD_VERIFY_FAILED"
+        elif phase == "pre":
+            status = "CLOUD_SKIPPED"
+        # phase "post" (record/artifact after a successful sync+verify): the
+        # data is safe on GCS — keep the sync status; the bookkeeping error
+        # stays visible in the run record's error_message.
         raise
     finally:
         _record_run(
@@ -507,14 +551,17 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
     files_copied = 0
     bytes_copied = 0
     extended_metrics = None
+    phase = "pre"
 
     try:
         health_check_task(config, "lan")
         wol_check_task(config)
         preflight(config)
         before_dict = lan_snapshot_before_task(config)
+        phase = "sync"
         sync_result = sync(config)
         status = sync_result["status"]
+        phase = "post"
         after_dict = lan_snapshot_after_task(config)
         lan_record_task(
             db_path, sync_result, before_dict, after_dict,
@@ -539,16 +586,48 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
         except Exception:
             pass
 
-        logger.info("LAN pipeline completed successfully")
-        # Shut down the backup server after a successful sync.
-        # NOTE: this is intentionally inside the try block, not in an else clause.
-        # Python's try/else does NOT execute if try exits via return — so lan_shutdown
-        # was previously dead code. Placing it here before the return is correct.
-        lan_shutdown_task(config)
+        logger.info(f"LAN pipeline completed with status {status}")
+        # F3: shut the NAS down ONLY after a fully complete mirror (robocopy
+        # exit 0-3). A PARTIAL run (exit 4-15) means some files did not land —
+        # powering off the NAS now strands them until the next WoL, and the
+        # partial state must be reported, not silent.
+        if status == "LAN_COMPLETE":
+            lan_shutdown_task(config)
+        elif status == "LAN_PARTIAL":
+            logger.error(
+                f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
+                "some files were not copied. NAS shutdown SKIPPED — the next "
+                "run will re-sync the missing files."
+            )
+            try:
+                send_failure_alert(
+                    config.notifications, config.firm_name,
+                    (
+                        f"LAN backup PARTIAL: robocopy exit code "
+                        f"{sync_result.get('exit_code')} — some files were not "
+                        "copied. The NAS was NOT shut down; the next scheduled "
+                        "run will re-sync. "
+                        f"{sync_result.get('error') or ''}"
+                    ).strip(),
+                    {"mode": "lan", "status": status,
+                     "exit_code": sync_result.get("exit_code")},
+                    started_at,
+                )
+            except Exception as alert_err:
+                logger.warning(f"Could not send partial-backup alert: {alert_err}")
+        else:
+            logger.info(f"LAN shutdown skipped — status is {status}")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
     except Exception as e:
         error_msg = str(e)
+        # F2: record the TRUE terminal status (previously left as LAN_SKIPPED).
+        # phase "post" = sync already succeeded; keep its status, the
+        # bookkeeping error stays visible in the run record's error_message.
+        if phase == "sync":
+            status = "LAN_FAILED"
+        elif phase == "pre":
+            status = "LAN_SKIPPED"
         raise
     finally:
         _record_run(
@@ -647,6 +726,54 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
         send_monthly_report(db, config.notifications, config.firm_name)
     finally:
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# FY rollover check — scheduled (G10 fix)
+# ═══════════════════════════════════════════════════════════════
+
+@flow(name="rollover-check", log_prints=False)
+def rollover_check_flow(config_path: str = CONFIG_PATH):
+    """Daily FY-rollover check (G10 fix).
+
+    The rollover call in launch.py runs only when the agent process starts.
+    On a 24x7 server that is rarely rebooted, the April 1 rollover would
+    silently never happen. This scheduled deployment runs the SAME idempotent
+    rollover() every day: a no-op all year, and the real rollover on the
+    boundary (idempotency was verified with crash-injection probes).
+
+    Returns:
+        "ROLLOVER_COMPLETED" | "NO_ROLLOVER_NEEDED"
+    Raises:
+        RolloverError — rollover is BLOCKED (e.g. source not mounted). The
+        flow run fails in the Prefect console and an alert email is sent, so
+        a blocked rollover is visible daily until resolved.
+    """
+    from core.fy_rollover import RolloverError, rollover
+
+    try:
+        if rollover(config_path=config_path):
+            logger.info("FY rollover completed (scheduled check) — config updated for new FY")
+            return "ROLLOVER_COMPLETED"
+        return "NO_ROLLOVER_NEEDED"
+    except RolloverError as e:
+        logger.error(f"FY rollover BLOCKED: {e}")
+        try:
+            cfg = load_config(config_path)
+            send_failure_alert(
+                cfg.notifications, cfg.firm_name,
+                (
+                    f"FY Rollover BLOCKED: {e} The fiscal-year transition "
+                    "(new FY folders + config update) did not happen. Until "
+                    "this is resolved, new-FY data may not be backed up. "
+                    "The scheduled check retries daily."
+                ),
+                {"mode": "rollover", "status": "ROLLOVER_BLOCKED", "exit_code": None},
+                now_iso(),
+            )
+        except Exception as alert_err:
+            logger.warning(f"Could not send rollover-blocked alert: {alert_err}")
+        raise
 
 
 # ═══════════════════════════════════════════════════════════════

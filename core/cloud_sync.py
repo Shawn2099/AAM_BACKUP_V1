@@ -159,7 +159,12 @@ def run_cloud_sync(
 
         except subprocess.TimeoutExpired:
             logger.error(f"Cloud sync timed out after {timeout}s")
-            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": f"Timeout after {timeout}s"}
+            # G7: make the operator-facing message accurate — rclone sync is
+            # resumable, so a timeout is an interruption, not a data event.
+            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": (
+                f"Timeout after {timeout}s — rclone sync is resumable; progress is "
+                "preserved and the next run continues from where this one left off"
+            )}
         except FileNotFoundError:
             logger.error("rclone not found")
             return {"status": "CLOUD_FAILED", "exit_code": -1, "error": "rclone not found"}

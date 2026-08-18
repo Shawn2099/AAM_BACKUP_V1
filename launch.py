@@ -229,7 +229,13 @@ def main():
     from prefect import serve
 
     from serve import deployments
-    cloud_deployment, lan_deployment, report_deployment, monthly_deployment = deployments()
+    (
+        cloud_deployment,
+        lan_deployment,
+        report_deployment,
+        monthly_deployment,
+        rollover_deployment,
+    ) = deployments()
 
     shutdown_clean = False
     try:

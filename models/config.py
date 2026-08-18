@@ -312,9 +312,13 @@ class ScheduleConfig(BaseModel):
     lan_cron: str = Field(default="0 1 * * *", description="LAN backup cron expression")
     weekly_cron: str = Field(default="0 8 * * MON", description="Weekly report cron expression")
     monthly_cron: str = Field(default="0 8 1 * *", description="Monthly report cron expression")
+    rollover_cron: str = Field(
+        default="0 6 * * *",
+        description="Daily FY rollover check cron (no-op except on the fiscal-year boundary)",
+    )
     timezone: str = Field(default="Asia/Kolkata", description="IANA timezone for all schedules")
 
-    @field_validator("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron")
+    @field_validator("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron")
     @classmethod
     def valid_cron(cls, v: str) -> str:
         parts = v.strip().split()
