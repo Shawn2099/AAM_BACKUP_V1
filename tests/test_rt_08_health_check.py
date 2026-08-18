@@ -19,6 +19,21 @@ from tests.e2e_helpers import (
 )
 
 
+import os as _gate_os
+import sys as _gate_sys
+
+# F4/F5: real-hardware acceptance suite — skipped on dev/CI machines:
+#   * Windows-only (robocopy, NSSM, sc, msvcrt, production Windows paths)
+#   * requires the production deployment (source drive, NAS, GCS key)
+# Run it on the production server with:  set AAM_RUN_REAL_HARDWARE=1
+pytestmark = [
+    pytest.mark.skipif(_gate_sys.platform != "win32",
+                       reason="F5: Windows-only real-hardware acceptance test"),
+    pytest.mark.skipif(_gate_os.environ.get("AAM_RUN_REAL_HARDWARE") != "1",
+                       reason="F4: real-hardware test — set AAM_RUN_REAL_HARDWARE=1 on the production server"),
+]
+
+
 def test_hc_01_source_drive_exists():
     """HC-01: Source Drive Check — Drive Exists and Has Files."""
     config = cfg()

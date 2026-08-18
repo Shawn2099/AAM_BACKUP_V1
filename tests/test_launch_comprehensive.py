@@ -118,8 +118,14 @@ class TestCancelOrphanedRuns:
         mock_client = AsyncMock()
         mock_run_pending = MagicMock(id="p-123", name="pending-run")
         mock_client.read_flow_runs.return_value = [mock_run_pending]
-        with patch("prefect.client.orchestration.get_client") as mock_get_client, \
-             patch("core.process.read_lock_alive", return_value=(True, 12345)):
+        # F18: the config load must be patched — without a root config.yaml
+        # _cancel_orphaned_runs falls back to lock_path=None and never reads
+        # the lock (these tests previously only passed on machines where a
+        # deployed config.yaml existed).
+        with patch("prefect.client.orchestration.get_client") as mock_get_client,              patch("core.process.read_lock_alive", return_value=(True, 12345)),              patch("models.config.CONFIG_PATH", "/tmp/test_config.yaml"),              patch("models.config.load_config") as mock_config:
+            mock_cfg = MagicMock()
+            mock_cfg.paths.backup_lock_path = "/tmp/backup.lock"
+            mock_config.return_value = mock_cfg
             mock_get_client.return_value.__aenter__.return_value = mock_client
             _cancel_orphaned_runs()
             assert mock_client.set_flow_run_state.call_count == 1
@@ -148,8 +154,11 @@ class TestCancelOrphanedRuns:
         mock_client = AsyncMock()
         mock_run_pending = MagicMock(id="p-123", name="pending-run")
         mock_client.read_flow_runs.return_value = [mock_run_pending]
-        with patch("prefect.client.orchestration.get_client") as mock_get_client, \
-             patch("core.process.read_lock_alive", return_value=(True, 12345)):
+        # F18: config load patched (see test_backup_active_skips_running).
+        with patch("prefect.client.orchestration.get_client") as mock_get_client,              patch("core.process.read_lock_alive", return_value=(True, 12345)),              patch("models.config.CONFIG_PATH", "/tmp/test_config.yaml"),              patch("models.config.load_config") as mock_config:
+            mock_cfg = MagicMock()
+            mock_cfg.paths.backup_lock_path = "/tmp/backup.lock"
+            mock_config.return_value = mock_cfg
             mock_get_client.return_value.__aenter__.return_value = mock_client
             _cancel_orphaned_runs()
             assert mock_client.read_flow_runs.call_count == 1
@@ -193,7 +202,8 @@ class TestMainPrefectApiReady:
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
-        mock_deployments = (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        # G10: deployments() returns 5 — cloud, lan, weekly, monthly, rollover
+        mock_deployments = tuple(MagicMock() for _ in range(5))
         return {
             "launch._check_prefect_api": patch("launch._check_prefect_api", return_value=True),
             "launch._run_dashboard": patch("launch._run_dashboard"),
@@ -275,7 +285,7 @@ class TestMainFyRollover:
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
-        mock_deployments = (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        mock_deployments = tuple(MagicMock() for _ in range(5))  # G10: 5 deployments
         rollover_kwargs = {}
         if rollover_return is not None:
             rollover_kwargs["return_value"] = rollover_return
@@ -318,7 +328,7 @@ class TestMainShutdown:
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
-        mock_deployments = (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        mock_deployments = tuple(MagicMock() for _ in range(5))  # G10: 5 deployments
         with patch("launch._check_prefect_api", return_value=True), \
              patch("launch._run_dashboard"), \
              patch("launch._ensure_concurrency_limit"), \

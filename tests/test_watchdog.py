@@ -125,27 +125,35 @@ def test_deferral_active_transfer(mock_httpx, mock_sc_run, mock_psutil, temp_loc
     # Should sleep for BACKUP_WAIT_INTERVAL
     assert sleep_calls[-1][0][0] == watchdog.BACKUP_WAIT_INTERVAL
 
-def test_stale_lock_cleanup(mock_httpx, mock_sc_run, mock_get_create_time, temp_lock_file):
-    """Test 5 & 9: API dead, stale lock file exists -> remove lock and restart."""
+def test_stale_lock_routes_to_restart(mock_httpx, mock_sc_run, mock_get_create_time, temp_lock_file):
+    """Test 5 & 9: API dead + stale lock (PID reused) -> treated as "no backup
+    running" and the service is restarted.
+
+    F18 (documented contract): the watchdog does NOT delete the stale lock file
+    itself — _is_backup_running is side-effect-free (see its docstring: deleting
+    here would bypass the deferral protection and could restart the service
+    during an active backup). The next flow run atomically replaces the file
+    via write_lock (os.replace). The liveness check alone is what routes this
+    scenario to the restart path, which is what this test verifies.
+    """
     mock_httpx.side_effect = httpx.ConnectError("Dead")
-    
+
     # Write a lock file with PID 9999 and create_time 100.0
     temp_lock_file.write_text("9999:100.0")
-    
+
     # Mock the system to say PID 9999 has create_time 500.0 (PID was reused by another app!)
     mock_get_create_time.return_value = 500.0
-    
-    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file), \
-         patch("watchdog._transfer_process_running", return_value=False):
-        
+
+    with patch("watchdog.BACKUP_LOCK_PATH", temp_lock_file),          patch("watchdog._transfer_process_running", return_value=False):
+
         simulate_watchdog_loop(watchdog.FAILURE_THRESHOLD)
-        
-    # Lock file should be deleted because it was stale
-    assert not temp_lock_file.exists()
-    
-    # Should have restarted the service
+
+    # Stale lock -> "no backup running" -> safe to act -> restart the service
     stop_calls = [c for c in mock_sc_run.call_args_list if "stop" in c[0][0]]
     assert len(stop_calls) == 1
+
+    # The lock file is deliberately left in place (side-effect-free design)
+    assert temp_lock_file.exists()
 
 def test_antivirus_lock_interference(temp_lock_file):
     """Test 7: Antivirus locks the file, causing PermissionError -> fail safe."""

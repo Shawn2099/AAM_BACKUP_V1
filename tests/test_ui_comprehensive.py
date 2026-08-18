@@ -256,42 +256,41 @@ class TestIsRunning:
 
 
 class TestDashboardRendering:
+    """F18: the old `ui._render_dashboard()` helper no longer exists — the
+    dashboard is a FastAPI endpoint that renders a static "Loading..."
+    placeholder; DB-driven values are fetched client-side via /status and
+    /health. These tests now exercise the real endpoint (TestClient), which
+    is what production traffic hits. The assertions (200 + Loading placeholder
+    regardless of DB/pipeline state) are unchanged in intent."""
+
     def test_render_without_db(self):
-        with patch("ui._cfg", return_value=_mock_cfg()), \
-             patch("ui.Path.exists", return_value=False):
-            html = asyncio.run(ui._render_dashboard())
-            assert "Loading..." in html
+        with patch("ui._cfg", return_value=_mock_cfg()):
+            client = TestClient(ui.app)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert "Loading..." in resp.text
 
     def test_render_with_db_and_runs(self):
         mock_db = MagicMock()
         mock_db.file_count.return_value = 42
         mock_db.get_recent_runs.return_value = []
         mock_db.last_run.return_value = None
-        with patch("ui._cfg", return_value=_mock_cfg()), \
-             patch("ui.Path.exists", return_value=True), \
-             patch("ui.get_db", return_value=mock_db), \
-             patch("ui._is_running", new_callable=AsyncMock, return_value=False), \
-             patch("ui._get_health", return_value={"source_free_gb": "500.0", "source_exists": True}):
-            html = asyncio.run(ui._render_dashboard())
-            assert "Loading..." in html
+        with patch("ui._cfg", return_value=_mock_cfg()),              patch("ui.get_db", return_value=mock_db):
+            client = TestClient(ui.app)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert "Loading..." in resp.text
 
     def test_render_with_running_pipeline(self):
         mock_db = MagicMock()
         mock_db.file_count.return_value = 0
         mock_db.get_recent_runs.return_value = []
         mock_db.last_run.return_value = None
-        with patch("ui._cfg", return_value=_mock_cfg()), \
-             patch("ui.Path.exists", return_value=True), \
-             patch("ui.get_db", return_value=mock_db), \
-             patch("ui._is_running", new_callable=AsyncMock, return_value=True), \
-             patch("ui._get_health", return_value={"source_free_gb": "100.0", "source_exists": True}):
-            html = asyncio.run(ui._render_dashboard())
-            assert "Loading..." in html
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Last Run Summary
-# ═══════════════════════════════════════════════════════════════════
+        with patch("ui._cfg", return_value=_mock_cfg()),              patch("ui.get_db", return_value=mock_db):
+            client = TestClient(ui.app)
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert "Loading..." in resp.text
 
 
 class TestLastRunSummary:

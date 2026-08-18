@@ -118,20 +118,24 @@ class TestIsBackupRunning:
              patch("core.process._get_create_time", return_value=1000000.0):
             assert watchdog._is_backup_running() is True
 
-    def test_lock_dead_pid_removes_lock(self, temp_lock):
+    def test_lock_dead_pid_not_running_lock_kept(self, temp_lock):
+        # F18 (documented contract): _is_backup_running is intentionally
+        # side-effect-free — it detects the stale lock but does NOT unlink it.
+        # Premature deletion could mask an in-progress backup; the next flow
+        # run atomically replaces the file via write_lock (os.replace), and the
+        # main loop's MAX_DEFERRALS branch handles the lock-held deferral cap.
         temp_lock.write_text("999999:1000000.0")
-        with patch("watchdog.BACKUP_LOCK_PATH", temp_lock), \
-             patch("core.process._get_create_time", return_value=None):
+        with patch("watchdog.BACKUP_LOCK_PATH", temp_lock),              patch("core.process._get_create_time", return_value=None):
             assert watchdog._is_backup_running() is False
-            assert not temp_lock.exists()
+            assert temp_lock.exists(), "stale lock must not be deleted here"
 
-    def test_lock_pid_reused_removes_lock(self, temp_lock):
+    def test_lock_pid_reused_not_running_lock_kept(self, temp_lock):
+        # PID exists but with different create_time — reused (stale lock).
+        # Same side-effect-free contract as test_lock_dead_pid_not_running_lock_kept.
         temp_lock.write_text("999999:1000000.0")
-        # PID exists but with different create_time — reused
-        with patch("watchdog.BACKUP_LOCK_PATH", temp_lock), \
-             patch("core.process._get_create_time", return_value=2000000.0):
+        with patch("watchdog.BACKUP_LOCK_PATH", temp_lock),              patch("core.process._get_create_time", return_value=2000000.0):
             assert watchdog._is_backup_running() is False
-            assert not temp_lock.exists()
+            assert temp_lock.exists(), "stale lock must not be deleted here"
 
     def test_lock_bare_pid_alive(self, temp_lock):
         """Legacy format: bare PID (no create_time)."""

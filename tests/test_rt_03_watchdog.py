@@ -1,4 +1,3 @@
-import msvcrt
 import os
 import subprocess
 import threading
@@ -13,6 +12,23 @@ from tests.e2e_helpers import (
     source_test_dir,
 )
 from watchdog import _transfer_process_running
+
+
+import os as _gate_os
+import sys as _gate_sys
+
+import pytest
+
+# F4/F5: real-hardware acceptance suite — skipped on dev/CI machines:
+#   * Windows-only (robocopy, NSSM, sc, msvcrt, production Windows paths)
+#   * requires the production deployment (source drive, NAS, GCS key)
+# Run it on the production server with:  set AAM_RUN_REAL_HARDWARE=1
+pytestmark = [
+    pytest.mark.skipif(_gate_sys.platform != "win32",
+                       reason="F5: Windows-only real-hardware acceptance test"),
+    pytest.mark.skipif(_gate_os.environ.get("AAM_RUN_REAL_HARDWARE") != "1",
+                       reason="F4: real-hardware test — set AAM_RUN_REAL_HARDWARE=1 on the production server"),
+]
 
 
 def test_wd_01_lock_write_read():
@@ -41,7 +57,10 @@ def test_wd_02_stale_lock():
     lock_path = Path("test_backup_stale.lock")
     try:
         # Spawn short lived process
-        proc = subprocess.Popen(["ping", "127.0.0.1", "-n", "1"], stdout=subprocess.DEVNULL)
+        # F5: portable ping flags (Windows -n / POSIX -c) — the short-lived process
+        # only needs to exist briefly for a create_time probe.
+        ping_flags = ["-n", "1"] if __import__("sys").platform == "win32" else ["-c", "1"]
+        proc = subprocess.Popen(["ping", *ping_flags, "127.0.0.1"], stdout=subprocess.DEVNULL)
         pid = proc.pid
         ct = psutil.Process(pid).create_time()
         proc.wait()
@@ -75,6 +94,7 @@ def test_wd_03_pid_reuse():
 
 def test_wd_04_av_locked_file():
     """WD-04: AV-Locked File — Fail-Safe to Alive."""
+    import msvcrt  # F5: Windows-only stdlib — lazy import (module gate skips non-Windows)
     lock_path = Path("test_backup_av.lock")
     try:
         # Create it first

@@ -727,8 +727,12 @@ class TestReportEdgeCases:
                 sender="test@test.com", recipients=["r@test.com"],
             )
             # send_summary_report aborts early if no runs are found. Add a dummy run.
+            # F18: relative date — the old hardcoded 2026-06-26 rotted once the
+            # clock passed 7 days beyond it ("No runs found in last 7 days").
+            import pendulum
             db.insert_run({
-                "run_id": "dummy", "mode": "cloud", "started_at": "2026-06-26T10:00:00Z",
+                "run_id": "dummy", "mode": "cloud",
+                "started_at": pendulum.now().subtract(days=1).isoformat(),
                 "status": "SUCCESS"
             })
             with patch("core.report._send_email_with_attachments", return_value=True):

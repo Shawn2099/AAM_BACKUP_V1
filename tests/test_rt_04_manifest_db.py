@@ -212,38 +212,50 @@ def test_db_07_prune_stale_synced(tmp_path):
 def test_db_08_wal_survives_crash(tmp_path):
     """DB-08: WAL Mode Survives Abrupt Process Kill (Crash Recovery)."""
     db_path = get_temp_db_path(tmp_path)
-    
+
+    started_writes = threading.Event()
+
     def crashy_writer():
         db = ManifestDB(db_path)
         try:
-            # We don't use bulk upsert here so we can interrupt it mid-loop
+            # We don''t use bulk upsert here so we can interrupt it mid-loop
             for i in range(100):
                 db.upsert_file_entry(f"file_{i}.txt", 100, 100.0, cloud_status="synced")
+                if i == 20:
+                    started_writes.set()  # enough writes landed — crash window is open
                 time.sleep(0.01)
         finally:
             db.close()
-            
+
     t = threading.Thread(target=crashy_writer)
-    t.daemon = True # Will be killed abruptly when main thread exits if we don't join
     t.start()
-    
-    # Wait a bit then kill it abruptly (by letting the test function finish/thread object be garbage collected without joining cleanly, or just timeout join)
-    t.join(timeout=0.2)
-    # The thread is still running and will be killed when the test suite exits.
-    # But for this test, we just want to verify we can open a NEW connection while it was interrupted or writing
-    
-    # Open new connection
-    db2 = ManifestDB(db_path)
+
+    # Proceed to the "crash" point: a second connection opens while the writer
+    # is still mid-loop (its connection stays open — simulating a crashed /
+    # abandoned writer, which is what WAL must tolerate).
+    assert started_writes.wait(timeout=10)
+
     try:
-        # Should not crash, and should return a valid integer
-        count = db2.file_count("cloud_status")
-        assert count >= 0
-        
-        conn = sqlite3.connect(db_path)
+        # Open new connection
+        db2 = ManifestDB(db_path)
         try:
-            res = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            assert res.lower() == "ok"
+            # Should not crash, and should return a valid integer
+            count = db2.file_count("cloud_status")
+            assert count >= 0
+
+            conn = sqlite3.connect(db_path)
+            try:
+                res = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                assert res.lower() == "ok"
+            finally:
+                conn.close()
         finally:
-            conn.close()
+            db2.close()
     finally:
-        db2.close()
+        # F18: reap the writer thread fully. The old code abandoned it as a
+        # daemon — it kept calling time.sleep(0.01) for ~1s after the test
+        # finished, and since the watchdog tests patch ``watchdog.time.sleep``
+        # (the shared global ``time`` module), the surviving thread''s calls
+        # leaked into their mocks and flaked test_healthy_state.
+        t.join(timeout=10)
+        assert not t.is_alive()

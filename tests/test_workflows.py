@@ -455,11 +455,25 @@ class TestBackupRepositoryWorkflow:
 # ═══════════════════════════════════════════════════════════════
 
 class TestTemplateWorkflow:
+    """F18: `templates.dashboard` (a Python render module) no longer exists —
+    the dashboard is a Jinja2 template rendered by ui.dashboard(). These tests
+    now render the real templates/dashboard.html with the same context the
+    endpoint builds, using the same engine family (Jinja2 with autoescape,
+    flash_html passed through an explicit |safe in the template)."""
+
+    @staticmethod
+    def _render(**context):
+        from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+        env = Environment(
+            loader=FileSystemLoader("templates"),
+            autoescape=select_autoescape(["html"]),
+        )
+        return env.get_template("dashboard.html").render(**context)
+
     def test_render_with_all_data(self):
         """Template should render correctly with all dashboard data."""
-        from templates.dashboard import render_dashboard
-
-        html = render_dashboard(
+        html = self._render(
             fy_prefix="FY26-27",
             flash_html='<div class="flash success">Backup started</div>',
             auth_enabled=True,
@@ -475,9 +489,13 @@ class TestTemplateWorkflow:
 
     def test_render_with_no_data(self):
         """Template should render correctly with default/empty data."""
-        from templates.dashboard import render_dashboard
-
-        html = render_dashboard()
+        html = self._render(
+            fy_prefix="",
+            flash_html="",
+            auth_enabled=False,
+            cloud_schedule="",
+            lan_schedule="",
+        )
         assert "<!DOCTYPE html>" in html
         assert "Loading data..." in html
-        assert "/logout" not in html  # auth disabled by default
+        assert "/logout" not in html  # auth disabled

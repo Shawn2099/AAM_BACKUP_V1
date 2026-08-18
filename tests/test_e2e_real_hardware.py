@@ -1,4 +1,3 @@
-import msvcrt
 import os
 import shutil
 import time
@@ -62,6 +61,23 @@ def _get_test_paths():
         
     return config, test_source, test_dest
 
+import os as _gate_os
+import sys as _gate_sys
+
+import pytest
+
+# F4/F5: real-hardware acceptance suite — skipped on dev/CI machines:
+#   * Windows-only (robocopy, NSSM, sc, msvcrt, production Windows paths)
+#   * requires the production deployment (source drive, NAS, GCS key)
+# Run it on the production server with:  set AAM_RUN_REAL_HARDWARE=1
+pytestmark = [
+    pytest.mark.skipif(_gate_sys.platform != "win32",
+                       reason="F5: Windows-only real-hardware acceptance test"),
+    pytest.mark.skipif(_gate_os.environ.get("AAM_RUN_REAL_HARDWARE") != "1",
+                       reason="F4: real-hardware test — set AAM_RUN_REAL_HARDWARE=1 on the production server"),
+]
+
+
 def test_1_golden_path_lan_sync():
     """Test 1: Execute a real robocopy /MIR to the NAS."""
     logger.info("=== STARTING TEST 1: Golden Path LAN Sync ===")
@@ -112,6 +128,7 @@ def test_2_canary_missing_abort():
 
 def test_3_locked_file_bypass():
     """Test 3: Lock a file on the source and ensure robocopy /ZB handles it."""
+    import msvcrt  # F5: Windows-only stdlib — lazy import (module gate skips non-Windows)
     logger.info("=== STARTING TEST 3: Locked File Bypass ===")
     config, test_source, test_dest = _get_test_paths()
     

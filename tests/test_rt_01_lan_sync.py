@@ -1,4 +1,3 @@
-import msvcrt
 import os
 import time
 from pathlib import Path
@@ -42,6 +41,21 @@ def ensure_canary():
     """Ensure canary file exists before each test."""
     nas_test_dir().mkdir(parents=True, exist_ok=True)
     (nas_test_dir() / ".AAM_TARGET_MOUNTED").touch()
+
+
+import os as _gate_os
+import sys as _gate_sys
+
+# F4/F5: real-hardware acceptance suite — skipped on dev/CI machines:
+#   * Windows-only (robocopy, NSSM, sc, msvcrt, production Windows paths)
+#   * requires the production deployment (source drive, NAS, GCS key)
+# Run it on the production server with:  set AAM_RUN_REAL_HARDWARE=1
+pytestmark = [
+    pytest.mark.skipif(_gate_sys.platform != "win32",
+                       reason="F5: Windows-only real-hardware acceptance test"),
+    pytest.mark.skipif(_gate_os.environ.get("AAM_RUN_REAL_HARDWARE") != "1",
+                       reason="F4: real-hardware test — set AAM_RUN_REAL_HARDWARE=1 on the production server"),
+]
 
 
 def test_lan_01_golden_path_new_files(capture_logs):
@@ -117,6 +131,7 @@ def test_lan_03_canary_missing_abort(capture_logs):
 
 def test_lan_04_os_locked_file_robocopy_survives(capture_logs):
     """LAN-04: OS-Level Locked File — Robocopy Survives."""
+    import msvcrt  # F5: Windows-only stdlib — lazy import (module gate skips non-Windows)
     source = source_test_dir()
     dest = nas_test_dir()
     config = cfg()

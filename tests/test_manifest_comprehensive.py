@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import pytest
 
+import pendulum
+
 from core.manifest import ManifestDB
+
+
+# F18: relative dates — the old fixtures hardcoded 2026-06-24 as "new" and
+# 2025-01-01 as "old"; once the real clock passed those dates the tests rotted
+# (a "new" run became older than the retention window and was purged).
+def _ts(offset_days: int = 0) -> str:
+    return pendulum.now("Asia/Kolkata").add(days=offset_days).isoformat()
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -318,13 +327,13 @@ class TestPurgeOldRuns:
         db.insert_run({
             "run_id": "run-old",
             "mode": "cloud",
-            "started_at": "2025-01-01T10:00:00+05:30",
+            "started_at": _ts(-40),
             "status": "CLOUD_COMPLETE",
         })
         db.insert_run({
             "run_id": "run-new",
             "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
+            "started_at": _ts(0),
             "status": "CLOUD_COMPLETE",
         })
         db.purge_old_runs(retention_days=30)
@@ -336,7 +345,7 @@ class TestPurgeOldRuns:
         db.insert_run({
             "run_id": "run-1",
             "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
+            "started_at": _ts(-30),
             "status": "CLOUD_COMPLETE",
         })
         db.purge_old_runs(retention_days=365)
@@ -397,13 +406,13 @@ class TestGetRunsSince:
         db.insert_run({
             "run_id": "run-old",
             "mode": "cloud",
-            "started_at": "2025-01-01T10:00:00+05:30",
+            "started_at": _ts(-40),
             "status": "CLOUD_COMPLETE",
         })
         db.insert_run({
             "run_id": "run-new",
             "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
+            "started_at": _ts(0),
             "status": "CLOUD_COMPLETE",
         })
         runs = db.get_runs_since(days=1)
@@ -414,13 +423,13 @@ class TestGetRunsSince:
         db.insert_run({
             "run_id": "run-cloud",
             "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
+            "started_at": _ts(0),
             "status": "CLOUD_COMPLETE",
         })
         db.insert_run({
             "run_id": "run-lan",
             "mode": "lan",
-            "started_at": "2026-06-24T10:00:00+05:30",
+            "started_at": _ts(0),
             "status": "LAN_COMPLETE",
         })
         runs = db.get_runs_since(days=30, mode="cloud")
