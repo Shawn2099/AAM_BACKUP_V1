@@ -7,9 +7,14 @@ from unittest.mock import MagicMock, patch
 from core.cloud_sync import build_rclone_sync_command, classify_rclone_exit, run_cloud_sync
 
 
+import os
+import tempfile
+
+_DUMMY_STDERR_PATH = os.path.join(tempfile.gettempdir(), "test_cloud_sync_stderr.log")
+
 @contextmanager
 def _mock_temp_config(*args, **kwargs):
-    yield "/tmp/rclone_test.conf"
+    yield os.path.join(tempfile.gettempdir(), "rclone_test.conf")
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +223,7 @@ class TestBuildRcloneSyncCommand:
 
 class TestRunCloudSync:
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_success_exit_0(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
@@ -229,7 +234,7 @@ class TestRunCloudSync:
         assert result["error"] is None
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_no_files_to_transfer_exit_9(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
@@ -240,7 +245,7 @@ class TestRunCloudSync:
         assert result["error"] is None
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_partial_exit_4(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
@@ -250,7 +255,7 @@ class TestRunCloudSync:
         assert result["exit_code"] == 4
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.Path")
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
@@ -263,7 +268,7 @@ class TestRunCloudSync:
         assert "auth failed" in result["error"]
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.Path")
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
@@ -276,7 +281,7 @@ class TestRunCloudSync:
         assert result["error"] == large_stderr
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.Path")
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
@@ -287,7 +292,7 @@ class TestRunCloudSync:
         assert "stderr unreadable" in result["error"]
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_timeout_expired(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
@@ -298,7 +303,7 @@ class TestRunCloudSync:
         assert "Timeout after 300s" in result["error"]
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_rclone_not_found(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
@@ -309,7 +314,7 @@ class TestRunCloudSync:
         assert "rclone not found" in result["error"]
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_os_error(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
@@ -320,7 +325,7 @@ class TestRunCloudSync:
         assert result["error"] == "disk full"
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.Path")
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
@@ -332,7 +337,7 @@ class TestRunCloudSync:
         mock_path_instance.unlink.assert_called_once()
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.Path")
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
@@ -344,7 +349,7 @@ class TestRunCloudSync:
         mock_path_instance.unlink.assert_called_once()
 
     @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, "/tmp/stderr.log"))
+    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_buffer_size_passed_to_command(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
