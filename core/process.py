@@ -20,10 +20,18 @@ import psutil
 
 
 def _get_create_time(pid: int) -> float | None:
-    """Return the process creation time for *pid*, or None if the process is gone."""
+    """Return the process creation time for *pid*, or None if the process is gone.
+
+    G6: a corrupted lock file may contain a negative or absurdly large PID.
+    psutil raises ValueError (negative) / OverflowError (too large) for those
+    — neither is a "process gone" signal, both must map to None so callers
+    treat the lock as stale instead of crashing (which crash-looped the
+    watchdog, verified by probe D).
+    """
     try:
         return psutil.Process(pid).create_time()
-    except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError,
+            ValueError, OverflowError):
         return None
 
 
@@ -92,6 +100,10 @@ def read_lock_alive(lock_path: Path) -> tuple[bool, int | None]:
             written_ct = float(ct_str)
         except ValueError:
             return False, None
+        # G6: non-positive PIDs can never own a live lock (verified: negative
+        # PIDs made psutil raise ValueError out of this function).
+        if pid <= 0:
+            return False, pid
 
         current_ct = _get_create_time(pid)
         if current_ct is None:
@@ -111,7 +123,14 @@ def read_lock_alive(lock_path: Path) -> tuple[bool, int | None]:
             pid = int(raw)
         except ValueError:
             return False, None
-        return psutil.pid_exists(pid), pid
+        # G6: clamp invalid PIDs (negative / beyond OS range) — psutil raises
+        # ValueError/OverflowError for those instead of returning False.
+        if pid <= 0:
+            return False, pid
+        try:
+            return psutil.pid_exists(pid), pid
+        except (ValueError, OverflowError):
+            return False, pid
 
 
 # ── Backward-compat alias (used by tests) ─────────────────────────────────────

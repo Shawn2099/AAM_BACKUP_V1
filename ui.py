@@ -121,39 +121,54 @@ _config = None
 _config_loaded_at: float = 0.0
 _CONFIG_TTL: float = 300.0  # 5 minutes
 
+# F13: uvicorn runs the sync endpoints in a threadpool, so two requests can
+# refresh config / open the DB concurrently. The old code had no lock: one
+# thread could CLOSE the cached DB connection while another was mid-query
+# (transient 503s), or two threads could both open a connection on a path
+# change. One lock now serializes the whole config-refresh + DB-lifecycle
+# critical section. Cost: requests serialize briefly only at the 5-minute
+# refresh boundary (config load is a small YAML parse) — negligible for an
+# ops dashboard.
+_CFG_LOCK = threading.Lock()
+
 
 def _cfg():
     global _config, _config_loaded_at
-    now = time.time()
-    if _config is None or (now - _config_loaded_at) > _CONFIG_TTL:
-        from models.config import CONFIG_PATH, load_config
-        new_cfg = load_config(CONFIG_PATH)
-        # If the database path changed (e.g. FY rollover), close and evict the
-        # cached DB connection so get_db() reconnects with the new path.
-        if _config is not None and _config.paths.database_path != new_cfg.paths.database_path:
-            global _DB_INSTANCE
-            if _DB_INSTANCE is not None:
-                try:
-                    _DB_INSTANCE.close()
-                except Exception:
-                    pass
-                _DB_INSTANCE = None
-            logger.info(
-                f"Config refreshed: database path changed from "
-                f"{_config.paths.database_path} to {new_cfg.paths.database_path}"
-            )
-        _config = new_cfg
-        _config_loaded_at = now
-    return _config
+    with _CFG_LOCK:
+        now = time.time()
+        if _config is None or (now - _config_loaded_at) > _CONFIG_TTL:
+            from models.config import CONFIG_PATH, load_config
+            new_cfg = load_config(CONFIG_PATH)
+            # If the database path changed (e.g. FY rollover), close and evict
+            # the cached DB connection so get_db() reconnects with the new
+            # path. Done under the same lock so no thread can use the
+            # connection between close() and the reopen in get_db().
+            if _config is not None and _config.paths.database_path != new_cfg.paths.database_path:
+                global _DB_INSTANCE
+                if _DB_INSTANCE is not None:
+                    try:
+                        _DB_INSTANCE.close()
+                    except Exception:
+                        pass
+                    _DB_INSTANCE = None
+                logger.info(
+                    f"Config refreshed: database path changed from "
+                    f"{_config.paths.database_path} to {new_cfg.paths.database_path}"
+                )
+            _config = new_cfg
+            _config_loaded_at = now
+        return _config
 
 
 _DB_INSTANCE = None
 
 def get_db():
     global _DB_INSTANCE
-    if _DB_INSTANCE is None:
-        _DB_INSTANCE = ManifestDB(_cfg().paths.database_path)
-    return _DB_INSTANCE
+    with _CFG_LOCK:
+        _cfg()  # ensure the config (and any DB eviction) is current first
+        if _DB_INSTANCE is None:
+            _DB_INSTANCE = ManifestDB(_cfg().paths.database_path)
+        return _DB_INSTANCE
 
 
 
@@ -192,24 +207,8 @@ async def _prefect_has_active_run(pipeline: str) -> bool:
 
 
 # ── Trigger pipeline (via Prefect deployment API) ────────────
-
-
-async def _run_in_background(pipeline: str):
-    """Trigger pipeline asynchronously via Prefect SDK.
-
-    Checks Prefect API for active runs before triggering.
-    Duplicate prevention is handled by the Prefect concurrency limit.
-    """
-    if await _prefect_has_active_run(pipeline):
-        logger.warning(f"{pipeline} already running or queued — skipping trigger")
-        return
-
-    try:
-        logger.info(f"Manual trigger: {pipeline}")
-        flow_run = await arun_deployment(name=f"aam-backup/backup-{pipeline}")
-        logger.info(f"Triggered {pipeline} — run ID: {flow_run.id}")
-    except Exception as e:
-        logger.error(f"Manual {pipeline} trigger failed: {e}")
+# (G15: the endpoints now await arun_deployment inline and surface failures
+# as HTTP 500 — the old fire-and-forget _run_in_background helper is gone.)
 
 
 # ── API endpoints ────────────────────────────────────────────
@@ -397,27 +396,53 @@ async def health():
 
 
 @app.post("/trigger/cloud")
-async def trigger_cloud(request: Request, background_tasks: BackgroundTasks):
+async def trigger_cloud(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if await _is_running("cloud"):
         return JSONResponse({"status": "already_running", "detail": "Cloud backup is already in progress."}, status_code=400)
-    background_tasks.add_task(_run_in_background, "cloud")
-    return JSONResponse({"status": "triggered", "detail": "Cloud backup triggered successfully!"})
+    # G15: await the actual deployment run creation before answering. The
+    # old code returned 200 via background_tasks BEFORE arun_deployment
+    # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
+    # API error showed as "triggered successfully" while nothing ran.
+    try:
+        flow_run = await arun_deployment(name="aam-backup/backup-cloud")
+    except Exception as e:
+        logger.error(f"Manual cloud trigger failed: {e}")
+        return JSONResponse(
+            {"status": "trigger_failed",
+             "detail": f"Could not start the cloud backup run: {e}"},
+            status_code=500,
+        )
+    return JSONResponse({
+        "status": "triggered",
+        "detail": f"Cloud backup started (flow run {flow_run.id}).",
+    })
 
 
 @app.post("/trigger/lan")
-async def trigger_lan(request: Request, background_tasks: BackgroundTasks):
+async def trigger_lan(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if await _is_running("lan"):
         return JSONResponse({"status": "already_running", "detail": "LAN backup is already in progress."}, status_code=400)
-    background_tasks.add_task(_run_in_background, "lan")
-    return JSONResponse({"status": "triggered", "detail": "LAN backup triggered successfully!"})
+    try:
+        flow_run = await arun_deployment(name="aam-backup/backup-lan")
+    except Exception as e:
+        logger.error(f"Manual LAN trigger failed: {e}")
+        return JSONResponse(
+            {"status": "trigger_failed",
+             "detail": f"Could not start the LAN backup run: {e}"},
+            status_code=500,
+        )
+    return JSONResponse({
+        "status": "triggered",
+        "detail": f"LAN backup started (flow run {flow_run.id}).",
+    })
 
 
 # ── Report endpoints ────────────────────────────────────────

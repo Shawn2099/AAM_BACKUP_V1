@@ -57,20 +57,36 @@ def configure_prefect_bridge():
 
     from prefect.context import FlowRunContext, TaskRunContext
 
-    _cached_logger = None
-    _logger_initialized = False
+    # F10: the old code cached the FIRST logger obtained by this process and
+    # reused it for every later flow run. On the always-on agent process the
+    # first flow run happens at night 1 — from night 2 on, every loguru line
+    # was forwarded into the STALE run's logger (wrong run id in the Prefect
+    # console, empty logs for the current run). Cache per active run id
+    # instead, with a small eviction cap (the agent process lives for months).
+    _logger_cache = {}
+    _CACHE_MAX = 128
 
     def _get_prefect_logger():
-        nonlocal _cached_logger, _logger_initialized
-        if _logger_initialized:
-            return _cached_logger
-        _logger_initialized = True
-        from prefect import get_run_logger
+        task_ctx = TaskRunContext.get()
+        flow_ctx = FlowRunContext.get()
+        if task_ctx is not None:
+            key = ("task", task_ctx.task_run.id)
+        elif flow_ctx is not None:
+            key = ("flow", flow_ctx.flow_run.id)
+        else:
+            return None
+        cached = _logger_cache.get(key)
+        if cached is not None:
+            return cached
         try:
-            _cached_logger = get_run_logger()
+            from prefect import get_run_logger
+            cached = get_run_logger()
         except Exception:
-            _logger_initialized = False
-        return _cached_logger
+            return None
+        if len(_logger_cache) >= _CACHE_MAX:
+            _logger_cache.pop(next(iter(_logger_cache)))  # evict oldest
+        _logger_cache[key] = cached
+        return cached
 
     def prefect_sink(message):
         if FlowRunContext.get() or TaskRunContext.get():

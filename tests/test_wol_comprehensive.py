@@ -77,28 +77,32 @@ class TestSmbPortOpen:
 class TestSendMagicPacket:
     """Send WoL magic packet to global and subnet broadcast."""
 
+    # G3: _send_magic_packet now sends `repeat` rounds (default 3). These
+    # per-packet-behavior tests pin a single round (repeat=1) to stay precise;
+    # the default retransmit contract is covered in tests/test_wol.py.
+
     @patch("core.wol.wol_send")
     def test_global_broadcast_sent(self, mock_wol_send):
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
 
         mock_wol_send.assert_any_call("AA:BB:CC:DD:EE:FF", ip_address="255.255.255.255", port=9)
 
     @patch("core.wol.wol_send")
     def test_subnet_broadcast_sent(self, mock_wol_send):
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
 
         mock_wol_send.assert_any_call("AA:BB:CC:DD:EE:FF", ip_address="192.168.10.255", port=9)
 
     @patch("core.wol.wol_send")
     def test_both_broadcasts_called(self, mock_wol_send):
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
 
-        assert mock_wol_send.call_count == 2
+        assert mock_wol_send.call_count == 2  # one round, two targets
 
     @patch("core.wol.wol_send")
     def test_subnet_255_255_255_255_only_one_send(self, mock_wol_send):
         """When subnet = 255.255.255.255, only global broadcast sent."""
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "255.255.255.255")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "255.255.255.255", repeat=1, interval=1)
 
         assert mock_wol_send.call_count == 1
         mock_wol_send.assert_called_once_with("AA:BB:CC:DD:EE:FF", ip_address="255.255.255.255", port=9)
@@ -108,21 +112,21 @@ class TestSendMagicPacket:
         mock_wol_send.side_effect = OSError("network unreachable")
 
         # Should not raise — errors are logged
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
 
     @patch("core.wol.wol_send")
     def test_oserror_on_subnet_broadcast_logged(self, mock_wol_send):
         # First call (global) succeeds, second call (subnet) fails
         mock_wol_send.side_effect = [None, OSError("subnet fail")]
 
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
         assert mock_wol_send.call_count == 2
 
     @patch("core.wol.wol_send")
     def test_oserror_on_global_still_sends_subnet(self, mock_wol_send):
         mock_wol_send.side_effect = [OSError("global fail"), None]
 
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255")
+        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
         assert mock_wol_send.call_count == 2
 
 
@@ -244,11 +248,15 @@ class TestEnsureServerOnline:
         mock_smb.return_value = False  # Initially offline
         mock_wait.return_value = None
         cfg = _make_config()
+        cfg.wol.wake_retry_count = 3
+        cfg.wol.wake_retry_interval_seconds = 5
 
         result = ensure_server_online(cfg)
 
         assert result is True
-        mock_send.assert_called_once_with("AA:BB:CC:DD:EE:FF", "10.0.0.255")
+        mock_send.assert_called_once_with(
+            "AA:BB:CC:DD:EE:FF", "10.0.0.255", repeat=3, interval=5
+        )
         mock_wait.assert_called_once()
 
     @patch("core.wol.wait_for_server")
@@ -289,7 +297,11 @@ class TestEnsureServerOnline:
         mock_smb.return_value = False
         cfg = _make_config()
         cfg.wol.get_broadcast_address.return_value = "192.168.10.255"
+        cfg.wol.wake_retry_count = 3
+        cfg.wol.wake_retry_interval_seconds = 5
 
         ensure_server_online(cfg)
 
-        mock_send.assert_called_once_with("AA:BB:CC:DD:EE:FF", "192.168.10.255")
+        mock_send.assert_called_once_with(
+            "AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=3, interval=5
+        )

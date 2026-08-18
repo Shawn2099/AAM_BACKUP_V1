@@ -13,6 +13,15 @@ def prefect_harness():
 
 import watchdog
 
+
+@pytest.fixture(autouse=True)
+def _reset_service_breaker():
+    """F6: the watchdog's auto-start circuit breaker is module-level state;
+    reset it so tests can't leak suppression across each other."""
+    watchdog.service_start_log.clear()
+    yield
+
+
 # ── Fixtures ────────────────────────────────────────────────────────
 
 
@@ -283,10 +292,12 @@ class TestMainLoop:
             assert mock_sleep.call_args_list[-1][0][0] == watchdog.BACKUP_WAIT_INTERVAL
 
     def test_no_backup_restarts(self):
+        """Hung service (RUNNING but API dead) is stopped. The loop now
+        branches on _service_state, so patch that to 'RUNNING'."""
         with patch("httpx.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
-             patch("watchdog._service_is_running", return_value=True), \
+             patch("watchdog._service_state", return_value="RUNNING"), \
              patch("watchdog._stop_service") as mock_stop:
             self._run_loop(watchdog.FAILURE_THRESHOLD)
             mock_stop.assert_called_once()
@@ -317,11 +328,29 @@ class TestMainLoop:
             mock_sleep = self._run_loop(total_iters)
             mock_lock.unlink.assert_called()
 
-    def test_service_not_running_skips_restart(self):
+    def test_service_stopped_is_started_not_stopped(self):
+        """F6: a STOPPED service is started (sc start), never sc stop.
+        The pre-fix test here expected the watchdog to 'skip' a stopped
+        service — that was the blind spot (it would wait forever)."""
         with patch("httpx.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
-             patch("watchdog._service_is_running", return_value=False), \
+             patch("watchdog._service_state", return_value="STOPPED"), \
+             patch("watchdog._start_service") as mock_start, \
+             patch("watchdog._stop_service") as mock_stop:
+            self._run_loop(watchdog.FAILURE_THRESHOLD)
+            mock_stop.assert_not_called()
+            mock_start.assert_called_once_with(watchdog.WATCHED_SERVICE)
+
+    def test_service_transitioning_waits(self):
+        """F6: START_PENDING = NSSM is already restarting — wait, don't act."""
+        with patch("httpx.get", side_effect=Exception("dead")), \
+             patch("watchdog._is_backup_running", return_value=False), \
+             patch("watchdog._transfer_process_running", return_value=False), \
+             patch("watchdog._service_state", return_value="START_PENDING"), \
+             patch("watchdog._start_service") as mock_start, \
              patch("watchdog._stop_service") as mock_stop:
             mock_sleep = self._run_loop(watchdog.FAILURE_THRESHOLD)
             mock_stop.assert_not_called()
+            mock_start.assert_not_called()
+            assert mock_sleep.call_args_list[-1][0][0] == watchdog.CHECK_INTERVAL_SECONDS

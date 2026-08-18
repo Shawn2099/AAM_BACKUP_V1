@@ -310,14 +310,18 @@ class TestRateLimiter:
 class TestTriggerEndpoints:
     def test_trigger_cloud_not_running(self):
         client = TestClient(ui.app)
+        mock_run = MagicMock()
+        mock_run.id = "run-123"
         with patch("ui._require_auth"), \
              patch("ui._check_rate_limit", return_value=True), \
              patch("ui._is_running", return_value=False), \
-             patch("ui._run_in_background") as mock_run:
+             patch("ui.arun_deployment", return_value=mock_run) as mock_depl:
             response = client.post("/trigger/cloud")
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "triggered"
+            assert "run-123" in data["detail"]
+            mock_depl.assert_awaited_once_with(name="aam-backup/backup-cloud")
 
     def test_trigger_cloud_already_running(self):
         client = TestClient(ui.app)
@@ -338,14 +342,30 @@ class TestTriggerEndpoints:
 
     def test_trigger_lan_not_running(self):
         client = TestClient(ui.app)
+        mock_run = MagicMock()
+        mock_run.id = "run-456"
         with patch("ui._require_auth"), \
              patch("ui._check_rate_limit", return_value=True), \
              patch("ui._is_running", return_value=False), \
-             patch("ui._run_in_background") as mock_run:
+             patch("ui.arun_deployment", return_value=mock_run) as mock_depl:
             response = client.post("/trigger/lan")
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "triggered"
+            mock_depl.assert_awaited_once_with(name="aam-backup/backup-lan")
+
+    def test_trigger_cloud_run_creation_failure_returns_500(self):
+        """G15: a failed arun_deployment must NOT report success."""
+        client = TestClient(ui.app)
+        with patch("ui._require_auth"), \
+             patch("ui._check_rate_limit", return_value=True), \
+             patch("ui._is_running", return_value=False), \
+             patch("ui.arun_deployment", side_effect=RuntimeError("deployment not found")):
+            response = client.post("/trigger/cloud")
+            assert response.status_code == 500
+            data = response.json()
+            assert data["status"] == "trigger_failed"
+            assert "deployment not found" in data["detail"]
 
 
 class TestDashboardRendering:

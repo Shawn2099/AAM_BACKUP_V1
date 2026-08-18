@@ -374,7 +374,7 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
-def _run_cloud_pipeline(config, run_id: str, started_at: str):
+def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
     db_path = config.paths.database_path
     fy_prefix = get_fy_prefix()
@@ -525,6 +525,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
             files_copied, bytes_copied, extended_metrics,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+            monotonic_start=monotonic_start,
         )
 
 
@@ -532,7 +533,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str):
 # LAN pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
-def _run_lan_pipeline(config, run_id: str, started_at: str):
+def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
     """Execute LAN backup tasks sequentially. Each task is independently tracked."""
     db_path = config.paths.database_path
 
@@ -636,6 +637,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str):
             files_copied, bytes_copied, extended_metrics,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+            monotonic_start=monotonic_start,
         )
 
 
@@ -656,10 +658,18 @@ def _record_run(
     extended_metrics: str | None = None,
     busy_timeout_ms: int = 30000,
     vacuum_freelist_threshold: int = 10000,
+    monotonic_start: float | None = None,
 ):
     """Record run history to ManifestDB."""
     ended_at = now_iso()
-    duration = time.time() - pendulum.parse(started_at).timestamp()
+    # F16: duration must come from a monotonic clock. The old wall-clock
+    # subtraction (time.time() - parse(started_at)) goes negative or wildly
+    # wrong if NTP adjusts the clock mid-run — exactly the condition this
+    # deployment is exposed to (GCS auth depends on NTP being applied).
+    if monotonic_start is not None:
+        duration = time.monotonic() - monotonic_start
+    else:
+        duration = time.time() - pendulum.parse(started_at).timestamp()
     db = ManifestDB(
         db_path,
         busy_timeout_ms=busy_timeout_ms,
@@ -832,7 +842,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
                 if mode in ("cloud", "all") and config.cloud.enabled:
                     logger.info("Starting cloud backup pipeline")
                     try:
-                        _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso())
+                        _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic())
                     except Exception as e:
                         excs.append(e)
 
@@ -840,7 +850,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
                 if mode in ("lan", "all") and config.lan.enabled:
                     logger.info("Starting LAN backup pipeline")
                     try:
-                        _run_lan_pipeline(config, _stable_run_id("lan"), now_iso())
+                        _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic())
                     except Exception as e:
                         excs.append(e)
 

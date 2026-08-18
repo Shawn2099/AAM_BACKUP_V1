@@ -5,6 +5,17 @@ Runs as AamWatchdog Windows Service (via NSSM).
 Pattern: External Watchdog Service — same concept as Kubernetes liveness
 probes, Docker HEALTHCHECK, and IIS Windows Process Activation Service (WAS).
 
+Watches BOTH services:
+  - AamPrefectServer (API health via HTTP)
+  - AamBackupAgent (SCM state) — G4: the in-process scheduler lives there;
+    a healthy API with a stopped agent is a silent total stoppage.
+
+F6: services that are STOPPED (not hung) are started directly via `sc start`
+— SCM failure actions never revive a merely-stopped service. Auto-starts are
+circuit-breaker limited to 3/hour per service (mirrors the SCM failure
+budget set at install time); exhaustion logs CRITICAL and demands manual
+intervention instead of flapping the service forever.
+
 HOW IT WORKS
 ────────────
 1. Polls http://127.0.0.1:4200/api/health every 60 seconds.
@@ -57,6 +68,14 @@ MAX_TRANSFER_DEFERRALS = 240    # real-transfer cap: force restart after 8 h (24
                                  #   A genuinely zombie/hung rclone is recovered within 8 h.
 RESTART_COOLDOWN       = 120    # wait after triggering a restart before resuming
 WATCHED_SERVICE        = "AamPrefectServer"
+AGENT_SERVICE          = "AamBackupAgent"   # G4: hosts the scheduler + dashboard
+
+# Circuit breaker for auto-starts (mirrors the SCM failure-action budget the
+# install scripts configure: 3 failures per 24h). Prevents a crash-looping
+# service from being flapped forever by the watchdog.
+MAX_STARTS_PER_WINDOW  = 3      # max auto-starts per service per window
+START_WINDOW_SECONDS   = 3600   # window in which starts are counted
+
 
 # Defaults — overwritten by _resolve_paths() at startup from config.yaml.
 BACKUP_LOCK_PATH: Path = Path(r"C:\BackupAgent\backup.lock")
@@ -148,12 +167,47 @@ def _is_backup_running() -> bool:
             f"Stale backup lock detected (PID {pid} not running or reused) "
             f"— deferral counter in main loop will handle cleanup"
         )
-    except OSError as exc:
-        logger.warning(f"Could not read backup lock file: {exc}")
+    # G6: catch EVERY parse/psutil failure, not just OSError. A corrupted
+    # lock file must make the watchdog treat the lock as stale, never crash
+    # the main loop (verified crash modes: negative PID -> ValueError, huge
+    # PID -> OverflowError — both escaped the old OSError-only catch and
+    # crash-looped the service under NSSM).
+    except Exception as exc:
+        logger.warning(f"Could not read backup lock file (treating as stale): {exc!r}")
     return False
 
 
 # ── Service management ────────────────────────────────────────────────────────
+
+def _service_state(service: str) -> str:
+    """Return the service's SCM STATE string (e.g. 'RUNNING', 'STOPPED',
+    'START_PENDING', 'STOP_PENDING', 'PAUSED'), or '' when it cannot be
+    determined (service missing, sc timeout, unparseable output).
+
+    F6: the old boolean check collapsed STOPPED and START_PENDING into the
+    same 'not running' answer, so the watchdog could not tell 'NSSM is
+    already restarting it' from 'it is stopped and nothing will ever
+    restart it'. Parsing the state makes that distinction possible.
+    """
+    try:
+        r = subprocess.run(
+            ["sc", "query", service],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("STATE"):
+                # Format: 'STATE              : 4  RUNNING (STOPPABLE, ...)' —
+                # the state name is the token after the numeric code.
+                tokens = stripped.split(":", 1)[1].split()
+                if len(tokens) >= 2 and tokens[0].isdigit():
+                    return tokens[1].strip()
+                if tokens:
+                    return tokens[0].strip()
+    except Exception as exc:
+        logger.warning(f"sc query {service} failed: {exc}")
+    return ""
+
 
 def _service_is_running(service: str) -> bool:
     """Return True only when the service SCM state is RUNNING.
@@ -161,14 +215,56 @@ def _service_is_running(service: str) -> bool:
     Prevents restarting a service that is in START_PENDING (NSSM just
     restarted it) or STOP_PENDING — avoids kicking a transitioning service.
     """
+    return _service_state(service) == "RUNNING"
+
+
+def _start_service(service: str) -> bool:
+    """Start a stopped service via Windows SCM.
+
+    F6: SCM failure actions only fire for services that STARTED and then
+    failed — a service that is merely STOPPED is never auto-revived by
+    Windows itself. The watchdog is the designated reviver (this is the
+    standard external-watchdog pattern, cf. NSSM's own documentation).
+
+    Returns True if the start request was accepted by the SCM.
+    """
+    logger.warning(f"Issuing: sc start {service}")
     try:
         r = subprocess.run(
-            ["sc", "query", service],
-            capture_output=True, text=True, timeout=5,
+            ["sc", "start", service],
+            capture_output=True, text=True, timeout=30,
         )
-        return "RUNNING" in r.stdout
-    except Exception:
+        if r.returncode == 0:
+            logger.info(f"sc start {service} accepted — service should be up within ~30-60s")
+            return True
+        logger.error(f"sc start {service} returned {r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
         return False
+    except subprocess.TimeoutExpired:
+        logger.error(f"sc start {service} timed out (30s) — service may need manual attention")
+    except Exception as exc:
+        logger.error(f"Start attempt failed for {service}: {exc}")
+    return False
+
+
+# Per-service list of auto-start timestamps (module-level so main() can pass it).
+service_start_log: dict = {}
+
+
+def _start_allowed(service: str) -> bool:
+    """Circuit breaker: allow an auto-start unless MAX_STARTS_PER_WINDOW
+    starts were already issued for this service within START_WINDOW_SECONDS.
+
+    When the window naturally empties (no starts for an hour), the breaker
+    resets on its own. On recovery (service observed RUNNING) main() clears
+    the log entry immediately.
+    """
+    now = time.time()
+    recent = [t for t in service_start_log.get(service, []) if now - t < START_WINDOW_SECONDS]
+    if len(recent) >= MAX_STARTS_PER_WINDOW:
+        return False
+    recent.append(now)
+    service_start_log[service] = recent
+    return True
 
 
 def _stop_service(service: str) -> None:
@@ -232,6 +328,30 @@ def main() -> None:
                 logger.info(f"Prefect API healthy (recovered after {failures} failure(s))")
             failures = 0
             deferrals = 0
+            # G4: a healthy Prefect API does NOT mean backups are being
+            # scheduled. The in-process scheduler + dashboard live in
+            # AamBackupAgent; if that service is stopped, deployments never
+            # run and nothing else reports it (the server looks perfectly
+            # fine). Monitor it directly.
+            agent_state = _service_state(AGENT_SERVICE)
+            if agent_state == "RUNNING":
+                service_start_log.pop(AGENT_SERVICE, None)  # breaker reset
+            elif agent_state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
+                logger.info(f"{AGENT_SERVICE} is {agent_state} — waiting for NSSM to finish the transition")
+            elif agent_state == "STOPPED":
+                if _start_allowed(AGENT_SERVICE):
+                    _start_service(AGENT_SERVICE)
+                else:
+                    logger.critical(
+                        f"{AGENT_SERVICE} is STOPPED and auto-start is suppressed "
+                        f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
+                        f"Manual intervention required: sc query {AGENT_SERVICE}"
+                    )
+            else:
+                logger.warning(
+                    f"{AGENT_SERVICE} state unknown ({agent_state!r}) — "
+                    "cannot verify the scheduler is running"
+                )
             time.sleep(CHECK_INTERVAL_SECONDS)
             continue
 
@@ -305,16 +425,33 @@ def main() -> None:
                 time.sleep(BACKUP_WAIT_INTERVAL)
                 continue
 
-        # ── No backup running — safe to restart ──────────────────────────────
-        if not _service_is_running(WATCHED_SERVICE):
-            # Service is in START_PENDING / STOP_PENDING — NSSM is already
-            # handling a restart. Reset counter and wait.
+        # ── No backup running — safe to act ──────────────────────────────────
+        state = _service_state(WATCHED_SERVICE)
+        if state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
+            # NSSM is already handling a restart — wait.
             logger.info(
-                f"{WATCHED_SERVICE} is not in RUNNING state (transitioning). "
+                f"{WATCHED_SERVICE} is {state} (transitioning). "
                 "NSSM is already handling a restart — resetting failure counter."
             )
             failures = 0
             time.sleep(CHECK_INTERVAL_SECONDS)
+            continue
+        if state != "RUNNING":
+            # F6: the service is STOPPED (or unqueryable). SCM failure actions
+            # only fire for services that started and then failed — a stopped
+            # service is never revived by Windows on its own, so the old code
+            # waited here forever. Start it directly (circuit-breaker guarded).
+            if _start_allowed(WATCHED_SERVICE):
+                _start_service(WATCHED_SERVICE)
+                failures = 0
+            else:
+                logger.critical(
+                    f"{WATCHED_SERVICE} is down and auto-start is suppressed "
+                    f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
+                    f"Manual intervention required: sc query {WATCHED_SERVICE}"
+                )
+                failures = 0
+            time.sleep(BACKUP_WAIT_INTERVAL)
             continue
 
         # Service is RUNNING but API is dead — genuine hung state.

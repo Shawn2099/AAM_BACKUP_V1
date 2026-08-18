@@ -102,6 +102,12 @@ class WolConfig(BaseModel):
     wake_timeout_seconds: int = Field(default=300, ge=60, le=600)
     ping_interval_seconds: int = Field(default=15, ge=5, le=60)
     stability_wait_seconds: int = Field(default=30, ge=0)
+    # G3: a single unicast-ish broadcast packet is frequently dropped
+    # (managed switches, NIC firmware, half-initiated NIC wake state).
+    # Standard practice (cf. etherwake -s/-I): send several rounds.
+    # 3 rounds × 5 s adds only ~10 s against a 300 s wake timeout.
+    wake_retry_count: int = Field(default=3, ge=1, le=10)
+    wake_retry_interval_seconds: int = Field(default=5, ge=1, le=30)
 
     @field_validator("mac_address")
     @classmethod
@@ -325,6 +331,34 @@ class ScheduleConfig(BaseModel):
         if len(parts) != 5:
             raise ValueError(f"Invalid cron expression '{v}': expected 5 fields (min hour dom month dow)")
         return v
+
+    @model_validator(mode="after")
+    def _validate_crons_with_prefect(self) -> "ScheduleConfig":
+        """G1: validate cron VALUES and the timezone with Prefect's own
+        CronSchedule model — the exact schema the Prefect server applies when
+        deployments register.
+
+        The old check accepted any 5-field string (e.g. "99 99 * * *" or
+        timezone "Not/AZone"), which only failed later, at serve() deployment
+        time — crash-looping the agent (and, since all deployments register in
+        one serve() call, taking down every pipeline and report).
+
+        Verified (probe E + 2026-08-18 experiment): standalone import works
+        without a running server; ~3 ms per check; one-time ~1.8 s import cost
+        at config-load time (accepted: watchdog/dashboard/flows load config at
+        startup, not in a hot path).
+        """
+        from prefect.server.schemas.schedules import CronSchedule
+
+        for field_name in ("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron"):
+            try:
+                CronSchedule(cron=getattr(self, field_name), timezone=self.timezone)
+            except Exception as e:
+                raise ValueError(
+                    f"schedule.{field_name}={getattr(self, field_name)!r} "
+                    f"(timezone={self.timezone!r}) rejected by Prefect's scheduler: {e}"
+                ) from e
+        return self
 
 
 class AppConfig(BaseModel):

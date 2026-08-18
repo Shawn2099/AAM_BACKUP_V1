@@ -514,14 +514,16 @@ class TestDashboardEndpoint:
 
 class TestTriggerEndpoints:
     def test_trigger_cloud_success(self):
+        mock_run = MagicMock()
+        mock_run.id = "run-1"
         with patch("ui._require_auth"), \
              patch("ui._check_rate_limit", return_value=True), \
              patch("ui._is_running", new_callable=AsyncMock, return_value=False), \
-             patch("ui._run_in_background", new_callable=AsyncMock):
+             patch("ui.arun_deployment", new_callable=AsyncMock, return_value=mock_run):
             client = TestClient(ui.app)
             resp = client.post("/trigger/cloud")
             assert resp.status_code == 200
-            assert resp.json()["status"] == "triggered"
+            assert resp.json()["status"] == "triggered"  # G15: only after arun_deployment resolved
 
     def test_trigger_cloud_already_running(self):
         with patch("ui._require_auth"), \
@@ -540,10 +542,12 @@ class TestTriggerEndpoints:
             assert resp.status_code == 429
 
     def test_trigger_lan_success(self):
+        mock_run = MagicMock()
+        mock_run.id = "run-2"
         with patch("ui._require_auth"), \
              patch("ui._check_rate_limit", return_value=True), \
              patch("ui._is_running", new_callable=AsyncMock, return_value=False), \
-             patch("ui._run_in_background", new_callable=AsyncMock):
+             patch("ui.arun_deployment", new_callable=AsyncMock, return_value=mock_run):
             client = TestClient(ui.app)
             resp = client.post("/trigger/lan")
             assert resp.status_code == 200

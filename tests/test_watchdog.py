@@ -10,6 +10,13 @@ import watchdog
 from core.process import read_lock_alive
 
 
+@pytest.fixture(autouse=True)
+def _reset_service_breaker():
+    """F6: reset the module-level auto-start circuit breaker between tests."""
+    watchdog.service_start_log.clear()
+    yield
+
+
 @pytest.fixture
 def mock_sleep():
     with patch("watchdog.time.sleep") as m:
