@@ -450,7 +450,6 @@ def main() -> None:
                     f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
                     f"Manual intervention required: sc query {WATCHED_SERVICE}"
                 )
-                failures = 0
             time.sleep(BACKUP_WAIT_INTERVAL)
             continue
 

@@ -3,10 +3,12 @@
 import os
 import sys
 import tempfile
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from loguru import logger
 
 # Mock Windows-specific modules for cross-platform test execution
 if sys.platform != 'win32':
@@ -35,6 +37,15 @@ def temp_db_path():
         Path(path).unlink()
     except OSError:
         pass
+
+
+@pytest.fixture
+def capture_logs():
+    """Capture loguru logs to a string buffer."""
+    buf = StringIO()
+    handler_id = logger.add(buf, format="{level} | {message}", level="DEBUG")
+    yield buf
+    logger.remove(handler_id)
 
 
 @pytest.fixture

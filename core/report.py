@@ -22,6 +22,11 @@ from core.time_utils import now_formatted
 from models.config import NotificationConfig
 
 
+_SMTP_MAX_ATTEMPTS = 3
+_SMTP_BASE_DELAY_SECONDS = 10
+_SMTP_JITTER_FACTOR = 0.2
+
+
 def _send_email_with_attachments(
     config: NotificationConfig,
     subject: str,
@@ -53,10 +58,6 @@ def _send_email_with_attachments(
             part = MIMEApplication(att["content"], Name=att["filename"])
             part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
             msg.attach(part)
-
-    _SMTP_MAX_ATTEMPTS = 3
-    _SMTP_BASE_DELAY_SECONDS = 10
-    _SMTP_JITTER_FACTOR = 0.2
 
     for attempt in range(1, _SMTP_MAX_ATTEMPTS + 1):
         server: smtplib.SMTP | smtplib.SMTP_SSL | None = None

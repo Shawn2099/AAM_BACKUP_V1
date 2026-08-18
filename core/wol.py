@@ -116,8 +116,8 @@ def ensure_server_online(config: AppConfig) -> bool:
     _send_magic_packet(
         config.wol.mac_address,
         config.wol.get_broadcast_address(),
-        repeat=getattr(config.wol, "wake_retry_count", 3),
-        interval=getattr(config.wol, "wake_retry_interval_seconds", 5),
+        repeat=config.wol.wake_retry_count,
+        interval=config.wol.wake_retry_interval_seconds,
     )
     wait_for_server(
         server_ip,

@@ -53,7 +53,6 @@ def configure_prefect_bridge():
     global _bridge_configured
     if _bridge_configured:
         return
-    _bridge_configured = True
 
     from prefect.context import FlowRunContext, TaskRunContext
 
@@ -110,3 +109,4 @@ def configure_prefect_bridge():
                 logger.opt(depth=1, exception=False).debug("Prefect bridge failed to forward message")
 
     logger.add(prefect_sink, level="INFO")
+    _bridge_configured = True

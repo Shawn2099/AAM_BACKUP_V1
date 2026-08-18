@@ -540,7 +540,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         _record_run(
             db_path, run_id, "cloud", started_at, status,
             sync_result.get("exit_code", -1), error_msg,
-            files_copied, bytes_copied, extended_metrics,
+            files_copied=files_copied,
+            bytes_copied=bytes_copied,
+            files_failed=0,
+            extended_metrics=extended_metrics,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
             monotonic_start=monotonic_start,
@@ -663,8 +666,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         _record_run(
             db_path, run_id, "lan", started_at, status,
             sync_result.get("exit_code", -1), error_msg,
-            files_copied, bytes_copied, extended_metrics,
+            files_copied=files_copied,
+            bytes_copied=bytes_copied,
             files_failed=files_failed,
+            extended_metrics=extended_metrics,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
             monotonic_start=monotonic_start,

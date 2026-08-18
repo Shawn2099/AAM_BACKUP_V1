@@ -19,7 +19,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pendulum
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -129,7 +129,7 @@ _CONFIG_TTL: float = 300.0  # 5 minutes
 # critical section. Cost: requests serialize briefly only at the 5-minute
 # refresh boundary (config load is a small YAML parse) — negligible for an
 # ops dashboard.
-_CFG_LOCK = threading.Lock()
+_CFG_LOCK = threading.RLock()  # RLock: re-entrant — get_db() acquires this, then calls _cfg() which re-acquires it (same thread)
 
 
 def _cfg():

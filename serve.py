@@ -14,7 +14,7 @@ from models.config import CONFIG_PATH, load_config
 
 
 def deployments():
-    """Public entry point — returns (cloud, lan, weekly, monthly) deployments."""
+    """Public entry point — returns (cloud, lan, weekly, monthly, rollover) deployments."""
     return _deployments()
 
 

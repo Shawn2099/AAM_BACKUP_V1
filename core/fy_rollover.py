@@ -381,7 +381,7 @@ def run_archive_transition(
         return False
     except subprocess.TimeoutExpired:
         logger.warning(
-            f"FY rollover: archive transition timed out after 600 s "
+            f"FY rollover: archive transition timed out after {archive_timeout} s "
             f"for gs://{bucket}/{old_fy}/"
         )
         return False
