@@ -30,7 +30,7 @@ from core.fy_router import get_fy_prefix
 from core.health import pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 from core.lan_preflight import run_lan_dry_run
-from core.lan_sync import run_lan_sync
+from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
@@ -219,6 +219,10 @@ def lan_preflight_task(config):
     result = run_lan_dry_run(
         source=config.paths.source_drive,
         dest=config.paths.lan_destination,
+        # F8: the dry-run /L walk scales with dataset size (1M files ~= 5-10 min
+        # over SMB); the old hardcoded 300s failed at the scale this deployment
+        # targets. Config-driven so the operator can tune per environment.
+        timeout=config.lan.dry_run_timeout_seconds,
     )
     if not result["ok"]:
         raise RuntimeError(f"LAN preflight failed: {result['error']}")
@@ -236,10 +240,24 @@ def lan_snapshot_before_task(config):
 
 @task(name="lan-snapshot-after")
 def lan_snapshot_after_task(config):
-    """Snapshot LAN destination after sync for diff comparison."""
+    """Snapshot LAN destination after sync for diff comparison.
+
+    G14: returns None (instead of raising) when the walk fails. The sync
+    itself already succeeded — a dropped SMB session or NAS hiccup while
+    enumerating must not turn a completed backup into a failed run. The
+    pipeline skips diff metrics + DB record for that run; the next run
+    re-derives everything from a fresh walk.
+    """
     logger.info("Taking LAN snapshot (after sync)")
-    after_files = walk_lan_destination(config.paths.lan_destination)
-    after = snapshot_to_dict(after_files)
+    try:
+        after_files = walk_lan_destination(config.paths.lan_destination)
+        after = snapshot_to_dict(after_files)
+    except Exception as e:
+        logger.critical(
+            f"Post-sync destination walk failed: {e} — sync result is "
+            "UNAFFECTED; diff metrics and DB record are skipped for this run"
+        )
+        return None
     logger.info(f"LAN snapshot: {len(after)} files after sync")
     return after
 
@@ -551,6 +569,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
     error_msg = None
     files_copied = 0
     bytes_copied = 0
+    files_failed = 0
     extended_metrics = None
     phase = "pre"
 
@@ -563,29 +582,39 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         sync_result = sync(config)
         status = sync_result["status"]
         phase = "post"
+        # F12: robocopy per-file failure count (0 on clean/anomaly runs)
+        files_failed = int(sync_result.get("files_failed", 0))
         after_dict = lan_snapshot_after_task(config)
-        lan_record_task(
-            db_path, sync_result, before_dict, after_dict,
-            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-        )
+        if after_dict is not None:
+            lan_record_task(
+                db_path, sync_result, before_dict, after_dict,
+                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+            )
 
-        # Calculate files and bytes copied
-        diff = diff_snapshots(before_dict, after_dict)
-        copied_paths = diff.get("added", []) + diff.get("modified", [])
-        files_copied = len(copied_paths)
-        bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
+            # Calculate files and bytes copied
+            diff = diff_snapshots(before_dict, after_dict)
+            copied_paths = diff.get("added", []) + diff.get("modified", [])
+            files_copied = len(copied_paths)
+            bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
 
-        extended_metrics = json.dumps({
-            "added": len(diff.get("added", [])),
-            "modified": len(diff.get("modified", [])),
-            "removed": len(diff.get("removed", [])),
-            "total_files": len(after_dict)
-        })
-        try:
-            lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
-        except Exception:
-            pass
+            extended_metrics = json.dumps({
+                "added": len(diff.get("added", [])),
+                "modified": len(diff.get("modified", [])),
+                "removed": len(diff.get("removed", [])),
+                "total_files": len(after_dict)
+            })
+            try:
+                lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
+            except Exception:
+                pass
+        else:
+            # G14: metrics unavailable this run — record the sync outcome only
+            logger.error(
+                "Post-sync snapshot unavailable — diff metrics and file-level "
+                "DB record skipped for this run; the sync outcome is recorded "
+                "as-is and the next run re-derives the metrics."
+            )
 
         logger.info(f"LAN pipeline completed with status {status}")
         # F3: shut the NAS down ONLY after a fully complete mirror (robocopy
@@ -635,6 +664,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             db_path, run_id, "lan", started_at, status,
             sync_result.get("exit_code", -1), error_msg,
             files_copied, bytes_copied, extended_metrics,
+            files_failed=files_failed,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
             monotonic_start=monotonic_start,
@@ -655,6 +685,7 @@ def _record_run(
     error_msg: str | None,
     files_copied: int = 0,
     bytes_copied: int = 0,
+    files_failed: int = 0,
     extended_metrics: str | None = None,
     busy_timeout_ms: int = 30000,
     vacuum_freelist_threshold: int = 10000,
@@ -683,6 +714,7 @@ def _record_run(
             status=status, exit_code=exit_code,
             duration_seconds=duration, error_message=error_msg,
             files_copied=files_copied, bytes_copied=bytes_copied,
+            files_failed=files_failed,
             extended_metrics=extended_metrics,
         ):
             logger.critical(
@@ -815,6 +847,15 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         logger.debug(f"configure_prefect_bridge skipped: {e} — Prefect UI may not show loguru logs")
 
     logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
+
+    # G8: clean up orphaned robocopy temp logs left behind by hard-killed
+    # processes (SCM stop, timeout kill, crash). Normal runs delete their own
+    # log in a finally block; only killed runs strand them in %TEMP%. The 24h
+    # age gate protects a concurrently running pipeline's active log.
+    try:
+        cleanup_orphaned_robocopy_logs(max_age_hours=24)
+    except Exception as e:
+        logger.warning(f"Orphaned robocopy log cleanup failed (non-fatal): {e}")
 
     # ── Watchdog lock — signals that a backup is in progress ──
     # Written INSIDE the concurrency block so only the flow that actually

@@ -111,7 +111,10 @@ class TestWolConfig:
 
 class TestCloudConfig:
     def test_defaults(self):
-        cfg = CloudConfig()
+        # F11: an enabled cloud config must name its bucket; pass one so the
+        # other defaults are testable (empty-bucket default is covered in
+        # tests/test_batch3_fixes.py::TestConditionalValidation).
+        cfg = CloudConfig(bucket="aam-backup-test")
         assert cfg.storage_class == "STANDARD"
         assert cfg.bandwidth_limit == "10M"
         assert cfg.transfers == 2    # HDD-optimized: 2 concurrent upload slots
@@ -129,7 +132,7 @@ class TestCloudConfig:
             CloudConfig(storage_class="GLACIER")
 
     def test_storage_class_uppercased(self):
-        cfg = CloudConfig(storage_class="nearline")
+        cfg = CloudConfig(bucket="aam-backup-test", storage_class="nearline")
         assert cfg.storage_class == "NEARLINE"
 
     def test_invalid_bandwidth_raises(self):
@@ -208,6 +211,7 @@ class TestAppConfig:
                 gcs_key_path="C:\\keys\\key.json",
             ),
             lan=LanConfig(enabled=False),
+            cloud=CloudConfig(bucket="aam-backup-test"),
             wol=WolConfig(mac_address="AA-BB-CC-DD-EE-FF", server_ip="10.0.0.1"),
             dashboard=DashboardConfig(auth_enabled=False, api_key=""),
         )

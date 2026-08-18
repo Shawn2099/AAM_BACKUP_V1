@@ -96,7 +96,10 @@ class TestDetectRollover:
             detect_rollover(r"E:\SOURCE", r"\\server\share")
         mock_logger.warning.assert_called_once()
         msg = mock_logger.warning.call_args.args[0]
-        assert "no FY suffix" in msg
+        # G2: the message must explain WHY rollover is off (opt-out, not a
+        # silent skip) and that it is a configuration choice.
+        assert "no FYxx-xx folder name" in msg
+        assert "disabled by configuration" in msg
 
     @patch("core.fy_rollover.get_fy_prefix", return_value="FY27-28")
     def test_explicit_boundary(self, mock_fy):
@@ -204,6 +207,7 @@ class TestRolloverOrchestrator:
             "  server_ip: \"192.168.1.1\"\n"
             "cloud:\n"
             "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
             "  retry_count: 3\n"
             "  subprocess_timeout_seconds: 21600\n"
             "  verify_timeout_seconds: 600\n"
@@ -243,6 +247,7 @@ class TestRolloverOrchestrator:
             "  server_ip: \"192.168.1.1\"\n"
             "cloud:\n"
             "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
             "  retry_count: 3\n"
             "  subprocess_timeout_seconds: 21600\n"
             "  verify_timeout_seconds: 600\n"
@@ -333,6 +338,7 @@ class TestRolloverOrchestrator:
             "  server_ip: \"192.168.1.1\"\n"
             "cloud:\n"
             "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
             "  retry_count: 3\n"
             "  subprocess_timeout_seconds: 21600\n"
             "  verify_timeout_seconds: 600\n"
@@ -377,6 +383,7 @@ class TestRolloverOrchestrator:
             "  server_ip: \"192.168.1.1\"\n"
             "cloud:\n"
             "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
             "  retry_count: 3\n"
             "  subprocess_timeout_seconds: 21600\n"
             "  verify_timeout_seconds: 600\n"
@@ -422,6 +429,7 @@ class TestRolloverOrchestrator:
             "  server_ip: \"192.168.1.1\"\n"
             "cloud:\n"
             "  enabled: true\n"
+            "  bucket: \"aam-backup-bucket\"\n"
             "  retry_count: 3\n"
             "  subprocess_timeout_seconds: 21600\n"
             "  verify_timeout_seconds: 600\n"

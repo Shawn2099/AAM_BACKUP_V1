@@ -314,7 +314,9 @@ class TestRunLanSync:
 
         result = run_lan_sync("D:\\", "\\\\10.0.0.5\\share", cfg)
 
-        assert set(result.keys()) == {"status", "exit_code", "error", "anomaly_details"}
+        # F12: files_failed is part of the result contract (0 on clean runs)
+        assert set(result.keys()) == {"status", "exit_code", "error", "anomaly_details", "files_failed"}
+        assert result["files_failed"] == 0
 
     @patch("core.lan_sync.subprocess.run")
     @patch("core.lan_sync.resolve_binary", return_value="robocopy")

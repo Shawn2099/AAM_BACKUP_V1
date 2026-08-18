@@ -143,8 +143,10 @@ notifications:
     - "admin@yourcompany.com"
   # Send an immediate alert email when a backup fails
   send_on_failure: true
-  # Send a confirmation email when a backup succeeds (set true if desired)
-  send_on_success: false
+  # NOTE: there is deliberately no send_on_success switch. Per-run success
+  # emails were never implemented (and would be noise); the weekly/monthly
+  # reports below are the success visibility. If your config still lists
+  # send_on_success, it is ignored safely.
   # Send the weekly summary report email every Monday
   weekly_enabled: true
   # Send the monthly summary report email on the 1st of every month

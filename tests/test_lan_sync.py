@@ -136,63 +136,68 @@ class TestRunLanSync:
         result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert result["status"] == "LAN_COMPLETE"
 
+    # F15 note: these tests use REAL temp files (not a mocked Path) because the
+    # seek-based _read_log_tail performs stat + binary read; mocking Path would
+    # hide exactly the code under test.
+
+    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     @patch("core.lan_sync.os.close")
-    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
-    @patch("core.lan_sync.Path")
     @patch("core.lan_sync.subprocess.run")
-    def test_exit_4_anomalies_no_error_field(self, mock_run, mock_path, mock_mkstemp, mock_close):
+    def test_exit_4_anomalies_no_error_field(self, mock_run, mock_close, mock_resolve, tmp_path):
         """Code 4 (mismatches) — sync completed. error must be None (no alert).
         anomaly_details must be populated so operators can investigate."""
         cfg = LanConfig()
-        mock_run.return_value = MagicMock(returncode=4)
-        mock_path.return_value.exists.return_value = True
-        mock_path.return_value.read_text.return_value = "Mismatch: file.bak size differs"
-        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        log = tmp_path / "robocopy_test.log"
+        log.write_text("Mismatch: file.bak size differs")
+        with patch("core.lan_sync.tempfile.mkstemp", return_value=(99, str(log))):
+            mock_run.return_value = MagicMock(returncode=4)
+            result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert result["status"] == "LAN_PARTIAL"
         assert result["error"] is None, "code 4 must not trigger alerts"
         assert result["anomaly_details"] is not None, "anomaly context must be captured"
         assert "Mismatch" in result["anomaly_details"]
+        assert result["files_failed"] == 0
 
+    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     @patch("core.lan_sync.os.close")
-    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
-    @patch("core.lan_sync.Path")
     @patch("core.lan_sync.subprocess.run")
-    def test_exit_8_copy_errors_has_error_field(self, mock_run, mock_path, mock_mkstemp, mock_close):
+    def test_exit_8_copy_errors_has_error_field(self, mock_run, mock_close, mock_resolve, tmp_path):
         """Code 8 (copy errors) — sync failed. error must contain log for triage.
         anomaly_details must be None (error field already carries the context)."""
         cfg = LanConfig()
-        mock_run.return_value = MagicMock(returncode=8)
-        mock_path.return_value.exists.return_value = True
-        mock_path.return_value.read_text.return_value = "ERROR: File in use"
-        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        log = tmp_path / "robocopy_test.log"
+        log.write_text("ERROR: File in use")
+        with patch("core.lan_sync.tempfile.mkstemp", return_value=(99, str(log))):
+            mock_run.return_value = MagicMock(returncode=8)
+            result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert result["status"] == "LAN_PARTIAL"
         assert "File in use" in result["error"]
         assert result["anomaly_details"] is None, "real errors must not populate anomaly_details"
+        assert result["files_failed"] == 0
 
+    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     @patch("core.lan_sync.os.close")
-    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
-    @patch("core.lan_sync.Path")
     @patch("core.lan_sync.subprocess.run")
-    def test_fatal_with_log_tail(self, mock_run, mock_path, mock_mkstemp, mock_close):
+    def test_fatal_with_log_tail(self, mock_run, mock_close, mock_resolve, tmp_path):
         cfg = LanConfig()
-        mock_run.return_value = MagicMock(returncode=16)
-        mock_path.return_value.exists.return_value = True
-        mock_path.return_value.read_text.return_value = "ERROR: Access denied (0x00000005)"
-        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        log = tmp_path / "robocopy_test.log"
+        log.write_text("ERROR: Access denied (0x00000005)")
+        with patch("core.lan_sync.tempfile.mkstemp", return_value=(99, str(log))):
+            mock_run.return_value = MagicMock(returncode=16)
+            result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert result["status"] == "LAN_FAILED"
         assert "Access denied" in result["error"]
 
+    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     @patch("core.lan_sync.os.close")
-    @patch("core.lan_sync.tempfile.mkstemp", return_value=(99, "/tmp/robocopy_test.log"))
-    @patch("core.lan_sync.Path")
     @patch("core.lan_sync.subprocess.run")
-    def test_log_tail_truncation(self, mock_run, mock_path, mock_mkstemp, mock_close):
+    def test_log_tail_truncation(self, mock_run, mock_close, mock_resolve, tmp_path):
         cfg = LanConfig()
-        mock_run.return_value = MagicMock(returncode=16)
-        mock_path.return_value.exists.return_value = True
-        long_log = "x" * 150000
-        mock_path.return_value.read_text.return_value = long_log
-        result = run_lan_sync("/src", "\\\\server\\share", cfg)
+        log = tmp_path / "robocopy_test.log"
+        log.write_text("x" * 150000)
+        with patch("core.lan_sync.tempfile.mkstemp", return_value=(99, str(log))):
+            mock_run.return_value = MagicMock(returncode=16)
+            result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert len(result["error"]) == 100000
         assert result["anomaly_details"] is None
 
@@ -201,10 +206,12 @@ class TestRunLanSync:
     @patch("core.lan_sync.Path")
     @patch("core.lan_sync.subprocess.run")
     def test_log_unreadable(self, mock_run, mock_path, mock_mkstemp, mock_close):
+        """stat() failure (unreadable log) falls back to the diagnostic message.
+        A mocked Path is fine HERE: only the stat-failure branch is under test."""
         cfg = LanConfig()
         mock_run.return_value = MagicMock(returncode=16)
         mock_path.return_value.exists.return_value = True
-        mock_path.return_value.read_text.side_effect = OSError("bad file")
+        mock_path.return_value.stat.side_effect = OSError("bad file")
         result = run_lan_sync("/src", "\\\\server\\share", cfg)
         assert "log unreadable" in result["error"]
 

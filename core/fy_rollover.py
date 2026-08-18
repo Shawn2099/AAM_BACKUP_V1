@@ -101,11 +101,16 @@ def detect_rollover(source_drive: str, lan_destination: str) -> bool:
     """Return True if the configured FY suffix doesn't match the computed FY prefix."""
     current_fy = _fy_name(source_drive) or _fy_name(lan_destination)
     if current_fy is None:
-        # Warn operators so they know rollover is permanently skipped for this config.
+        # G2: explicit opt-out signal. No FY suffix in either path means the
+        # operator is not using FY folders, so rollover is intentionally a
+        # permanent no-op for this config. (The 4-digit FY trap that used to
+        # end up here is now refused at config load — see models/config.py.)
         logger.warning(
-            "FY rollover: no FY suffix found in source_drive or lan_destination — "
-            "rollover detection is permanently disabled. "
-            f"source_drive={source_drive!r}, lan_destination={lan_destination!r}"
+            "FY rollover: no FYxx-xx folder name in source_drive or "
+            "lan_destination — rollover is disabled by configuration for this "
+            "deployment (not using FY folders is a valid choice; data simply "
+            f"accumulates in the same folders). source_drive={source_drive!r}, "
+            f"lan_destination={lan_destination!r}"
         )
         return False
     computed = get_fy_prefix()

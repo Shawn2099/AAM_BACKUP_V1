@@ -64,6 +64,7 @@ def record_run_history(
     error_message: str | None = None,
     files_copied: int = 0,
     bytes_copied: int = 0,
+    files_failed: int = 0,
     extended_metrics: str | None = None,
 ) -> bool:
     """Record a backup run to run_history and checkpoint WAL.
@@ -83,6 +84,8 @@ def record_run_history(
             "error_message": error_message,
             "files_copied": files_copied,
             "bytes_copied": bytes_copied,
+            # F12: persisted so reports/CSV show how many files actually failed
+            "files_failed": files_failed,
             "extended_metrics": extended_metrics,
         })
         db.wal_checkpoint()

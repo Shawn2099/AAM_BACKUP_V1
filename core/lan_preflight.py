@@ -34,7 +34,21 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     dest_path = Path(dest)
     canary_file = dest_path / ".AAM_TARGET_MOUNTED"
     if not canary_file.exists():
-        msg = f"Canary file {canary_file} missing! Target is unmounted or empty."
+        # G11: make the failure self-recovering. The preflight deliberately
+        # refuses to run robocopy /MIR against a destination it cannot prove
+        # is the mounted FY share — but the fix used to be undocumented. The
+        # message now carries the exact recovery command (and the operator can
+        # run deploy/10_recreate_canary.bat <dest>).
+        msg = (
+            f"Canary file {canary_file} missing — refusing to mirror into an "
+            "unverified destination. Recovery: verify the FY share is mounted, "
+            f"then create the canary:  cmd /c type nul > \"{canary_file}\"  "
+            "(or run deploy\\10_recreate_canary.bat from the project's deploy "
+            "folder). NOTE: if this file is missing on a destination that "
+            "already holds backup data, check why before re-creating it — a "
+            "deleted canary on a populated share usually means the share or "
+            "mount was touched manually."
+        )
         logger.error(msg)
         raise HealthError(msg)
 

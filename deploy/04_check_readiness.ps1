@@ -127,6 +127,18 @@ if ($ar -and $ar.NoAutoRebootWithLoggedOnUsers -eq 1) {
     Check-Item "Auto-Reboot" "Not suppressed (Run 03_setup_system.bat)" $true
 }
 
+# 8b. Check Registry - Windows Update Active Hours (G9)
+# The NoAutoReboot policy above is useless on a headless server (no logged-on
+# user). Active Hours is the protection that actually works here: reboots
+# must be confined to 06:00-12:00 so neither the 01:00 LAN window nor the
+# 18:00-23:00 cloud window can be interrupted by a WU reboot.
+$ah = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" -ErrorAction SilentlyContinue
+if ($ah -and $ah.Start -eq 12 -and $ah.End -eq 6) {
+    Check-Item "Update Active Hours" "12:00-06:00 (backup windows protected)" $false
+} else {
+    Check-Item "Update Active Hours" "Missing/incorrect - reboots could hit a backup window (Run 03_setup_system.bat)" $true
+}
+
 # 9. Check Ports
 $p4200 = netstat -an | Select-String ":4200 " | Select-String "LISTENING"
 if ($p4200) { Check-Item "Port 4200" "In use! (Must be free for Prefect)" $true } else { Check-Item "Port 4200" "Available" $false }

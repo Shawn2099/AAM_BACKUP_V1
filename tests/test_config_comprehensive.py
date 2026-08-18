@@ -155,7 +155,10 @@ class TestWolConfig:
 
 class TestCloudConfig:
     def test_defaults(self):
-        cfg = CloudConfig()
+        # F11: enabled cloud requires an explicit bucket — supply one so the
+        # remaining defaults are testable (conditional validation is covered
+        # in tests/test_batch3_fixes.py).
+        cfg = CloudConfig(bucket="aam-backup-test")
         assert cfg.storage_class == "STANDARD"
         assert cfg.bandwidth_limit == "10M"
         assert cfg.transfers == 2
@@ -177,7 +180,7 @@ class TestCloudConfig:
             CloudConfig(bucket="-invalid-bucket")
 
     def test_storage_class_uppercased(self):
-        cfg = CloudConfig(storage_class="nearline")
+        cfg = CloudConfig(bucket="aam-backup-test", storage_class="nearline")
         assert cfg.storage_class == "NEARLINE"
 
     def test_invalid_storage_class_raises(self):
@@ -190,7 +193,7 @@ class TestCloudConfig:
 
     def test_valid_bandwidth_formats(self):
         for bw in ["10M", "500k", "1G"]:
-            cfg = CloudConfig(bandwidth_limit=bw)
+            cfg = CloudConfig(bucket="aam-backup-test", bandwidth_limit=bw)
             assert cfg.bandwidth_limit == bw
 
 
@@ -420,6 +423,7 @@ class TestAppConfig:
                 gcs_key_path="C:\\keys\\key.json",
             ),
             lan=LanConfig(enabled=False),
+            cloud=CloudConfig(bucket="test-bucket"),
             wol=WolConfig(mac_address="AA-BB-CC-DD-EE-FF", server_ip="10.0.0.1"),
             dashboard=DashboardConfig(auth_enabled=False, api_key=""),
         )
@@ -435,6 +439,7 @@ class TestAppConfig:
                     database_path="C:\\db\\test.db",
                     gcs_key_path="C:\\keys\\key.json",
                 ),
+                cloud=CloudConfig(bucket="test-bucket"),
                 wol=WolConfig(mac_address="AA-BB-CC-DD-EE-FF", server_ip="10.0.0.1"),
                 dashboard=DashboardConfig(auth_enabled=False, api_key=""),
             )

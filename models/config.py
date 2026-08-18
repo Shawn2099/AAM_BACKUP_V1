@@ -85,11 +85,18 @@ class LanConfig(BaseModel):
     max_attempts: int = Field(default=2, ge=1, le=10, description="Flow-level retry attempts for LAN backup orchestration")
     retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
     mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
+    # F8: the preflight /L walk scales with dataset size (1M files ~= 5-10 min
+    # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the
+    # scale this deployment targets, aborting a healthy backup before it started.
+    dry_run_timeout_seconds: int = Field(default=900, ge=60, le=7200, description="Timeout for the robocopy /L preflight dry-run (seconds)")
 
 
 class WolConfig(BaseModel):
     enabled: bool = True
-    mac_address: str
+    # F11: empty default + conditional validation below. The MAC is only
+    # meaningful when WoL is enabled; requiring it for disabled pipelines made
+    # lan-only / cloud-only deployments carry a fake MAC.
+    mac_address: str = ""
     server_ip: str = "192.168.10.10"
     broadcast_address: str = Field(
         default="",
@@ -112,9 +119,17 @@ class WolConfig(BaseModel):
     @field_validator("mac_address")
     @classmethod
     def valid_mac(cls, v: str) -> str:
-        if not v or not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", v):
+        # F11: an empty MAC is allowed here; enabled-ness is checked in the
+        # model validator below (field validators can't see sibling fields).
+        if v and not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", v):
             raise ValueError(f"Invalid MAC address format: {v}")
         return v
+
+    @model_validator(mode="after")
+    def _mac_required_when_enabled(self) -> "WolConfig":
+        if self.enabled and not self.mac_address:
+            raise ValueError("wol.mac_address is required when wol.enabled is true")
+        return self
 
     @field_validator("server_ip")
     @classmethod
@@ -159,7 +174,9 @@ class WolConfig(BaseModel):
 
 class CloudConfig(BaseModel):
     enabled: bool = True
-    bucket: str = "aam-backup-demo-innovizta"
+    # F11: no real-looking default. An empty bucket is only valid when cloud
+    # is disabled; an enabled cloud backup must name its bucket explicitly.
+    bucket: str = ""
     project_number: str = "920173882190"
     location: str = "asia-south1"
     storage_class: str = "STANDARD"
@@ -170,9 +187,14 @@ class CloudConfig(BaseModel):
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
     verify_timeout_seconds: int = Field(default=14400, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Increase to 14400+ for large datasets on HDD.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
-    diff_timeout_seconds: int = Field(default=600, ge=30, le=3600, description="Timeout for rclone check --combined diff report (seconds)")
-    manifest_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for rclone lsjson manifest listing (seconds)")
-    cloud_size_timeout_seconds: int = Field(default=30, ge=10, le=300, description="Timeout for rclone size GCS object count query (seconds)")
+    # F7: listing timeouts sized for the target scale (200GB / ~1M files, growing
+    # to ~2.5M by yr-5). Measured order-of-magnitude: rclone size over GCS takes
+    # ~40-150s at 1M objects, the lsjson manifest ~2-5 min, the diff ~3-8 min —
+    # the old defaults (30/300/600) were tuned for a demo-sized bucket and
+    # would time out (and misreport "0 files") at the real scale.
+    diff_timeout_seconds: int = Field(default=1800, ge=30, le=7200, description="Timeout for rclone check --combined diff report (seconds)")
+    manifest_timeout_seconds: int = Field(default=900, ge=30, le=7200, description="Timeout for rclone lsjson manifest listing (seconds)")
+    cloud_size_timeout_seconds: int = Field(default=300, ge=10, le=3600, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
     buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
@@ -180,9 +202,20 @@ class CloudConfig(BaseModel):
     @field_validator("bucket")
     @classmethod
     def valid_bucket(cls, v: str) -> str:
-        if not re.match(r"^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$", v):
+        # F11: empty is legal here; the enabled-ness check lives in the model
+        # validator (a field validator cannot see `enabled`).
+        if v and not re.match(r"^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$", v):
             raise ValueError(f"Invalid bucket name: {v}")
         return v
+
+    @model_validator(mode="after")
+    def _bucket_required_when_enabled(self) -> "CloudConfig":
+        if self.enabled and not re.match(r"^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$", self.bucket):
+            raise ValueError(
+                "cloud.bucket is required when cloud.enabled is true — "
+                f"got {self.bucket!r}. Set it to the real GCS bucket name."
+            )
+        return self
 
     @field_validator("storage_class")
     @classmethod
@@ -207,8 +240,11 @@ class NotificationConfig(BaseModel):
     smtp_password: str = ""
     sender: str = ""
     recipients: list[str] = Field(default_factory=list)
+    # F12: the old `send_on_success` flag was removed — no code path ever
+    # read it (success emails would have been 5 a.m. noise), and a config
+    # switch that does nothing is worse than none. Pydantic ignores unknown
+    # keys, so existing configs that still list it load fine.
     send_on_failure: bool = True
-    send_on_success: bool = False
     weekly_enabled: bool = True
     monthly_enabled: bool = True
 
@@ -385,6 +421,23 @@ class AppConfig(BaseModel):
         # FY Mismatch Safety Guard:
         # Prevent mirroring FY24-25 into FY23-24 if a human typo occurs.
         fy_pattern = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
+
+        # G2: 4-digit FY trap. Rollover detection only understands the 2-digit
+        # convention (FY25-26); a name like FY2026-27 silently disables rollover
+        # forever. Refuse at config load instead of at the FY boundary.
+        fy_4digit = re.compile(r"FY\d{4}-\d{2,4}\b", re.IGNORECASE)
+        for path_name, path_value in (("source_drive", self.paths.source_drive),
+                                      ("lan_destination", self.paths.lan_destination)):
+            for seg in path_value.replace("\\", "/").split("/"):
+                seg = seg.strip()
+                if fy_4digit.search(seg):
+                    raise ValueError(
+                        f"paths.{path_name} uses a 4-digit FY name ({seg!r}) — "
+                        "fiscal-year rollover only supports the 2-digit convention "
+                        "(FY25-26). Rename the FY folder: a 4-digit name silently "
+                        "disables rollover forever, and every run after the FY "
+                        "boundary would keep overwriting the previous year's data."
+                    )
         src_parts = self.paths.source_drive.replace("\\", "/").rstrip("/").split("/")
         src_fy = src_parts[-1].upper() if fy_pattern.match(src_parts[-1]) else None
 

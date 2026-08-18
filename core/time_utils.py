@@ -100,10 +100,13 @@ def cron_to_human(cron: str, tz: str) -> str:
         return f"Every {day_name} at {int(hour):02d}:{int(minute):02d} {tz_short}"
 
     if dom != "*":
+        # F14: 11/13 (and the 4-20 range) are always -th; the old code took
+        # 11 % 10 -> "st" and 13 % 10 -> "rd".
+        d = int(dom)
         suffix = (
-            "th" if 4 <= int(dom) <= 20
-            else {1: "st", 2: "nd", 3: "rd"}.get(int(dom) % 10, "th")
+            "th" if (4 <= d <= 20) or d in (11, 13)
+            else {1: "st", 2: "nd", 3: "rd"}.get(d % 10, "th")
         )
-        return f"{int(dom)}{suffix} of month at {int(hour):02d}:{int(minute):02d} {tz_short}"
+        return f"{d}{suffix} of month at {int(hour):02d}:{int(minute):02d} {tz_short}"
 
     return f"Daily at {int(hour):02d}:{int(minute):02d} {tz_short}"

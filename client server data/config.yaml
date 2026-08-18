@@ -32,6 +32,9 @@ lan:
   retry_delay_seconds: 600
   # Set to 2 based on server having a 2-core Intel Xeon CPU
   mt_threads: 2 
+  # F8: preflight dry-run /L walk timeout. Sized for ~2.5M files by yr-5
+  # (12-25 min over SMB); raise further if the dataset grows faster.
+  dry_run_timeout_seconds: 1800
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
@@ -44,6 +47,10 @@ wol:
   wake_timeout_seconds: 300
   ping_interval_seconds: 15
   stability_wait_seconds: 30
+  # G3: magic-packet retransmit rounds (single broadcasts get dropped by
+  # managed switches); 3 rounds x 5 s adds ~10 s against the 300 s timeout.
+  wake_retry_count: 3
+  wake_retry_interval_seconds: 5
 
 # ═══════════════════════════════════════════════════
 # CLOUD BACKUP
@@ -61,9 +68,11 @@ cloud:
   retry_delay_seconds: 300
   verify_timeout_seconds: 14400
   preflight_timeout_seconds: 300
-  diff_timeout_seconds: 600
-  manifest_timeout_seconds: 300
-  cloud_size_timeout_seconds: 30
+  # F7: listing timeouts sized for ~1M objects (yr-1) growing to ~2.5M (yr-5):
+  # rclone size 40-150 s, lsjson manifest 2-5 min, diff 3-8 min at 1M objects.
+  diff_timeout_seconds: 1800
+  manifest_timeout_seconds: 900
+  cloud_size_timeout_seconds: 300
   transfers: 2
   checkers: 2
   buffer_size: "64M"
@@ -76,6 +85,9 @@ schedule:
   lan_cron: "0 1 * * *"
   weekly_cron: "0 8 * * MON"
   monthly_cron: "0 8 1 * *"
+  # G10: scheduled FY rollover check (no-op except on the FY boundary);
+  # 06:00 sits clear of both backup windows.
+  rollover_cron: "0 6 * * *"
   timezone: "Asia/Kolkata"
 
 # ═══════════════════════════════════════════════════
@@ -101,7 +113,6 @@ notifications:
     - "recipient2_placeholder@example.com"
     - "recipient3_placeholder@example.com"
   send_on_failure: true
-  send_on_success: false
   weekly_enabled: false
   monthly_enabled: true
 

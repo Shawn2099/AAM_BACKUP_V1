@@ -134,6 +134,23 @@ if %ERRORLEVEL% equ 0 (
     echo        ^> Windows Update ^> "No auto-restart with logged on users"
 )
 
+:: G9: the policy above only applies while a user is LOGGED ON - a headless
+:: backup server is almost never logged on, so it does not protect this box.
+:: Windows Update Active Hours do: reboots are forbidden 12:00-06:00 (18 h,
+:: the maximum allowed window), leaving only 06:00-12:00 for a pending
+:: reboot. Both backup windows (LAN 01:00, cloud 18:00-23:00) sit INSIDE the
+:: protected hours. Set Start=12, End=6 so protected = 12:00 to next 06:00.
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v Start /t REG_DWORD /d 12 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v End /t REG_DWORD /d 6 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v ActiveHoursSource /t REG_DWORD /d 2 /f >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo [OK]   Update Active Hours set to 12:00-06:00. Reboots can only happen 06:00-12:00.
+) else (
+    echo [WARN] Active Hours registry write failed. Set manually:
+    echo        HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours
+    echo        Start=12  End=6  ActiveHoursSource=2
+)
+
 :: ====================================================================
 :: STEP 3: Microsoft Defender Antivirus Exclusion
 :: Prevents Defender from scanning the massive .venv Python folder during

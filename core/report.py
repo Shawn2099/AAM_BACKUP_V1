@@ -166,6 +166,27 @@ def send_failure_alert(
     return _send_email_with_attachments(config, subject, body, attachments)
 
 
+# G5: cells that begin with one of these are interpreted as formulas/commands
+# by spreadsheet apps when the CSV is opened in Excel (CSV injection / DDE).
+_CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value) -> str:
+    """Neutralize CSV formula injection for text cells.
+
+    Error messages and metric JSON are free text that ends up in a CSV opened
+    in Excel by accountants. A cell starting with =, +, -, @ (or tab/CR) is
+    evaluated as a formula/DDE by Excel; prepending a single quote forces
+    literal-text treatment in Excel and LibreOffice without changing what the
+    user reads (the quote renders as the cell's text format marker, not the
+    value). Numeric columns are never passed through this helper.
+    """
+    text = "" if value is None else str(value)
+    if text.startswith(_CSV_INJECTION_PREFIXES):
+        return "'" + text
+    return text
+
+
 def _generate_csv_data(runs: list[dict]) -> bytes:
     """Generate a CSV payload containing the full history and un-truncated errors."""
     output = io.StringIO()
@@ -190,8 +211,9 @@ def _generate_csv_data(runs: list[dict]) -> bytes:
             r.get("bytes_copied", 0),
             r.get("duration_seconds", 0),
             r.get("exit_code", ""),
-            r.get("error_message", ""),
-            r.get("extended_metrics", "")
+            # G5: free-text columns neutralized against CSV injection
+            _csv_safe(r.get("error_message", "")),
+            _csv_safe(r.get("extended_metrics", ""))
         ])
         
     return output.getvalue().encode("utf-8")

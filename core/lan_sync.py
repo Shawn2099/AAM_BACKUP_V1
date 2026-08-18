@@ -5,6 +5,7 @@ Exit code reference: https://learn.microsoft.com/en-us/windows-server/administra
 """
 
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -33,6 +34,20 @@ def _validate_required_flags(flags: list[str]) -> None:
             raise ValueError("/NC flag suppresses file class labels — parser has nothing to match")
 
 
+_FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
+
+
+def count_failed_lines(log_text: str) -> int:
+    """Count robocopy per-file failure lines ("** FAILED: <path>") in a log tail.
+
+    Robocopy prints one such line per file that could not be copied. The count
+    is taken over the captured tail only; if a run fails more files than fit
+    in the tail window the true number is higher (the tail is the contract:
+    bounded payload, actionable diagnostics).
+    """
+    return len(_FAILED_LINE.findall(log_text))
+
+
 def _read_log_tail(log_path: Path, max_bytes: int) -> str:
     """Read the tail of a robocopy log file, bounded to max_bytes.
 
@@ -40,11 +55,22 @@ def _read_log_tail(log_path: Path, max_bytes: int) -> str:
     Reading the tail rather than the head ensures we always get the
     most actionable diagnostic data regardless of log file size.
 
+    F15: seek from the end instead of reading the whole file. At 1M+ files
+    with /V /TS /FP the log can be several hundred MB; the old
+    read-entire-then-slice path loaded all of it into RAM for a 100KB tail.
+
     Returns the raw text tail or a fallback message if the file is unreadable.
     """
     try:
-        log_text = log_path.read_text(encoding="utf-8", errors="replace")
-        return log_text[-max_bytes:] if len(log_text) > max_bytes else log_text
+        size = log_path.stat().st_size
+        if size <= max_bytes:
+            return log_path.read_text(encoding="utf-8", errors="replace")
+        with open(log_path, "rb") as f:
+            f.seek(size - max_bytes)
+            data = f.read()
+        # The cut point can land mid UTF-8 sequence; errors=replace yields a
+        # leading U+FFFD which we strip so the tail starts on a clean char.
+        return data.decode("utf-8", errors="replace").lstrip("\ufffd")
     except OSError as exc:
         return f"robocopy log unreadable: {exc}"
 
@@ -91,6 +117,39 @@ def classify_exit_code(code: int) -> str:
         return "LAN_PARTIAL"
     # Negative codes (-1 timeout sentinel) and any unexpected values → failed
     return "LAN_FAILED"
+
+
+# G8: prefix used for robocopy /LOG temp files. Normal runs delete their log
+# in a finally block; hard-killed runs (SCM stop, timeout kill, crash) strand
+# them in %TEMP%. cleanup_orphaned_robocopy_logs() reclaims those at the start
+# of each backup flow, age-gated so a live run's log is never touched.
+ROBOCOPY_LOG_PREFIX = "robocopy_sync_"
+
+
+def cleanup_orphaned_robocopy_logs(max_age_hours: int = 24) -> int:
+    """Delete orphaned robocopy temp logs older than max_age_hours.
+
+    Returns the number of files removed. Never raises — cleanup is
+    best-effort and must not block a backup.
+    """
+    import time as _time
+    cutoff = _time.time() - max_age_hours * 3600
+    removed = 0
+    tempdir = Path(tempfile.gettempdir())
+    try:
+        candidates = tempdir.glob(f"{ROBOCOPY_LOG_PREFIX}*.log")
+    except OSError:
+        return 0
+    for path in candidates:
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        logger.warning(f"Cleaned up {removed} orphaned robocopy log(s) older than {max_age_hours}h from {tempdir}")
+    return removed
 
 
 def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> list[str]:
@@ -191,14 +250,20 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
 
         error_msg = None
         anomaly_details = None
+        files_failed = 0
 
         if status == "LAN_FAILED" or (result.returncode & 8):
             # Real failure: bit 4 (fatal) or bit 3 (copy errors) set.
             # Capture full log tail for alert system and operator triage.
             error_msg = _read_log_tail(log_path, _ERROR_LOG_TAIL)
+            # F12: count which files actually failed — robocopy prints one
+            # "** FAILED: <path>" line per failed file, so the operator gets a
+            # number (and the paths in the tail) instead of an opaque code.
+            files_failed = count_failed_lines(error_msg)
             logger.error(
                 f"LAN sync FAILED (exit {result.returncode}) — "
-                f"{len(error_msg)} bytes of log captured in result['error']"
+                f"{len(error_msg)} bytes of log captured in result['error'], "
+                f"{files_failed} failed file line(s) counted in the tail"
             )
 
         elif 4 <= result.returncode <= 7:
@@ -218,6 +283,9 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "exit_code": result.returncode,
             "error": error_msg,
             "anomaly_details": anomaly_details,
+            # F12: failed-file count from the tail (0 on clean/anomaly runs);
+            # persisted to run_history for reports and the dashboard.
+            "files_failed": files_failed,
         }
 
     except subprocess.TimeoutExpired:
@@ -227,6 +295,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "exit_code": -1,
             "error": f"Timeout after {lan_config.subprocess_timeout_seconds}s — robocopy process killed",
             "anomaly_details": None,
+            "files_failed": 0,
         }
     except FileNotFoundError as exc:
         logger.error("robocopy.exe not found — is this running on Windows Server?")
@@ -235,6 +304,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "exit_code": -1,
             "error": f"robocopy.exe not found: {exc}",
             "anomaly_details": None,
+            "files_failed": 0,
         }
     except OSError as exc:
         logger.error(f"LAN sync OS error: {exc}")
@@ -243,6 +313,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "exit_code": -1,
             "error": str(exc),
             "anomaly_details": None,
+            "files_failed": 0,
         }
     finally:
         if log_path and log_path.exists():
