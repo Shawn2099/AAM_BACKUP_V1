@@ -18,7 +18,7 @@ from loguru import logger
 from core.cloud_sync import run_cloud_sync
 from core.lan_sync import classify_exit_code as classify_lan_exit
 from core.lan_sync import run_lan_sync
-from core.time_utils import get_fy_prefix
+from core.time_utils import get_fy_prefix, now_iso
 
 FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
 
@@ -210,6 +210,28 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str) -> dict[
     created["source"] = new_source
     logger.info(f"FY rollover: created source folder {new_source}")
 
+    # NA-01: seed the brand-new source folder with a marker so that
+    # (a) the health gate treats "new FY, no data yet" as healthy-with-warning
+    #     instead of failing every nightly run until data arrives, and
+    # (b) the wipe-risk guard can word its block message correctly
+    #     ("new FY, waiting for data" vs "source deleted").
+    # The marker is excluded from both syncs (robocopy /XF, rclone --exclude),
+    # so it never lands on the NAS or in GCS.
+    seed = new_source / ".AAM_SOURCE_SEEDED"
+    try:
+        if not seed.exists():
+            seed.write_text(
+                f"AAM Backup FY-rollover seed marker\n"
+                f"fiscal_year: {new_fy}\n"
+                f"created_at: {now_iso()}\n"
+                f"This file marks the start of a new fiscal-year source folder.\n"
+                f"It is excluded from backups (robocopy /XF, rclone --exclude).\n",
+                encoding="utf-8",
+            )
+            logger.info(f"FY rollover: seeded {seed}")
+    except OSError as e:
+        logger.warning(f"FY rollover: could not write seed marker {seed}: {e}")
+
     # LAN folder: network path — may fail if NAS is offline at rollover time
     try:
         new_lan.mkdir(parents=True, exist_ok=True)
@@ -397,6 +419,12 @@ def rollover(config_path: str = "config.yaml") -> bool:
 
     Returns True if rollover was performed, False if no rollover needed.
     Raises RolloverError if final backup fails (config unchanged, retry next run).
+
+    Concurrency: the rollover may be triggered from TWO paths — the agent
+    boot-time check in launch.py and the scheduled rollover-check deployment.
+    An exclusive lock (runtime_dir/rollover.lock) guarantees only one of them
+    runs the rollover at a time; the loser returns False (no-op) and the
+    scheduled check re-asserts idempotency on the next day.
     """
     from models.config import load_config
 
@@ -414,52 +442,74 @@ def rollover(config_path: str = "config.yaml") -> bool:
     if old_fy is None:
         return False
 
-    new_fy = get_fy_prefix()
-    src_root = _parent_path(source_drive)
-    lan_root = _parent_path(lan_destination)
+    # Acquire the exclusive rollover lock BEFORE doing any work so the boot
+    # path and the scheduled path cannot interleave (e.g. both running the
+    # final backup of the closing FY simultaneously).
+    from core.process import acquire_exclusive_lock, release_exclusive_lock
+    lock_path = Path(config.paths.runtime_dir) / "rollover.lock"
+    if not acquire_exclusive_lock(lock_path):
+        holder_pid = None
+        try:
+            raw = lock_path.read_text(encoding="utf-8").strip()
+            holder_pid = int(raw.split(":", 1)[0])
+        except (OSError, ValueError):
+            pass
+        logger.info(
+            f"FY rollover: another process (PID {holder_pid}) holds the "
+            f"rollover lock — this invocation is a no-op. The scheduled "
+            f"check will confirm completion on the next run."
+        )
+        return False
 
-    logger.info(f"FY rollover: {old_fy} → {new_fy}")
-    logger.info(f"  Source root: {src_root}")
-    logger.info(f"  LAN root:    {lan_root}")
+    try:
+        new_fy = get_fy_prefix()
+        src_root = _parent_path(source_drive)
+        lan_root = _parent_path(lan_destination)
 
-    cloud_ok, lan_ok = run_final_backup(
-        source_drive=source_drive,
-        lan_destination=lan_destination,
-        lan_config=config.lan,
-        cloud_config=config.cloud,
-        paths_config=config.paths,
-        config=config,
-        old_fy=old_fy,
-    )
+        logger.info(f"FY rollover: {old_fy} → {new_fy}")
+        logger.info(f"  Source root: {src_root}")
+        logger.info(f"  LAN root:    {lan_root}")
 
-    required = []
-    if config.cloud.enabled and not cloud_ok:
-        required.append("cloud")
-    if config.lan.enabled and not lan_ok:
-        required.append("LAN")
-
-    if required:
-        msg = f"FY rollover blocked: final backup failed for {', '.join(required)}"
-        logger.error(msg)
-        raise RolloverError(msg)
-
-    # Attempt to move the entire closing-year GCS folder to Archive tier.
-    # Non-blocking: rollover proceeds even if this step fails.
-    archive_ok = False
-    if config.cloud.enabled:
-        archive_ok = run_archive_transition(
-            bucket=config.cloud.bucket,
+        cloud_ok, lan_ok = run_final_backup(
+            source_drive=source_drive,
+            lan_destination=lan_destination,
+            lan_config=config.lan,
+            cloud_config=config.cloud,
+            paths_config=config.paths,
+            config=config,
             old_fy=old_fy,
-            gcs_key_path=config.paths.gcs_key_path,
-            auth_timeout=config.health.rollover_auth_timeout_seconds,
-            archive_timeout=config.health.rollover_archive_timeout_seconds,
         )
 
-    create_new_fy_folders(src_root, lan_root, new_fy)
+        required = []
+        if config.cloud.enabled and not cloud_ok:
+            required.append("cloud")
+        if config.lan.enabled and not lan_ok:
+            required.append("LAN")
 
-    update_config_yaml(config_path, src_root, lan_root, new_fy)
+        if required:
+            msg = f"FY rollover blocked: final backup failed for {', '.join(required)}"
+            logger.error(msg)
+            raise RolloverError(msg)
 
-    logger.info(
-        f"FY rollover complete: {old_fy} → {new_fy} | archive_ok={archive_ok}"
-    )
-    return True
+        # Attempt to move the entire closing-year GCS folder to Archive tier.
+        # Non-blocking: rollover proceeds even if this step fails.
+        archive_ok = False
+        if config.cloud.enabled:
+            archive_ok = run_archive_transition(
+                bucket=config.cloud.bucket,
+                old_fy=old_fy,
+                gcs_key_path=config.paths.gcs_key_path,
+                auth_timeout=config.health.rollover_auth_timeout_seconds,
+                archive_timeout=config.health.rollover_archive_timeout_seconds,
+            )
+
+        create_new_fy_folders(src_root, lan_root, new_fy)
+
+        update_config_yaml(config_path, src_root, lan_root, new_fy)
+
+        logger.info(
+            f"FY rollover complete: {old_fy} → {new_fy} | archive_ok={archive_ok}"
+        )
+        return True
+    finally:
+        release_exclusive_lock(lock_path)

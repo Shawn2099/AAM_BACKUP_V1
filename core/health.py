@@ -15,8 +15,22 @@ class HealthError(RuntimeError):
     """Raised when a pre-backup health check fails."""
 
 
+# Marker the FY-rollover writes into a brand-new source folder so the health
+# gate can distinguish "new FY, no data yet" (expected) from "source deleted"
+# (emergency). The marker is excluded from both syncs (robocopy /XF,
+# rclone --exclude), so it never reaches the backup destinations.
+SEED_MARKER = ".AAM_SOURCE_SEEDED"
+
+
 def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, str]:
     """Verify source drive exists, has files, and has free space.
+
+    A directory containing ONLY the FY-rollover seed marker is treated as
+    healthy-with-warning: after an April-1 rollover the new source folder is
+    legitimately empty until the client puts data in it. Without this, every
+    nightly run until data arrives fails in the pre-phase (NA-01), and the
+    wipe-risk guard (core/wipe_guard.py) is the layer that actually prevents
+    an empty source from mirroring over the destination.
 
     Args:
         min_free_gb: Minimum free space required (GB). Override via config.health.min_free_source_gb.
@@ -30,14 +44,23 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
         return False, f"Source drive not accessible: {source}"
 
     try:
-        has_files = any(source.iterdir())
+        entries = list(source.iterdir())
     except PermissionError:
         return False, f"Source drive permission denied: {source}"
     except OSError as e:
         return False, f"Source drive error: {e}"
 
-    if not has_files:
-        return False, f"Source drive appears empty: {source}"
+    user_files = [e for e in entries if e.name != SEED_MARKER]
+    if not user_files:
+        if any(e.name == SEED_MARKER for e in entries):
+            logger.warning(
+                f"Source drive {source} holds only the FY-rollover seed marker — "
+                f"no user data yet. Proceeding; the wipe-risk guard will keep "
+                f"mirror syncs blocked until real data lands."
+            )
+            # fall through to the disk-space check and return healthy
+        else:
+            return False, f"Source drive appears empty: {source}"
 
     try:
         usage = shutil.disk_usage(str(source))

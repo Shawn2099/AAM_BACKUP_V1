@@ -382,13 +382,18 @@ async def status(request: Request):
 
 @app.get("/health")
 async def health():
-    """Unauthenticated health check for monitoring systems."""
+    """Unauthenticated health check for monitoring systems.
+
+    NA-08: this endpoint is intentionally unauthenticated for external
+    monitoring, so it must not disclose internal details — the old payload
+    included the absolute source-drive path (an internal network-layout
+    detail; cf. AUDIT-030). Only a reachability boolean is exposed.
+    """
     try:
         src = _cfg().paths.source_drive
         source_ok = await asyncio.to_thread(Path(src).exists)
         return JSONResponse({
             "status": "healthy",
-            "source_drive": str(src),
             "source_accessible": source_ok,
         })
     except Exception:
@@ -403,12 +408,17 @@ async def trigger_cloud(request: Request):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if await _is_running("cloud"):
         return JSONResponse({"status": "already_running", "detail": "Cloud backup is already in progress."}, status_code=400)
-    # G15: await the actual deployment run creation before answering. The
+    # G15: await the actual deployment run CREATION before answering. The
     # old code returned 200 via background_tasks BEFORE arun_deployment
     # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
     # API error showed as "triggered successfully" while nothing ran.
+    # NA-05: timeout=0 — arun_deployment's default (timeout=None) polls until
+    # the run REACHES A TERMINAL STATE, holding the browser's HTTP request
+    # open for the whole backup (up to the 6 h cloud timeout) before 200.
+    # timeout=0 returns as soon as the flow run is created, which preserves
+    # G15's intent (creation errors still surface) without a frozen page.
     try:
-        flow_run = await arun_deployment(name="aam-backup/backup-cloud")
+        flow_run = await arun_deployment(name="aam-backup/backup-cloud", timeout=0)
     except Exception as e:
         logger.error(f"Manual cloud trigger failed: {e}")
         return JSONResponse(
@@ -430,8 +440,10 @@ async def trigger_lan(request: Request):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if await _is_running("lan"):
         return JSONResponse({"status": "already_running", "detail": "LAN backup is already in progress."}, status_code=400)
+    # NA-05: timeout=0 — return on run creation, not on run completion
+    # (see the cloud trigger above).
     try:
-        flow_run = await arun_deployment(name="aam-backup/backup-lan")
+        flow_run = await arun_deployment(name="aam-backup/backup-lan", timeout=0)
     except Exception as e:
         logger.error(f"Manual LAN trigger failed: {e}")
         return JSONResponse(

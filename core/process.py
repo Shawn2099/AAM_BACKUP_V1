@@ -133,6 +133,69 @@ def read_lock_alive(lock_path: Path) -> tuple[bool, int | None]:
             return False, pid
 
 
+def acquire_exclusive_lock(lock_path: Path) -> bool:
+    """Atomically acquire an exclusive PID lock (O_CREAT|O_EXCL).
+
+    Unlike write_lock (overwrite style, for "I am running" signalling), this
+    *fails* when a live process already holds the lock — used by the FY
+    rollover so the boot-time check (launch.py) and the scheduled check
+    (rollover-check deployment) can never run the rollover concurrently.
+
+    Stale locks (owner PID gone / reused) are stolen. Note: two stealers can
+    in principle race; the rollover steps that follow are idempotent mirrors,
+    so a lost race degrades to duplicate work, not corruption.
+
+    Returns True if the lock is now held by this process, False otherwise.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+    ct = _get_create_time(pid)
+    content = f"{pid}:{ct:.6f}" if ct is not None else str(pid)
+
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+        return True
+    except FileExistsError:
+        alive, holder = read_lock_alive(lock_path)
+        if alive:
+            return False
+        # Stale — steal it (atomic replace).
+        try:
+            tmp_fd, tmp = tempfile.mkstemp(
+                dir=str(lock_path.parent), prefix=".exclusive.lock.", suffix=".tmp")
+            try:
+                os.write(tmp_fd, content.encode())
+                os.close(tmp_fd)
+                tmp_fd = -1
+                os.replace(tmp, str(lock_path))
+            finally:
+                if tmp_fd >= 0:
+                    os.close(tmp_fd)
+                Path(tmp).unlink(missing_ok=True)
+            return True
+        except OSError:
+            return False
+    except OSError:
+        return False
+
+
+def release_exclusive_lock(lock_path: Path) -> None:
+    """Release an exclusive lock we own. Never deletes another process's lock."""
+    try:
+        if not lock_path.exists():
+            return
+        raw = lock_path.read_text(encoding="utf-8").strip()
+        pid = int(raw.split(":", 1)[0])
+        if pid == os.getpid():
+            lock_path.unlink(missing_ok=True)
+    except (ValueError, OSError):
+        pass
+
+
 # ── Backward-compat alias (used by tests) ─────────────────────────────────────
 
 def pid_alive(pid: int) -> bool:

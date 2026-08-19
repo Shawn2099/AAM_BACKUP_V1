@@ -28,7 +28,12 @@ from core.cloud_sync import run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.fy_router import get_fy_prefix
 from core.health import pre_backup_health
-from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
+from core.lan_manifest import (
+    diff_snapshots,
+    snapshot_to_dict,
+    walk_lan_destination,
+    walk_lan_destination_detailed,
+)
 from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
@@ -39,6 +44,7 @@ from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
 from core.shutdown import shutdown_server
 from core.time_utils import now_iso
+from core import wipe_guard
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
 
@@ -53,6 +59,40 @@ def _stable_run_id(mode: str) -> str:
     except Exception:
         pass
     return f"{uuid.uuid4()}-{mode}"
+
+
+def _mtime_to_epoch(value) -> float | None:
+    """Normalize a stored mtime to a Unix epoch float.
+
+    NA-02: the shared ``file_entries.mtime`` cell is written by BOTH pipelines
+    — the LAN pipeline stores ``st_mtime`` (epoch float, REAL) and the cloud
+    pipeline stores GCS ``ModTime`` (ISO-8601 string, e.g.
+    ``2026-08-18T15:50:55.123456789+05:30``). The old comparison did
+    ``pendulum.parse(str(old_mtime))`` on the DB value; for a float that is
+    ``pendulum.parse("1784992800.0")`` which RAISES, falling through to a raw
+    ``str() != str()`` compare that is ALWAYS different — so every file was
+    counted as "copied" on any cloud night following a LAN night (proven on
+    production run_history: exit 9 "no transfer" runs reporting 17/567 files).
+
+    Returns the epoch float, or None when the value is unparseable.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # Numeric epoch (LAN-written) — try float first
+        try:
+            return float(s)
+        except ValueError:
+            pass
+        # ISO-8601 (cloud-written, possibly with 9-digit nanos / +05:30)
+        try:
+            return float(pendulum.parse(s).timestamp())
+        except Exception:
+            return None
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -172,6 +212,10 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             "size": size,
             "manifest": manifest,
             "diff": cloud_diff,
+            # NV-02: carry the failure classification across the task boundary
+            # so the pipeline's alert can tell "GCS unreadable" apart from a
+            # true integrity mismatch (rclone check exits 1 for BOTH).
+            "error_class": verify_result.get("error_class"),
         }
 
 
@@ -231,9 +275,30 @@ def lan_preflight_task(config):
 
 @task(name="lan-snapshot-before")
 def lan_snapshot_before_task(config):
-    """Snapshot LAN destination before sync for diff comparison."""
+    """Snapshot LAN destination before sync for diff comparison.
+
+    NA-03 companion: uses the detailed walk so subdirectory errors (SMB drop
+    mid-walk) are counted and reported LOUDLY instead of silently truncating
+    the snapshot. This snapshot doubles as the wipe guard's destination
+    baseline: a truncated walk makes the baseline look smaller than it is
+    (below `wipe_guard_min_files` → guard silent this run). That
+    disable-on-unknown-baseline semantics matches the cloud guard's
+    listing-failure path (and the preflight dry-run just passed, so a
+    mid-walk SMB drop is a transient blip) — the critical log keeps the
+    operator informed either way.
+    """
     logger.info("Taking LAN snapshot (before sync)")
-    before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
+    before_files, walk_errors = walk_lan_destination_detailed(
+        config.paths.lan_destination
+    )
+    if walk_errors:
+        logger.critical(
+            f"Pre-sync destination walk had {walk_errors} error(s) — snapshot "
+            f"of {len(before_files)} files is untrustworthy; the wipe guard's "
+            "destination baseline may be understated (guard may stay silent "
+            "this run). The post-sync walk re-checks (NA-03)."
+        )
+    before = snapshot_to_dict(before_files)
     logger.info(f"LAN snapshot: {len(before)} files before sync")
     return before
 
@@ -247,10 +312,26 @@ def lan_snapshot_after_task(config):
     enumerating must not turn a completed backup into a failed run. The
     pipeline skips diff metrics + DB record for that run; the next run
     re-derives everything from a fresh walk.
+
+    NA-03: a *partial* walk is treated exactly like a failed one. os.walk()
+    silently swallows subdirectory errors by default, so a mid-walk SMB drop
+    returns a truncated list — diffing that against the before-snapshot would
+    mark every unseen file "removed" and prune it from the manifest. Any
+    walk error therefore makes the snapshot unusable (None) for this run.
     """
     logger.info("Taking LAN snapshot (after sync)")
     try:
-        after_files = walk_lan_destination(config.paths.lan_destination)
+        after_files, walk_errors = walk_lan_destination_detailed(
+            config.paths.lan_destination
+        )
+        if walk_errors:
+            logger.critical(
+                f"Post-sync destination walk had {walk_errors} error(s) — "
+                f"snapshot of {len(after_files)} files is untrustworthy. "
+                "Sync result is UNAFFECTED; diff metrics and DB record are "
+                "skipped for this run (no manifest pruning on a partial walk)"
+            )
+            return None
         after = snapshot_to_dict(after_files)
     except Exception as e:
         logger.critical(
@@ -434,6 +515,53 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
     try:
         health_check_task(config, "cloud")
         preflight(config, fy_prefix)
+        # AUDIT-012 (live-verified on Windows: empty source → robocopy exit 2
+        # = LAN_COMPLETE, rclone sync exit 9/0 = success): refuse to run a
+        # mirror when the source has collapsed relative to what the DESTINATION
+        # currently holds. The baseline is the live GCS object count (rclone
+        # size — instant, GCS pre-computes it), NOT the manifest: the manifest
+        # is FY-agnostic and would keep the old FY's count after a rollover,
+        # blocking the new FY's legitimate start for months. A destination
+        # count of 0 (fresh FY prefix) means "nothing to protect" → guard
+        # silent → mirroring empty→empty is harmless (NA-01 companion).
+        phase = "guard"
+        if config.maintenance.wipe_guard_enabled:
+            dest_count = None
+            try:
+                with temp_rclone_config(
+                    config.paths.gcs_key_path,
+                    config.cloud.location,
+                    config.cloud.project_number,
+                    config.cloud.storage_class,
+                ) as _rcfg:
+                    _size = get_cloud_size(
+                        config.cloud.bucket, fy_prefix, _rcfg,
+                    )
+                if _size.get("_error"):
+                    logger.warning(
+                        "Wipe guard: GCS destination count unavailable — guard "
+                        "inactive this run (the preflight GCS probe passed, so "
+                        "sync proceeds normally)"
+                    )
+                else:
+                    dest_count = int(_size.get("count", 0))
+            except Exception as e:
+                logger.warning(
+                    f"Wipe guard: could not count GCS destination ({e}) — "
+                    "guard inactive this run"
+                )
+            if dest_count is not None:
+                try:
+                    wipe_guard.check_wipe_risk(
+                        config.paths.source_drive,
+                        previous_files=dest_count,
+                        min_files=config.maintenance.wipe_guard_min_files,
+                        min_ratio=config.maintenance.wipe_guard_min_ratio,
+                    )
+                except wipe_guard.WipeRiskError as we:
+                    status = "CLOUD_WIPE_RISK_BLOCKED"
+                    error_msg = we.reason
+                    raise
         phase = "sync"
         sync_result = sync(config, fy_prefix)
         status = sync_result["status"]
@@ -450,14 +578,32 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         # and fail the run so it is visible in the Prefect console.
         if not verify_data.get("verified"):
             diff = verify_data.get("diff") or {}
-            verify_err = (
-                "Cloud integrity verification FAILED after sync: rclone check found "
-                f"differences vs source (missing-from-cloud={len(diff.get('removed', []))}, "
-                f"unexpected-in-cloud={len(diff.get('added', []))}, "
-                f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
-                "incomplete or out of sync. rclone sync is resumable — the next "
-                "scheduled run will re-sync the differences."
-            )
+            # NV-02: rclone check exits 1 for BOTH a true mismatch and a GCS
+            # access failure. When the classifier says the destination could
+            # not be read, the diff counts are meaningless and the alert must
+            # NOT claim an integrity mismatch.
+            eclass = verify_data.get("error_class")
+            if eclass in ("access_error", "mixed"):
+                verify_err = (
+                    f"Cloud verify could not fully read GCS after sync "
+                    f"(classification: {eclass}) — this is NOT a confirmed "
+                    "integrity mismatch; GCS reachability must be checked "
+                    "before drawing conclusions about the data. rclone check "
+                    "reported differences vs source (missing-from-cloud="
+                    f"{len(diff.get('removed', []))}, unexpected-in-cloud="
+                    f"{len(diff.get('added', []))}, size-changed="
+                    f"{len(diff.get('modified', []))}), but those counts are "
+                    "unreliable while destination reads fail."
+                )
+            else:
+                verify_err = (
+                    "Cloud integrity verification FAILED after sync: rclone check found "
+                    f"differences vs source (missing-from-cloud={len(diff.get('removed', []))}, "
+                    f"unexpected-in-cloud={len(diff.get('added', []))}, "
+                    f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
+                    "incomplete or out of sync. rclone sync is resumable — the next "
+                    "scheduled run will re-sync the differences."
+                )
             status = "CLOUD_VERIFY_FAILED"
             error_msg = verify_err
             logger.error(verify_err)
@@ -470,7 +616,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 )
             except Exception as alert_err:
                 logger.warning(f"Could not send verify-failure alert: {alert_err}")
-            raise RuntimeError(verify_err)
+            _err = RuntimeError(verify_err)
+            # NA-07: mark that this pipeline already emailed the operator so
+            # backup() suppresses the generic summary for a deduped set.
+            _err._dedupe_alert = True
+            raise _err
 
         phase = "post"
 
@@ -492,18 +642,15 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 if abs(float(size) - float(old_size)) > 0.01:
                     copied_files_list.append((path, size))
                 else:
-                    try:
-                        if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
-                            # Numeric Unix timestamps — compare directly
-                            t1, t2 = float(mtime), float(old_mtime)
-                        else:
-                            t1 = pendulum.parse(str(mtime)).timestamp()
-                            t2 = pendulum.parse(str(old_mtime)).timestamp()
-                        if abs(t1 - t2) > 1.1:
-                            copied_files_list.append((path, size))
-                    except Exception:
-                        if str(mtime) != str(old_mtime):
-                            copied_files_list.append((path, size))
+                    # NA-02: normalize BOTH sides to epoch (the DB value may be
+                    # an epoch float from a LAN upsert while GCS ModTime is an
+                    # ISO string — the old code string-compared them and always
+                    # saw a difference). Unparseable values are treated as
+                    # "changed" (safe: the file gets re-counted, not lost).
+                    t1 = _mtime_to_epoch(mtime)
+                    t2 = _mtime_to_epoch(old_mtime)
+                    if t1 is None or t2 is None or abs(t1 - t2) > 1.1:
+                        copied_files_list.append((path, size))
 
         files_copied = len(copied_files_list)
         bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
@@ -531,7 +678,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         elif phase == "verify" and status == "CLOUD_COMPLETE":
             status = "CLOUD_VERIFY_FAILED"
         elif phase == "pre":
-            status = "CLOUD_SKIPPED"
+            # AUDIT-004: a pre-phase failure (health/preflight) is a FAILURE,
+            # not a skip — "SKIPPED" hid 5 weeks of nightly infrastructure
+            # errors (canary/SMB/GCS) from operators reading the reports.
+            status = "CLOUD_PREFLIGHT_FAILED"
+        # phase "guard": status already set to CLOUD_WIPE_RISK_BLOCKED
         # phase "post" (record/artifact after a successful sync+verify): the
         # data is safe on GCS — keep the sync status; the bookkeeping error
         # stays visible in the run record's error_message.
@@ -581,6 +732,23 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         wol_check_task(config)
         preflight(config)
         before_dict = lan_snapshot_before_task(config)
+        # AUDIT-012 (live-verified on Windows: empty source → robocopy exit 2
+        # = LAN_COMPLETE — the mirror wipe is reported as SUCCESS): refuse to
+        # run a /MIR when the source has collapsed relative to what the
+        # destination currently holds (before_dict = the pre-sync mirror).
+        phase = "guard"
+        if config.maintenance.wipe_guard_enabled:
+            try:
+                wipe_guard.check_wipe_risk(
+                    config.paths.source_drive,
+                    previous_files=len(before_dict),
+                    min_files=config.maintenance.wipe_guard_min_files,
+                    min_ratio=config.maintenance.wipe_guard_min_ratio,
+                )
+            except wipe_guard.WipeRiskError as we:
+                status = "LAN_WIPE_RISK_BLOCKED"
+                error_msg = we.reason
+                raise
         phase = "sync"
         sync_result = sync(config)
         status = sync_result["status"]
@@ -660,7 +828,11 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         if phase == "sync":
             status = "LAN_FAILED"
         elif phase == "pre":
-            status = "LAN_SKIPPED"
+            # AUDIT-004: a pre-phase failure (WoL/preflight/canary) is a
+            # FAILURE, not a skip — "SKIPPED" hid 5 weeks of nightly
+            # infrastructure errors from operators reading the reports.
+            status = "LAN_PREFLIGHT_FAILED"
+        # phase "guard": status already set to LAN_WIPE_RISK_BLOCKED
         raise
     finally:
         _record_run(
@@ -873,9 +1045,18 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     _lock_path = config.paths.backup_lock_path
 
     excs = []
+    _enabled_modes = [
+        m for m in (["cloud", "lan"] if mode == "all" else [mode])
+        if (m == "cloud" and config.cloud.enabled) or (m == "lan" and config.lan.enabled)
+    ]
+    _pipelines_started = 0  # NA-06: distinguishes "never got the slot" from pipeline errors
 
     try:
-        with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
+        # NA-04: strict=True — if the "aam-backup" global concurrency limit is
+        # ever missing (fresh/reset Prefect server DB), fail LOUDLY instead of
+        # silently no-op'ing the serialization guarantee (Prefect's
+        # non-strict default was proven to no-op on ephemeral Prefect 3.7.2).
+        with concurrency("aam-backup", occupy=1, timeout_seconds=3600, strict=True):
             # ── Acquire watchdog lock now that we hold the concurrency slot ──
             try:
                 write_lock(_lock_path)
@@ -887,6 +1068,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
                 # ── Cloud ──
                 if mode in ("cloud", "all") and config.cloud.enabled:
                     logger.info("Starting cloud backup pipeline")
+                    _pipelines_started += 1
                     try:
                         _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic())
                     except Exception as e:
@@ -895,6 +1077,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
                 # ── LAN ──
                 if mode in ("lan", "all") and config.lan.enabled:
                     logger.info("Starting LAN backup pipeline")
+                    _pipelines_started += 1
                     try:
                         _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic())
                     except Exception as e:
@@ -914,16 +1097,27 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         if excs:
             error_summary = '; '.join(str(e) for e in excs)
             logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
-            try:
-                send_failure_alert(
-                    config.notifications,
-                    config.firm_name,
-                    error_summary,
-                    {"mode": mode},
-                    timestamp=now_iso(),
+            # NA-07: if every pipeline already sent its own dedicated alert
+            # (verify-failure, partial backup), the generic summary would
+            # double-email the operator. Skip it — the dedicated alerts carry
+            # the detail, and run_history carries the record.
+            all_deduped = all(getattr(e, "_dedupe_alert", False) for e in excs)
+            if all_deduped:
+                logger.info(
+                    "Summary alert suppressed — each failed pipeline already "
+                    "sent a dedicated alert"
                 )
-            except Exception:
-                pass
+            else:
+                try:
+                    send_failure_alert(
+                        config.notifications,
+                        config.firm_name,
+                        error_summary,
+                        {"mode": mode},
+                        timestamp=now_iso(),
+                    )
+                except Exception:
+                    pass
             raise ExceptionGroup("Backup completed with errors", excs)
 
         # ── Maintenance ──
@@ -940,5 +1134,36 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
 
         logger.info("AAM Backup completed successfully")
 
-    except Exception:
+    except Exception as e:
+        # NA-06: if we never entered the slot, NO pipeline ran — so no
+        # _record_run executed and the summary alert above never happens.
+        # Without this handler a slot timeout (e.g. a previous run hanging,
+        # or the limit misconfigured) leaves run_history silent and no email:
+        # the only trace is a failed flow run in the Prefect UI.
+        if _pipelines_started == 0:
+            started = now_iso()
+            reason = (
+                "Backup did not start: could not acquire the 'aam-backup' "
+                f"concurrency slot within the wait window ({e}). Another "
+                "backup may still be running, or the concurrency limit is "
+                "misconfigured. No backup ran this schedule."
+            )
+            logger.critical(reason)
+            for m in _enabled_modes:
+                try:
+                    _record_run(
+                        config.paths.database_path,
+                        f"{uuid.uuid4()}-{m}",
+                        m, started, f"{m.upper()}_FAILED", -1, reason,
+                    )
+                except Exception as rec_err:
+                    logger.warning(f"Could not record slot-timeout run ({m}): {rec_err}")
+            try:
+                send_failure_alert(
+                    config.notifications, config.firm_name, reason,
+                    {"mode": mode, "status": "SLOT_TIMEOUT"},
+                    started,
+                )
+            except Exception:
+                pass
         raise

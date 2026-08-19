@@ -137,6 +137,21 @@ def prefect_harness():
                 LocalFileSystem(basepath=tempfile.gettempdir()).save("backup-storage", overwrite=True)
             except Exception:
                 pass
+            # Mirror launch.py: production always registers the global
+            # concurrency limit before serving, and flow.py uses
+            # concurrency(..., strict=True) (NA-04) — tests that exercise
+            # backup() must run against the same precondition.
+            try:
+                import asyncio
+                from prefect.client.orchestration import get_client
+                async def _ensure_limit():
+                    async with get_client() as client:
+                        await client.upsert_global_concurrency_limit_by_name(
+                            name="aam-backup", limit=1,
+                        )
+                asyncio.run(_ensure_limit())
+            except Exception:
+                pass
             yield
     except Exception:
         # Prefect server unavailable — tests that mock Prefect will still work

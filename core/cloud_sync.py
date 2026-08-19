@@ -10,6 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.lan_sync import MIRROR_EXCLUDED_DIRS
 from core.rclone_config import temp_rclone_config
 
 
@@ -69,6 +70,14 @@ def build_rclone_sync_command(
         "--fast-list",
         "--gcs-no-check-bucket",
         "--gcs-storage-class", storage_class,
+        # NA-01: never back up the FY-rollover seed marker
+        "--exclude", ".AAM_SOURCE_SEEDED",
+        # R4: exclude the same directories the LAN mirror does (robocopy /XD
+        # — MIRROR_EXCLUDED_DIRS). Shadow copies are OS junk, and
+        # $RECYCLE.BIN holds DELETED user files that must not reach GCS.
+        # The verify (rclone check) and diff (check --combined) commands carry
+        # the same exclusions so sync and verify see the identical file set.
+        *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d)],
         "--error-on-no-transfer",
         "--modify-window", "2s",    # NTFS mtime granularity is 2 seconds.
                                      # Prevents false-positive re-uploads when a file
@@ -89,6 +98,31 @@ def build_rclone_sync_command(
         "--log-level", "INFO",
         "--stats", "60s",
     ]
+
+
+# AUDIT-003: bound the stderr payload that reaches run_history and the
+# failure-alert email. A chatty rclone failure (per-file retries, rate-limit
+# spam) can produce megabytes of stderr; the full text made the alert itself
+# fail (SMTP 102 KB limit) and hid the real error. rclone prints its summary
+# and the last errors at the END of stderr, so a tail keeps the actionable part.
+_CLOUD_STDERR_TAIL = 100_000  # bytes — matches the robocopy log tail
+
+
+def _read_tail(path: Path, max_bytes: int) -> str:
+    """Read the tail of *path*, bounded to max_bytes (seek-from-end)."""
+    try:
+        size = path.stat().st_size
+        if size <= max_bytes:
+            return path.read_text(encoding="utf-8", errors="replace")
+        with open(path, "rb") as f:
+            f.seek(size - max_bytes)
+            data = f.read()
+        text = data.decode("utf-8", errors="replace").lstrip("\ufffd")
+        return (
+            f"[truncated: showing last {max_bytes} of {size} bytes]\n{text}"
+        )
+    except OSError as exc:
+        return f"rclone stderr unreadable: {exc}"
 
 
 def run_cloud_sync(
@@ -145,11 +179,8 @@ def run_cloud_sync(
             if result.returncode == 9:
                 logger.info("Cloud sync: no changes to transfer")
             elif result.returncode != 0:
-                try:
-                    error_msg = Path(stderr_path).read_text(encoding="utf-8")
-                    logger.error(f"rclone error: {error_msg}")
-                except OSError:
-                    error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
+                error_msg = _read_tail(Path(stderr_path), _CLOUD_STDERR_TAIL)
+                logger.error(f"rclone error: {error_msg}")
 
             return {
                 "status": status,

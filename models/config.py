@@ -293,6 +293,21 @@ class MaintenanceConfig(BaseModel):
         le=50000,
         description="VACUUM triggers when SQLite freelist page count exceeds this value (~40 MB at default). Lower = more frequent VACUUM.",
     )
+    wipe_guard_enabled: bool = Field(
+        default=True,
+        description="Pre-sync sanity gate (core/wipe_guard.py). Blocks a mirror sync when the source has collapsed relative to the DESTINATION's current file count (live GCS object count for cloud; pre-sync LAN destination snapshot — deliberately NOT the DB manifest, which is FY-agnostic). Protects the destination from a /MIR or rclone-sync wipe caused by an emptied or mis-pointed source (AUDIT-012).",
+    )
+    wipe_guard_min_files: int = Field(
+        default=100,
+        ge=1,
+        description="Wipe-guard activates only when the DESTINATION's current file count is >= this (below this the destination has nothing meaningful to protect — e.g. a fresh post-rollover FY prefix).",
+    )
+    wipe_guard_min_ratio: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Wipe-guard blocks when the source's current file count < destination's current count * this ratio (e.g. 0.5 = block if fewer than half of the destination's files remain on the source).",
+    )
 
 
 class HealthConfig(BaseModel):

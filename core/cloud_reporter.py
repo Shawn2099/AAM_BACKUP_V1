@@ -12,6 +12,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.lan_sync import MIRROR_EXCLUDED_DIRS
 from core.process import resolve_binary
 
 
@@ -107,6 +108,9 @@ def get_cloud_diff(
             "--combined", diff_file,   # Write unified diff to file (not stderr)
             "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
             "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
+            # R4: same exclusions as the sync (see MIRROR_EXCLUDED_DIRS) — the
+            # diff must compare the same file set the sync transferred.
+            *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d)],
             # NOTE: --check-first and --transfers are intentionally omitted here.
             # rclone check does no file transfers, so both flags are no-ops.
             "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits

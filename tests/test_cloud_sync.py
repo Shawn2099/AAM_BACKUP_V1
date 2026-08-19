@@ -261,6 +261,9 @@ class TestRunCloudSync:
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_fatal_exit_7_with_stderr(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
         mock_run.return_value = MagicMock(returncode=7)
+        # _read_tail stats the file first (AUDIT-003 bounded tail) — under the
+        # 100 KB cap it falls through to read_text, so size must be a real int.
+        mock_path.return_value.stat.return_value.st_size = 26
         mock_path.return_value.read_text.return_value = "auth failed: bad credentials"
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         assert result["status"] == "CLOUD_FAILED"
@@ -273,12 +276,15 @@ class TestRunCloudSync:
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_not_truncated(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """Full stderr is returned — no truncation, proper debugging in production."""
+        """Stderr at or below the AUDIT-003 tail cap (100 KB) is returned in
+        full. Above the cap the tail is taken with a truncation marker —
+        covered by TestBoundedStderr in test_session2_fixes.py."""
         mock_run.return_value = MagicMock(returncode=1)
-        large_stderr = "x" * 150000
-        mock_path.return_value.read_text.return_value = large_stderr
+        stderr = "x" * 90_000
+        mock_path.return_value.stat.return_value.st_size = 90_000
+        mock_path.return_value.read_text.return_value = stderr
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["error"] == large_stderr
+        assert result["error"] == stderr
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
@@ -287,7 +293,8 @@ class TestRunCloudSync:
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_unreadable(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
         mock_run.return_value = MagicMock(returncode=1)
-        mock_path.return_value.read_text.side_effect = OSError("permission denied")
+        # stat() runs before any read; an unreadable file surfaces there.
+        mock_path.return_value.stat.side_effect = OSError("permission denied")
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         assert "stderr unreadable" in result["error"]
 

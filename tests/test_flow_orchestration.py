@@ -181,7 +181,7 @@ class TestLanSyncTask:
 
 
 class TestLanSnapshotTasks:
-    @patch("flow.walk_lan_destination", return_value=[])
+    @patch("flow.walk_lan_destination_detailed", return_value=([], 0))
     @patch("flow.snapshot_to_dict", return_value={"a.txt": (100, 1.0)})
     def test_snapshot_before_returns_dict(self, mock_snap, mock_walk):
         config = MagicMock()
@@ -189,13 +189,40 @@ class TestLanSnapshotTasks:
         assert isinstance(result, dict)
         assert "a.txt" in result
 
-    @patch("flow.walk_lan_destination", return_value=[])
+    @patch("flow.walk_lan_destination_detailed", return_value=(
+        [{"path": "a.txt", "size": 1, "mtime": 1.0}], 1,
+    ))
+    @patch("flow.snapshot_to_dict", return_value={"a.txt": (1, 1.0)})
+    def test_snapshot_before_partial_walk_still_returns_dict(
+        self, mock_snap, mock_walk,
+    ):
+        """NA-03 companion: a pre-sync walk with subdirectory errors must not
+        crash the pipeline — the contract is unchanged (dict returned, loud
+        log emitted); the wipe guard's baseline is understated this run,
+        same disable-on-unknown-baseline semantics as the cloud guard's
+        listing-failure path."""
+        config = MagicMock()
+        result = lan_snapshot_before_task.fn(config)
+        assert result == {"a.txt": (1, 1.0)}
+
+    @patch("flow.walk_lan_destination_detailed", return_value=([], 0))
     @patch("flow.snapshot_to_dict", return_value={"b.txt": (200, 2.0)})
     def test_snapshot_after_returns_dict(self, mock_snap, mock_walk):
         config = MagicMock()
         result = lan_snapshot_after_task.fn(config)
         assert isinstance(result, dict)
         assert "b.txt" in result
+
+    @patch("flow.walk_lan_destination_detailed", return_value=(
+        [{"path": "a.txt", "size": 1, "mtime": 1.0}], 1,
+    ))
+    def test_snapshot_after_partial_walk_returns_none(self, mock_walk):
+        """NA-03: a walk with subdirectory errors must NOT be diffed —
+        a truncated after-list would prune every unseen file from the
+        manifest. The task returns None (G14 path) instead."""
+        config = MagicMock()
+        result = lan_snapshot_after_task.fn(config)
+        assert result is None
 
 
 class TestLanRecordTask:

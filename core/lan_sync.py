@@ -15,6 +15,21 @@ from loguru import logger
 from core.process import resolve_binary
 from models.config import LanConfig
 
+# Directories the mirror must NEVER transfer or count. Matched by NAME at any
+# depth, and used by every surface that sees the source tree:
+#   - robocopy /XD (LAN mirror, below)
+#   - rclone --exclude (cloud sync, check, and check --combined)
+#   - core/wipe_guard.count_source_files (the wipe guard's source count)
+# They MUST stay in sync: the guard counts what the mirrors will transfer, so
+# a directory excluded here must be excluded there (R4 — a source holding
+# ONLY these directories must count as EMPTY, or a large shadow-copy/
+# recycle-bin directory could let an SVI-only source pass the wipe guard
+# and wipe the destination).
+#   System Volume Information — VSS shadow copies: OS junk, can be huge.
+#   $RECYCLE.BIN — holds DELETED user files; must not reach a backup
+#                  (privacy), and must not be counted as "source data".
+MIRROR_EXCLUDED_DIRS = ("System Volume Information", "$RECYCLE.BIN")
+
 # ═══════════════════════════════════════════════════════════════
 # Flag validation — /NC is FORBIDDEN
 # Source: ConvertFrom-RobocopLog §Notes
@@ -175,8 +190,8 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         /NJS    — No job summary (we parse exit code, not summary text).
         /NDL    — No directory list (individual file lines are sufficient).
         /NP     — No progress percentage (meaningless in log files).
-        /XD     — Exclude "System Volume Information" to avoid access errors on
-                  NTFS system directories.
+        /XD     — Exclude MIRROR_EXCLUDED_DIRS (shadow copies + recycle bin) —
+                  OS junk and deleted-user-file privacy; see the constant.
     """
     flags = [
         "/MIR",
@@ -188,8 +203,8 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         f"/W:{lan_config.retry_wait_seconds}",
         "/V", "/TS", "/FP",
         "/NJH", "/NJS", "/NDL", "/NP",
-        "/XF", ".AAM_TARGET_MOUNTED",
-        "/XD", "System Volume Information", "$RECYCLE.BIN",
+        "/XF", ".AAM_TARGET_MOUNTED", ".AAM_SOURCE_SEEDED",
+        "/XD", *MIRROR_EXCLUDED_DIRS,
     ]
 
     _validate_required_flags(flags)

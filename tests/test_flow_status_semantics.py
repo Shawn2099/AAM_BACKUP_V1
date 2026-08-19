@@ -158,7 +158,7 @@ class TestCloudFailureStatus:
     @patch("flow.get_fy_prefix", return_value="FY26-27")
     @patch("flow.ManifestDB")
     @patch("flow._record_run")
-    def test_preflight_failure_records_skipped(
+    def test_preflight_failure_records_preflight_failed(
         self, mock_record, mock_db, mock_fy, mock_health, mock_preflight,
         mock_sync, mock_verify, mock_record_task, mock_artifact,
     ):
@@ -169,7 +169,50 @@ class TestCloudFailureStatus:
             flow._run_cloud_pipeline(cfg, "run-4", "2026-08-18T18:00:00")
 
         args = mock_record.call_args.args
-        assert args[4] == "CLOUD_SKIPPED"  # genuinely never ran — SKIPPED is honest
+        # AUDIT-004-s2: pre-phase (health/preflight) failures are FAILED, not
+        # SKIPPED — "SKIPPED" hid 5 weeks of nightly LAN outages in reports.
+        assert args[4] == "CLOUD_PREFLIGHT_FAILED"
+
+    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.cloud_publish_artifact_task")
+    @patch("flow.cloud_record_task")
+    @patch("flow.cloud_verify_and_report_task")
+    @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_preflight_task")
+    @patch("flow.health_check_task")
+    @patch("flow.get_fy_prefix", return_value="FY26-27")
+    @patch("flow.ManifestDB")
+    @patch("flow._record_run")
+    def test_verify_access_error_alert_not_mismatch(
+        self, mock_record, mock_db, mock_fy, mock_health, mock_preflight,
+        mock_sync, mock_verify, mock_record_task, mock_artifact, mock_alert,
+    ):
+        """NV-02 end-to-end: when the classifier says the check could not read
+        GCS (access_error), the operator alert must NOT claim an integrity
+        mismatch — the diff counts are meaningless while reads fail."""
+        mock_sync.with_options.return_value.return_value = {
+            "status": "CLOUD_COMPLETE", "exit_code": 0, "error": None,
+        }
+        mock_verify.with_options.return_value.return_value = {
+            "verified": False,
+            "error_class": "access_error",
+            "size": {"count": 0, "bytes": 0},
+            "manifest": [],
+            "diff": {"added": [], "removed": ["a.txt", "b.txt"],
+                     "modified": [], "unchanged": []},
+        }
+        mock_db.return_value.get_cloud_synced_entries.return_value = {}
+        cfg = _make_config()
+
+        with pytest.raises(RuntimeError,
+                           match="NOT a confirmed integrity mismatch"):
+            flow._run_cloud_pipeline(cfg, "run-9", "2026-08-19T18:00:00")
+
+        args = mock_record.call_args.args
+        assert args[4] == "CLOUD_VERIFY_FAILED"
+        mock_alert.assert_called_once()
+        alert_err = mock_alert.call_args.args[2]
+        assert "NOT a confirmed integrity mismatch" in alert_err
 
 
 class TestLanFailureStatus:
@@ -189,6 +232,10 @@ class TestLanFailureStatus:
     ):
         mock_sync.with_options.return_value.side_effect = RuntimeError("LAN sync failed")
         cfg = _make_config()
+        # cfg.paths.source_drive is a mock string never created on disk; the
+        # AUDIT-012 wipe guard walks it (its dedicated tests cover it) —
+        # disable the guard so this test exercises the sync-failure path.
+        cfg.maintenance.wipe_guard_enabled = False
 
         with pytest.raises(RuntimeError):
             flow._run_lan_pipeline(cfg, "run-5", "2026-08-18T01:00:00")
@@ -206,7 +253,7 @@ class TestLanFailureStatus:
     @patch("flow.wol_check_task")
     @patch("flow.health_check_task", side_effect=RuntimeError("NAS unreachable"))
     @patch("flow._record_run")
-    def test_lan_preflight_failure_records_skipped(
+    def test_lan_preflight_failure_records_preflight_failed(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
         mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown,
     ):
@@ -216,7 +263,8 @@ class TestLanFailureStatus:
             flow._run_lan_pipeline(cfg, "run-6", "2026-08-18T01:00:00")
 
         args = mock_record.call_args.args
-        assert args[4] == "LAN_SKIPPED"
+        # AUDIT-004-s2: pre-phase failures are FAILED, not SKIPPED (see above).
+        assert args[4] == "LAN_PREFLIGHT_FAILED"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -244,6 +292,10 @@ class TestLanPartialShutdown:
             "error": "robocopy tail: 3 files FAILED",
         }
         cfg = _make_config()
+        # cfg.paths.source_drive is a mock string never created on disk; the
+        # AUDIT-012 wipe guard walks it (its dedicated tests cover it) —
+        # disable the guard so this test exercises the PARTIAL path.
+        cfg.maintenance.wipe_guard_enabled = False
 
         result = flow._run_lan_pipeline(cfg, "run-7", "2026-08-18T01:00:00")
 
@@ -274,6 +326,10 @@ class TestLanPartialShutdown:
             "status": "LAN_COMPLETE", "exit_code": 1, "error": None,
         }
         cfg = _make_config()
+        # cfg.paths.source_drive is a mock string never created on disk; the
+        # AUDIT-012 wipe guard walks it (its dedicated tests cover it) —
+        # disable the guard so this test exercises the COMPLETE path.
+        cfg.maintenance.wipe_guard_enabled = False
 
         result = flow._run_lan_pipeline(cfg, "run-8", "2026-08-18T01:00:00")
 

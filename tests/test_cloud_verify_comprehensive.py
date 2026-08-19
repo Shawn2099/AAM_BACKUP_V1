@@ -223,19 +223,27 @@ class TestVerifyReturnStructure:
     def test_return_keys_on_success(self, mock_run):
         mock_run.return_value = _mock_result(0)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
-        assert set(result.keys()) == {"verified", "exit_code", "error"}
+        # NV-02: error_class is part of the contract (None on success).
+        assert set(result.keys()) == {"verified", "exit_code", "error", "error_class"}
+        assert result["error_class"] is None
 
     @patch("core.cloud_verify.subprocess.run")
     def test_return_keys_on_failure(self, mock_run):
         mock_run.return_value = _mock_result(1, stderr="mismatch")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
-        assert set(result.keys()) == {"verified", "exit_code", "error"}
+        # NV-02: error_class classifies the failed check (access_error /
+        # mismatch / mixed / error) so callers do not mislabel access
+        # failures as integrity mismatches.
+        assert set(result.keys()) == {"verified", "exit_code", "error", "error_class"}
+        assert result["error_class"] == "mismatch"
 
     @patch("core.cloud_verify.subprocess.run")
     def test_return_keys_on_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=600)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
-        assert set(result.keys()) == {"verified", "exit_code", "error"}
+        # Uniform contract: local exceptions carry error_class = None.
+        assert set(result.keys()) == {"verified", "exit_code", "error", "error_class"}
+        assert result["error_class"] is None
 
 
 class TestVerifyStderrHandling:

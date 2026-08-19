@@ -342,6 +342,9 @@ class TestRunCloudSyncStderr:
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_exit_nonzero_reads_stderr(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
         mock_run.return_value = _mock_result(7)
+        # _read_tail stats the file first (AUDIT-003 bounded tail) — under the
+        # 100 KB cap it falls through to read_text, so size must be a real int.
+        mock_path.return_value.stat.return_value.st_size = 26
         mock_path.return_value.read_text.return_value = "auth failed: bad credentials"
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         assert result["status"] == "CLOUD_FAILED"
@@ -354,11 +357,15 @@ class TestRunCloudSyncStderr:
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_full_stderr_returned_no_truncation(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
+        """Below the AUDIT-003 cap (100 KB) the full stderr is returned; above
+        it the tail is taken with a marker (TestBoundedStderr,
+        test_session2_fixes.py)."""
         mock_run.return_value = _mock_result(1)
-        large_stderr = "x" * 150000
-        mock_path.return_value.read_text.return_value = large_stderr
+        stderr = "x" * 90_000
+        mock_path.return_value.stat.return_value.st_size = 90_000
+        mock_path.return_value.read_text.return_value = stderr
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["error"] == large_stderr
+        assert result["error"] == stderr
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
@@ -367,7 +374,8 @@ class TestRunCloudSyncStderr:
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_unreadable_uses_fallback(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
         mock_run.return_value = _mock_result(1)
-        mock_path.return_value.read_text.side_effect = OSError("permission denied")
+        # stat() runs before any read; an unreadable file surfaces there.
+        mock_path.return_value.stat.side_effect = OSError("permission denied")
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         assert "stderr unreadable" in result["error"]
 
@@ -491,6 +499,8 @@ class TestRunCloudSyncReturnStructure:
         mock_run.return_value = _mock_result(7)
         mock_path_patcher = patch("core.cloud_sync.Path")
         mock_path = mock_path_patcher.start()
+        # _read_tail stats the file first (AUDIT-003 bounded tail).
+        mock_path.return_value.stat.return_value.st_size = 11
         mock_path.return_value.read_text.return_value = "fatal error"
         try:
             result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")

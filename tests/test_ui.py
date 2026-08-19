@@ -321,7 +321,8 @@ class TestTriggerEndpoints:
             data = response.json()
             assert data["status"] == "triggered"
             assert "run-123" in data["detail"]
-            mock_depl.assert_awaited_once_with(name="aam-backup/backup-cloud")
+            # NA-05: timeout=0 — return on run creation, not run completion
+            mock_depl.assert_awaited_once_with(name="aam-backup/backup-cloud", timeout=0)
 
     def test_trigger_cloud_already_running(self):
         client = TestClient(ui.app)
@@ -352,7 +353,7 @@ class TestTriggerEndpoints:
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "triggered"
-            mock_depl.assert_awaited_once_with(name="aam-backup/backup-lan")
+            mock_depl.assert_awaited_once_with(name="aam-backup/backup-lan", timeout=0)
 
     def test_trigger_cloud_run_creation_failure_returns_500(self):
         """G15: a failed arun_deployment must NOT report success."""

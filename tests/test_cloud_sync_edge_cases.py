@@ -191,8 +191,18 @@ class TestBuildRcloneSyncCommandFlags:
 
     def test_no_duplicate_flags(self):
         cmd = self._build_default()
-        flags = [x for x in cmd if x.startswith("--")]
-        assert len(flags) == len(set(flags)), "Duplicate flags found"
+        # A flag token may legitimately recur when it is a repeatable,
+        # value-accumulating flag — rclone --exclude takes one pattern per
+        # occurrence (seed marker + each MIRROR_EXCLUDED_DIR, see R4). The
+        # real defect is a duplicated flag+VALUE pair (e.g. --buffer-size
+        # appearing twice), so assert pair uniqueness instead of token
+        # uniqueness (stricter than the old check).
+        pairs = []
+        for i, tok in enumerate(cmd):
+            if tok.startswith("--"):
+                val = cmd[i + 1] if (i + 1 < len(cmd) and not cmd[i + 1].startswith("--")) else None
+                pairs.append((tok, val))
+        assert len(pairs) == len(set(pairs)), f"Duplicate flag+value pairs: {pairs}"
 
     def test_no_max_delete(self):
         """--max-delete removed — GCS versioning covers this."""
@@ -309,12 +319,15 @@ class TestRunCloudSyncComprehensive:
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_not_truncated(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """Full stderr is returned — no truncation, proper debugging in production."""
+        """Stderr at or below the AUDIT-003 tail cap (100 KB) is returned in
+        full. Above the cap the tail is taken with a truncation marker —
+        covered by TestBoundedStderr in test_session2_fixes.py."""
         mock_run.return_value = MagicMock(returncode=1)
-        large_stderr = "x" * 150000
-        mock_path.return_value.read_text.return_value = large_stderr
+        stderr = "x" * 90_000
+        mock_path.return_value.stat.return_value.st_size = 90_000
+        mock_path.return_value.read_text.return_value = stderr
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["error"] == large_stderr
+        assert result["error"] == stderr
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
@@ -323,7 +336,8 @@ class TestRunCloudSyncComprehensive:
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_unreadable(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
         mock_run.return_value = MagicMock(returncode=1)
-        mock_path.return_value.read_text.side_effect = OSError("permission denied")
+        # stat() runs before any read; an unreadable file surfaces there.
+        mock_path.return_value.stat.side_effect = OSError("permission denied")
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         assert "stderr unreadable" in result["error"]
 
@@ -380,6 +394,8 @@ class TestRunCloudSyncComprehensive:
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
     def test_stderr_cleanup_on_failure(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
         mock_path_instance = mock_path.return_value
+        # _read_tail stats the file first (AUDIT-003 bounded tail).
+        mock_path_instance.stat.return_value.st_size = 1
         mock_run.return_value = MagicMock(returncode=1)
         run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         mock_path_instance.unlink.assert_called_once()

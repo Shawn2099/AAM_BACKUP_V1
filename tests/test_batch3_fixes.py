@@ -307,17 +307,33 @@ class TestAfterWalkTolerance:
     def test_failed_walk_returns_none(self):
         import flow as flow_mod
         cfg = MagicMock()
-        with patch.object(flow_mod, "walk_lan_destination", side_effect=OSError("SMB session reset")):
+        with patch.object(flow_mod, "walk_lan_destination_detailed",
+                          side_effect=OSError("SMB session reset")):
             result = flow_mod.lan_snapshot_after_task.fn(cfg)
         assert result is None
 
     def test_successful_walk_unchanged(self):
         import flow as flow_mod
         cfg = MagicMock()
-        with patch.object(flow_mod, "walk_lan_destination") as mock_walk:
-            mock_walk.return_value = [{"path": "x.txt", "size": 10, "mtime": 123.0}]
+        with patch.object(flow_mod, "walk_lan_destination_detailed") as mock_walk:
+            mock_walk.return_value = (
+                [{"path": "x.txt", "size": 10, "mtime": 123.0}], 0,
+            )
             result = flow_mod.lan_snapshot_after_task.fn(cfg)
         assert result == {"x.txt": (10, 123.0)}
+
+    def test_partial_walk_with_errors_returns_none(self):
+        """NA-03: subdirectory walk errors (SMB drop mid-walk) make the
+        snapshot untrustworthy — diffing it would prune unseen files from
+        the manifest, so the task must return None (G14 path)."""
+        import flow as flow_mod
+        cfg = MagicMock()
+        with patch.object(flow_mod, "walk_lan_destination_detailed") as mock_walk:
+            mock_walk.return_value = (
+                [{"path": "x.txt", "size": 10, "mtime": 123.0}], 2,
+            )
+            result = flow_mod.lan_snapshot_after_task.fn(cfg)
+        assert result is None
 
 
 # ═══════════════════════════════════════════════════════════════

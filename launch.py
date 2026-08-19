@@ -7,7 +7,7 @@ The Prefect server runs as a separate process (start_server.bat).
 
 Services managed by this script:
   - Dashboard UI (in-process, configurable host:port)
-  - Backup scheduler (in-process, 4 deployments)
+  - Backup scheduler (in-process, 5 deployments — see serve.deployments())
 
 Ctrl+C stops both cleanly. The Prefect server continues running independently.
 """
@@ -70,6 +70,23 @@ def _ensure_concurrency_limit():
                 print("[launch] Ensured global concurrency limit 'aam-backup' (limit=1)")
             except Exception as e:
                 print(f"[launch] Warning: failed to create global concurrency limit: {e}")
+
+            # NA-04: VERIFY the global limit actually exists. flow.py now uses
+            # strict=True, so a missing limit makes every backup run FAIL —
+            # which is the correct behavior (loud, not silent), but we want
+            # the operator to see WHY at service startup instead of at 22:00
+            # tonight.
+            try:
+                gl = await client.read_global_concurrency_limit_by_name(name="aam-backup")
+                if gl is None:
+                    raise RuntimeError("global concurrency limit 'aam-backup' not found after upsert")
+                print(f"[launch] Verified global concurrency limit 'aam-backup' (limit={gl.limit})")
+            except Exception as e:
+                print(f"[launch] ERROR: global concurrency limit 'aam-backup' is missing: {e}")
+                print("[launch] Every backup run will FAIL until the limit exists "
+                      "(Prefect server DB reset?). Fix: recreate the limit or "
+                      "check the Prefect server database, then restart the service.")
+                raise SystemExit(2)
 
             # 2. Create Tag-based Concurrency Limit (used by tagged runs/tasks)
             try:
@@ -237,6 +254,14 @@ def main():
         rollover_deployment,
     ) = deployments()
 
+    # AUDIT-001: serve ALL deployments deployments() returns — the old code
+    # silently dropped rollover_deployment, so the scheduled daily FY-rollover
+    # check was never registered on the production Prefect server (verified
+    # live: exactly 4 deployments). On a 24x7 server that never reboots, the
+    # April-1 rollover would then silently never happen. The loop (not a
+    # literal list) makes any FUTURE deployment added to deployments()
+    # served automatically; the test in tests/test_launch_serve_wiring.py
+    # asserts this wiring.
     shutdown_clean = False
     try:
         serve(
@@ -244,6 +269,7 @@ def main():
             lan_deployment,
             report_deployment,
             monthly_deployment,
+            rollover_deployment,
             pause_on_shutdown=False,
         )
         shutdown_clean = True

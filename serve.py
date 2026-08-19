@@ -2,7 +2,8 @@
 
 Run from project root:  python serve.py
 
-Registers four deployments with schedules read from config.yaml.
+Registers five deployments with schedules read from config.yaml
+(cloud, LAN, weekly-report, monthly-report, rollover-check).
 Edit the `schedule:` section in config.yaml to change cron expressions and timezone.
 """
 
