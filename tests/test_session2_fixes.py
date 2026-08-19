@@ -232,55 +232,61 @@ class TestWipeGuard:
 
 class TestMirrorExclusions:
     """The cloud sync, the post-sync verify check, and the diff check must
-    all carry the same --exclude list (MIRROR_EXCLUDED_DIRS) as the LAN
-    mirror's /XD list — otherwise sync and verify disagree on the file set
-    and verify reports excluded directories as 'missing from cloud' (or,
-    without the exclusions at all, deleted user files in $RECYCLE.BIN land
-    in GCS)."""
+    all carry the same --exclude set as the LAN mirror's /XD list
+    (MIRROR_EXCLUDED_DIRS) plus the NA-01 seed marker — otherwise sync and
+    verify disagree on the file set and verify reports excluded paths as
+    'missing from cloud' (or, without the exclusions at all, deleted user
+    files in $RECYCLE.BIN land in GCS).
+
+    rclone filter semantics (live-verified 2026-08-19): a bare name pattern
+    matches the FULL relative path exactly and filters nothing useful for a
+    directory; the "<dir>/*" form (no leading slash) matches at ANY depth.
+    The builders therefore emit BOTH forms for each excluded dir, and the
+    tests pin that so a regression to the bare form fails loudly."""
 
     def _flag_pairs(self, cmd):
-        """Return {flag: value} for all two-token flags in cmd."""
+        """Return {flag: [values]} for all two-token flags in cmd."""
         pairs = {}
         for i, tok in enumerate(cmd):
             if tok.startswith("--") and i + 1 < len(cmd):
                 pairs.setdefault(tok, []).append(cmd[i + 1])
         return pairs
 
+    def _assert_excludes(self, pairs, label):
+        from core.lan_sync import MIRROR_EXCLUDED_DIRS
+        exc = pairs.get("--exclude", [])
+        for d in MIRROR_EXCLUDED_DIRS:
+            assert d in exc, f"{label}: must --exclude {d!r}"
+            assert f"{d}/*" in exc, (
+                f"{label}: must --exclude {d!r}/* (bare name matches the full "
+                f"path exactly and would filter nothing — E2E-verified)"
+            )
+        assert ".AAM_SOURCE_SEEDED" in exc, f"{label}: must --exclude the seed marker"
+
     def test_sync_command_excludes_mirror_dirs(self):
         from core.cloud_sync import build_rclone_sync_command
-        from core.lan_sync import MIRROR_EXCLUDED_DIRS
         cmd = build_rclone_sync_command("E:\\SRC", "bucket", "FY26-27", "cfg", "STANDARD")
-        pairs = self._flag_pairs(cmd)
-        for d in MIRROR_EXCLUDED_DIRS:
-            assert d in pairs.get("--exclude", []), f"rclone sync must --exclude {d}"
+        self._assert_excludes(self._flag_pairs(cmd), "rclone sync")
 
     def test_verify_command_excludes_mirror_dirs(self):
         import subprocess
         from unittest.mock import patch
         from core.cloud_verify import verify_cloud_integrity
-        from core.lan_sync import MIRROR_EXCLUDED_DIRS
         fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch("core.cloud_verify.resolve_binary", return_value="rclone"), \
              patch("core.cloud_verify.subprocess.run", return_value=fake) as m:
             verify_cloud_integrity("E:\\SRC", "bucket", "FY26-27", "cfg")
-        cmd = m.call_args[0][0]
-        pairs = self._flag_pairs(cmd)
-        for d in MIRROR_EXCLUDED_DIRS:
-            assert d in pairs.get("--exclude", []), f"rclone check must --exclude {d}"
+        self._assert_excludes(self._flag_pairs(m.call_args[0][0]), "rclone check (verify)")
 
     def test_diff_command_excludes_mirror_dirs(self):
         import subprocess
         from unittest.mock import patch
         from core.cloud_reporter import get_cloud_diff
-        from core.lan_sync import MIRROR_EXCLUDED_DIRS
         fake = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
              patch("core.cloud_reporter.subprocess.run", return_value=fake) as m:
             get_cloud_diff("E:\\SRC", "bucket", "FY26-27", "cfg")
-        cmd = m.call_args[0][0]
-        pairs = self._flag_pairs(cmd)
-        for d in MIRROR_EXCLUDED_DIRS:
-            assert d in pairs.get("--exclude", []), f"rclone check --combined must --exclude {d}"
+        self._assert_excludes(self._flag_pairs(m.call_args[0][0]), "rclone check --combined (diff)")
 
     def test_robocopy_and_rclone_exclusion_sets_match(self):
         """Single source of truth: the /XD list and the --exclude lists all
@@ -729,6 +735,47 @@ class TestBoundedStderr:
 # ═══════════════════════════════════════════════════════════════
 
 class TestVerifyClassification:
+    """NV-02 (E2E-refined 2026-08-19).
+
+    Live-verified on GCS: a genuinely MISSING file is counted by rclone
+    check in ALL THREE counters ("files missing" + "differences found" +
+    "errors while checking"), so counter arithmetic cannot separate a true
+    mismatch from an access failure. Classification is therefore
+    content-based (credential/network signatures in the ERROR lines). The
+    fixtures below are verbatim from the 2026-08-19 E2E runs."""
+
+    def test_e2e_p4a_bad_key_is_access_error(self):
+        """Verbatim P4a: truncated SA key — destination root unreadable."""
+        from core.cloud_verify import _classify_check_failure
+        stderr = (
+            "ERROR : large_0.bin: file not in GCS bucket aam-backup-demo-innovizta path AUDIT-20260819\n"
+            "ERROR : large_1.bin: file not in GCS bucket aam-backup-demo-innovizta path AUDIT-20260819\n"
+            "ERROR : GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: error reading "
+            'destination root directory: Get "https://storage.googleapis.com/...": private key '
+            "should be a PEM or plain PKCS1 or PKCS8; parse error: asn1: syntax error: data truncated\n"
+            "NOTICE: GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: 3 files missing\n"
+            "NOTICE: GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: 3 differences found\n"
+            "NOTICE: GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: 4 errors while checking\n"
+            "NOTICE: Failed to check with 4 errors\n"
+        )
+        assert _classify_check_failure(1, stderr) == "access_error"
+
+    def test_e2e_p6_missing_marker_is_mismatch_NOT_access_error(self):
+        """Verbatim P6/P6c: seed marker missing from GCS. The OLD
+        counter-based heuristic (errors >= diffs => access_error) mislabelled
+        this; it is a plain (albeit spurious — fixed at the exclusion level)
+        difference, not an access failure."""
+        from core.cloud_verify import _classify_check_failure
+        stderr = (
+            "ERROR : .AAM_SOURCE_SEEDED: file not in GCS bucket aam-backup-demo-innovizta path AUDIT-20260819\n"
+            "NOTICE: GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: 1 files missing\n"
+            "NOTICE: GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: 1 differences found\n"
+            "NOTICE: GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: 1 errors while checking\n"
+            "NOTICE: GCS bucket aam-backup-demo-innovizta path AUDIT-20260819: 5 matching files\n"
+            "NOTICE: Failed to check: 1 differences found\n"
+        )
+        assert _classify_check_failure(1, stderr) == "mismatch"
+
     def test_access_error_distinguished(self):
         from core.cloud_verify import _classify_check_failure
         stderr = (
@@ -739,9 +786,49 @@ class TestVerifyClassification:
         )
         assert _classify_check_failure(1, stderr) == "access_error"
 
+    def test_gcs_403_rejected_key_is_access_error(self):
+        from core.cloud_verify import _classify_check_failure
+        stderr = (
+            "ERROR : GCS bucket b: error reading destination root directory: "
+            "googleapi: Error 403: Access Denied. This request lacks sufficient "
+            "scope, or does not have permission to perform this action.\n"
+            "NOTICE: GCS bucket b: 1 errors while checking\n"
+        )
+        assert _classify_check_failure(1, stderr) == "access_error"
+
+    def test_network_down_is_access_error(self):
+        from core.cloud_verify import _classify_check_failure
+        assert _classify_check_failure(1, "ERROR : no such host\n") == "access_error"
+        assert _classify_check_failure(1, "ERROR : connection refused\n") == "access_error"
+        assert _classify_check_failure(1, "ERROR : i/o timeout\n") == "access_error"
+
+    def test_access_plus_differences_is_mixed(self):
+        """Root IS readable; one file shows a real difference and another
+        hits an individual read error — partially readable destination."""
+        from core.cloud_verify import _classify_check_failure
+        stderr = (
+            "ERROR : file_a.txt: file not in GCS bucket b path FY26-27\n"
+            "ERROR : file_b.txt: open: connection reset by peer\n"
+            "NOTICE: 1 files missing\n"
+            "NOTICE: 2 differences found\n"
+        )
+        assert _classify_check_failure(1, stderr) == "mixed"
+
     def test_true_mismatch(self):
         from core.cloud_verify import _classify_check_failure
         stderr = "NOTICE: 2 differences found\n"
+        assert _classify_check_failure(1, stderr) == "mismatch"
+
+    def test_filename_containing_403_is_not_access_error(self):
+        """A missing file named '403_report.txt' must not trip the
+        '\\b40[134]\\b' signature (word boundary: '_403' has no boundary)."""
+        from core.cloud_verify import _classify_check_failure
+        stderr = (
+            "ERROR : reports/403_report.txt: file not in GCS bucket b path FY26-27\n"
+            "NOTICE: 1 files missing\n"
+            "NOTICE: 1 differences found\n"
+            "NOTICE: 1 errors while checking\n"
+        )
         assert _classify_check_failure(1, stderr) == "mismatch"
 
     def test_exit2_is_error(self):
@@ -756,6 +843,34 @@ class TestVerifyClassification:
         from core.cloud_verify import _build_error_message
         msg = _build_error_message(1, "access_error")
         assert "NOT a confirmed integrity mismatch" in msg
+
+
+# ═══════════════════════════════════════════════════════════════
+# E2E-run1 (2026-08-19) — config robustness
+# ═══════════════════════════════════════════════════════════════
+
+class TestConfigEncoding:
+    """A config saved in a legacy Windows encoding (cp1252) must fail with
+    an actionable message, not an opaque UnicodeDecodeError (live-verified:
+    the E2E bad-creds config written with Windows-default write_text
+    crashed the flow before any status/alert was recorded)."""
+
+    def test_non_utf8_config_raises_actionable_error(self, tmp_path):
+        from models.config import load_config
+        p = tmp_path / "config_cp1252.yaml"
+        p.write_bytes("# header with em-dash \u2014\nfirm_name: X\n".encode("cp1252"))
+        with pytest.raises(ValueError, match="not valid UTF-8"):
+            load_config(str(p))
+
+    def test_backup_config_failure_raises_runtime_error(self, tmp_path):
+        """backup() must convert a config-load failure into a clean
+        RuntimeError (no raw decode traceback, no silent no-op). The
+        session-scoped autouse prefect_harness fixture is already active."""
+        import flow
+        p = tmp_path / "bad.yaml"
+        p.write_bytes(b"\xff\xfe\x97\x00firm_name: X\n")
+        with pytest.raises(RuntimeError, match="Config load failed"):
+            flow.backup(config_path=str(p), mode="cloud")
 
 
 # ═══════════════════════════════════════════════════════════════

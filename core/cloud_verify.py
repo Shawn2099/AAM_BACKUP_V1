@@ -9,6 +9,7 @@ Exit codes (rclone check):
     2+ = error — connection failure, invalid config, etc.
 """
 
+import re
 import subprocess
 
 from loguru import logger
@@ -54,10 +55,18 @@ def verify_cloud_integrity(
         "--fast-list",             # Fewer GCS API calls (uses more memory but faster)
         "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
         "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
-        # R4: same exclusions as the sync (see MIRROR_EXCLUDED_DIRS) — the
-        # check must compare the same file set the sync transferred, or
-        # excluded directories would report as "missing from cloud".
-        *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d)],
+        # R4/E2E-verified: the check must compare EXACTLY the file set the
+        # sync transferred (see MIRROR_EXCLUDED_DIRS + the NA-01 seed
+        # marker). Without the marker exclusion, any source carrying the
+        # FY-rollover seed marker (i.e. EVERY run after an April-1
+        # rollover — the marker is never removed) makes rclone check report
+        # it "missing from GCS" and the pipeline fails with a false
+        # CLOUD_VERIFY_FAILED. Live-verified in the 2026-08-19 E2E (P6/P6c).
+        # Directory exclusions use the "<dir>/*" any-depth form (a bare name
+        # matches the full path exactly and would filter nothing — see
+        # cloud_sync.build_rclone_sync_command for the verified semantics).
+        "--exclude", ".AAM_SOURCE_SEEDED",
+        *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d, "--exclude", f"{d}/*")],
         # NOTE: --check-first and --transfers are intentionally omitted here.
         # rclone check does no file transfers, so both flags are no-ops on this command.
         "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits
@@ -111,39 +120,95 @@ def verify_cloud_integrity(
                 "error_class": None}
 
 
+# E2E-verified on real GCS (2026-08-19): a genuinely MISSING file makes
+# rclone check report it in ALL THREE counters — "N files missing",
+# "N differences found" AND "N errors while checking" (the per-file
+# "ERROR : <path>: file not in ... bucket" line is counted as a check
+# error). The original NV-02 heuristic (errors >= diffs => access_error)
+# therefore mislabelled EVERY true mismatch as an access error. Reliable
+# classification must be based on the CONTENT of the ERROR lines: access
+# failures carry credential/network/API signatures; missing-file lines
+# carry "file not in <backend>". The signatures below are taken from
+# live rclone v1.74.3 output:
+#   - bad/truncated SA key:  "error reading destination root directory:
+#     Get ...: private key should be a PEM or plain PKCS1 or PKCS8; parse
+#     error: asn1: syntax error: data truncated"
+#   - rejected/expired key:  "googleapi: Error 403: ... access denied or
+#     insufficient permissions" / "401: ... Unauthenticated"
+#   - network:               "no such host" / "connection refused" /
+#     "i/o timeout" / "deadline exceeded"
+_ACCESS_SIGNATURE_RE = re.compile(
+    r"error reading destination root directory"
+    r"|private key should be a pem"
+    r"|could not read private key"
+    r"|asn1:"
+    r"|invalid[_ ]grant"
+    r"|unauthenticated"
+    r"|\b40[134]\b"
+    r"|forbidden"
+    r"|access[_ ]denied"
+    r"|permission denied"
+    r"|no such host"
+    r"|connection (refused|reset)"
+    r"|i/o timeout"
+    r"|deadline exceeded"
+    r"|oauth2:"
+    r"|googleapi: error",
+    re.IGNORECASE,
+)
+
+
 def _classify_check_failure(exit_code: int, stderr_text: str) -> str | None:
-    """Classify a failed `rclone check` (NV-02).
+    """Classify a failed `rclone check` (NV-02, E2E-refined 2026-08-19).
 
     rclone check exits 1 for BOTH a true integrity mismatch AND a
     destination access failure (bad credentials, network drop, missing
-    bucket) — live verified on GCS. The NOTICE summary line distinguishes
-    them: an access failure reports "N errors while checking" where the
-    "differences" are the unreadable files; a true mismatch reports
-    differences with zero check errors.
+    bucket) — and, live-verified, a missing file is counted in the
+    "files missing", "differences found" AND "errors while checking"
+    counters simultaneously. The counters therefore cannot distinguish
+    the two cases; the ERROR-line content can (see
+    _ACCESS_SIGNATURE_RE for the verified signatures).
 
     Returns:
         None for exit 0;
-        "access_error" — destination read errors dominate (NOT a data mismatch);
-        "mismatch"     — true size/count divergence;
-        "mixed"        — both signals present;
+        "access_error" — credential/network/API read failures (NOT a data
+                         mismatch; do not conclude about the data);
+        "mismatch"     — true divergence (files missing/changed in GCS);
+        "mixed"        — access failures AND differences in one run
+                         (treat as access_error until GCS is reachable);
         "error"        — exit 2+ (config/usage-level failure).
     """
-    import re
-
     if exit_code == _EXIT_VERIFIED:
         return None
     if exit_code != _EXIT_MISMATCH:
         return "error"
 
-    err_m = re.search(r"(\d+) errors? while checking", stderr_text)
-    diff_m = re.search(r"(\d+) differences? found", stderr_text)
-    errors = int(err_m.group(1)) if err_m else 0
-    diffs = int(diff_m.group(1)) if diff_m else 0
+    error_lines = re.findall(r"ERROR\s*:\s*(.+)", stderr_text)
+    has_access = any(_ACCESS_SIGNATURE_RE.search(line) for line in error_lines)
+    has_missing = any("file not in" in line for line in error_lines) or bool(
+        re.search(r"\d+ files? missing", stderr_text)
+    )
+    has_diffs = bool(re.search(r"\d+ differences? found", stderr_text))
 
-    if errors and errors >= diffs:
+    # If the destination ROOT could not be read at all, the destination
+    # listing is empty, so every source file appears "missing" — those
+    # missing/diff counts are byproducts of the access failure, not real
+    # differences. Classify as access_error, not mixed. (Live-verified:
+    # the 2026-08-19 P4a bad-key run.)
+    if any("error reading destination root directory" in line for line in error_lines):
         return "access_error"
-    if errors and diffs:
+
+    if has_access and (has_missing or has_diffs):
         return "mixed"
+    if has_access:
+        return "access_error"
+    if has_missing or has_diffs:
+        return "mismatch"
+    # Defensive fallback: exit 1 with no parseable counters or recognizable
+    # error lines. "N errors while checking" with no other signal means the
+    # destination could not be read — do not claim a data mismatch.
+    if re.search(r"\d+ errors? while checking", stderr_text):
+        return "access_error"
     return "mismatch"
 
 

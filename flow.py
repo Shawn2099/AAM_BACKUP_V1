@@ -1016,7 +1016,16 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     if mode not in valid_modes:
         raise ValueError(f"Invalid mode '{mode}'. Must be one of: {sorted(valid_modes)}")
 
-    config = load_config(config_path)
+    try:
+        config = load_config(config_path)
+    except (ValueError, OSError) as e:
+        # Config load failed BEFORE configure_logging can run (it needs the
+        # loaded config for its log path), so log to the default sink and
+        # re-raise a clean, operator-actionable error. Live-verified in the
+        # 2026-08-19 E2E: a cp1252-encoded config crashed the flow with an
+        # opaque UnicodeDecodeError and recorded no status/alert at all.
+        logger.error(f"Config load FAILED — backup aborted before any sync: {e}")
+        raise RuntimeError(f"Config load failed; backup aborted: {e}") from e
     configure_logging(config.paths.log_directory, log_retention_days=config.maintenance.log_retention_days)
     try:
         configure_prefect_bridge()

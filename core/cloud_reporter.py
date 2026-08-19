@@ -108,9 +108,15 @@ def get_cloud_diff(
             "--combined", diff_file,   # Write unified diff to file (not stderr)
             "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
             "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
-            # R4: same exclusions as the sync (see MIRROR_EXCLUDED_DIRS) — the
-            # diff must compare the same file set the sync transferred.
-            *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d)],
+            # R4/E2E-verified: the diff must compare EXACTLY the file set
+            # the sync transferred (MIRROR_EXCLUDED_DIRS + NA-01 seed
+            # marker). The marker exclusion is mandatory: with a
+            # seed-marker source, the diff otherwise reports the marker as
+            # an "added" phantom (+1) on every run. Directory patterns use
+            # the any-depth "<dir>/*" form (see cloud_sync for the
+            # verified rclone filter semantics).
+            "--exclude", ".AAM_SOURCE_SEEDED",
+            *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d, "--exclude", f"{d}/*")],
             # NOTE: --check-first and --transfers are intentionally omitted here.
             # rclone check does no file transfers, so both flags are no-ops.
             "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits

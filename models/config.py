@@ -471,8 +471,21 @@ class AppConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str) -> "AppConfig":
-        with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+        except UnicodeDecodeError as e:
+            # Live-verified in the 2026-08-19 E2E: a config saved in a
+            # legacy Windows encoding (cp1252 — e.g. an em-dash 0x97 in a
+            # header comment) crashes every flow with an opaque
+            # UnicodeDecodeError before any status/alert is recorded. Fail
+            # with a message the operator can act on.
+            raise ValueError(
+                f"Config file {path!r} is not valid UTF-8 "
+                f"(byte at offset {e.start} is not decodable). Re-save the "
+                f"file as UTF-8 (Notepad: Save As → encoding: UTF-8) and "
+                f"re-run."
+            ) from e
         return cls(**data)
 
 

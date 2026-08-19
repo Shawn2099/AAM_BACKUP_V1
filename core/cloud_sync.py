@@ -72,12 +72,18 @@ def build_rclone_sync_command(
         "--gcs-storage-class", storage_class,
         # NA-01: never back up the FY-rollover seed marker
         "--exclude", ".AAM_SOURCE_SEEDED",
-        # R4: exclude the same directories the LAN mirror does (robocopy /XD
-        # — MIRROR_EXCLUDED_DIRS). Shadow copies are OS junk, and
-        # $RECYCLE.BIN holds DELETED user files that must not reach GCS.
-        # The verify (rclone check) and diff (check --combined) commands carry
-        # the same exclusions so sync and verify see the identical file set.
-        *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d)],
+        # R4 (E2E-verified 2026-08-19): exclude the same directories the LAN
+        # mirror excludes (robocopy /XD — MIRROR_EXCLUDED_DIRS). Shadow copies
+        # are OS junk and $RECYCLE.BIN holds DELETED user files that must
+        # never reach GCS. rclone filter semantics (live-verified): a bare
+        # name pattern matches the FULL relative path exactly, so
+        # "--exclude <dir>" alone does NOT filter the directory's contents;
+        # the "<dir>/*" form (no leading slash) matches at ANY depth and
+        # filters every file beneath. Both forms are emitted for completeness
+        # (the bare form also suppresses the empty dir entry itself). The
+        # verify (rclone check) and diff (check --combined) commands carry
+        # the identical exclusions so sync and verify see the same file set.
+        *[opt for d in MIRROR_EXCLUDED_DIRS for opt in ("--exclude", d, "--exclude", f"{d}/*")],
         "--error-on-no-transfer",
         "--modify-window", "2s",    # NTFS mtime granularity is 2 seconds.
                                      # Prevents false-positive re-uploads when a file
