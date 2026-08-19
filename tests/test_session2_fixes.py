@@ -362,11 +362,22 @@ class TestDetailedWalk:
         sub.mkdir()
         (sub / "f.txt").write_text("x")
         (tmp_path / "ok.txt").write_text("y")
-        os.chmod(sub, 0o000)
-        try:
+
+        # Cross-platform: os.chmod(0o000) has no permission semantics on
+        # Windows, so simulate the walk error by injecting a
+        # PermissionError through os.walk's onerror hook (works on both OSes).
+        orig_walk = os.walk
+
+        def mock_walk(top, topdown=True, onerror=None, followlinks=False):
+            for root, dirs, files in orig_walk(top, topdown=topdown, onerror=onerror, followlinks=followlinks):
+                if os.path.basename(root) == "noperm" and onerror is not None:
+                    onerror(PermissionError(13, "Permission denied", str(root)))
+                    continue
+                yield root, dirs, files
+
+        with patch("os.walk", side_effect=mock_walk):
             files, errors = walk_lan_destination_detailed(str(tmp_path))
-        finally:
-            os.chmod(sub, 0o755)
+
         assert errors >= 1
         # the readable file is still reported
         assert any(f["path"].endswith("ok.txt") for f in files)

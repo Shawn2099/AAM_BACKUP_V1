@@ -44,8 +44,10 @@ class TestFilesFailed:
             "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"
         )
         mock_run.return_value = MagicMock(returncode=9)
-        # point the (mocked) run at our prepared log
-        with patch.object(lan_sync, "tempfile") as mock_tf:
+        # point the (mocked) run at our prepared log. os.close is patched so
+        # the fake fd 3 from the mocked mkstemp is never closed for real
+        # (deterministic on both Windows and Linux — cross-platform fix).
+        with patch.object(lan_sync, "tempfile") as mock_tf, patch.object(lan_sync.os, "close"):
             mock_tf.mkstemp.return_value = (3, str(log_file))
             result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
 
