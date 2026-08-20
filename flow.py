@@ -28,7 +28,12 @@ from core.cloud_sync import run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.fy_router import get_fy_prefix
 from core.health import pre_backup_health
-from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
+from core.lan_manifest import (
+    WalkIncompleteError,
+    diff_snapshots,
+    snapshot_to_dict,
+    walk_lan_destination,
+)
 from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
@@ -233,7 +238,20 @@ def lan_preflight_task(config):
 def lan_snapshot_before_task(config):
     """Snapshot LAN destination before sync for diff comparison."""
     logger.info("Taking LAN snapshot (before sync)")
-    before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
+    try:
+        before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
+    except WalkIncompleteError as e:
+        # Some destination directories were unreadable. An incomplete BEFORE
+        # snapshot is safe to downgrade to empty: diff's "removed" is
+        # before-set minus after-set, so nothing can be falsely reported as
+        # removed (no false DB pruning); only "added" over-counts for this
+        # run and self-heals next run. The sync itself still proceeds.
+        logger.error(
+            f"Pre-sync LAN snapshot incomplete ({e}) — proceeding with an "
+            "empty before-snapshot; added/modified metrics for this run are "
+            "under-counted for the unreadable subtree(s)."
+        )
+        before = {}
     logger.info(f"LAN snapshot: {len(before)} files before sync")
     return before
 
@@ -450,10 +468,15 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         # and fail the run so it is visible in the Prefect console.
         if not verify_data.get("verified"):
             diff = verify_data.get("diff") or {}
+            # rclone check SOURCE DEST --combined semantics (verified live,
+            # 2026-08-20): '+' = present in source, ABSENT from cloud (added to
+            # dest), '-' = present in cloud only (unexpected/extra in cloud),
+            # '*' = size mismatch. The labels below MUST match that direction —
+            # a swapped label tells the operator the opposite of what is wrong.
             verify_err = (
                 "Cloud integrity verification FAILED after sync: rclone check found "
-                f"differences vs source (missing-from-cloud={len(diff.get('removed', []))}, "
-                f"unexpected-in-cloud={len(diff.get('added', []))}, "
+                f"differences vs source (missing-from-cloud={len(diff.get('added', []))}, "
+                f"unexpected-in-cloud={len(diff.get('removed', []))}, "
                 f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
                 "incomplete or out of sync. rclone sync is resumable — the next "
                 "scheduled run will re-sync the differences."
@@ -461,15 +484,24 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             status = "CLOUD_VERIFY_FAILED"
             error_msg = verify_err
             logger.error(verify_err)
+            alert_ok = True
             try:
-                send_failure_alert(
+                alert_ok = send_failure_alert(
                     config.notifications, config.firm_name, verify_err,
                     {"mode": "cloud", "status": status,
                      "exit_code": sync_result.get("exit_code")},
                     started_at,
                 )
             except Exception as alert_err:
+                alert_ok = False
                 logger.warning(f"Could not send verify-failure alert: {alert_err}")
+            if not alert_ok:
+                logger.critical(
+                    "ALERT DELIVERY FAILED — the verify-failure alert was NOT "
+                    "delivered; the operator was NOT notified that the cloud "
+                    "integrity check failed. Check SMTP connectivity/credentials."
+                )
+                _mark_run_alert_not_delivered(db_path, run_id)
             raise RuntimeError(verify_err)
 
         phase = "post"
@@ -632,8 +664,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 "some files were not copied. NAS shutdown SKIPPED — the next "
                 "run will re-sync the missing files."
             )
+            alert_ok = True
             try:
-                send_failure_alert(
+                alert_ok = send_failure_alert(
                     config.notifications, config.firm_name,
                     (
                         f"LAN backup PARTIAL: robocopy exit code "
@@ -647,7 +680,15 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     started_at,
                 )
             except Exception as alert_err:
+                alert_ok = False
                 logger.warning(f"Could not send partial-backup alert: {alert_err}")
+            if not alert_ok:
+                logger.critical(
+                    "ALERT DELIVERY FAILED — the PARTIAL-backup alert was NOT "
+                    "delivered; the operator was NOT notified that some files "
+                    "were not copied. Check SMTP connectivity/credentials."
+                )
+                _mark_run_alert_not_delivered(db_path, run_id)
         else:
             logger.info(f"LAN shutdown skipped — status is {status}")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
@@ -679,6 +720,23 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
 # ═══════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════
+
+def _mark_run_alert_not_delivered(db_path: str, run_id: str) -> None:
+    """Annotate one run's record with [ALERT_NOT_DELIVERED] (best-effort).
+
+    Used by pipeline-level alert sites (PARTIAL, verify-failed) where the
+    run_id is known. Never raises — an annotation failure must not mask the
+    original backup failure.
+    """
+    try:
+        db = ManifestDB(db_path)
+        try:
+            db.mark_alert_not_delivered(run_id=run_id)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Could not annotate run {run_id}: {e}")
+
 
 def _record_run(
     db_path: str,
@@ -750,9 +808,21 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     db = ManifestDB(config.paths.database_path)
     try:
         from core.report import send_weekly_report
-        send_weekly_report(db, config.notifications, config.firm_name)
+        had_runs = bool(db.get_runs_since(7))
+        sent = send_weekly_report(db, config.notifications, config.firm_name)
     finally:
         db.close()
+    # send_*_report returns False for BOTH "no runs (normal skip)" and
+    # "email not delivered" — previously the flow ignored the result either
+    # way, so a weekly report silently not arriving left no trace in Prefect.
+    if not sent and had_runs:
+        logger.error(
+            "Weekly report email was NOT delivered (runs exist for the period) "
+            "— check SMTP connectivity/credentials."
+        )
+        raise RuntimeError("Weekly report email failed to send")
+    if not sent:
+        logger.info("No runs in the last 7 days — weekly report skipped (normal)")
 
 
 @flow(name="monthly-report", log_prints=True)
@@ -770,9 +840,19 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     db = ManifestDB(config.paths.database_path)
     try:
         from core.report import send_monthly_report
-        send_monthly_report(db, config.notifications, config.firm_name)
+        had_runs = bool(db.get_runs_since(30))
+        sent = send_monthly_report(db, config.notifications, config.firm_name)
     finally:
         db.close()
+    # Same double-meaning False as the weekly flow — see comment there.
+    if not sent and had_runs:
+        logger.error(
+            "Monthly report email was NOT delivered (runs exist for the period) "
+            "— check SMTP connectivity/credentials."
+        )
+        raise RuntimeError("Monthly report email failed to send")
+    if not sent:
+        logger.info("No runs in the last 30 days — monthly report skipped (normal)")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -805,9 +885,10 @@ def rollover_check_flow(config_path: str = CONFIG_PATH):
         return "NO_ROLLOVER_NEEDED"
     except RolloverError as e:
         logger.error(f"FY rollover BLOCKED: {e}")
+        alert_ok = True
         try:
             cfg = load_config(config_path)
-            send_failure_alert(
+            alert_ok = send_failure_alert(
                 cfg.notifications, cfg.firm_name,
                 (
                     f"FY Rollover BLOCKED: {e} The fiscal-year transition "
@@ -819,7 +900,14 @@ def rollover_check_flow(config_path: str = CONFIG_PATH):
                 now_iso(),
             )
         except Exception as alert_err:
+            alert_ok = False
             logger.warning(f"Could not send rollover-blocked alert: {alert_err}")
+        if not alert_ok:
+            logger.critical(
+                "ALERT DELIVERY FAILED — the rollover-BLOCKED alert was NOT "
+                "delivered; the operator was NOT notified that the fiscal-year "
+                "transition is blocked. Check SMTP connectivity/credentials."
+            )
         raise
 
 
@@ -873,6 +961,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     _lock_path = config.paths.backup_lock_path
 
     excs = []
+    # Timestamp of this flow run — used to scope the [ALERT_NOT_DELIVERED]
+    # annotation to THIS run's run_history rows if the summary alert fails.
+    _flow_start_iso = now_iso()
 
     try:
         with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
@@ -914,16 +1005,43 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         if excs:
             error_summary = '; '.join(str(e) for e in excs)
             logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
+            alert_ok = True
             try:
-                send_failure_alert(
+                alert_ok = send_failure_alert(
                     config.notifications,
                     config.firm_name,
                     error_summary,
                     {"mode": mode},
                     timestamp=now_iso(),
                 )
-            except Exception:
-                pass
+            except Exception as alert_err:
+                alert_ok = False
+                logger.warning(f"Could not send failure alert: {alert_err}")
+            if not alert_ok:
+                # DOUBLE FAILURE: the backup failed AND the operator was not
+                # notified. Make it visible at every layer: a CRITICAL log
+                # line (log file + Prefect console via the bridge) and a
+                # [ALERT_NOT_DELIVERED] annotation on this run's record(s) so
+                # the dashboard/reports surface the notification gap. Before
+                # this fix the alert failure was swallowed by `except: pass`
+                # — during the 2026-07-25→08-13 blackout (backup + SMTP both
+                # network-blocked) 19 nights of failures produced no
+                # notification and no persistent trace of the gap.
+                logger.critical(
+                    "ALERT DELIVERY FAILED — the failure alert email was NOT "
+                    "delivered; the operator was NOT notified of this backup "
+                    "failure. Check SMTP connectivity, credentials, and "
+                    "network policy."
+                )
+                try:
+                    _ann_db = ManifestDB(config.paths.database_path)
+                    try:
+                        _n = _ann_db.mark_alert_not_delivered(since_iso=_flow_start_iso)
+                        logger.critical(f"Annotated {_n} run record(s) with [ALERT_NOT_DELIVERED]")
+                    finally:
+                        _ann_db.close()
+                except Exception as ann_err:
+                    logger.warning(f"Could not annotate run record(s): {ann_err}")
             raise ExceptionGroup("Backup completed with errors", excs)
 
         # ── Maintenance ──

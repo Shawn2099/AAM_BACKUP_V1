@@ -36,7 +36,11 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+# --capture=sys: fd-level capture races with loguru file-sink add/remove
+# (each add/remove churns fds; pytest's saved dup'd fd gets closed under it
+# and teardown raises OSError [Errno 9] Bad file descriptor — the "all
+# tests passed but exit code 1" noise). sys-level capture avoids the race.
+addopts = "-v --tb=short --capture=sys"
 filterwarnings = ["ignore::DeprecationWarning"]
 pythonpath = ["."]
 

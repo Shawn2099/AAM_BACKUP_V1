@@ -171,7 +171,23 @@ def run_final_backup(source_drive: str, lan_destination: str,
             )
             exit_code = result.get("exit_code", -1)
             lan_status = classify_lan_exit(exit_code)
-            if lan_status in ("LAN_COMPLETE", "LAN_PARTIAL"):
+            # classify_exit_code's contract: callers MUST distinguish anomaly
+            # PARTIAL (exit 4-7: bit 2, mismatches/extras — no files missing)
+            # from copy-error PARTIAL (exit 8-15: bit 3 — some files were NOT
+            # copied). At rollover the FY cutover is PERMANENT: after it, the
+            # old-FY LAN destination is never re-mirrored, so a bit-3 failure
+            # here strands the failed files forever while the dashboard shows
+            # "rollover complete". Block the cutover instead (RolloverError →
+            # visible failure, daily retry). Negative exit codes (-1 timeout)
+            # also set bit 3 in two's complement → blocked, as they must be.
+            if exit_code & 8:
+                logger.error(
+                    f"FY rollover: final LAN backup had COPY ERRORS "
+                    f"(exit {exit_code} → {lan_status}) — blocking cutover; "
+                    "the failed files would never be re-mirrored after the "
+                    "FY destination changes. The scheduled check retries."
+                )
+            elif lan_status in ("LAN_COMPLETE", "LAN_PARTIAL"):
                 lan_ok = True
                 logger.info(f"FY rollover: final LAN backup OK (exit {exit_code} → {lan_status})")
             else:

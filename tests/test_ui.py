@@ -77,19 +77,35 @@ class TestApiKeyHeader:
     def test_matching_key_returns_true(self):
         mock_request = MagicMock()
         mock_request.headers.get.return_value = "my-key"
-        with patch("ui._get_api_key", return_value="my-key"):
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value="my-key"):
             assert _check_api_key_header(mock_request) is True
 
     def test_mismatched_key_returns_false(self):
         mock_request = MagicMock()
         mock_request.headers.get.return_value = "wrong-key"
-        with patch("ui._get_api_key", return_value="my-key"):
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value="my-key"):
             assert _check_api_key_header(mock_request) is False
 
-    def test_empty_configured_key_returns_true(self):
+    def test_auth_disabled_returns_true(self):
+        """Auth disabled by config → no key required (existing behavior)."""
         mock_request = MagicMock()
-        with patch("ui._get_api_key", return_value=""):
+        mock_request.headers.get.return_value = ""
+        with patch("ui._auth_enabled", return_value=False):
             assert _check_api_key_header(mock_request) is True
+
+    def test_empty_configured_key_fails_closed(self):
+        """Auth enabled but api_key empty → DENY (fail-closed). The old code
+        returned True here (any key accepted), silently disabling the
+        authentication the operator asked for."""
+        mock_request = MagicMock()
+        mock_request.headers.get.return_value = "anything"
+        import ui
+        ui._empty_api_key_warned = False
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value=""):
+            assert _check_api_key_header(mock_request) is False
 
 
 class TestLastRunSummary:

@@ -74,11 +74,16 @@ class TestCloudVerifyFailure:
         # True terminal status recorded (F1+F2)
         args = mock_record.call_args.args
         assert args[4] == "CLOUD_VERIFY_FAILED"
-        assert "missing-from-cloud=2" in args[6]
+        # F1 label fix: rclone check SOURCE DEST — '+' (added) = present in
+        # source, ABSENT from cloud = missing-from-cloud; '-' (removed) =
+        # cloud-only = unexpected-in-cloud. Fixture: added=1, removed=2.
+        assert "missing-from-cloud=1" in args[6]
+        assert "unexpected-in-cloud=2" in args[6]
         # Alert fired with the verify details
         mock_alert.assert_called_once()
         alert_err = mock_alert.call_args.args[2]
-        assert "missing-from-cloud=2" in alert_err
+        assert "missing-from-cloud=1" in alert_err
+        assert "unexpected-in-cloud=2" in alert_err
         assert "size-changed=1" in alert_err
         # Observed cloud state still recorded to the DB before failing
         mock_record_task.assert_called_once()

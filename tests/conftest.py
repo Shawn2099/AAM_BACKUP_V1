@@ -158,3 +158,46 @@ def prevent_mock_db_leaks(monkeypatch):
         monkeypatch.setattr("core.manifest.ManifestDB.__init__", patched_init)
     except ImportError:
         pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def redirect_test_logging():
+    """Never let tests configure loguru into the configured log directory.
+
+    Several tests execute real flow code paths with production-derived
+    configs; without this guard their configure_logging() calls would create
+    loguru file sinks under the configured (production) log directory and
+    interleave test noise into production log files.
+
+    The shim is a no-op (adds no sink and never calls logger.remove()):
+    loguru's default stderr sink keeps showing logs, no file fds are churned
+    (a per-call file sink leaked an atexit "Bad file descriptor" crash), and
+    logger.remove() would destroy other tests' capture sinks mid-session.
+    """
+    import core.logging as core_logging
+
+    def safe_configure(log_dir, log_retention_days=30):
+        return None  # deliberately add no file sink in tests
+
+    core_logging._aam_original_configure = core_logging.configure
+    core_logging.configure = safe_configure
+    patched = []
+    try:
+        import flow as flow_mod
+        flow_mod.configure_logging = safe_configure
+        patched.append(flow_mod)
+    except Exception:
+        pass
+    try:
+        import core as core_pkg
+        core_pkg.configure_logging = safe_configure
+        patched.append(core_pkg)
+    except Exception:
+        pass
+
+    yield
+
+    original = core_logging._aam_original_configure
+    core_logging.configure = original
+    for mod in patched:
+        mod.configure_logging = original

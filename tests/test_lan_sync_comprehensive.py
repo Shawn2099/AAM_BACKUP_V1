@@ -105,7 +105,9 @@ class TestBuildRobocopyCommand:
         assert "/NP" in cmd
         assert "/NDL" in cmd
         assert "/NJH" in cmd
-        assert "/NJS" in cmd
+        # F12-fix: the job summary must stay in the log — its "Files :" line
+        # carries the authoritative FAILED count parsed by run_lan_sync.
+        assert "/NJS" not in cmd
         assert "/TS" in cmd
         assert "/FP" in cmd
         assert "/V" in cmd

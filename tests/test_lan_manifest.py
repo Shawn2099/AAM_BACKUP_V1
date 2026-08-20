@@ -1,7 +1,16 @@
 """Tests for lan_manifest — filesystem walk, snapshot, and diff logic."""
 
+import os
+from unittest.mock import patch
 
-from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
+import pytest
+
+from core.lan_manifest import (
+    WalkIncompleteError,
+    diff_snapshots,
+    snapshot_to_dict,
+    walk_lan_destination,
+)
 
 
 class TestWalkLanDestination:
@@ -35,6 +44,45 @@ class TestWalkLanDestination:
         (tmp_path / "ok.txt").write_text("fine")
         files = walk_lan_destination(str(tmp_path))
         assert len(files) == 1
+
+
+class TestWalkIncomplete:
+    """P2 fix: per-directory walk errors must not be swallowed silently.
+
+    An incomplete snapshot fed to diff_snapshots would report intact files
+    as "removed" and prune their DB rows (silent manifest under-reporting).
+    """
+
+    def test_directory_error_raises_walk_incomplete(self, tmp_path):
+        (tmp_path / "ok.txt").write_text("fine")
+        (tmp_path / "locked").mkdir()
+
+        def fake_walk(path, topdown=True, onerror=None, followlinks=False):
+            if onerror:
+                onerror(OSError(5, "Access is denied", str(tmp_path / "locked")))
+            yield (str(tmp_path), ["locked"], ["ok.txt"])
+
+        with patch("core.lan_manifest.os.walk", side_effect=fake_walk):
+            with pytest.raises(WalkIncompleteError) as ei:
+                walk_lan_destination(str(tmp_path))
+        assert "locked" in str(ei.value)
+        assert len(ei.value.errors) == 1
+
+    def test_clean_walk_does_not_raise(self, tmp_path):
+        (tmp_path / "a.txt").write_text("x")
+        # plain call — no errors expected on a healthy local dir
+        assert len(walk_lan_destination(str(tmp_path))) == 1
+
+    def test_error_message_names_first_failure(self, tmp_path):
+        err = WalkIncompleteError(
+            r"\\nas\share",
+            [r"\\nas\share\bad1: [WinError 5] Access is denied",
+             r"\\nas\share\bad2: [WinError 32] Sharing violation"],
+        )
+        assert "2 directories were unreadable" in str(err)
+        assert "bad1" in str(err)
+        assert err.unc_path == r"\\nas\share"
+        assert len(err.errors) == 2
 
 
 class TestSnapshotToDict:

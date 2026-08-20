@@ -115,3 +115,58 @@ class TestManifestEdgeCases:
             db.upsert_file_entry(f"file_{i}.txt", i, float(i), cloud_status="synced")
         assert db.file_count("cloud_status") == 100
         db.close()
+
+
+class TestMarkAlertNotDelivered:
+    """[ALERT_NOT_DELIVERED] annotation — double-failure visibility (backup
+    failed AND the failure email was not delivered)."""
+
+    def _insert(self, db, run_id, mode, started_at, error):
+        db.insert_run({
+            "run_id": run_id, "mode": mode,
+            "started_at": started_at, "status": "CLOUD_FAILED",
+            "error_message": error,
+        })
+
+    def test_annotate_by_run_id(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        self._insert(db, "r1", "cloud", "2026-08-20T00:00:00Z", "boom")
+        self._insert(db, "r2", "lan", "2026-08-20T01:00:00Z", "other")
+        n = db.mark_alert_not_delivered(run_id="r1")
+        assert n == 1
+        runs = {r["run_id"]: r for r in db.get_recent_runs(10)}
+        assert runs["r1"]["error_message"].endswith("[ALERT_NOT_DELIVERED]")
+        assert runs["r2"]["error_message"] == "other"
+        db.close()
+
+    def test_annotate_by_since_iso_scopes_to_flow_run(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        self._insert(db, "old", "cloud", "2026-08-19T00:00:00Z", "old fail")
+        self._insert(db, "new", "cloud", "2026-08-20T00:00:00Z", "new fail")
+        n = db.mark_alert_not_delivered(since_iso="2026-08-20T00:00:00Z")
+        assert n == 1
+        runs = {r["run_id"]: r for r in db.get_recent_runs(10)}
+        assert runs["old"]["error_message"] == "old fail"
+        assert runs["new"]["error_message"].endswith("[ALERT_NOT_DELIVERED]")
+        db.close()
+
+    def test_null_error_message_still_annotated(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        self._insert(db, "r1", "lan", "2026-08-20T00:00:00Z", None)
+        n = db.mark_alert_not_delivered(run_id="r1")
+        assert n == 1
+        assert db.last_run("lan")["error_message"].strip() == "[ALERT_NOT_DELIVERED]"
+        db.close()
+
+    def test_idempotent(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        self._insert(db, "r1", "cloud", "2026-08-20T00:00:00Z", "boom")
+        assert db.mark_alert_not_delivered(run_id="r1") == 1
+        assert db.mark_alert_not_delivered(run_id="r1") == 0
+        assert db.last_run("cloud")["error_message"].count("[ALERT_NOT_DELIVERED]") == 1
+        db.close()
+
+    def test_no_target_returns_zero(self, temp_db_path):
+        db = ManifestDB(temp_db_path)
+        assert db.mark_alert_not_delivered() == 0
+        db.close()

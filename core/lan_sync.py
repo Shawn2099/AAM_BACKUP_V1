@@ -36,16 +36,43 @@ def _validate_required_flags(flags: list[str]) -> None:
 
 _FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
 
+# F12-fix (verified against real robocopy output, 2026-08-20): a file that
+# cannot be copied does NOT produce a "** FAILED: <path>" line. Sharing
+# violations and access denials print per-file
+#     "ERROR <n> (0x...) Copying File <path>"
+# blocks plus "ERROR: RETRY LIMIT EXCEEDED." — the legacy regex above matches
+# none of them and always returned 0 in production. The authoritative count is
+# robocopy's own job summary, which ends with:
+#     Files :   <total> <copied> <skipped> <mismatch> <FAILED> <extras>
+# Parsing it requires the job summary to be in the log — so /NJS must NOT be
+# set (removed from build_robocopy_command; the ~10 summary lines are cheap).
+_SUMMARY_FILES_LINE = re.compile(
+    r"^\s*Files\s*:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)",
+    re.MULTILINE,
+)
+
 
 def count_failed_lines(log_text: str) -> int:
-    """Count robocopy per-file failure lines ("** FAILED: <path>") in a log tail.
+    """Legacy fallback: count "** FAILED: <path>" lines (see F12-fix note).
 
-    Robocopy prints one such line per file that could not be copied. The count
-    is taken over the captured tail only; if a run fails more files than fit
-    in the tail window the true number is higher (the tail is the contract:
-    bounded payload, actionable diagnostics).
+    Real robocopy output rarely contains such lines; kept because some log
+    variants/tools do, and as a secondary signal when the job summary is
+    absent from the captured tail.
     """
     return len(_FAILED_LINE.findall(log_text))
+
+
+def count_failed_files_from_summary(log_text: str) -> int | None:
+    """Return the FAILED count from robocopy's job summary (Files line).
+
+    Returns None when no job summary is present in the text (caller should
+    fall back to count_failed_lines). Uses the LAST summary line so a log
+    containing multiple runs still reports the final one.
+    """
+    matches = _SUMMARY_FILES_LINE.findall(log_text)
+    if not matches:
+        return None
+    return int(matches[-1][4])
 
 
 def _read_log_tail(log_path: Path, max_bytes: int) -> str:
@@ -172,7 +199,9 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         /TS     — Include source file timestamps in log output.
         /FP     — Include full file paths in log (critical for failure diagnosis).
         /NJH    — No job header (reduces log noise).
-        /NJS    — No job summary (we parse exit code, not summary text).
+        (the job summary is INTENTIONALLY kept — F12-fix: the FAILED column of
+        the "Files :" summary line is the authoritative failed-file count; do
+        NOT add /NJS back)
         /NDL    — No directory list (individual file lines are sufficient).
         /NP     — No progress percentage (meaningless in log files).
         /XD     — Exclude "System Volume Information" to avoid access errors on
@@ -187,7 +216,7 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
         "/V", "/TS", "/FP",
-        "/NJH", "/NJS", "/NDL", "/NP",
+        "/NJH", "/NDL", "/NP",
         "/XF", ".AAM_TARGET_MOUNTED",
         "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
@@ -256,10 +285,17 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             # Real failure: bit 4 (fatal) or bit 3 (copy errors) set.
             # Capture full log tail for alert system and operator triage.
             error_msg = _read_log_tail(log_path, _ERROR_LOG_TAIL)
-            # F12: count which files actually failed — robocopy prints one
-            # "** FAILED: <path>" line per failed file, so the operator gets a
-            # number (and the paths in the tail) instead of an opaque code.
-            files_failed = count_failed_lines(error_msg)
+            # F12 (fixed): count which files actually failed. Primary source is
+            # robocopy's own job summary ("Files : ... FAILED ..." line —
+            # authoritative, verified against real output); the legacy
+            # "** FAILED:" line count is only a fallback for logs without a
+            # summary. The operator gets a number (and the per-file ERROR
+            # blocks in the tail) instead of an opaque exit code.
+            summary_failed = count_failed_files_from_summary(error_msg)
+            if summary_failed is not None:
+                files_failed = summary_failed
+            else:
+                files_failed = count_failed_lines(error_msg)
             logger.error(
                 f"LAN sync FAILED (exit {result.returncode}) — "
                 f"{len(error_msg)} bytes of log captured in result['error'], "

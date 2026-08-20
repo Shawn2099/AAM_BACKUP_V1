@@ -14,11 +14,19 @@ LOG_FORMAT = (
 def configure(log_dir: str | Path, log_retention_days: int = 30) -> None:
     """Configure Loguru with daily rotating file + stderr output.
 
+    The Prefect bridge sink (see configure_prefect_bridge) is restored after
+    the internal logger.remove(): without this, the SECOND configure() call
+    in a long-lived process (i.e. every flow run after the first in the
+    always-on agent) permanently killed loguru→Prefect forwarding while file
+    logging continued — logs silently missing from the Prefect console for
+    the process lifetime.
+
     Args:
         log_dir: Directory for log files. Created if missing.
         log_retention_days: Days before log files are auto-deleted.
-                            Override via config.maintenance.log_retention_days.
+                             Override via config.maintenance.log_retention_days.
     """
+    global _bridge_sink_id
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -41,17 +49,27 @@ def configure(log_dir: str | Path, log_retention_days: int = 30) -> None:
         enqueue=True,
     )
 
+    # Restore the Prefect bridge if it was active before the remove() above.
+    # The sink callable is kept in a module global (loguru 0.7.x has no
+    # public sink inspection API, so we track it ourselves).
+    if _bridge_sink_fn is not None:
+        _bridge_sink_id = logger.add(_bridge_sink_fn, level="INFO")
+
 
 _bridge_configured = False
+_bridge_sink_id: int | None = None
+_bridge_sink_fn = None
 
 
 def configure_prefect_bridge():
     """Forward Loguru messages to the active Prefect run logger if running under Prefect.
 
-    Idempotent — safe to call on every flow run. Only adds the sink once.
+    Idempotent — safe to call on every flow run. Tracks its sink by id; if
+    the flag is set but the sink was removed (only configure() does that,
+    and it re-adds the stored callable), nothing happens.
     """
-    global _bridge_configured
-    if _bridge_configured:
+    global _bridge_configured, _bridge_sink_id, _bridge_sink_fn
+    if _bridge_configured and _bridge_sink_id is not None:
         return
 
     from prefect.context import FlowRunContext, TaskRunContext
@@ -108,5 +126,13 @@ def configure_prefect_bridge():
             except Exception:
                 logger.opt(depth=1, exception=False).debug("Prefect bridge failed to forward message")
 
-    logger.add(prefect_sink, level="INFO")
+    # Drop a stale sink id if one exists (flag reset without sink removal).
+    if _bridge_sink_id is not None:
+        try:
+            logger.remove(_bridge_sink_id)
+        except ValueError:
+            pass
+    # Keep the callable so configure() can re-add it after logger.remove().
+    _bridge_sink_fn = prefect_sink
+    _bridge_sink_id = logger.add(prefect_sink, level="INFO")
     _bridge_configured = True

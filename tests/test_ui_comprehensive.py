@@ -167,27 +167,42 @@ class TestRequireAuth:
 class TestApiKeyHeader:
     def test_matching_key_returns_true(self):
         mock_req = _make_request(headers={"X-API-Key": "my-key"})
-        with patch("ui._get_api_key", return_value="my-key"):
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value="my-key"):
             assert _check_api_key_header(mock_req) is True
 
     def test_mismatched_key_returns_false(self):
         mock_req = _make_request(headers={"X-API-Key": "wrong"})
-        with patch("ui._get_api_key", return_value="my-key"):
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value="my-key"):
             assert _check_api_key_header(mock_req) is False
 
-    def test_empty_configured_key_returns_true(self):
+    def test_auth_disabled_returns_true(self):
+        """Auth disabled by config → no key required (existing behavior)."""
         mock_req = _make_request()
-        with patch("ui._get_api_key", return_value=""):
+        with patch("ui._auth_enabled", return_value=False):
             assert _check_api_key_header(mock_req) is True
+
+    def test_empty_configured_key_fails_closed(self):
+        """Auth enabled but api_key empty → DENY. The old code returned True
+        here (any key accepted), silently disabling the requested auth."""
+        mock_req = _make_request()
+        import ui
+        ui._empty_api_key_warned = False
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value=""):
+            assert _check_api_key_header(mock_req) is False
 
     def test_missing_header_returns_false(self):
         mock_req = _make_request()
-        with patch("ui._get_api_key", return_value="secret"):
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value="secret"):
             assert _check_api_key_header(mock_req) is False
 
     def test_uses_hmac_compare_digest(self):
         mock_req = _make_request(headers={"X-API-Key": "key"})
-        with patch("ui._get_api_key", return_value="key"), \
+        with patch("ui._auth_enabled", return_value=True), \
+             patch("ui._get_api_key", return_value="key"), \
              patch("hmac.compare_digest", return_value=True) as mock_cmp:
             _check_api_key_header(mock_req)
             mock_cmp.assert_called_once_with("key", "key")

@@ -18,6 +18,7 @@ from core import lan_sync, lan_preflight, report, time_utils
 from core.lan_sync import (
     _read_log_tail,
     cleanup_orphaned_robocopy_logs,
+    count_failed_files_from_summary,
     count_failed_lines,
     run_lan_sync,
 )
@@ -54,6 +55,47 @@ class TestFilesFailed:
 
     @patch("core.lan_sync.subprocess.run")
     @patch("core.lan_sync.resolve_binary", return_value="robocopy")
+    def test_real_robocopy_failure_output_counts_from_summary(self, mock_resolve, mock_run, tmp_path, lan_cfg):
+        """F12-fix regression: REAL robocopy failure output (sharing violation)
+        has NO '** FAILED:' lines — the count must come from the job summary.
+        Output captured verbatim from robocopy on 2026-08-20 (exit 9)."""
+        log_file = tmp_path / "robocopy_sync_real.log"
+        log_file.write_text(
+            "\n"
+            "\t    Older      \t      14\tC:\\src\\a.txt\n"
+            "2026/08/20 10:06:06 ERROR 32 (0x00000020) Copying File C:\\src\\a.txt\n"
+            "The process cannot access the file because it is being used by another process.\n"
+            "\n"
+            "\n"
+            "\t    Older      \t       3\tC:\\src\\b.txtWaiting 1 seconds...\n"
+            "\t    Older      \t      14\tC:\\src\\a.txt Retrying...\n"
+            "2026/08/20 10:06:07 ERROR 32 (0x00000020) Copying File C:\\src\\a.txt\n"
+            "The process cannot access the file because it is being used by another process.\n"
+            "\n"
+            "\n"
+            "ERROR: RETRY LIMIT EXCEEDED.\n"
+            "\n"
+            "\n"
+            "------------------------------------------------------------------------------\n"
+            "\n"
+            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
+            "    Dirs :         1         1         1         0         0         0\n"
+            "   Files :         2         1         0         0         1         0\n"
+            "   Bytes :        17         3         0         0        14         0\n"
+            "   Times :   0:00:01   0:00:00                       0:00:00   0:00:01\n"
+            "   Ended : 20 August 2026 10:06:07\n"
+        )
+        mock_run.return_value = MagicMock(returncode=9)
+        with patch.object(lan_sync, "tempfile") as mock_tf, \
+             patch("core.lan_sync.os.close"):  # mock fd: don't close a real fd
+            mock_tf.mkstemp.return_value = (3, str(log_file))
+            result = run_lan_sync("D:\\", "\\\\nas\\FY26-27", lan_cfg)
+
+        assert result["status"] == "LAN_PARTIAL"
+        assert result["files_failed"] == 1  # summary, not the (nonexistent) FAILED lines
+
+    @patch("core.lan_sync.subprocess.run")
+    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     def test_clean_run_files_failed_zero(self, mock_resolve, mock_run, lan_cfg):
         mock_run.return_value = MagicMock(returncode=1)
         result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
@@ -77,6 +119,41 @@ class TestCountFailedLines:
           ** FAILED: \\\\a\\2.bin
 """
         assert count_failed_lines(log) == 2
+
+
+class TestCountFailedFilesFromSummary:
+    """F12-fix: the job summary is the authoritative failed-file count.
+
+    Verified against real robocopy output (sharing violation + access
+    denied, 2026-08-20): failed copies produce per-file
+    'ERROR <n> (0x...) Copying File <path>' blocks, NOT '** FAILED:' lines.
+    """
+
+    def test_parses_failed_column(self):
+        log = (
+            "    Dirs :         1         1         1         0         0         0\n"
+            "   Files :         2         1         0         0         1         0\n"
+            "   Bytes :        17         3         0         0        14         0\n"
+        )
+        assert count_failed_files_from_summary(log) == 1
+
+    def test_zero_failures(self):
+        log = "   Files :         3         3         0         0         0         0\n"
+        assert count_failed_files_from_summary(log) == 0
+
+    def test_multi_digit_counts(self):
+        log = "   Files :      120        90        10         0        15         5\n"
+        assert count_failed_files_from_summary(log) == 15
+
+    def test_no_summary_returns_none(self):
+        assert count_failed_files_from_summary("no summary here\nERROR 32 (0x00000020) Copying File C:\\a.txt\n") is None
+
+    def test_uses_last_summary_when_multiple(self):
+        log = (
+            "   Files :         2         1         0         0         1         0\n"
+            "   Files :         5         2         0         0         3         0\n"
+        )
+        assert count_failed_files_from_summary(log) == 3
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -233,6 +233,61 @@ class TestRunFinalBackup:
 
         assert lan_ok is False
 
+    @patch("core.fy_rollover.classify_lan_exit", return_value="LAN_PARTIAL")
+    @patch("core.fy_rollover.run_lan_sync")
+    def test_lan_copy_error_partial_blocks_rollover(self, mock_sync, mock_classify):
+        """P1 regression: exit 10 (bit 3 set — copy errors) must NOT be
+        accepted at cutover. The FY destination change is permanent; failed
+        files would never be re-mirrored. (Before the fix this returned
+        lan_ok=True and the cutover proceeded.)"""
+        mock_sync.return_value = {"exit_code": 10}
+        cloud_cfg = _make_cloud_config(enabled=False)
+        lan_cfg = _make_lan_config(enabled=True)
+        config = _make_full_config()
+        config.wol.enabled = False
+
+        _, lan_ok = run_final_backup(
+            "D:\\FY26-27", "\\\\NAS\\share\\FY26-27",
+            lan_cfg, cloud_cfg, _make_paths_config(), config, "FY26-27",
+        )
+
+        assert lan_ok is False
+
+    @patch("core.fy_rollover.classify_lan_exit", return_value="LAN_PARTIAL")
+    @patch("core.fy_rollover.run_lan_sync")
+    def test_lan_anomaly_partial_allowed(self, mock_sync, mock_classify):
+        """Exit 5 (bit 2 only — mismatches/extras, no copy errors) is safe:
+        no files are missing, so the cutover may proceed."""
+        mock_sync.return_value = {"exit_code": 5}
+        cloud_cfg = _make_cloud_config(enabled=False)
+        lan_cfg = _make_lan_config(enabled=True)
+        config = _make_full_config()
+        config.wol.enabled = False
+
+        _, lan_ok = run_final_backup(
+            "D:\\FY26-27", "\\\\NAS\\share\\FY26-27",
+            lan_cfg, cloud_cfg, _make_paths_config(), config, "FY26-27",
+        )
+
+        assert lan_ok is True
+
+    @patch("core.fy_rollover.classify_lan_exit", return_value="LAN_FAILED")
+    @patch("core.fy_rollover.run_lan_sync")
+    def test_lan_timeout_blocks_rollover(self, mock_sync, mock_classify):
+        """exit -1 (timeout sentinel) sets bit 3 in two's complement → blocked."""
+        mock_sync.return_value = {"exit_code": -1}
+        cloud_cfg = _make_cloud_config(enabled=False)
+        lan_cfg = _make_lan_config(enabled=True)
+        config = _make_full_config()
+        config.wol.enabled = False
+
+        _, lan_ok = run_final_backup(
+            "D:\\FY26-27", "\\\\NAS\\share\\FY26-27",
+            lan_cfg, cloud_cfg, _make_paths_config(), config, "FY26-27",
+        )
+
+        assert lan_ok is False
+
     @patch("core.fy_rollover.run_cloud_sync", side_effect=RuntimeError("cloud err"))
     def test_cloud_runtime_error(self, mock_sync):
         cloud_cfg = _make_cloud_config(enabled=True)

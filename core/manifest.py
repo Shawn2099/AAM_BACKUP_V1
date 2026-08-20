@@ -449,6 +449,45 @@ class ManifestDB:
             )
             conn.commit()
 
+    def mark_alert_not_delivered(self, run_id: str | None = None,
+                                 since_iso: str | None = None) -> int:
+        """Annotate run_history record(s) with [ALERT_NOT_DELIVERED].
+
+        Called when a failure alert could NOT be delivered (SMTP down,
+        blocked, or misconfigured) — the double-failure case where the backup
+        failed AND the operator was not notified. Previously this case left
+        no trace beyond an ERROR line in the log file (the 2026-07-25→08-13
+        blackout had 19 nights of exactly this). The annotation makes the
+        notification gap visible in the dashboard and reports.
+
+        Targeting: by exact run_id when known (pipeline call sites), else by
+        started_at >= since_iso (flow summary, which spans both pipelines).
+
+        Idempotent — rows already annotated are left untouched. Returns the
+        number of rows annotated. Never raises (best-effort).
+        """
+        if not run_id and not since_iso:
+            return 0
+        marker = " [ALERT_NOT_DELIVERED]"
+        sql = ("UPDATE run_history "
+               "SET error_message = COALESCE(error_message || ' ', '') || ? "
+               "WHERE COALESCE(error_message, '') NOT LIKE ? ")
+        params: list = [marker, "%ALERT_NOT_DELIVERED%"]
+        if run_id:
+            sql += "AND run_id = ? "
+            params.append(run_id)
+        else:
+            sql += "AND started_at >= ? "
+            params.append(since_iso)
+        try:
+            with self._lock:
+                conn = self._get_conn()
+                cur = conn.execute(sql, params)
+                conn.commit()
+                return cur.rowcount
+        except sqlite3.Error:
+            return 0
+
     def get_runs_since(self, days: int, mode: str | None = None) -> list[dict]:
         cutoff = cutoff_iso(days)
         with self._lock:

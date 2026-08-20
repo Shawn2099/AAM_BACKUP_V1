@@ -107,11 +107,32 @@ def _auth_enabled() -> bool:
 
 
 def _check_api_key_header(request: Request) -> bool:
+    if not _auth_enabled():
+        return True
     header_key = request.headers.get("X-API-Key", "")
     configured_key = _get_api_key()
     if not configured_key:
-        return True
+        # FAIL CLOSED: auth is enabled but no API key is configured. The old
+        # code returned True here (any key accepted), which silently
+        # disabled the authentication the operator asked for. Deny instead,
+        # and say so — the fix is to set dashboard.api_key in config.yaml.
+        _warn_empty_api_key_once()
+        return False
     return hmac.compare_digest(header_key, configured_key)
+
+
+_empty_api_key_warned = False
+
+
+def _warn_empty_api_key_once() -> None:
+    global _empty_api_key_warned
+    if not _empty_api_key_warned:
+        _empty_api_key_warned = True
+        logger.error(
+            "Dashboard auth is enabled but dashboard.api_key is EMPTY — "
+            "requests are being DENIED (fail-closed). Set a non-empty "
+            "api_key in config.yaml to unlock the dashboard."
+        )
 
 # ── Lazy config (works on any OS, validates only on use) ─────
 # TTL-based refresh ensures the dashboard picks up config.yaml changes
@@ -244,6 +265,17 @@ button:hover {{ background: #1d4ed8; }}
 </html>"""
 
 
+def _login_success_response() -> RedirectResponse:
+    """303 redirect to the dashboard with a fresh session cookie."""
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(
+        key="session", value=_create_session(),
+        httponly=True, samesite="lax",
+        max_age=int(_SESSION_TTL.total_seconds()),
+    )
+    return resp
+
+
 @app.post("/login")
 async def login_submit(request: Request):
     client_ip = request.client.host if request.client else "unknown"
@@ -252,15 +284,20 @@ async def login_submit(request: Request):
     form = await request.form()
     api_key = form.get("api_key", "")
     configured_key = _get_api_key()
-    if not configured_key or hmac.compare_digest(str(api_key), configured_key):
-        token = _create_session()
-        resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(
-            key="session", value=token,
-            httponly=True, samesite="lax",
-            max_age=int(_SESSION_TTL.total_seconds()),
+    if not _auth_enabled():
+        # Auth disabled by configuration — no key required (existing behavior).
+        return _login_success_response()
+    if configured_key and hmac.compare_digest(str(api_key), configured_key):
+        return _login_success_response()
+    if not configured_key:
+        # Fail closed — matches _check_api_key_header. The old code accepted
+        # ANY submitted key when the configured key was empty.
+        _warn_empty_api_key_once()
+        return RedirectResponse(
+            "/login?error=API+key+is+not+configured+(auth+is+enabled).+"
+            "Set+dashboard.api_key+in+config.yaml.",
+            status_code=303,
         )
-        return resp
     return RedirectResponse("/login?error=Invalid+API+key", status_code=303)
 
 
@@ -322,16 +359,20 @@ async def dashboard(request: Request, status: str = ""):
         return templates.TemplateResponse("dashboard.html", context)
 
 
-@app.get("/status")
-async def status(request: Request):
-    _require_auth(request)
-    cfg = _cfg()
+def _status_db_data() -> dict:
+    """All synchronous SQLite reads for /status.
 
+    Runs in a threadpool via asyncio.to_thread: /status is an async
+    endpoint, so any code in it executes on the event loop (the F13
+    threadpool note applies only to sync endpoints). A slow or locked
+    SQLite read would otherwise freeze the ENTIRE dashboard — including
+    /health — until it returns.
+    """
     db = get_db()
     try:
         runs = db.get_recent_runs(25)
     except Exception:
-        return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
+        raise  # → 503 "ManifestDB not found" at the endpoint
 
     recent_runs = []
     for r in runs:
@@ -349,8 +390,30 @@ async def status(request: Request):
             "extended_metrics": r.get("extended_metrics", "")
         })
 
-    cloud_last_run = _last_run_summary(db, "cloud")
-    lan_last_run = _last_run_summary(db, "lan")
+    return {
+        "recent_runs": recent_runs,
+        "cloud_last_run": _last_run_summary(db, "cloud"),
+        "lan_last_run": _last_run_summary(db, "lan"),
+        "cloud_success": _get_last_success(db, "cloud"),
+        "lan_success": _get_last_success(db, "lan"),
+        "lan_files": db.file_count("lan_status"),
+        "cloud_files": db.file_count("cloud_status"),
+    }
+
+
+@app.get("/status")
+async def status(request: Request):
+    _require_auth(request)
+    cfg = _cfg()
+
+    try:
+        db_data = await asyncio.to_thread(_status_db_data)
+    except Exception:
+        return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
+
+    recent_runs = db_data["recent_runs"]
+    cloud_last_run = db_data["cloud_last_run"]
+    lan_last_run = db_data["lan_last_run"]
 
     return JSONResponse({
         "firm": cfg.firm_name,
@@ -362,18 +425,18 @@ async def status(request: Request):
         "cloud": {
             "running": await _is_running("cloud"),
             "last_run": cloud_last_run,
-            "last_success": _get_last_success(db, "cloud"),
+            "last_success": db_data["cloud_success"],
             "last_run_formatted": (cloud_last_run["started_at"] or "-")[:19].replace("T", " ") if cloud_last_run else "No data",
         },
         "lan": {
             "running": await _is_running("lan"),
             "last_run": lan_last_run,
-            "last_success": _get_last_success(db, "lan"),
+            "last_success": db_data["lan_success"],
             "last_run_formatted": (lan_last_run["started_at"] or "-")[:19].replace("T", " ") if lan_last_run else "No data",
         },
         "manifest": {
-            "lan_files": db.file_count("lan_status"),
-            "cloud_files": db.file_count("cloud_status"),
+            "lan_files": db_data["lan_files"],
+            "cloud_files": db_data["cloud_files"],
         },
         "health": await _get_health(),
         "recent_runs": recent_runs

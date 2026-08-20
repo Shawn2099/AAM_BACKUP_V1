@@ -322,6 +322,37 @@ class TestWeeklyReportFlow:
             mock_db.close.assert_called_once()
 
 
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.ManifestDB")
+    def test_send_failure_with_runs_raises(self, mock_db_cls, mock_log, mock_cfg):
+        """Runs exist for the period but the email was not delivered → the
+        scheduled run must FAIL in Prefect (visible), not return silently."""
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+        mock_db.get_runs_since.return_value = [{"run_id": "r1"}]
+        mock_config = MagicMock()
+        mock_config.notifications.weekly_enabled = True
+        mock_cfg.return_value = mock_config
+        with patch("core.report.send_weekly_report", return_value=False):
+            with pytest.raises(RuntimeError, match="Weekly report email failed to send"):
+                weekly_report_flow.fn("config.yaml")
+
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.ManifestDB")
+    def test_send_skip_without_runs_does_not_raise(self, mock_db_cls, mock_log, mock_cfg):
+        """No runs in the period → False is a normal skip, not a failure."""
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+        mock_db.get_runs_since.return_value = []
+        mock_config = MagicMock()
+        mock_config.notifications.weekly_enabled = True
+        mock_cfg.return_value = mock_config
+        with patch("core.report.send_weekly_report", return_value=False):
+            assert weekly_report_flow.fn("config.yaml") is None
+
+
 class TestMonthlyReportFlow:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
@@ -335,6 +366,20 @@ class TestMonthlyReportFlow:
             monthly_report_flow.fn("config.yaml")
             mock_send.assert_called_once()
             mock_db.close.assert_called_once()
+
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.ManifestDB")
+    def test_send_failure_with_runs_raises(self, mock_db_cls, mock_log, mock_cfg):
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+        mock_db.get_runs_since.return_value = [{"run_id": "r1"}]
+        mock_config = MagicMock()
+        mock_config.notifications.monthly_enabled = True
+        mock_cfg.return_value = mock_config
+        with patch("core.report.send_monthly_report", return_value=False):
+            with pytest.raises(RuntimeError, match="Monthly report email failed to send"):
+                monthly_report_flow.fn("config.yaml")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -401,3 +446,57 @@ class TestFailureAlertPath:
 
         with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
             backup.fn("config.yaml", "cloud")
+
+    @patch("flow.ManifestDB")
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.configure_prefect_bridge")
+    @patch("flow.send_failure_alert", return_value=False)
+    @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud error"))
+    def test_undelivered_alert_annotates_run_record(self, mock_pipeline, mock_alert,
+                                                   mock_bridge, mock_log, mock_cfg,
+                                                   mock_db_cls):
+        """Double failure: backup failed AND the alert email was not
+        delivered → the run's record must be annotated [ALERT_NOT_DELIVERED]
+        so the notification gap is visible in dashboard/reports (before the
+        fix the False return was swallowed by `except: pass`)."""
+        mock_config = MagicMock()
+        mock_config.cloud.enabled = True
+        mock_config.lan.enabled = False
+        mock_config.firm_name = "Test Firm"
+        mock_config.notifications = MagicMock()
+        mock_cfg.return_value = mock_config
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+
+        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
+            backup.fn("config.yaml", "cloud")
+
+        mock_alert.assert_called_once()
+        mock_db.mark_alert_not_delivered.assert_called_once()
+        _, kwargs = mock_db.mark_alert_not_delivered.call_args
+        assert "since_iso" in kwargs
+        mock_db.close.assert_called_once()
+
+    @patch("flow.ManifestDB")
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.configure_prefect_bridge")
+    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud error"))
+    def test_delivered_alert_does_not_annotate(self, mock_pipeline, mock_alert,
+                                               mock_bridge, mock_log, mock_cfg,
+                                               mock_db_cls):
+        mock_config = MagicMock()
+        mock_config.cloud.enabled = True
+        mock_config.lan.enabled = False
+        mock_config.firm_name = "Test Firm"
+        mock_config.notifications = MagicMock()
+        mock_cfg.return_value = mock_config
+
+        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
+            backup.fn("config.yaml", "cloud")
+
+        # Alert delivered → the annotation path (which opens its own
+        # ManifestDB) must not have run at all.
+        mock_db_cls.assert_not_called()
