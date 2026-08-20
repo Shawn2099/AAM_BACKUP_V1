@@ -7,7 +7,7 @@ The Prefect server runs as a separate process (start_server.bat).
 
 Services managed by this script:
   - Dashboard UI (in-process, configurable host:port)
-  - Backup scheduler (in-process, 4 deployments)
+  - Backup scheduler (in-process, 5 deployments)
 
 Ctrl+C stops both cleanly. The Prefect server continues running independently.
 """
@@ -244,6 +244,7 @@ def main():
             lan_deployment,
             report_deployment,
             monthly_deployment,
+            rollover_deployment,
             pause_on_shutdown=False,
         )
         shutdown_clean = True
