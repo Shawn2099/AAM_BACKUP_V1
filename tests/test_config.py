@@ -232,3 +232,74 @@ class TestAppConfig:
                 wol=WolConfig(mac_address="AA-BB-CC-DD-EE-FF", server_ip="10.0.0.1"),
                 dashboard=DashboardConfig(auth_enabled=False, api_key=""),
             )
+
+
+class TestUnknownRootKeyWarning:
+    """M8/S2-26: Pydantic's default extra='ignore' silently drops unknown
+    keys. The DEPLOYMENT_GUIDE shipped typo'd section names ('notification'
+    instead of 'notifications', 'email_from'/'email_to' instead of
+    'sender'/'recipients') — a deployment built from the guide had alerts
+    silently misconfigured while 05_test_config printed SUCCESS.
+
+    The fix is a LOAD-TIME WARNING on unknown TOP-LEVEL keys: the load must
+    still succeed (existing configs with legacy section-level keys like
+    notifications.send_on_success must keep loading — that silence is
+    deliberate and documented in the model), but the operator sees the
+    unknown key named at startup instead of discovering it as a missing
+    email three weeks later."""
+
+    _VALID_MINIMAL = (
+        'firm_name: "T"\n'
+        "paths:\n"
+        '  source_drive: "C:\\\\src"\n'
+        '  lan_destination: "\\\\\\\\10.0.0.1\\\\share"\n'
+        '  database_path: "C:\\\\t\\\\m.db"\n'
+        '  log_directory: "C:\\\\t\\\\logs"\n'
+        '  gcs_key_path: "C:\\\\t\\\\k.json"\n'
+        "cloud:\n"
+        "  enabled: true\n"
+        '  bucket: "aam-test-bucket"\n'
+        "lan:\n"
+        "  enabled: false\n"
+        "wol:\n"
+        '  mac_address: "AA-BB-CC-DD-EE-FF"\n'
+        '  server_ip: "10.0.0.1"\n'
+        "dashboard:\n"
+        "  auth_enabled: false\n"
+    )
+
+    def test_unknown_root_key_warns(self, temp_dir, capture_logs):
+        text = self._VALID_MINIMAL + (
+            "notification:\n"  # ← the guide's typo; real section is 'notifications'
+            '  smtp_host: "smtp.example.com"\n'
+        )
+        p = temp_dir / "config.yaml"
+        p.write_text(text, encoding="utf-8")
+
+        # Must still load (no crash) — warnings, not rejections.
+        cfg = load_config(str(p))
+        assert cfg.firm_name == "T"
+
+        logs = capture_logs.getvalue()
+        assert "notification" in logs
+        assert "unknown" in logs.lower()
+        assert "ignor" in logs.lower()  # the key will be ignored
+        assert "notifications" in logs  # suggests the correct name
+
+    def test_unknown_root_key_multiple_warns_all(self, temp_dir, capture_logs):
+        text = self._VALID_MINIMAL + (
+            "bogus_section:\n  x: 1\n"
+            "maintenance2:\n  y: 2\n"
+        )
+        p = temp_dir / "config.yaml"
+        p.write_text(text, encoding="utf-8")
+        load_config(str(p))
+        logs = capture_logs.getvalue()
+        assert "bogus_section" in logs
+        assert "maintenance2" in logs
+
+    def test_valid_config_no_unknown_key_warning(self, temp_dir, capture_logs, sample_yaml_config):
+        p = temp_dir / "config.yaml"
+        p.write_text(sample_yaml_config, encoding="utf-8")
+        load_config(str(p))
+        assert "unknown top-level" not in capture_logs.getvalue().lower()

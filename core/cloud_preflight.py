@@ -61,7 +61,18 @@ def run_cloud_dry_run(
     # ── Probe A: Source drive alive (Python, zero HDD IO) ──────────────────
     source_path = Path(source)
 
-    if not source_path.exists():
+    # M5/S2-12: Path.exists() re-raises OSErrors outside its small swallow
+    # set — e.g. WinError 5 (ACCESS_DENIED) from a share that answers
+    # ACCESS_DENIED instead of NOT_FOUND. Convert any stat error into the
+    # structured failure instead of a raw traceback escaping the pipeline.
+    try:
+        source_present = source_path.exists()
+    except OSError as exc:
+        msg = f"Source drive not accessible ({source}): {exc}"
+        logger.error(f"Cloud preflight [A] FAILED — {msg}")
+        return {"ok": False, "exit_code": -1, "error": msg}
+
+    if not source_present:
         msg = f"Source drive not accessible: {source}"
         logger.error(f"Cloud preflight [A] FAILED — {msg}")
         return {"ok": False, "exit_code": -1, "error": msg}

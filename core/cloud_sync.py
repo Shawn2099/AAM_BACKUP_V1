@@ -10,6 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
 
 
@@ -62,17 +63,33 @@ def build_rclone_sync_command(
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
+    # M6/S2-13: resolve rclone the same way preflight/verify do (deploy/bin
+    # first, then PATH). A bare "rclone" resolved through the OS PATH — and
+    # in production that picked up a DIFFERENT version from
+    # C:\Windows\system32 (1.74.2) while preflight/verify used deploy\bin
+    # (1.74.3): the sync and the verify that follows it could disagree on
+    # behavior.
+    rclone_exe = resolve_binary("rclone") or "rclone"
+
     return [
-        "rclone", "sync",
+        rclone_exe, "sync",
         source, dest,
         "--config", config_path,
         "--fast-list",
         "--gcs-no-check-bucket",
         "--gcs-storage-class", storage_class,
         "--error-on-no-transfer",
-        "--modify-window", "2s",    # NTFS mtime granularity is 2 seconds.
-                                     # Prevents false-positive re-uploads when a file
-                                     # is saved twice within the same NTFS tick.
+        # S2-30: --modify-window 2s REMOVED. With the window, rclone treated
+        # a same-size resave whose mtime landed within 2 s of the GCS
+        # object's mtime as UNCHANGED — and it stayed skipped on EVERY
+        # subsequent run (reproduced on real GCS, session-2 E1: sync exit 9,
+        # object byte-verified STALE). The "NTFS mtime granularity is 2 s"
+        # rationale was wrong (NTFS FILETIME is 100 ns; 2 s is FAT). Without
+        # the window, rclone compares size + exact mtime: GCS stores the
+        # source mtime verbatim (x-gcs-mtime), so unchanged files still
+        # match exactly (no re-upload storm — proven by test_cloud_02's
+        # idempotent second run on real hardware) while changed files are
+        # re-uploaded (proven by test_cloud_11, the E1 scenario).
         "--bwlimit", bwlimit,
         "--transfers", str(transfers),
         "--checkers", str(checkers),

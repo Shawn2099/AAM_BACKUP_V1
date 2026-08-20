@@ -834,3 +834,39 @@ class TestHardeningFixes:
         
         assert "CRITICAL DATA LOSS PREVENTION" in str(exc_info.value)
 
+
+class TestS220RolloverTargetGuard:
+    """S2-20: the real-hardware full-rollover test (tests/test_rt_05_fy_rollover.py::
+    test_fy_07) must never point its scenario at live production paths — its
+    cleanup rmtree would destroy E:\\FY26-27 and the NAS FY folder. The guard
+    is a pure function so it can be unit-tested without hardware."""
+
+    def test_guard_aborts_on_live_path_case_insensitive(self):
+        from tests.e2e_helpers import assert_safe_rollover_targets
+
+        live = {r"E:\FY26-27", r"\\nas\lan_backup\FY26-27"}
+        with pytest.raises(AssertionError, match="S2-20"):
+            assert_safe_rollover_targets([r"e:\fy26-27"], live)
+
+    def test_guard_aborts_on_nas_live_path(self):
+        from tests.e2e_helpers import assert_safe_rollover_targets
+
+        live = {r"\\nas\lan_backup\FY26-27"}
+        with pytest.raises(AssertionError, match="S2-20"):
+            assert_safe_rollover_targets(
+                [r"E:\scratch\FY23-24", r"\\NAS\lan_backup\FY26-27"], live
+            )
+
+    def test_guard_passes_for_scratch_paths(self):
+        from tests.e2e_helpers import assert_safe_rollover_targets
+
+        live = {r"E:\FY26-27", r"\\nas\lan_backup\FY26-27"}
+        assert_safe_rollover_targets(
+            [
+                r"E:\E2E_TEST_SOURCE\ROLLOVER\FY23-24",
+                r"\\nas\lan_backup\E2E_TEST_DEST\ROLLOVER\FY23-24",
+                r"E:\E2E_TEST_SOURCE\ROLLOVER\FY26-27",
+            ],
+            live,
+        )
+

@@ -500,3 +500,162 @@ class TestFailureAlertPath:
         # Alert delivered → the annotation path (which opens its own
         # ManifestDB) must not have run at all.
         mock_db_cls.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════
+# M3/S2-03 — concurrency-slot timeout: record + alert (was fully silent)
+# ═══════════════════════════════════════════════════════════════
+
+class TestConcurrencySlotTimeout:
+    """Session-2 finding M3 (S2-03): if the 'aam-backup' slot cannot be
+    acquired within the 1 h timeout (e.g. a stuck run held it — possible
+    given the 3×6 h cloud retry budget), Prefect's concurrency() raises
+    TimeoutError on entry. Pre-fix the flow failed in the Prefect console
+    with NO email, NO run_history row, and no dashboard trace — the one
+    fully-silent failure mode in the system. Now: a FAILED run row per
+    affected pipeline + one alert, then the raise (Prefect run still fails).
+    """
+
+    def _timeout_concurrency(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm(*args, **kwargs):
+            raise TimeoutError(
+                "Timed out waiting for concurrency limit 'aam-backup' "
+                "(limit 1, slots 1 held)"
+            )
+            yield  # unreachable — its presence makes this a generator
+
+        return _cm
+
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.configure_prefect_bridge")
+    @patch("flow.cleanup_orphaned_robocopy_logs")
+    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow._record_run")
+    @patch("flow._run_cloud_pipeline")
+    @patch("flow._run_lan_pipeline")
+    def test_slot_timeout_records_rows_and_alerts(
+        self, mock_lan_pipe, mock_cloud_pipe, mock_record, mock_alert,
+        mock_cleanup, mock_bridge, mock_log, mock_cfg,
+    ):
+        cfg = MagicMock()
+        cfg.cloud.enabled = True
+        cfg.lan.enabled = True
+        cfg.firm_name = "Test Firm"
+        cfg.notifications = MagicMock()
+        mock_cfg.return_value = cfg
+
+        with patch("flow.concurrency", self._timeout_concurrency()):
+            with pytest.raises(TimeoutError):
+                backup.fn("config.yaml", "all")
+
+        # No pipeline may have run
+        mock_cloud_pipe.assert_not_called()
+        mock_lan_pipe.assert_not_called()
+
+        # A FAILED run row was recorded for EACH pipeline this mode would
+        # have run — visible in reports and the dashboard even though no
+        # pipeline executed.
+        recorded = {c.args[2]: c for c in mock_record.call_args_list}
+        assert set(recorded) == {"cloud", "lan"}
+        assert recorded["cloud"].args[4] == "CLOUD_FAILED"
+        assert recorded["lan"].args[4] == "LAN_FAILED"
+        for c in recorded.values():
+            assert "concurrency" in (c.args[6] or "").lower()
+
+        # One alert telling the operator why nothing ran.
+        mock_alert.assert_called_once()
+        alert_msg = mock_alert.call_args.args[2]
+        assert "concurrency" in alert_msg.lower()
+        assert "did not run" in alert_msg.lower()
+
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.configure_prefect_bridge")
+    @patch("flow.cleanup_orphaned_robocopy_logs")
+    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow._record_run")
+    @patch("flow._run_cloud_pipeline")
+    @patch("flow._run_lan_pipeline")
+    def test_slot_timeout_single_mode_records_one_row(
+        self, mock_lan_pipe, mock_cloud_pipe, mock_record, mock_alert,
+        mock_cleanup, mock_bridge, mock_log, mock_cfg,
+    ):
+        """mode='cloud' → exactly one row (cloud), no LAN row."""
+        cfg = MagicMock()
+        cfg.cloud.enabled = True
+        cfg.lan.enabled = True
+        cfg.firm_name = "Test Firm"
+        cfg.notifications = MagicMock()
+        mock_cfg.return_value = cfg
+
+        with patch("flow.concurrency", self._timeout_concurrency()):
+            with pytest.raises(TimeoutError):
+                backup.fn("config.yaml", "cloud")
+
+        recorded = {c.args[2] for c in mock_record.call_args_list}
+        assert recorded == {"cloud"}
+        mock_alert.assert_called_once()
+        mock_lan_pipe.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════
+# M2/S2-02 — verify failure produces exactly ONE alert email
+# ═══════════════════════════════════════════════════════════════
+
+class TestVerifyFailureSingleAlert:
+    """Session-2 finding M2 (S2-02): with the REAL _run_cloud_pipeline, a
+    verify failure used to alert inside the pipeline AND in the backup()
+    summary — 2 emails per failure (reproduced live in session-1 T6, where
+    "emailed 2 alerts" was recorded as a PASSING outcome). The summary alert
+    is the single alert point; the pipeline logs + raises without alerting.
+    """
+
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.configure_prefect_bridge")
+    @patch("flow.cleanup_orphaned_robocopy_logs")
+    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.cloud_publish_artifact_task")
+    @patch("flow.cloud_record_task")
+    @patch("flow.cloud_verify_and_report_task")
+    @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_preflight_task")
+    @patch("flow.health_check_task")
+    @patch("flow.get_fy_prefix", return_value="FY26-27")
+    @patch("flow._record_run")
+    def test_verify_failure_single_alert(
+        self, mock_record, mock_fy, mock_health, mock_preflight, mock_sync,
+        mock_verify, mock_record_task, mock_artifact, mock_alert,
+        mock_cleanup, mock_bridge, mock_log, mock_cfg,
+    ):
+        from tests.test_flow_status_semantics import _make_config
+
+        mock_sync.with_options.return_value.return_value = {
+            "status": "CLOUD_COMPLETE", "exit_code": 0, "error": None,
+        }
+        mock_verify.with_options.return_value.return_value = {
+            "verified": False,
+            "size": {"count": 0, "bytes": 0},
+            "manifest": [],
+            "diff": {"added": ["a.txt"], "removed": ["b.txt", "c.txt"],
+                     "modified": ["d.txt"], "unchanged": []},
+        }
+        cfg = _make_config()
+        cfg.cloud.enabled = True
+        cfg.lan.enabled = False
+        mock_cfg.return_value = cfg
+
+        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
+            backup.fn("config.yaml", "cloud")
+
+        # M2: exactly ONE alert email for this failure (pre-fix: two)
+        mock_alert.assert_called_once()
+        alert_msg = mock_alert.call_args.args[2]
+        assert "verification FAILED" in alert_msg
+        # The verify details survived into the summary message
+        assert "missing-from-cloud=1" in alert_msg
+        assert "unexpected-in-cloud=2" in alert_msg

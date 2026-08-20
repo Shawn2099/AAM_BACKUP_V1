@@ -62,3 +62,42 @@ def assert_log_contains(captured_buf, keyword: str):
     messages = captured_buf.getvalue()
     assert keyword.lower() in messages.lower(), \
         f"Expected log to contain '{keyword}' but got:\n{messages}"
+
+
+# ── S2-20: rollover-test safety guard ───────────────────────────────────────
+
+def live_rollover_path_set() -> set:
+    """S2-20: the production paths a rollover test must never touch — the
+    live source/lan destinations from config.yaml and the current-FY folders
+    derived from them (what a real rollover would target if the live FY went
+    stale)."""
+    from core.fy_rollover import _child_path, _fy_name, _parent_path
+    from core.time_utils import get_fy_prefix
+
+    cfg = load_config(str(CONFIG_PATH))
+    paths = set()
+    for base in (cfg.paths.source_drive, cfg.paths.lan_destination):
+        paths.add(os.path.normcase(os.path.normpath(base)))
+        if _fy_name(base):
+            paths.add(os.path.normcase(os.path.normpath(
+                _child_path(_parent_path(base), get_fy_prefix())
+            )))
+    return paths
+
+
+def assert_safe_rollover_targets(candidates, live_paths) -> None:
+    """S2-20: refuse loudly (AssertionError) if any rollover-test path
+    matches a live production path, case-insensitively.
+
+    The original test_fy_07 built its scenario under the live config's
+    parents and its finally block rmtree'd the rollover TARGET — which on
+    this machine resolved to E:\\FY26-27 (the live source dataset) and the
+    NAS FY26-27 folder: a test that destroys production data on success.
+    """
+    norm_live = {os.path.normcase(os.path.normpath(p)) for p in live_paths}
+    bad = [c for c in candidates
+           if os.path.normcase(os.path.normpath(c)) in norm_live]
+    assert not bad, (
+        "S2-20 SAFETY ABORT: rollover test target(s) match live production "
+        f"path(s): {bad} — refusing to run (would destroy production data)"
+    )

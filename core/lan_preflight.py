@@ -33,7 +33,21 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     """
     dest_path = Path(dest)
     canary_file = dest_path / ".AAM_TARGET_MOUNTED"
-    if not canary_file.exists():
+    # M5/S2-12: Path.exists() only swallows a small errno set (ENFILE,
+    # EMFILE, ENOENT, ENOTDIR, ETIMEDOUT). This NAS has been observed to
+    # answer ACCESS_DENIED (WinError 5) instead of NOT_FOUND — on CPython
+    # 3.12.3 that RE-RAISES as PermissionError, escaping the self-recovering
+    # HealthError below (the live 2026-07-10/11 preflight crashes). Any stat
+    # error means "mount not proven" → take the HealthError path.
+    try:
+        canary_proven = canary_file.exists()
+    except OSError as exc:
+        logger.error(
+            f"Canary existence check errored for {canary_file}: {exc} — "
+            "treating as missing"
+        )
+        canary_proven = False
+    if not canary_proven:
         # G11: make the failure self-recovering. The preflight deliberately
         # refuses to run robocopy /MIR against a destination it cannot prove
         # is the mounted FY share — but the fix used to be undocumented. The

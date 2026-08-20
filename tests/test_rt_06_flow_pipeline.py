@@ -92,12 +92,26 @@ pytestmark = [
 def test_pipe_01_cloud_pipeline(temp_config_and_db):
     """PIPE-01: Cloud Pipeline — Golden Path, All Steps Record to DB."""
     config = temp_config_and_db
-    
-    # Patch the get_fy_prefix used internally by flow.py
-    import core.fy_router
-    orig_prefix = core.fy_router.get_fy_prefix
-    core.fy_router.get_fy_prefix = lambda: "E2E_TEST_FY"
-    
+
+    # S3 INCIDENT (2026-08-21): the old version patched only
+    # core.fy_router.get_fy_prefix, but flow.py does
+    # `from core.fy_router import get_fy_prefix` (flow.py L29) — flow holds
+    # its OWN binding, so the patch was a no-op. The cloud pipeline then
+    # computed the LIVE FY prefix ("FY26-27") and mirror-synced the 5-file
+    # scratch source into the PRODUCTION bucket prefix, deleting 567
+    # production objects (recovered by re-syncing from the byte-intact
+    # local source; see SESSION_3_REMEDIATION.md §7.4). Patch the binding
+    # flow.py actually calls, and assert it took effect BEFORE the
+    # pipeline runs — a future refactor that breaks this interception must
+    # fail the test loudly instead of aiming a mirror at live data.
+    import flow
+    orig_prefix = flow.get_fy_prefix
+    flow.get_fy_prefix = lambda: "E2E_TEST_FY"
+    assert flow.get_fy_prefix() == "E2E_TEST_FY", (
+        "S3 SAFETY ABORT: flow.get_fy_prefix patch not in effect — the cloud "
+        "pipeline would target the LIVE FY bucket prefix. Refusing to run."
+    )
+
     try:
         result = _run_cloud_pipeline(config, run_id="e2e-cloud-test", started_at=now_iso())
         
@@ -119,7 +133,7 @@ def test_pipe_01_cloud_pipeline(temp_config_and_db):
         finally:
             db.close()
     finally:
-        core.fy_router.get_fy_prefix = orig_prefix
+        flow.get_fy_prefix = orig_prefix
 
 
 def test_pipe_02_lan_pipeline(temp_config_and_db):

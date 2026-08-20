@@ -106,7 +106,8 @@ def get_cloud_diff(
             source, dest,
             "--combined", diff_file,   # Write unified diff to file (not stderr)
             "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
-            "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
+            # S2-30: --modify-window 2s removed (inert here — --size-only
+            # skips mtime comparison; see core/cloud_verify.py).
             # NOTE: --check-first and --transfers are intentionally omitted here.
             # rclone check does no file transfers, so both flags are no-ops.
             "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits

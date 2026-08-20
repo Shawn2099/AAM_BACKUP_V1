@@ -107,11 +107,18 @@ class TestBuildRcloneSyncCommandFlags:
         assert isinstance(cmd, list)
         assert all(isinstance(x, str) for x in cmd)
 
-    def test_starts_with_rclone_sync(self):
+    @patch("core.cloud_sync.resolve_binary", return_value=r"C:\AAMBackup\deploy\bin\rclone.exe")
+    def test_starts_with_rclone_sync(self, mock_resolve):
+        """M6/S2-13: the binary is resolved (deploy/bin first, then PATH) —
+        the same resolution preflight/verify use — instead of a bare
+        'rclone' that PATH-resolved to a different version in production."""
         cmd = self._build_default()
-        assert cmd[:2] == ["rclone", "sync"]
+        mock_resolve.assert_called_once_with("rclone")
+        assert cmd[0] == r"C:\AAMBackup\deploy\bin\rclone.exe"
+        assert cmd[1] == "sync"
 
-    def test_source_and_dest_in_correct_positions(self):
+    @patch("core.cloud_sync.resolve_binary", return_value="/usr/bin/rclone")
+    def test_source_and_dest_in_correct_positions(self, mock_resolve):
         cmd = self._build_default()
         assert cmd[2] == "D:\\data"
         assert cmd[3] == "aam_gcs:my-bucket/FY26-27"
@@ -122,7 +129,6 @@ class TestBuildRcloneSyncCommandFlags:
         "--gcs-no-check-bucket",
         "--gcs-storage-class",
         "--error-on-no-transfer",
-        "--modify-window",
         "--bwlimit",
         "--transfers",
         "--checkers",
@@ -138,10 +144,17 @@ class TestBuildRcloneSyncCommandFlags:
         cmd = self._build_default()
         assert flag in cmd, f"{flag} missing from command"
 
+    def test_modify_window_removed(self):
+        """S2-30: --modify-window 2s removed — it permanently skipped
+        same-size resaves whose mtime fell within 2 s of the GCS object's
+        mtime (reproduced on real GCS, session-2 E1). See
+        test_cloud_sync.TestBuildRcloneSyncCommand for the full rationale."""
+        cmd = self._build_default()
+        assert "--modify-window" not in cmd
+
     @pytest.mark.parametrize("flag,expected", [
         ("--config", "/tmp/rclone.conf"),
         ("--gcs-storage-class", "COLDLINE"),
-        ("--modify-window", "2s"),
         ("--bwlimit", "10M"),
         ("--transfers", "2"),
         ("--checkers", "4"),

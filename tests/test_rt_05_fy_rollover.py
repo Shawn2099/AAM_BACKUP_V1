@@ -148,53 +148,97 @@ def test_fy_06_run_archive_transition(capture_logs):
 
 
 def test_fy_07_full_rollover(temp_config):
-    """FY-07: Full Rollover on Temp Config — End-to-End."""
+    """FY-07: Full Rollover on Temp Config — End-to-End.
+
+    S2-20 (session-2 finding): the original version built its scenario
+    under the live config's parents — source_test_dir().parent is E:\\ and
+    the NAS share root — so the rollover TARGET (current FY) and the
+    finally-block rmtree resolved to E:\\FY26-27 (the live source dataset)
+    and the NAS FY26-27 folder: a test that destroys production data on
+    SUCCESS. That is why the 2026-08-20 audit excluded it (destructive).
+
+    Now the scenario lives under dedicated scratch roots
+    (<E2E_TEST_SOURCE | E2E_TEST_DEST>\\ROLLOVER\\FY...) and:
+      1. a guard refuses to run if any old/new path matches a live
+         production path (defense in depth — a config change could never
+         silently re-aim the cleanup at live data again);
+      2. the temp config forces wol.enabled=False and
+         lan.shutdown_after_backup=False — rollover() runs a final backup
+         with THIS config, and a copied production config would wake AND
+         send `shutdown /s /m \\\\NAS /t 300` (a real 5-minute-delayed NAS
+         power-off) during the test.
+    """
     import ruamel.yaml
+    from core.time_utils import get_fy_prefix
+    from tests.e2e_helpers import (
+        assert_safe_rollover_targets,
+        live_rollover_path_set,
+    )
+
     yaml = ruamel.yaml.YAML()
     yaml.preserve_quotes = True
-    
-    # Modify temp config to point to old FY
+
+    # Modify temp config to point to old FY — under SCRATCH roots, never
+    # under the live config's parents (S2-20).
     with open(temp_config, encoding="utf-8") as f:
         c = yaml.load(f)
-        
-    source_parent = str(source_test_dir().parent)
-    nas_parent = str(nas_test_dir().parent)
+
+    source_parent = str(source_test_dir() / "ROLLOVER")
+    nas_parent = str(nas_test_dir() / "ROLLOVER")
     old_fy = "FY23-24"
-    
+
     c["paths"]["source_drive"] = os.path.join(source_parent, old_fy)
     c["paths"]["lan_destination"] = os.path.join(nas_parent, old_fy)
-    
+
+    # S2-20 guard: the rollover computes NEW paths = <parent>/<current FY>.
+    # If any candidate (old or new) matches a live production path, abort.
+    new_fy = get_fy_prefix()
+    assert_safe_rollover_targets(
+        [
+            c["paths"]["source_drive"],
+            c["paths"]["lan_destination"],
+            os.path.join(source_parent, new_fy),
+            os.path.join(nas_parent, new_fy),
+        ],
+        live_rollover_path_set(),
+    )
+
+    # S2-20: never let a test's final backup wake or shut down the real NAS.
+    c["wol"]["enabled"] = False
+    c["lan"]["shutdown_after_backup"] = False
+
     with open(temp_config, "w", encoding="utf-8") as f:
         yaml.dump(c, f)
-        
+
     # Create the old folders
     Path(c["paths"]["source_drive"]).mkdir(parents=True, exist_ok=True)
     nas_path = Path(c["paths"]["lan_destination"])
     nas_path.mkdir(parents=True, exist_ok=True)
     (nas_path / ".AAM_TARGET_MOUNTED").touch()
-    
+
     try:
         # Run rollover!
         result = rollover(config_path=str(temp_config))
         assert result is True
-        
+
         # Verify config was updated
         with open(temp_config, encoding="utf-8") as f:
             new_c = yaml.load(f)
-            
+
         assert not new_c["paths"]["source_drive"].endswith(old_fy)
         assert not new_c["paths"]["lan_destination"].endswith(old_fy)
-        
-        # Verify new folders created
+
+        # Verify new folders created (scratch targets — live data untouched)
         assert Path(new_c["paths"]["source_drive"]).exists()
         if Path(new_c["paths"]["lan_destination"]).parent.exists(): # If NAS is online
             assert Path(new_c["paths"]["lan_destination"]).exists()
-            
+
     finally:
-        # Cleanup
+        # Cleanup — scratch paths only (the guard above guarantees these
+        # can never be live production paths).
         shutil.rmtree(Path(c["paths"]["source_drive"]), ignore_errors=True)
         shutil.rmtree(Path(c["paths"]["lan_destination"]), ignore_errors=True)
-        
+
         # Reload to get new paths
         with open(temp_config, encoding="utf-8") as f:
             new_c = yaml.load(f)

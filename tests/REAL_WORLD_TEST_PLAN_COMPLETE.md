@@ -241,7 +241,7 @@ and `core/cloud_reporter.py` work correctly against the real GCS bucket. Uses th
 1. Second `sync_result["status"]` is `"CLOUD_COMPLETE"` or `"CLOUD_NO_CHANGES_COMPLETE"` (exit code 0 or 9).
 2. Rclone does not re-upload — verify by timing the second run (should be < 5 seconds for small test set).
 
-**Why this matters:** Verifies rclone's `--check-first` and `--modify-window 2s` flags correctly identify unchanged NTFS files. A bug here means the system re-uploads hundreds of GB every night.
+**Why this matters:** Verifies rclone's size + exact-mtime comparison (via `--check-first`) correctly identifies unchanged files. A bug here means the system re-uploads hundreds of GB every night. (The former `--modify-window 2s` flag was removed in the 2026-08-20 Session-2 remediation — S2-30: it permanently skipped same-size resaves whose mtime fell within 2 s of the GCS object's mtime. GCS stores the source mtime verbatim via `x-gcs-mtime`, so unchanged files still match exactly without the window — this idempotency test is the no-re-upload-storm proof, and CLOUD-11 is the same-size-resave-is-re-uploaded proof.)
 
 ---
 

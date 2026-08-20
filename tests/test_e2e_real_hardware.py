@@ -78,6 +78,52 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def e2e_live_cleanup():
+    """S2-35: the suite's cleanup lived only in run_all()'s __main__ block,
+    so under pytest (the only way this module actually runs) the E2E_TEST_FY
+    data accumulated on the real source drive, NAS, and GCS bucket — the
+    2026-08-20 audit observed it as live pollution (NAS E2E_TEST_FY/ folder,
+    bucket E2E_TEST_FY/ prefix). Clean before and after the module,
+    regardless of entry point. The E2E_TEST_FY GCS prefix is this suite's
+    own namespace — the same purge convention tests/test_rt_02 uses in its
+    module teardown."""
+    import subprocess
+    from core.process import resolve_binary
+    from core.rclone_config import temp_rclone_config
+
+    def _purge():
+        try:
+            config, test_source, test_dest = _get_test_paths()
+        except Exception as e:
+            logger.warning(f"E2E cleanup could not resolve test paths: {e}")
+            return
+        shutil.rmtree(str(test_source), ignore_errors=True)
+        shutil.rmtree(str(test_dest), ignore_errors=True)
+        try:
+            with temp_rclone_config(
+                config.paths.gcs_key_path,
+                config.cloud.location,
+                config.cloud.project_number,
+                config.cloud.storage_class,
+            ) as rclone_conf:
+                rclone_exe = resolve_binary("rclone") or "rclone"
+                subprocess.run(
+                    [rclone_exe, "purge",
+                     f"aam_gcs:{config.cloud.bucket}/E2E_TEST_FY",
+                     "--config", rclone_conf],
+                    check=False,
+                    timeout=300,
+                )
+                logger.info("E2E cleanup: GCS E2E_TEST_FY prefix purged")
+        except Exception as e:
+            logger.warning(f"E2E cleanup: GCS E2E_TEST_FY purge failed: {e}")
+
+    _purge()  # pre-cleanup: start from a quiet known state
+    yield
+    _purge()  # post-cleanup: never leave suite data in live destinations
+
+
 def test_1_golden_path_lan_sync():
     """Test 1: Execute a real robocopy /MIR to the NAS."""
     logger.info("=== STARTING TEST 1: Golden Path LAN Sync ===")

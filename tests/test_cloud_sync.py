@@ -67,7 +67,8 @@ class TestClassifyRcloneExit:
 # ---------------------------------------------------------------------------
 
 class TestBuildRcloneSyncCommand:
-    def test_basic_structure(self):
+    @patch("core.cloud_sync.resolve_binary", return_value=r"C:\AAMBackup\deploy\bin\rclone.exe")
+    def test_basic_structure(self, mock_resolve):
         cmd = build_rclone_sync_command(
             source="D:\\data",
             bucket="my-bucket",
@@ -75,10 +76,25 @@ class TestBuildRcloneSyncCommand:
             config_path="/tmp/rclone.conf",
             storage_class="COLDLINE",
         )
-        assert cmd[0] == "rclone"
+        # M6/S2-13: the command must use the same binary resolution as
+        # preflight/verify (deploy/bin first, then PATH) — a bare "rclone"
+        # silently picked up a DIFFERENT version from C:\Windows\system32 in
+        # production (1.74.2 vs 1.74.3 in deploy\bin).
+        mock_resolve.assert_called_once_with("rclone")
+        assert cmd[0] == r"C:\AAMBackup\deploy\bin\rclone.exe"
         assert cmd[1] == "sync"
         assert "D:\\data" in cmd
         assert "aam_gcs:my-bucket/FY26-27" in cmd
+
+    def test_falls_back_to_bare_rclone_when_unresolvable(self):
+        """When no rclone is found anywhere, the bare name is kept so the
+        existing FileNotFoundError → 'rclone not found' path still applies."""
+        with patch("core.cloud_sync.resolve_binary", return_value=None):
+            cmd = build_rclone_sync_command(
+                source="D:\\", bucket="b", fy_prefix="FY",
+                config_path="/tmp/c.conf", storage_class="COLDLINE",
+            )
+        assert cmd[0] == "rclone"
 
     def test_config_path_included(self):
         cmd = build_rclone_sync_command(
@@ -151,14 +167,24 @@ class TestBuildRcloneSyncCommand:
         )
         assert "--error-on-no-transfer" in cmd
 
-    def test_modify_window_2s(self):
-        """Must be 2s to match NTFS timestamp granularity."""
+    def test_modify_window_removed(self):
+        """S2-30: --modify-window 2s was REMOVED (session-2 finding,
+        reproduced on real GCS in experiment E1): with the window, a
+        same-size resave whose mtime landed within 2 s of the GCS object's
+        mtime was NEVER re-uploaded — on any subsequent run either. The
+        'NTFS 2 s granularity' rationale was wrong (NTFS FILETIME is 100 ns;
+        2 s is FAT), and the window's failure direction (skipping real
+        changes) is the data-integrity-critical one. rclone's default
+        size + exact-mtime comparison is correct change detection: GCS
+        stores the source mtime verbatim via x-gcs-mtime, so unchanged files
+        still match exactly (no re-upload storm) and changed files are
+        re-uploaded. Proven on real hardware by tests/test_rt_02_cloud_sync.py
+        (golden path + idempotent second run) under AAM_RUN_REAL_HARDWARE=1."""
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE",
         )
-        idx = cmd.index("--modify-window")
-        assert cmd[idx + 1] == "2s"
+        assert "--modify-window" not in cmd
 
     def test_buffer_size_default(self):
         cmd = build_rclone_sync_command(

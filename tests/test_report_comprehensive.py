@@ -65,6 +65,7 @@ class TestSendEmail:
     def test_ssl_port_465(self):
         config = _make_config(smtp_port=465)
         mock_server = MagicMock()
+        mock_server.sendmail.return_value = {}  # smtplib contract: {} = no refusals
         with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server) as mock_ssl:
             result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is True
@@ -76,6 +77,7 @@ class TestSendEmail:
     def test_starttls_port_587(self):
         config = _make_config(smtp_port=587)
         mock_server = MagicMock()
+        mock_server.sendmail.return_value = {}  # smtplib contract: {} = no refusals
         with patch("core.report.smtplib.SMTP", return_value=mock_server) as mock_smtp:
             result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is True
@@ -88,10 +90,36 @@ class TestSendEmail:
     def test_plain_port_25(self):
         config = _make_config(smtp_port=25)
         mock_server = MagicMock()
+        mock_server.sendmail.return_value = {}  # smtplib contract: {} = no refusals
         with patch("core.report.smtplib.SMTP", return_value=mock_server):
             result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
         assert result is True
         mock_server.starttls.assert_called_once()
+
+    def test_partial_refusal_returns_false(self):
+        """M4/S2-11: sendmail() returning a NON-empty dict of refused
+        recipients (partial refusal — no exception is raised in that case)
+        must yield False, not the pre-fix false success."""
+        config = _make_config(smtp_port=465)
+        mock_server = MagicMock()
+        mock_server.sendmail.return_value = {
+            "bad@nowhere.invalid": (550, "5.1.1 User unknown"),
+        }
+        with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server):
+            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
+        assert result is False
+
+    def test_all_refused_returns_false(self):
+        """Total refusal raises SMTPRecipientsRefused → permanent-error path
+        → False (existing behavior, regression guard)."""
+        config = _make_config(smtp_port=465)
+        mock_server = MagicMock()
+        mock_server.sendmail.side_effect = smtplib.SMTPRecipientsRefused(
+            {"a@x.invalid": (550, "no"), "b@y.invalid": (550, "no")}
+        )
+        with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server):
+            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
+        assert result is False
 
     def test_returns_false_on_smtp_connection_error(self):
         config = _make_config()

@@ -90,13 +90,18 @@ class TestVerifyResolveBinary:
 
 class TestVerifyCommandFlags:
     @patch("core.cloud_verify.subprocess.run")
-    def test_modify_window_2s(self, mock_run):
+    def test_modify_window_removed(self, mock_run):
+        """S2-30: the 2 s modify window was removed from the sync command
+        (real data-integrity gap: same-size resaves within the window were
+        never re-uploaded — session-2 E1, real GCS). It was inert here
+        (--size-only skips mtime comparison entirely) and its 'NTFS 2 s
+        granularity' comment documented the wrong rationale that
+        reintroduced the bug on the sync path — so it is removed from all
+        three rclone commands, not just sync."""
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         cmd = mock_run.call_args[0][0]
-        assert "--modify-window" in cmd
-        idx = cmd.index("--modify-window")
-        assert cmd[idx + 1] == "2s"
+        assert "--modify-window" not in cmd
 
     @patch("core.cloud_verify.subprocess.run")
     def test_one_way_flag(self, mock_run):

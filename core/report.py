@@ -69,7 +69,32 @@ def _send_email_with_attachments(
                 server.starttls()
 
             server.login(config.smtp_username, config.smtp_password)
-            server.sendmail(config.sender, config.recipients, msg.as_string())
+            # M4/S2-11: sendmail() returns {recipient: (code, msg)} for every
+            # recipient the server REFUSED. It raises (SMTPRecipientsRefused)
+            # only when ALL recipients are refused — a PARTIAL refusal (e.g.
+            # 1 of 2 addresses dead) comes back as a plain return value,
+            # which the pre-fix code ignored: it logged "Email sent" and
+            # returned True while the refused recipient(s) received nothing.
+            # (Reproduced against the real code with a local STARTTLS server
+            # — session-2 experiment E8.) A refused address is a permanent
+            # error, so return False immediately — no retry will succeed.
+            # The False feeds the caller's ALERT_NOT_DELIVERED bookkeeping
+            # (CRITICAL log + DB annotation), so a degraded alert channel
+            # leaves a trace at every layer.
+            refused = server.sendmail(config.sender, config.recipients, msg.as_string())
+            if refused:
+                refused_detail = ", ".join(
+                    f"{addr} ({code})" for addr, (code, _msg) in sorted(refused.items())
+                )
+                logger.error(
+                    f"Email only PARTIALLY delivered: {len(refused)} of "
+                    f"{len(config.recipients)} recipient(s) REFUSED by "
+                    f"{config.smtp_host}: {refused_detail}. The refused "
+                    f"recipient(s) did NOT receive the email: {subject}. "
+                    "Check the recipient address(es) in config "
+                    "(notifications.recipients)."
+                )
+                return False
 
             logger.info(f"Email sent: {subject} (attempt {attempt}/{_SMTP_MAX_ATTEMPTS})")
             return True

@@ -294,12 +294,22 @@ Open `config.yaml` and update the following sections using the snippets from Ste
 | `cloud.project_number` | `aam-backup-2026` |
 | `cloud.location` | `asia-south1` |
 | `cloud.storage_class` | `STANDARD` |
-| `notification.smtp_host` | Your SMTP server (e.g. `smtp.gmail.com`) |
-| `notification.smtp_port` | `587` |
-| `notification.smtp_username` | Your Gmail address |
-| `notification.smtp_password` | Gmail app password (NOT your Gmail password) |
-| `notification.email_from` | Sender address |
-| `notification.email_to` | List of recipient addresses |
+| `notifications.smtp_host` | Your SMTP server (e.g. `smtp.gmail.com`) |
+| `notifications.smtp_port` | `587` |
+| `notifications.smtp_username` | Your Gmail address |
+| `notifications.smtp_password` | Gmail app password (NOT your Gmail password) |
+| `notifications.sender` | Sender address |
+| `notifications.recipients` | List of recipient addresses |
+
+> **Key names matter — unknown keys are ignored.** The config model is
+> Pydantic with `extra="ignore"`: a typo'd section name (e.g. `notification`
+> instead of `notifications`, or the old guide's `email_from`/`email_to`)
+> is **silently dropped** — the deployment runs with default/empty
+> notification settings and no error is raised. Since 2026-08-20 the config
+> loader logs a loud warning at startup naming any unknown top-level key,
+> so if you see `Config contains unknown top-level key(s) that will be
+> IGNORED: …` in the agent log, fix the key name — the section is not in
+> effect.
 | `wol.mac_address` | MAC address of the NAS/target server |
 | `wol.server_ip` | IP address of the NAS/target server |
 | `wol.broadcast_address` | **(Optional)** Subnet broadcast IP (e.g., `192.168.1.255`). Leave empty to auto-derive from `server_ip`. |
@@ -397,15 +407,15 @@ On **April 1st** each year, the system automatically:
 *   **Silent Failures Blocked:** The system runs a rigid health check before any backup starts. If GCS keys are missing, the configuration is broken, or the system clock is skewed by >10 minutes, the backup **will halt immediately** with a critical error rather than proceeding and risking data corruption.
 *   **LAN Sync Anomalies:** Standard sync logs only show "Failed" or "Complete." This system monitors `robocopy` closely — if it returns an exit code between 4 and 7 (indicating file mismatches or uncopied extra files), the backup marks the phase as **PARTIAL** requiring manual review, preventing silent data mismatches.
 *   **Dual-Broadcast WoL:** If your NAS sits behind a managed switch or on a separate VLAN, global WoL broadcasts (`255.255.255.255`) are often dropped. The system sends magic packets to both the global broadcast and the auto-derived subnet broadcast (configurable via `wol.broadcast_address`) to ensure maximum delivery reliability.
-*   **Missed Runs Are Not Made Up:** If the Prefect agent is down at a scheduled time (01:00 LAN, 18:00 cloud) — e.g. a Windows Update reboot, a crash, or maintenance — that night's run is skipped, **not caught up**: the scheduler has no make-up logic, and leftover orphan runs are cancelled at the next startup (`_cancel_orphaned_runs`). The next run happens 24 hours later. For this incremental workload that is acceptable, but **a gap in the run history after an outage is expected behavior, not evidence that "nothing needed backing up"** — check the service logs for the outage window and re-trigger manually if the missed window matters (dashboard → trigger, or the Quick Reference commands below).
+*   **Missed Runs Are Not Made Up:** If the Prefect agent is down at a scheduled time (default 21:00 LAN, 22:00 cloud IST) — e.g. a Windows Update reboot, a crash, or maintenance — that night's run is skipped, **not caught up**: the scheduler has no make-up logic, and leftover orphan runs are cancelled at the next startup (`_cancel_orphaned_runs`). The next run happens 24 hours later. For this incremental workload that is acceptable, but **a gap in the run history after an outage is expected behavior, not evidence that "nothing needed backing up"** — check the service logs for the outage window and re-trigger manually if the missed window matters (dashboard → trigger, or the Quick Reference commands below).
 *   **Windows Update Reboot Window:** `03_setup_system.bat` configures Windows Update **Active Hours** (`Start=12`, `End=6` — an 18-hour window, the maximum allowed) so automatic reboots can only occur 06:00–12:00, outside both backup windows. This is what actually protects a *headless* server (the legacy `NoAutoRebootWithLoggedOnUsers` policy only applies while a user is logged on and is set as well, but is not relied on). `04_check_readiness.ps1` verifies the Active Hours values and fails readiness if they are missing or wrong.
 
 ---
 
 ## Platform Lifecycle & Upgrade Path
 
-*   **Windows Server 2016 Extended Support ends 2027-01-12** — inside this system's 5-year retention window. After that date the OS receives no security updates. Plan the OS upgrade (Server 2022/2025) well before then; the backup application itself is Python-based and relocates cleanly (the same `deploy` scripts and service layout apply), but a *tested* migration run against a scratch copy of the FY data is required — do not discover the migration at 01:00 on a production server.
-*   **Pinned toolchain:** Prefect 3.7.2, rclone 1.74.2, Python 3.12, and the gcloud SDK version are deliberately pinned for reproducibility. The full test suite (unit + regression, ~1,400 tests) now runs green on a clean checkout, so any upgrade can be validated by re-running it before deployment; previously the red suite blocked this path.
+*   **Windows Server 2016 Extended Support ends 2027-01-12** — inside this system's 5-year retention window. After that date the OS receives no security updates. Plan the OS upgrade (Server 2022/2025) well before then; the backup application itself is Python-based and relocates cleanly (the same `deploy` scripts and service layout apply), but a *tested* migration run against a scratch copy of the FY data is required — do not discover the migration at 21:00 on a production server.
+*   **Pinned toolchain:** Prefect 3.7.2, rclone 1.74.3 (bundled in `deploy\bin` — every rclone invocation in the codebase resolves `deploy\bin` first, then PATH), Python 3.12, and the gcloud SDK version are deliberately pinned for reproducibility. If a stray older rclone sits on the system PATH (e.g. in `C:\Windows\system32`), it will not be used by the application — but keep it aligned or remove it to avoid confusion during manual commands. The full test suite (unit + regression, ~1,400 tests) now runs green on a clean checkout, so any upgrade can be validated by re-running it before deployment; previously the red suite blocked this path.
 
 ---
 

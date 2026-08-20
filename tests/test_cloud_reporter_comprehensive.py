@@ -341,16 +341,18 @@ class TestGetCloudDiffCommandFlags:
     @patch("core.cloud_reporter.tempfile.mkstemp", return_value=(1, "/tmp/diff.txt"))
     @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
     @patch("core.cloud_reporter.subprocess.run")
-    def test_modify_window_2s(
+    def test_modify_window_removed(
         self, mock_run, mock_resolve, mock_mkstemp, mock_close, mock_path
     ):
+        """S2-30: the 2 s modify window was removed (see
+        test_cloud_sync.TestBuildRcloneSyncCommand.test_modify_window_removed).
+        Inert here (--size-only) but its wrong-rationale comment is gone."""
         mock_run.return_value = _mock_result(0)
         m = mock_open(read_data="")
         with patch("builtins.open", m):
             get_cloud_diff("/src", "bucket", "FY26-27", "/cfg")
         cmd = mock_run.call_args[0][0]
-        idx = cmd.index("--modify-window")
-        assert cmd[idx + 1] == "2s"
+        assert "--modify-window" not in cmd
 
     @patch("core.cloud_reporter.Path")
     @patch("core.cloud_reporter.os.close")

@@ -171,8 +171,10 @@ def test_cloud_03_modified_file_reuploaded():
     source = source_test_dir()
     config = cfg()
     
-    # Overwrite
-    time.sleep(2.1) # modify-window 2s
+    # Overwrite (size change 1024 → 2048: detected by size comparison alone;
+    # the sleep is legacy from the removed --modify-window 2s and is kept
+    # only to make the mtime delta unambiguous)
+    time.sleep(2.1)
     make_file(source / "cloud_small.txt", 2048)
     
     result = run_cloud_sync(
@@ -374,7 +376,7 @@ def test_cloud_10_preflight_succeeds_valid_config():
     """CLOUD-10: Preflight Succeeds on Valid Config."""
     source = source_test_dir()
     config = cfg()
-    
+
     result = run_cloud_dry_run(
         source=str(source),
         bucket=config.cloud.bucket,
@@ -385,5 +387,87 @@ def test_cloud_10_preflight_succeeds_valid_config():
         location=config.cloud.location,
         timeout=30,
     )
-    
+
     assert result["ok"] is True
+
+
+def test_cloud_11_same_size_resave_within_old_window_is_reuploaded():
+    """CLOUD-11 / S2-30 (real-hardware proof of the modify-window fix): a
+    SAME-SIZE resave whose mtime falls within the old 2 s window MUST be
+    re-uploaded. Session-2 experiment E1 (real GCS, the project's own sync
+    command with --modify-window 2s) proved the opposite happened: sync
+    exited 9 (no changes) and the object stayed byte-verified STALE across
+    repeated syncs — a permanent silent data-integrity gap.
+
+    After the flag removal, rclone compares size + exact mtime (NTFS
+    100 ns granularity; GCS stores the source mtime verbatim via
+    x-gcs-mtime), so the change is detected. Byte-verified end to end."""
+    import os
+    import subprocess
+
+    source = source_test_dir()
+    config = cfg()
+    source.mkdir(parents=True, exist_ok=True)
+
+    def _sync():
+        return run_cloud_sync(
+            source=str(source),
+            bucket=config.cloud.bucket,
+            fy_prefix="E2E_TEST_FY",
+            gcs_key_path=config.paths.gcs_key_path,
+            project_number=config.cloud.project_number,
+            storage_class=config.cloud.storage_class,
+            location=config.cloud.location,
+            bwlimit=config.cloud.bandwidth_limit,
+            retries=config.cloud.retry_count,
+            transfers=config.cloud.transfers,
+            checkers=config.cloud.checkers,
+            buffer_size=config.cloud.buffer_size,
+            timeout=config.cloud.subprocess_timeout_seconds,
+        )
+
+    def _object_bytes():
+        from core.process import resolve_binary
+
+        with temp_rclone_config(
+            config.paths.gcs_key_path,
+            config.cloud.location,
+            config.cloud.project_number,
+            config.cloud.storage_class,
+        ) as config_path:
+            rclone_exe = resolve_binary("rclone") or "rclone"
+            result = subprocess.run(
+                [rclone_exe, "cat",
+                 f"aam_gcs:{config.cloud.bucket}/E2E_TEST_FY/same_size_resave.bin",
+                 "--config", config_path],
+                capture_output=True, check=True,
+            )
+        return result.stdout
+
+    target = source / "same_size_resave.bin"
+    first = os.urandom(4096)
+    target.write_bytes(first)
+
+    result = _sync()
+    assert result["status"] == "CLOUD_COMPLETE"
+
+    # Same size, content changed, mtime delta far inside the old 2 s window
+    time.sleep(0.3)
+    second = os.urandom(4096)
+    target.write_bytes(second)
+
+    result = _sync()
+    # S2-30: pre-fix this was CLOUD_NO_CHANGES_COMPLETE (exit 9) — the
+    # change was permanently skipped.
+    assert result["status"] == "CLOUD_COMPLETE", (
+        f"same-size resave was NOT re-uploaded (status={result['status']}, "
+        f"exit_code={result['exit_code']}) — the modify-window silent-skip "
+        "regression is back"
+    )
+
+    # Byte-level proof: the object now holds the SECOND payload, not the first
+    on_gcs = _object_bytes()
+    assert on_gcs == second
+    assert on_gcs != first
+
+    target.unlink(missing_ok=True)

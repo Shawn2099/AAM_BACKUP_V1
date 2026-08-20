@@ -1,9 +1,14 @@
-"""Regression tests for F1/F2/F3/G7/G10 fixes (fix log 2026-08-18).
+"""Regression tests for F1/F2/F3/G7/G10 fixes (fix log 2026-08-18) and
+Session-2 audit findings M1/M2 (findings register SESSION_2_INDEPENDENT_AUDIT.md).
 
 Covers the pipeline status semantics that no prior test touched:
 - F1: cloud verify failure must NOT be recorded as CLOUD_COMPLETE
 - F2: a failed pipeline must be recorded with its true terminal status
-- F3: LAN_PARTIAL must alert and must NOT shut the NAS down
+- F3: LAN_PARTIAL (copy errors, exit 8-15) must alert and must NOT shut the NAS down
+- M1/S2-01: anomaly-only LAN_PARTIAL (exit 4-7, no bit 3) is a COMPLETE backup —
+  no alert, and the NAS must be shut down per the core severity contract
+- M2/S2-02: a cloud verify failure must produce exactly ONE alert email
+  (the flow-level summary) — the pre-fix pipeline alert was a duplicate
 - G7: cloud timeout message states resumability
 - G10: scheduled rollover-check flow (no-op / completed / blocked)
 """
@@ -51,7 +56,7 @@ class TestCloudVerifyFailure:
     @patch("flow.get_fy_prefix", return_value="FY26-27")
     @patch("flow.ManifestDB")
     @patch("flow._record_run")
-    def test_verify_failure_records_verify_failed_and_alerts(
+    def test_verify_failure_records_verify_failed_no_pipeline_alert(
         self, mock_record, mock_db, mock_fy, mock_health, mock_preflight,
         mock_sync, mock_verify, mock_record_task, mock_artifact, mock_alert,
     ):
@@ -79,12 +84,12 @@ class TestCloudVerifyFailure:
         # cloud-only = unexpected-in-cloud. Fixture: added=1, removed=2.
         assert "missing-from-cloud=1" in args[6]
         assert "unexpected-in-cloud=2" in args[6]
-        # Alert fired with the verify details
-        mock_alert.assert_called_once()
-        alert_err = mock_alert.call_args.args[2]
-        assert "missing-from-cloud=1" in alert_err
-        assert "unexpected-in-cloud=2" in alert_err
-        assert "size-changed=1" in alert_err
+        # M2/S2-02: the pipeline must NOT alert here — backup()'s flow-level
+        # summary is the single alert point for pipeline failures. Pre-fix,
+        # the pipeline AND the summary each emailed the operator: one verify
+        # failure = 2 emails (and doubled [ALERT_NOT_DELIVERED] bookkeeping
+        # when the send itself fails).
+        mock_alert.assert_not_called()
         # Observed cloud state still recorded to the DB before failing
         mock_record_task.assert_called_once()
         # No artifact on failure
@@ -285,6 +290,88 @@ class TestLanPartialShutdown:
         assert result["status"] == "LAN_COMPLETE"
         mock_shutdown.assert_called_once()  # full mirror OK — power off the NAS
         mock_alert.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════
+# M1/S2-01 — anomaly-only PARTIAL (exit 4-7) IS a complete backup
+# ═══════════════════════════════════════════════════════════════
+
+class TestLanPartialAnomalyOnly:
+    """Session-2 finding M1 (S2-01): core/lan_sync.classify_exit_code
+    deliberately maps exit 4-7 (bit 2 set, bit 3 clear) to LAN_PARTIAL with
+    error=None and files_failed=0 — "mismatched/extra attributes only; the
+    mirror itself completed". The F3 flow branch treated EVERY LAN_PARTIAL
+    as "some files were not copied": it alerted the operator and skipped the
+    NAS shutdown. Pre-fix, a healthy night produced a scary email plus a
+    NAS left powered on all night, training operators to ignore the emails
+    (the ones that matter — exit 8-15 — arrive with identical wording).
+
+    Correct semantics per the core contract:
+      exit 4-7  (anomaly only)  → warning log, NO alert, shut the NAS down
+      exit 8-15 (bit 3 set)     → failure alert, keep the NAS on
+    """
+
+    @pytest.mark.parametrize("exit_code", [4, 5, 6, 7])
+    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.lan_shutdown_task")
+    @patch("flow.lan_publish_artifact_task")
+    @patch("flow.lan_record_task")
+    @patch("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
+    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_sync_task")
+    @patch("flow.lan_preflight_task")
+    @patch("flow.wol_check_task")
+    @patch("flow.health_check_task")
+    @patch("flow._record_run")
+    def test_anomaly_only_no_alert_and_shuts_down(
+        self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
+        mock_before, mock_after, mock_record_task, mock_artifact,
+        mock_shutdown, mock_alert, exit_code,
+    ):
+        mock_sync.with_options.return_value.return_value = {
+            "status": "LAN_PARTIAL", "exit_code": exit_code,
+            "error": None, "files_failed": 0,
+        }
+        cfg = _make_config()
+
+        result = flow._run_lan_pipeline(cfg, f"run-anomaly-{exit_code}", "2026-08-20T21:00:00")
+
+        assert result["status"] == "LAN_PARTIAL"
+        mock_alert.assert_not_called()        # M1: false failure alert pre-fix
+        mock_shutdown.assert_called_once()    # M1: backup complete — power the NAS off
+        args = mock_record.call_args.args
+        assert args[4] == "LAN_PARTIAL"
+
+    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.lan_shutdown_task")
+    @patch("flow.lan_publish_artifact_task")
+    @patch("flow.lan_record_task")
+    @patch("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
+    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_sync_task")
+    @patch("flow.lan_preflight_task")
+    @patch("flow.wol_check_task")
+    @patch("flow.health_check_task")
+    @patch("flow._record_run")
+    def test_copy_error_partial_still_alerts_and_keeps_nas_on(
+        self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
+        mock_before, mock_after, mock_record_task, mock_artifact,
+        mock_shutdown, mock_alert,
+    ):
+        """exit 10 (8|2: copy errors + anomaly) — the M1 fix must NOT change
+        this direction: real copy errors still alert and keep the NAS on."""
+        mock_sync.with_options.return_value.return_value = {
+            "status": "LAN_PARTIAL", "exit_code": 10,
+            "error": "robocopy tail: 2 files FAILED", "files_failed": 2,
+        }
+        cfg = _make_config()
+
+        result = flow._run_lan_pipeline(cfg, "run-copyerr-10", "2026-08-20T21:00:00")
+
+        assert result["status"] == "LAN_PARTIAL"
+        mock_alert.assert_called_once()
+        assert "10" in mock_alert.call_args.args[2]
+        mock_shutdown.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════

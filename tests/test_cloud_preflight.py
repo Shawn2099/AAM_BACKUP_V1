@@ -395,3 +395,47 @@ class TestConfigCleanup:
             mock_path_cls.return_value = _make_accessible_path_mock()
             run_cloud_dry_run(*_CALL_ARGS)
         mock_cfg.assert_called_once()
+
+
+# ── M5/S2-12: exists() error guard (WinError 5 from the NAS) ───────────────
+
+class TestSourceExistsErrorGuard:
+    """Session-2 finding M5 (S2-12): Probe A must convert an OSError from
+    Path.exists() into the standard {'ok': False} failure result — not a raw
+    PermissionError traceback that bypasses the health pipeline's
+    structured failure handling (the live 07-10/11 lan/cloud preflight
+    crashes were exactly this)."""
+
+    @patch("core.cloud_preflight.subprocess.run")
+    def test_source_stat_error_returns_structured_failure(self, mock_run):
+        import pathlib
+
+        class _DenyPath(pathlib.Path):
+            def exists(self):
+                raise PermissionError(13, "Access is denied")
+
+        with patch("core.cloud_preflight.Path", _DenyPath):
+            result = run_cloud_dry_run(*_CALL_ARGS)
+
+        # M5: pre-fix this raised PermissionError out of run_cloud_dry_run
+        assert result["ok"] is False
+        assert result["exit_code"] == -1
+        assert "not accessible" in result["error"].lower()
+        # Probe B (rclone) must never run — the drive is unproven
+        mock_run.assert_not_called()
+
+    @patch("core.cloud_preflight.subprocess.run")
+    def test_missing_source_still_structured_failure(self, mock_run):
+        """Regression guard: the plain not-exists branch is unchanged."""
+        import pathlib
+
+        class _AbsentPath(pathlib.Path):
+            def exists(self):
+                return False
+
+        with patch("core.cloud_preflight.Path", _AbsentPath):
+            result = run_cloud_dry_run(*_CALL_ARGS)
+
+        assert result["ok"] is False
+        assert "not accessible" in result["error"].lower()
+        mock_run.assert_not_called()

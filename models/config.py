@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 import yaml
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 CONFIG_PATH = "config.yaml"
@@ -455,9 +456,39 @@ class AppConfig(BaseModel):
         return self
 
     @classmethod
+    def _warn_unknown_root_keys(cls, data) -> None:
+        """M8/S2-26: Pydantic's default extra='ignore' silently drops
+        unknown keys. A typo'd TOP-LEVEL section — the DEPLOYMENT_GUIDE
+        shipped 'notification' where the model expects 'notifications', and
+        'email_from'/'email_to' where the model uses 'sender'/'recipients' —
+        produced silently-misconfigured deployments that 05_test_config
+        validated as SUCCESS. Warn loudly at load time instead.
+
+        Deliberately limited to top-level keys: section-level legacy keys
+        (e.g. notifications.send_on_success, paths.temp_directory in older
+        configs) are silently ignored on purpose — that behavior is
+        documented on the models, and warning on them would spam every
+        startup of existing deployments.
+        """
+        if not isinstance(data, dict):
+            return
+        unknown = sorted(set(data) - set(cls.model_fields))
+        if unknown:
+            logger.warning(
+                f"Config contains unknown top-level key(s) that will be "
+                f"IGNORED: {', '.join(unknown)}. Known top-level keys: "
+                f"{', '.join(sorted(cls.model_fields))}. If an unknown key "
+                "was meant to configure the system, check the name for "
+                "typos — e.g. the email section is 'notifications' (not "
+                "'notification') and uses 'sender'/'recipients' (not "
+                "'email_from'/'email_to')."
+            )
+
+    @classmethod
     def from_yaml(cls, path: str) -> "AppConfig":
         with open(path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = yaml.safe_load(f) or {}
+        cls._warn_unknown_root_keys(data)
         return cls(**data)
 
 

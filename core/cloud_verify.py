@@ -48,7 +48,11 @@ def verify_cloud_integrity(
         "--one-way",               # Only check source→GCS, not reverse
         "--fast-list",             # Fewer GCS API calls (uses more memory but faster)
         "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
-        "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
+        # S2-30: --modify-window 2s removed. It was inert here (--size-only
+        # skips mtime comparison entirely) and its "NTFS 2 s granularity"
+        # comment documented the wrong rationale that caused the silent-skip
+        # data-integrity bug on the sync command — removed from all three
+        # rclone commands so it cannot come back by copy-paste.
         # NOTE: --check-first and --transfers are intentionally omitted here.
         # rclone check does no file transfers, so both flags are no-ops on this command.
         "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits

@@ -79,12 +79,16 @@ class TestClassifyRcloneExit:
 # ── build_rclone_sync_command — flags and structure ───────────────────────
 
 class TestBuildRcloneSyncCommand:
-    def test_starts_with_rclone_sync(self):
+    @patch("core.cloud_sync.resolve_binary", return_value="/usr/bin/rclone")
+    def test_starts_with_rclone_sync(self, mock_resolve):
+        """M6/S2-13: cmd[0] is the RESOLVED rclone (deploy/bin first, then
+        PATH) — same resolution as preflight/verify — not a bare "rclone"."""
         cmd = build_rclone_sync_command(
             source="D:\\data", bucket="my-bucket", fy_prefix="FY26-27",
             config_path="/tmp/rclone.conf", storage_class="COLDLINE",
         )
-        assert cmd[0] == "rclone"
+        mock_resolve.assert_called_once_with("rclone")
+        assert cmd[0] == "/usr/bin/rclone"
         assert cmd[1] == "sync"
 
     def test_source_and_dest_present(self):
@@ -103,13 +107,16 @@ class TestBuildRcloneSyncCommand:
         idx = cmd.index("--config")
         assert cmd[idx + 1] == "/tmp/myconfig.conf"
 
-    def test_modify_window_2s(self):
+    def test_modify_window_removed(self):
+        """S2-30: --modify-window 2s removed — it permanently skipped
+        same-size resaves whose mtime fell within the window (real-GCS
+        repro, session-2 E1). See test_cloud_sync.py for the full
+        rationale."""
         cmd = build_rclone_sync_command(
             source="D:\\", bucket="b", fy_prefix="FY",
             config_path="/tmp/c.conf", storage_class="COLDLINE",
         )
-        idx = cmd.index("--modify-window")
-        assert cmd[idx + 1] == "2s"
+        assert "--modify-window" not in cmd
 
     def test_buffer_size_default_64M(self):
         cmd = build_rclone_sync_command(
@@ -522,15 +529,19 @@ class TestRunCloudSyncTimeoutPassthrough:
 
 
 class TestRunCloudSyncEnvAndSubprocess:
+    @patch("core.cloud_sync.resolve_binary", return_value="/usr/bin/rclone")
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_subprocess_run_called_with_cmd(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
+    def test_subprocess_run_called_with_cmd(
+        self, mock_cfg, mock_run, mock_mkstemp, mock_close, mock_resolve
+    ):
         mock_run.return_value = _mock_result(0)
         run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "rclone"
+        # M6: the resolved binary, not a bare PATH name
+        assert cmd[0] == "/usr/bin/rclone"
         assert cmd[1] == "sync"
 
     @patch("core.cloud_sync.os.close")

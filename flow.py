@@ -464,8 +464,16 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         )
 
         # F1: verification is part of the backup contract. A failed check must
-        # NOT be recorded as COMPLETE — alert with a distinct, non-skip status
+        # NOT be recorded as COMPLETE — record a distinct, non-skip status
         # and fail the run so it is visible in the Prefect console.
+        #
+        # M2/S2-02: this pipeline does NOT send the failure alert itself —
+        # backup()'s flow-level summary is the single alert point for
+        # pipeline failures (it carries the same verify_err text and
+        # performs the [ALERT_NOT_DELIVERED] bookkeeping via the since_iso
+        # annotation). Pre-fix, the pipeline AND the summary each emailed
+        # the operator: one verify failure = 2 emails (observed live in
+        # session-1 T6, where "emailed 2 alerts" was a PASSING outcome).
         if not verify_data.get("verified"):
             diff = verify_data.get("diff") or {}
             # rclone check SOURCE DEST --combined semantics (verified live,
@@ -484,24 +492,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             status = "CLOUD_VERIFY_FAILED"
             error_msg = verify_err
             logger.error(verify_err)
-            alert_ok = True
-            try:
-                alert_ok = send_failure_alert(
-                    config.notifications, config.firm_name, verify_err,
-                    {"mode": "cloud", "status": status,
-                     "exit_code": sync_result.get("exit_code")},
-                    started_at,
-                )
-            except Exception as alert_err:
-                alert_ok = False
-                logger.warning(f"Could not send verify-failure alert: {alert_err}")
-            if not alert_ok:
-                logger.critical(
-                    "ALERT DELIVERY FAILED — the verify-failure alert was NOT "
-                    "delivered; the operator was NOT notified that the cloud "
-                    "integrity check failed. Check SMTP connectivity/credentials."
-                )
-                _mark_run_alert_not_delivered(db_path, run_id)
+            # The raised RuntimeError carries verify_err into the flow-level
+            # summary, which alerts ONCE for it.
             raise RuntimeError(verify_err)
 
         phase = "post"
@@ -652,43 +644,73 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             )
 
         logger.info(f"LAN pipeline completed with status {status}")
-        # F3: shut the NAS down ONLY after a fully complete mirror (robocopy
-        # exit 0-3). A PARTIAL run (exit 4-15) means some files did not land —
-        # powering off the NAS now strands them until the next WoL, and the
-        # partial state must be reported, not silent.
+        # F3/M1: shut the NAS down ONLY after a mirror in which NO file
+        # failed to copy (robocopy exit 0-3, or anomaly-only exit 4-7).
+        #
+        # M1/S2-01 (session-2 finding): core/lan_sync.classify_exit_code
+        # maps exit 4-7 (bit 2 only) to LAN_PARTIAL with error=None and
+        # files_failed=0 — "mismatched/extra attributes only; the mirror
+        # itself completed". The pre-fix branch treated EVERY LAN_PARTIAL
+        # as "some files were not copied": it emailed a false failure alert
+        # and skipped the NAS shutdown, so a healthy night produced a scary
+        # email plus a NAS powered on all night — training operators to
+        # ignore the alert that matters (exit 8-15, identical wording).
+        #
+        # Semantics now, per the core contract:
+        #   exit 0-3  (LAN_COMPLETE)          → shut down the NAS
+        #   exit 4-7  (anomaly-only PARTIAL)  → NO alert; shut down the NAS
+        #   exit 8-15 (copy-error PARTIAL)    → failure alert; keep NAS on
         if status == "LAN_COMPLETE":
             lan_shutdown_task(config)
         elif status == "LAN_PARTIAL":
-            logger.error(
-                f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
-                "some files were not copied. NAS shutdown SKIPPED — the next "
-                "run will re-sync the missing files."
-            )
-            alert_ok = True
-            try:
-                alert_ok = send_failure_alert(
-                    config.notifications, config.firm_name,
-                    (
-                        f"LAN backup PARTIAL: robocopy exit code "
-                        f"{sync_result.get('exit_code')} — some files were not "
-                        "copied. The NAS was NOT shut down; the next scheduled "
-                        "run will re-sync. "
-                        f"{sync_result.get('error') or ''}"
-                    ).strip(),
-                    {"mode": "lan", "status": status,
-                     "exit_code": sync_result.get("exit_code")},
-                    started_at,
+            exit_code = int(sync_result.get("exit_code", 0) or 0)
+            if exit_code & 8:
+                # Copy-error PARTIAL (exit 8-15): files really did not land.
+                # Alert and keep the NAS on — the next run re-syncs, and the
+                # operator may need to inspect the destination now.
+                logger.error(
+                    f"LAN backup PARTIAL (robocopy exit {exit_code}): COPY "
+                    "ERRORS — some files were not copied. NAS shutdown SKIPPED "
+                    "— the next run will re-sync the missing files."
                 )
-            except Exception as alert_err:
-                alert_ok = False
-                logger.warning(f"Could not send partial-backup alert: {alert_err}")
-            if not alert_ok:
-                logger.critical(
-                    "ALERT DELIVERY FAILED — the PARTIAL-backup alert was NOT "
-                    "delivered; the operator was NOT notified that some files "
-                    "were not copied. Check SMTP connectivity/credentials."
+                alert_ok = True
+                try:
+                    alert_ok = send_failure_alert(
+                        config.notifications, config.firm_name,
+                        (
+                            f"LAN backup PARTIAL: robocopy exit code "
+                            f"{exit_code} — some files were not copied "
+                            f"(files_failed={sync_result.get('files_failed', 0)}). "
+                            "The NAS was NOT shut down; the next scheduled "
+                            "run will re-sync. "
+                            f"{sync_result.get('error') or ''}"
+                        ).strip(),
+                        {"mode": "lan", "status": status,
+                         "exit_code": exit_code},
+                        started_at,
+                    )
+                except Exception as alert_err:
+                    alert_ok = False
+                    logger.warning(f"Could not send partial-backup alert: {alert_err}")
+                if not alert_ok:
+                    logger.critical(
+                        "ALERT DELIVERY FAILED — the PARTIAL-backup alert was NOT "
+                        "delivered; the operator was NOT notified that some files "
+                        "were not copied. Check SMTP connectivity/credentials."
+                    )
+                    _mark_run_alert_not_delivered(db_path, run_id)
+            else:
+                # Anomaly-only PARTIAL (exit 4-7): every file was copied —
+                # robocopy detected only mismatched/extra attributes
+                # (timestamps/attributes it will not copy). Per the core
+                # contract this is a COMPLETE backup: warn, do NOT alert,
+                # and shut the NAS down as after a full mirror.
+                logger.warning(
+                    f"LAN backup anomaly-only PARTIAL (robocopy exit {exit_code}): "
+                    "mismatched/extra attributes only — no file failed to copy. "
+                    "Treating the backup as COMPLETE; shutting down the NAS."
                 )
-                _mark_run_alert_not_delivered(db_path, run_id)
+                lan_shutdown_task(config)
         else:
             logger.info(f"LAN shutdown skipped — status is {status}")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
@@ -736,6 +758,96 @@ def _mark_run_alert_not_delivered(db_path: str, run_id: str) -> None:
             db.close()
     except Exception as e:
         logger.warning(f"Could not annotate run {run_id}: {e}")
+
+
+def _handle_concurrency_slot_timeout(
+    config,
+    mode: str,
+    flow_start_iso: str,
+    exc: TimeoutError,
+) -> None:
+    """M3/S2-03: make a concurrency-SLOT timeout visible everywhere a real
+    failure is visible.
+
+    When the 'aam-backup' slot cannot be acquired within its 1 h timeout
+    (a stuck run is holding it — possible given the 3×6 h cloud retry
+    budget), no pipeline runs at all. Pre-fix this failed silently: Prefect
+    console showed a failed run, but NO email was sent, NO run_history row
+    was written, and the dashboard showed nothing. Now:
+
+    1. Record a *_FAILED run row for EVERY pipeline this mode would have
+       run — the night shows up in reports, the dashboard, and the weekly
+       summary as a failure instead of as if it never happened.
+    2. Send ONE failure alert explaining that nothing ran and why.
+    3. If the alert itself fails: CRITICAL log + [ALERT_NOT_DELIVERED]
+       annotation on the just-recorded rows (same A1 double-failure
+       bookkeeping as the flow summary).
+
+    Never raises — the caller re-raises the original TimeoutError so the
+    Prefect flow run still fails in the console.
+    """
+    error = (
+        "Backup did not run: the 'aam-backup' concurrency slot could not be "
+        f"acquired within 3600 s ({exc}). Another backup run is holding the "
+        "lock — possibly a stuck or abnormally long pipeline. No pipelines "
+        "were executed for this flow run. Check for orphaned robocopy/rclone "
+        "processes and restart the AamBackupAgent service if none are found."
+    )
+    started_at = now_iso()
+    if mode in ("cloud", "all") and config.cloud.enabled:
+        _record_run(
+            config.paths.database_path,
+            _stable_run_id("cloud"),
+            "cloud",
+            started_at,
+            "CLOUD_FAILED",
+            -1,
+            error,
+            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+        )
+    if mode in ("lan", "all") and config.lan.enabled:
+        _record_run(
+            config.paths.database_path,
+            _stable_run_id("lan"),
+            "lan",
+            started_at,
+            "LAN_FAILED",
+            -1,
+            error,
+            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+        )
+
+    alert_ok = True
+    try:
+        alert_ok = send_failure_alert(
+            config.notifications,
+            config.firm_name,
+            error,
+            {"mode": mode, "status": "LOCK_TIMEOUT", "exit_code": None},
+            timestamp=now_iso(),
+        )
+    except Exception as alert_err:
+        alert_ok = False
+        logger.warning(f"Could not send slot-timeout alert: {alert_err}")
+
+    if not alert_ok:
+        logger.critical(
+            "ALERT DELIVERY FAILED — the concurrency-slot-timeout alert was "
+            "NOT delivered; the operator was NOT notified that no backups "
+            "ran this cycle. Check SMTP connectivity, credentials, and "
+            "network policy."
+        )
+        try:
+            _ann_db = ManifestDB(config.paths.database_path)
+            try:
+                _n = _ann_db.mark_alert_not_delivered(since_iso=flow_start_iso)
+                logger.critical(f"Annotated {_n} run record(s) with [ALERT_NOT_DELIVERED]")
+            finally:
+                _ann_db.close()
+        except Exception as ann_err:
+            logger.warning(f"Could not annotate run record(s): {ann_err}")
 
 
 def _record_run(
@@ -965,8 +1077,16 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     # annotation to THIS run's run_history rows if the summary alert fails.
     _flow_start_iso = now_iso()
 
+    # M3/S2-03: whether the slot was actually acquired. Prefect's
+    # concurrency() raises TimeoutError ON ENTRY (during __enter__) if the
+    # slot cannot be acquired within timeout_seconds; a TimeoutError raised
+    # later (inside the block) means the slot WAS held. The flag lets the
+    # handler below distinguish the two.
+    _slot_acquired = False
+
     try:
         with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
+            _slot_acquired = True
             # ── Acquire watchdog lock now that we hold the concurrency slot ──
             try:
                 write_lock(_lock_path)
@@ -1058,5 +1178,16 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
 
         logger.info("AAM Backup completed successfully")
 
+    except TimeoutError as e:
+        if not _slot_acquired:
+            # M3/S2-03: the SLOT ACQUISITION itself timed out — a stuck run
+            # held 'aam-backup' for >1 h (possible: the cloud retry budget is
+            # 3×6 h). Pre-fix this path was the system's one fully-silent
+            # failure mode: the flow failed in the Prefect console but NO
+            # email was sent, NO run_history row was written, and the
+            # dashboard showed nothing — an entire night of backups could
+            # vanish with no trace anywhere.
+            _handle_concurrency_slot_timeout(config, mode, _flow_start_iso, e)
+        raise
     except Exception:
         raise
