@@ -12,8 +12,10 @@ Two deployments from one codebase:
 
 import json
 import os
+import re
 import time
 import uuid
+from datetime import datetime
 
 import pendulum
 
@@ -410,6 +412,98 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
+# Plausible range for Unix timestamps this application handles (1970–2100).
+_MIN_UNIX_TS = 0.0
+_MAX_UNIX_TS = 4_102_444_800.0
+# Numeric-string Unix timestamps: 9-11 integer digits (2001–2336) with an
+# optional fractional part. Anchored so date-looking strings such as
+# "20260818" (8 digits) are never misread as Unix seconds.
+_NUMERIC_UNIX_RE = re.compile(r"^\d{9,11}(\.\d+)?$")
+
+
+def _mtime_to_unix(value) -> float | None:
+    """Normalize any mtime representation this application stores to Unix seconds.
+
+    Accepted forms (all produced by this application):
+      * int/float — Unix seconds (LAN records write os.stat mtime floats);
+      * numeric string — Unix seconds as text, e.g. "1783677447.705671";
+      * ISO-8601 / RFC-3339 string — e.g. "2026-08-18T19:58:48.071149100+05:30"
+        or "2026-07-10T10:27:27.705671Z" (cloud records / rclone ModTime);
+      * datetime / pendulum instances.
+    Returns None when the value cannot be interpreted as a point in time.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        return ts if _MIN_UNIX_TS < ts < _MAX_UNIX_TS else None
+    if isinstance(value, datetime):  # pendulum is a subclass of datetime
+        try:
+            return value.timestamp()
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        s = value.strip()
+        if _NUMERIC_UNIX_RE.match(s):
+            return float(s)
+        try:
+            return pendulum.parse(s).timestamp()
+        except Exception:
+            return None
+    return None
+
+
+def compute_copied_files(
+    manifest: list[dict],
+    before_dict: dict[str, tuple],
+    mtime_threshold_seconds: float = 1.1,
+) -> list[tuple[str, float]]:
+    """Return [(path, size)] of manifest entries representing an actual transfer.
+
+    An entry counts as copied when it is new (absent from before_dict), its
+    size changed beyond rclone float-reporting noise (0.01 B), or its mtime
+    moved by more than `mtime_threshold_seconds`. before_dict maps
+    relative_path -> (file_size, mtime) as stored in the database; the mtime
+    may be a numeric Unix float (LAN records) or an ISO-8601 string (cloud
+    records), while manifest entries carry rclone ModTime strings. Both sides
+    are normalized to Unix seconds via _mtime_to_unix BEFORE comparison, so
+    equivalent timestamps in different representations never produce a false
+    "copied". Only a value no representation can interpret falls back to the
+    conservative raw-string last resort.
+    """
+    copied_files_list = []
+    for item in manifest:
+        path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
+        size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
+        mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
+
+        if path not in before_dict:
+            copied_files_list.append((path, size))
+            continue
+
+        old_size, old_mtime = before_dict[path]
+        # 0.01-byte threshold: guards against float representation noise
+        # in rclone's size reporting. Accurate for all real file sizes
+        # since actual byte counts are always whole numbers.
+        if abs(float(size) - float(old_size)) > 0.01:
+            copied_files_list.append((path, size))
+            continue
+
+        new_ts = _mtime_to_unix(mtime)
+        old_ts = _mtime_to_unix(old_mtime)
+        if new_ts is None or old_ts is None:
+            # Uninterpretable representation on at least one side: keep the
+            # legacy conservative last resort (assume changed when the raw
+            # representations differ) instead of letting a parse failure
+            # classify every file as copied.
+            if str(mtime) != str(old_mtime):
+                copied_files_list.append((path, size))
+        elif abs(new_ts - old_ts) > mtime_threshold_seconds:
+            copied_files_list.append((path, size))
+
+    return copied_files_list
+
+
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
     db_path = config.paths.database_path
@@ -499,36 +593,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         phase = "post"
 
         # Calculate files and bytes copied by comparing old database state with new live GCS manifest
-        manifest = verify_data.get("manifest", [])
-        copied_files_list = []
-        for item in manifest:
-            path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
-            size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
-            mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
-            
-            if path not in before_dict:
-                copied_files_list.append((path, size))
-            else:
-                old_size, old_mtime = before_dict[path]
-                # 0.01-byte threshold: guards against float representation noise
-                # in rclone's size reporting. Accurate for all real file sizes
-                # since actual byte counts are always whole numbers.
-                if abs(float(size) - float(old_size)) > 0.01:
-                    copied_files_list.append((path, size))
-                else:
-                    try:
-                        if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
-                            # Numeric Unix timestamps — compare directly
-                            t1, t2 = float(mtime), float(old_mtime)
-                        else:
-                            t1 = pendulum.parse(str(mtime)).timestamp()
-                            t2 = pendulum.parse(str(old_mtime)).timestamp()
-                        if abs(t1 - t2) > 1.1:
-                            copied_files_list.append((path, size))
-                    except Exception:
-                        if str(mtime) != str(old_mtime):
-                            copied_files_list.append((path, size))
-
+        copied_files_list = compute_copied_files(verify_data.get("manifest", []), before_dict)
         files_copied = len(copied_files_list)
         bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
 
