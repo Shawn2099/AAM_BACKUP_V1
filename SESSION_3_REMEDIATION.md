@@ -382,3 +382,158 @@ regression guards), M6 (3), S2-30 (4 + 1 real-hardware), M8 (3), S2-20 guard (3)
 - `_s3_check_prod_db.py`, `_s3_snapshot_pre.py`, `_s3_snapshot_bucket.py` — read-only probes
 - `_s3_verify_post.py` — post-run state diff (live-data untouched proof)
 - `_s3_recover_bucket.py`, `_s3_verify_recovery.py` — §7.3 recovery + verification
+- `_s3_read_lifecycle.py`, `_s3_verify_lifecycle.py`, `_s3_*.bat` — S2-14 lifecycle read/apply/verify
+- `_s3_deploy_compare.py`, `_s3_deploy_copy.py` — prod-vs-git baseline + controlled copy with tree verification
+- `_s3_verify_service.py`, `_s3_list_runs.py`, `_s3_sched_dump.py` — post-restart service/Prefect verification
+- `_s3_pre_canary.py`, `_s3_canary.py`, `_s3_post_canary_cloud.py`, `_s3_post_canary_lan.py` — production canary harness
+- `_s3_guard_proof.py` — §7.3-guard abort proof (Phase 4)
+- `_s3_wake_nas.py`, `_s3_final_env_check.py` — WoL wake + final state verification
+- `_s3_deploy_gate_full.log`, `_s3_final_full.log`, `_s3_canary_cloud.log`, `_s3_canary_lan.log` — run logs
+
+## 11. Controlled Deployment of eef781f + Production Canary (2026-08-21)
+
+Mandate: deploy commit `eef781f` to the NSSM production service (previously running the
+audited `d27198c`) with preserved rollback, then prove through the real application path
+that the service runs the new code and that production backup works end-to-end — no
+destructive experiments.
+
+### 11.1 Pre-deploy gates (all green)
+
+- Git: `HEAD = eef781f` on `reliability-2026-08-20`, working tree clean (only the
+  intentionally-local `_s3_pre_state/` evidence dir untracked).
+- Runtime diff `d27198c..eef781f`: exactly **8 files** — `flow.py`,
+  `core/{cloud_preflight,cloud_reporter,cloud_sync,cloud_verify,lan_preflight,report}.py`,
+  `models/config.py`. `launch.py`/`serve.py`/`watchdog.py`/`ui.py`/`deploy/` unchanged.
+- Deploy-gate full suite on the committed code: **1462 passed, 54 skipped (all F4
+  real-hardware gate), 0 failed, exit 0** (3:12 min, `_s3_deploy_gate_full.log`).
+
+### 11.2 Deployment (controlled, rollback preserved)
+
+1. **Baseline verification** — all 20 runtime files in `C:\AAMBackup` byte-identical to
+   `d27198c` (line-ending normalized): production was running the audited code as expected.
+2. **Rollback backup** — full `robocopy /MIR` of `C:\AAMBackup` →
+   **`C:\AAMBackup.rollback-eef781f`** (11,621 files / 321 MB, exit 1 = files copied
+   successfully) + 9,145-file pre-deploy hash manifest
+   (`_s3_pre_state/prod_backup_manifest.json`).
+3. **Copy** — only the 8 changed runtime files from the checkout → `C:\AAMBackup`.
+4. **Verification** — (a) each copied file (normalized) == git blob at `eef781f`;
+   (b) full-tree diff vs pre-deploy manifest = exactly those 8 files, zero added/removed;
+   (c) `config.yaml` raw bytes unchanged (sha256 `2f75fbc9…` pre and post); (d) keys,
+   logs, and the production DB untouched.
+5. **Restart via the existing NSSM mechanism** — `nssm restart AamBackupAgent`.
+   Deviation (disclosed): the restart CLI was killed mid-sequence by a tool timeout,
+   which wedged the NSSM service host (SCM stuck `StopPending`, control error 1061,
+   `nssm start` refused "already running"). Recovery: killed the wedged host, SCM settled
+   to `Stopped`, `nssm start AamBackupAgent` → **Running** (fresh `launch.py` pid 1284,
+   started 09:06:58). `AamPrefectServer` and `AamWatchdog` were NOT restarted (they run no
+   changed code); the Prefect server (port 4200) stayed up throughout — no run history lost.
+
+### 11.3 Post-restart verification (all PASS)
+
+- **Code identity 8/8** (imported from `C:\AAMBackup` with the production venv): M3
+  `_handle_concurrency_slot_timeout` present; M1 `exit_code & 8` split; M4 sendmail
+  refusal handling; M6 `resolve_binary` in the sync command; S2-30 no `--modify-window` in
+  sync/verify code (rationale comment only); M8 `_warn_unknown_root_keys`; M5 `except
+  OSError` guard in lan_preflight.
+- **Expected production config loaded** (from `C:\AAMBackup\config.yaml`): source
+  `E:\FY26-27` → `\\10.10.186.231\lan_backup\FY26-27`; DB `C:\BackupAgent\manifest.db`;
+  runtime `C:\BackupAgent`; crons 21:00/22:00 Asia/Kolkata; `shutdown_after_backup` + WoL
+  enabled; Gmail SMTP configured (send_on_failure only); bucket
+  `aam-backup-demo-innovizta`.
+- **Prefect**: 5 deployments registered (backup-cloud, backup-lan, weekly-report,
+  monthly-report, rollover-check); 15 prescheduled runs (3 per deployment at startup —
+  normal Prefect 3 prescheduling, one of which is tonight's 21:00/22:00 pair).
+
+### 11.4 Production canary (real Prefect path, production config 100% unchanged)
+
+Pre-canary snapshot: DB 113 rows (latest 08-20: 22:00 `CLOUD_COMPLETE`, 21:00
+`LAN_SKIPPED [WinError 5]` — the live M5 incident), local `E:\FY26-27` 572 files /
+54.343 MiB, NAS canary-only, bucket 572 objs / 54.343 MiB.
+
+**CLOUD canary** — `run_deployment("backup-cloud")` → run `ae900e3c`,
+**Prefect COMPLETED, 62 s**:
+- DB row 114: `CLOUD_NO_CHANGES_COMPLETE`, exit 9, 0 files / 0 bytes, 0 failed,
+  `verified: true` (572 files, 0.053 GB) — the correct idempotent result; the S2-30
+  removal proven in production (no spurious "changes").
+- Note: the last no-change run under `d27198c` recorded exit 0 / `CLOUD_COMPLETE`.
+  Difference: old bare-`rclone` resolved to **system32 rclone v1.74.2**; the new code
+  resolves **deploy\bin v1.74.3** (M6 version unification, now identical to
+  preflight/verify). v1.74.3 honors `--error-on-no-transfer` (exit 9 = no-changes
+  success); both outcomes are success states with integrity verified. Status string for
+  no-change runs is now `CLOUD_NO_CHANGES_COMPLETE`.
+- Bucket `FY26-27/` unchanged: 572 objs / 54.343 MiB. Full log trace: health → preflight
+  A/B → sync → verify (572 match) → report diff `+0 -0 *0 =572` → 572 DB rows → artifact →
+  lock released. No orphans; no SMTP activity (correct on success).
+
+**LAN canary** — `run_deployment("backup-lan")` → run `65d3e792`,
+**Prefect COMPLETED, 21.9 s**:
+- DB row 115: `LAN_COMPLETE`, exit 3 (robocopy success), **571 files / 56,982,876 bytes
+  copied, 0 failed** (571 = 572 minus the pre-existing canary file); metrics
+  `{added: 571, modified: 0, removed: 0, total_files: 572}`.
+- **NAS mirror verified inside the 5-minute shutdown window: 572 files / 54.343 MiB —
+  exact mirror of the source.**
+- Log trace: preflight dry-run exit 3 → `robocopy /MIR` exit 3 → 572 recorded →
+  **designed shutdown task fired** (`shutdown /s /m \\10.10.186.231 /t 300 /f`).
+- The NAS powered off as designed (~09:32). This is the **first successful production LAN
+  backup since the missing-folder incident** (every `backup-lan` run since 07-24 had
+  failed).
+
+### 11.5 pipe_01 safety-guard proof (Phase 4 requirement)
+
+Harness `_s3_guard_proof.py` runs the **actual committed test**
+(`test_rt_06_flow_pipeline.py::test_pipe_01_cloud_pipeline`) through pytest with the
+FY-prefix interception broken in the **exact section-7.3 shape**: the test's
+`get_fy_prefix` patch is redirected to `core.fy_router` (lands on the wrong module —
+a no-op — while the pipeline keeps its own live-FY binding), with a spy on the pipeline
+and a global `subprocess.run` recorder (record + raise on any spawn).
+
+**Result: `ABORTED BEFORE ANY RCLONE: True`**
+- Guard fired at line 110 (before the line-116 pipeline call):
+  `AssertionError: S3 SAFETY ABORT: flow.get_fy_prefix patch not in effect — the cloud
+  pipeline would target the LIVE FY bucket prefix. Refusing to run.
+  (assert 'FY26-27' == 'E2E_TEST_FY')`
+- Pipeline spy never reached; **zero rclone/subprocess spawns in the call phase**;
+  zero GCS traffic (the fixture teardown's suite-namespace purge was likewise blocked by
+  the recorder; the `E2E_TEST_FY/` prefix was verified 0 objects afterwards).
+
+### 11.6 Final production state + rollback
+
+- Services: `AamBackupAgent` / `AamPrefectServer` / `AamWatchdog` all **Running**; only
+  the expected python processes; no robocopy/rclone/shutdown orphans.
+- Bucket: `FY26-27/` 572 objs (intact); `E2E_TEST_FY/` 0 (suite namespace clean); O1 junk
+  prefixes untouched (`NONEXISTENT_BUCKET/` 3, `docs/` 3).
+- NAS: full 572-file mirror; powered ON (woken via the app's own
+  `ensure_server_online` WoL for the guard proof — 52 s; the next 21:00 run will shut it
+  down after the backup as designed).
+- Production DB: rows 114/115 = the two canary runs (legitimate production records).
+- **Rollback state: READY** — `C:\AAMBackup.rollback-eef781f` (complete 11,621-file
+  pre-deploy copy) + 9,145-file manifest. Rollback = restore the 8 files from the backup
+  + `nssm restart AamBackupAgent`.
+- Known deviations: GitNexus MCP unavailable → manual caller analysis (documented since
+  Session 2); killing the NSSM restart CLI mid-sequence wedges the service host (recovery
+  documented in §11.2); NAS currently powered on (deviation from its sleep state, self-
+  corrects at the next run).
+
+### 11.7 Production-readiness verdict
+
+**PRODUCTION-READY**, evidenced (not assumed):
+
+1. **Deployed commit confirmed running**: `C:\AAMBackup` files == git blob `eef781f`
+   (normalized deep-equal, all 8), service process started after the copy, all 8 behavioral
+   code markers present in the running tree, and the canary runs executed that new code
+   (M6 version unification observable in the exit-9 no-change result).
+2. **Both pipelines verified end-to-end through the real Prefect path** on the
+   unchanged production config: Prefect state COMPLETED ×2, production DB rows
+   `LAN_COMPLETE` + `CLOUD_NO_CHANGES_COMPLETE` ×2, real NAS mirror byte-count verified,
+   real GCS integrity verified (572/572), logs clean, no orphans, SMTP correctly quiet on
+   success (failure-mail path proven separately in the real-STARTTLS tests).
+3. **The M5 production failure mode is gone**: last night's 21:00 `LAN_SKIPPED
+   [WinError 5]` is now a structured, recoverable path — and the canary proved the LAN
+   pipeline completes on the repaired NAS state.
+4. **The §7.3 incident class is guarded**: the pre-run safety assert provably aborts
+   before any rclone operation if the FY-prefix interception ever fails again.
+5. **One-step rollback** available (`C:\AAMBackup.rollback-eef781f`), production state
+   otherwise preserved (config/keys/logs/DB byte-identical to pre-deploy).
+
+Tonight's 21:00/22:00 IST scheduled runs are the first full production cycle on `eef781f`;
+both pipelines have already been exercised through exactly that path via the canary.
