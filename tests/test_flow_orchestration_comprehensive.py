@@ -185,8 +185,11 @@ class TestModeRouting:
 
     def test_invalid_mode_raises(self):
         from flow import backup
+        # .fn = undecorated function: asserts mode validation deterministically
+        # without the flow engine (full-suite runs share a spawned ephemeral
+        # API whose set_state can 409-race - same flake family as SCH-05).
         with pytest.raises(ValueError, match="Invalid mode"):
-            backup(config_path="test.yaml", mode="invalid")
+            backup.fn(config_path="test.yaml", mode="invalid")
 
     def test_mode_is_case_insensitive(self):
         from flow import backup
