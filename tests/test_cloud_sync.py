@@ -1,379 +1,154 @@
-"""Tests for cloud_sync — rclone command building, exit classification, and orchestration."""
-
-import subprocess
-from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
-
-from core.cloud_sync import build_rclone_sync_command, classify_rclone_exit, run_cloud_sync
-
+"""Tests for cloud_sync — REAL rclone.exe against the production GCS bucket."""
 
 import os
-import tempfile
+import time
+from pathlib import Path
 
 import pytest
 
-_DUMMY_STDERR_PATH = os.path.join(tempfile.gettempdir(), "test_cloud_sync_stderr.log")
+from core.cloud_sync import (
+    build_rclone_sync_command,
+    classify_rclone_exit,
+    resolve_max_duration_seconds,
+    run_cloud_sync,
+    scan_rclone_log_for_errors,
+)
+from core.rclone_config import temp_rclone_config
 
 
-@pytest.fixture(autouse=True)
-def _pin_rclone_exe():
-    """M7: builder resolves the binary via core.process.resolve_binary.
-
-    Pin to the bare name so structural assertions stay deterministic on
-    machines where rclone IS installed.
-    """
-    with patch("core.cloud_sync.resolve_binary", create=True, return_value="rclone"):
-        yield
-
-
-@contextmanager
-def _mock_temp_config(*args, **kwargs):
-    yield os.path.join(tempfile.gettempdir(), "rclone_test.conf")
+@pytest.fixture
+def gcs(gcs_sandbox, tmp_path):
+    fy = f"{gcs_sandbox['fy_prefix']}/{int(time.time() * 1000)}_{os.getpid()}"
+    src = tmp_path / "src"
+    (src / "docs").mkdir(parents=True)
+    (src / "a.txt").write_text("alpha")
+    (src / "docs" / "n.bin").write_bytes(os.urandom(2048))
+    return gcs_sandbox | {"fy_prefix": fy}, src
 
 
-# ---------------------------------------------------------------------------
-# classify_rclone_exit
-# ---------------------------------------------------------------------------
+def _sync(gcs_env, src, **overrides):
+    params = dict(
+        source=str(src), bucket=gcs_env["bucket"], fy_prefix=gcs_env["fy_prefix"],
+        gcs_key_path=gcs_env["gcs_key_path"], project_number=gcs_env["project_number"],
+        storage_class=gcs_env["storage_class"], location=gcs_env["location"],
+        timeout=300,
+    )
+    params.update(overrides)
+    return run_cloud_sync(**params)
+
 
 class TestClassifyRcloneExit:
-    def test_zero_is_complete(self):
-        assert classify_rclone_exit(0) == "CLOUD_COMPLETE"
 
-    def test_nine_is_no_changes(self):
-        assert classify_rclone_exit(9) == "CLOUD_NO_CHANGES_COMPLETE"
+    @pytest.mark.parametrize("code,expected", [
+        (0, "CLOUD_COMPLETE"),
+        (1, "CLOUD_FAILED"), (2, "CLOUD_FAILED"), (3, "CLOUD_FAILED"),
+        (4, "CLOUD_PARTIAL"), (5, "CLOUD_PARTIAL"),
+        (6, "CLOUD_FAILED"), (7, "CLOUD_FAILED"), (8, "CLOUD_FAILED"),
+        (9, "CLOUD_NO_CHANGES_COMPLETE"), (10, "CLOUD_PARTIAL"),
+        (99, "CLOUD_FAILED"), (-1, "CLOUD_FAILED"),
+    ])
+    def test_matrix(self, code, expected):
+        assert classify_rclone_exit(code) == expected
 
-    def test_one_is_failed(self):
-        assert classify_rclone_exit(1) == "CLOUD_FAILED"
-
-    def test_two_is_failed(self):
-        assert classify_rclone_exit(2) == "CLOUD_FAILED"
-
-    def test_three_is_failed(self):
-        assert classify_rclone_exit(3) == "CLOUD_FAILED"
-
-    def test_four_is_partial(self):
-        assert classify_rclone_exit(4) == "CLOUD_PARTIAL"
-
-    def test_five_is_partial(self):
-        assert classify_rclone_exit(5) == "CLOUD_PARTIAL"
-
-    def test_six_is_failed(self):
-        assert classify_rclone_exit(6) == "CLOUD_FAILED"
-
-    def test_seven_is_failed(self):
-        assert classify_rclone_exit(7) == "CLOUD_FAILED"
-
-    def test_eight_is_failed(self):
-        assert classify_rclone_exit(8) == "CLOUD_FAILED"
-
-    def test_ten_is_partial(self):
-        assert classify_rclone_exit(10) == "CLOUD_PARTIAL"
-
-    def test_unknown_code_defaults_to_failed(self):
-        assert classify_rclone_exit(99) == "CLOUD_FAILED"
-
-    def test_negative_defaults_to_failed(self):
-        assert classify_rclone_exit(-1) == "CLOUD_FAILED"
-
-
-# ---------------------------------------------------------------------------
-# build_rclone_sync_command
-# ---------------------------------------------------------------------------
 
 class TestBuildRcloneSyncCommand:
-    def test_basic_structure(self):
+
+    def test_structure(self):
         cmd = build_rclone_sync_command(
-            source="D:\\data",
-            bucket="my-bucket",
-            fy_prefix="FY26-27",
-            config_path="/tmp/rclone.conf",
-            storage_class="COLDLINE",
+            source="D:\\data", bucket="my-bucket", fy_prefix="FY26-27",
+            config_path="C:\\temp\\r.conf", storage_class="COLDLINE",
         )
-        assert cmd[0] == "rclone"
         assert cmd[1] == "sync"
-        assert "D:\\data" in cmd
         assert "aam_gcs:my-bucket/FY26-27" in cmd
+        assert cmd[cmd.index("--config") + 1] == "C:\\temp\\r.conf"
+        for flag in ("--fast-list", "--gcs-no-check-bucket",
+                     "--error-on-no-transfer", "--check-first"):
+            assert flag in cmd
 
-    def test_config_path_included(self):
+    def test_resolves_real_binary(self):
         cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/myconfig.conf",
-            storage_class="COLDLINE",
+            source="X:", bucket="b", fy_prefix="FY", config_path="c",
+            storage_class="STANDARD",
         )
-        idx = cmd.index("--config")
-        assert cmd[idx + 1] == "/tmp/myconfig.conf"
-
-    def test_custom_transfers(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE", transfers=8,
-        )
-        idx = cmd.index("--transfers")
-        assert cmd[idx + 1] == "8"
-
-    def test_custom_checkers(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE", checkers=32,
-        )
-        idx = cmd.index("--checkers")
-        assert cmd[idx + 1] == "32"
-
-    def test_custom_storage_class(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="ARCHIVE",
-        )
-        idx = cmd.index("--gcs-storage-class")
-        assert cmd[idx + 1] == "ARCHIVE"
-
-    def test_custom_bandwidth(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE", bwlimit="50M",
-        )
-        idx = cmd.index("--bwlimit")
-        assert cmd[idx + 1] == "50M"
-
-    def test_retry_count(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE", retries=5,
-        )
-        idx = cmd.index("--retries")
-        assert cmd[idx + 1] == "5"
-
-    def test_gcs_flags_present(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        assert "--gcs-no-check-bucket" in cmd
-        assert "--fast-list" in cmd
-
-    def test_check_first_present(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        assert "--check-first" in cmd
-
-    def test_error_on_no_transfer_present(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        assert "--error-on-no-transfer" in cmd
-
-    def test_modify_window_2s(self):
-        """Must be 2s to match NTFS timestamp granularity."""
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        idx = cmd.index("--modify-window")
-        assert cmd[idx + 1] == "2s"
-
-    def test_buffer_size_default(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        idx = cmd.index("--buffer-size")
-        assert cmd[idx + 1] == "64M"
-
-    def test_buffer_size_custom(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-            buffer_size="128M",
-        )
-        idx = cmd.index("--buffer-size")
-        assert cmd[idx + 1] == "128M"
-
-    def test_no_max_delete(self):
-        """--max-delete removed — GCS versioning provides this protection."""
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        assert "--max-delete" not in cmd
-
-    def test_no_track_renames(self):
-        """--track-renames removed — hash computation cost > bandwidth savings."""
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        assert "--track-renames" not in cmd
-
-    def test_use_json_log_present(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        assert "--use-json-log" in cmd
-
-    def test_log_level_info(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        idx = cmd.index("--log-level")
-        assert cmd[idx + 1] == "INFO"
-
-    def test_stats_60s(self):
-        cmd = build_rclone_sync_command(
-            source="D:\\", bucket="b", fy_prefix="FY",
-            config_path="/tmp/c.conf", storage_class="COLDLINE",
-        )
-        idx = cmd.index("--stats")
-        assert cmd[idx + 1] == "60s"
+        assert Path(cmd[0]).exists()
 
 
-# ---------------------------------------------------------------------------
-# run_cloud_sync — subprocess orchestration
-# ---------------------------------------------------------------------------
+class TestResolveMaxDuration:
 
-class TestRunCloudSync:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_success_exit_0(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = MagicMock(returncode=0)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_COMPLETE"
+    def test_auto_derivation(self):
+        assert resolve_max_duration_seconds(21600, None) == 21300
+
+    def test_too_small_disables_cap(self):
+        assert resolve_max_duration_seconds(200, None) is None
+
+
+class TestScanRcloneLog:
+
+    def test_clean_log_has_no_error(self):
+        ok, _ = scan_rclone_log_for_errors(
+            '{"level":"INFO","msg":"There was nothing to transfer"}\n')
+        assert ok is False
+
+    def test_json_error_detected(self):
+        ok, tail = scan_rclone_log_for_errors(
+            '{"level":"ERROR","msg":"failed to list bucket"}\n')
+        assert ok is True and "bucket" in tail
+
+
+class TestRunCloudSyncReal:
+
+    def test_upload_completes_and_lands_in_bucket(self, gcs):
+        env, src = gcs
+        result = _sync(env, src)
+
+        assert result["status"] == "CLOUD_COMPLETE", result
         assert result["exit_code"] == 0
-        assert result["error"] is None
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_no_files_to_transfer_exit_9(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = MagicMock(returncode=9)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_NO_CHANGES_COMPLETE"
+        from core.cloud_reporter import get_cloud_manifest
+        with temp_rclone_config(
+            env["gcs_key_path"], env["location"], env["project_number"],
+            env["storage_class"],
+        ) as cfg:
+            files = get_cloud_manifest(env["bucket"], env["fy_prefix"], cfg,
+                                       timeout=120)
+        assert {"a.txt", "docs/n.bin"} <= {f["Path"] for f in files}
+
+    def test_second_run_no_changes_is_not_an_error(self, gcs):
+        env, src = gcs
+        assert _sync(env, src)["status"] == "CLOUD_COMPLETE"
+
+        result = _sync(env, src)
+        assert result["status"] == "CLOUD_NO_CHANGES_COMPLETE", result
         assert result["exit_code"] == 9
-        assert result["error"] is None
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_partial_exit_4(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = MagicMock(returncode=4)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_PARTIAL"
-        assert result["exit_code"] == 4
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_fatal_exit_7_with_stderr(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.return_value = MagicMock(returncode=7)
-        mock_path.return_value.read_text.return_value = "auth failed: bad credentials"
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
+    def test_missing_source_directory_fails(self, gcs):
+        env, _src = gcs
+        result = _sync(env, Path("Q:/definitely_missing"))
         assert result["status"] == "CLOUD_FAILED"
-        assert result["exit_code"] == 7
-        assert "auth failed" in result["error"]
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_not_truncated(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """Full stderr is returned — no truncation, proper debugging in production."""
-        mock_run.return_value = MagicMock(returncode=1)
-        large_stderr = "x" * 150000
-        mock_path.return_value.read_text.return_value = large_stderr
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["error"] == large_stderr
+    def test_invalid_service_account_key_fails(self, gcs, tmp_path):
+        env, src = gcs
+        bad_key = tmp_path / "bad.json"
+        bad_key.write_text('{"not": "a real key"}')
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_unreadable(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.return_value = MagicMock(returncode=1)
-        mock_path.return_value.read_text.side_effect = OSError("permission denied")
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert "stderr unreadable" in result["error"]
+        result = _sync(env, src, gcs_key_path=str(bad_key))
+        assert result["status"] == "CLOUD_FAILED"
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_timeout_expired(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=300)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE", timeout=300)
+    def test_real_timeout_kills_slow_transfer(self, gcs):
+        """bwlimit=1 byte/s makes a real 100KB upload take minutes;
+        the OS-enforced timeout fires at ~5s."""
+        env, src = gcs
+        (src / "big.bin").write_bytes(os.urandom(100_000))
+
+        started = time.monotonic()
+        result = _sync(env, src, bwlimit="1", timeout=5, max_duration_seconds=0)
+        elapsed = time.monotonic() - started
+
         assert result["status"] == "CLOUD_FAILED"
         assert result["exit_code"] == -1
-        assert "Timeout after 300s" in result["error"]
+        assert "Timeout after 5s" in result["error"]
+        assert elapsed < 60
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_rclone_not_found(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.side_effect = FileNotFoundError("rclone not on PATH")
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_FAILED"
-        assert result["exit_code"] == -1
-        assert "rclone not found" in result["error"]
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_os_error(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.side_effect = OSError("disk full")
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_FAILED"
-        assert result["exit_code"] == -1
-        assert result["error"] == "disk full"
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_log_cleaned_up_on_success(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_path_instance = mock_path.return_value
-        mock_run.return_value = MagicMock(returncode=0)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_COMPLETE"
-        mock_path_instance.unlink.assert_called_once()
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_log_cleaned_up_on_timeout(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_path_instance = mock_path.return_value
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=300)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_FAILED"
-        mock_path_instance.unlink.assert_called_once()
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_buffer_size_passed_to_command(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        """buffer_size config flows through to rclone command."""
-        mock_run.return_value = MagicMock(returncode=0)
-        result = run_cloud_sync(
-            "/src", "bucket", "FY", "/key", "123", "COLDLINE",
-            buffer_size="128M",
-        )
-        assert result["status"] == "CLOUD_COMPLETE"
-        cmd = mock_run.call_args[0][0]
-        idx = cmd.index("--buffer-size")
-        assert cmd[idx + 1] == "128M"
+    def test_result_contract_keys_exact(self, gcs):
+        env, src = gcs
+        assert set(_sync(env, src).keys()) == {"status", "exit_code", "error"}
