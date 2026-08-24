@@ -340,12 +340,14 @@ class TestWOL08SmbProbeOSErrorSafety:
                 "dns_failure_result": dns_fail,
                 "port_overflow_behavior": overflow_behavior,
                 "inference": ("gaierror (OSError subclass) handled -> False; "
-                              "port-overflow behavior recorded verbatim"),
+                              "P1-WOL: port clamp guard makes out-of-range "
+                              "ports return False instead of raising"),
             })
             assert dns_fail is False, f"op={ops}"
+            # P1-WOL fixed contract: clamp guard -> False, never an exception
             if overflow_behavior != "returned False":
-                record_op(sid, "ANOMALY-RECORDED", ops)
-                return
+                record_op(sid, "FAIL", ops)
+                raise AssertionError(f"port overflow must return False, op={ops}")
             record_op(sid, "PASS", ops)
         except Exception as e:
             record_op(sid, "FAIL", _fail_ops(ops, e))
@@ -369,7 +371,8 @@ class TestWOL09PerRoundFailureContinuation:
             src = inspect.getsource(wol_mod._send_magic_packet)
             checks = {
                 "round_loop": "for attempt in range(1, rounds + 1)" in src,
-                "global_guarded": src.count("except OSError") >= 2,
+                "broad_loud_guards": src.count("except Exception") >= 2
+                                     and "type(e).__name__" in src,
                 "subnet_skips_when_same": '!= "255.255.255.255"' in src,
             }
 
@@ -382,14 +385,14 @@ class TestWOL09PerRoundFailureContinuation:
 
             ops.update({
                 "wiring": checks,
-                "unparseable_mac_outcome": escape or "swallowed silently",
-                "inference": ("round loop + dual guards verified; robustness "
-                              "probe recorded verbatim - non-OSError escapes "
-                              "the warn-and-continue net"),
+                "unparseable_mac_outcome": escape or "swallowed with loud warning",
+                "inference": ("P1-WOL fixed contract: broad-but-loud catches "
+                              "keep per-round failures non-fatal; unparseable "
+                              "MAC is warned and skipped, never escapes"),
             })
             assert all(checks.values()), f"op={ops}"
-            assert escape and escape.startswith("ValueError"), f"op={ops}"
-            record_op(sid, "ANOMALY-RECORDED", ops)
+            assert escape is None, f"non-OSError must not escape, op={ops}"
+            record_op(sid, "PASS", ops)
         except Exception as e:
             record_op(sid, "FAIL", _fail_ops(ops, e))
             raise

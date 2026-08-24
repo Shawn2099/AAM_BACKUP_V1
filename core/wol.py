@@ -17,7 +17,14 @@ class WolTimeout(RuntimeError):
 
 
 def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 5.0) -> bool:
-    """TCP connect to SMB port. More reliable than ping."""
+    """TCP connect to SMB port. More reliable than ping.
+
+    P1-WOL: ports outside the valid range are rejected by the clamp guard
+    (connect_ex can raise OverflowError for them) - return False, never raise.
+    """
+    if not isinstance(port, int) or not (0 <= port <= 65535):
+        logger.warning(f"SMB probe refused: invalid port {port!r}")
+        return False
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
@@ -45,14 +52,20 @@ def _send_magic_packet(
     standard external loop — same convention as `etherwake -s 3 -I 5`).
     Broadcast UDP is fire-and-forget: any single dropped round previously
     meant a failed wake for the whole night.
+
+    P1-WOL: catches are broad-but-loud. Per-round failures (OSError from a
+    dead interface, ValueError from an unparseable MAC, OverflowError from
+    bad ports inside the library) are warned with type+args and the round
+    continues — wake attempts must never abort mid-cycle on one bad target.
+    KeyboardInterrupt/SystemExit still propagate (Exception excludes them).
     """
     rounds = max(1, int(repeat))
     for attempt in range(1, rounds + 1):
         try:
             wol_send(mac_address, ip_address="255.255.255.255", port=9)
             logger.debug(f"WoL magic packet sent to {mac_address} via 255.255.255.255 (round {attempt}/{rounds})")
-        except OSError as e:
-            logger.warning(f"WoL global broadcast failed: {e}")
+        except Exception as e:
+            logger.warning(f"WoL global broadcast failed ({type(e).__name__}: {e})")
 
         if subnet_broadcast != "255.255.255.255":
             try:
@@ -61,8 +74,11 @@ def _send_magic_packet(
                     f"WoL magic packet sent to {mac_address} via subnet broadcast "
                     f"{subnet_broadcast} (round {attempt}/{rounds})"
                 )
-            except OSError as e:
-                logger.warning(f"WoL subnet broadcast ({subnet_broadcast}) failed: {e}")
+            except Exception as e:
+                logger.warning(
+                    f"WoL subnet broadcast ({subnet_broadcast}) failed "
+                    f"({type(e).__name__}: {e})"
+                )
 
         if attempt < rounds:
             time.sleep(interval)
