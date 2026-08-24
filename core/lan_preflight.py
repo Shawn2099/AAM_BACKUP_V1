@@ -9,11 +9,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.health import HealthError  # P1-EXC: THE domain exception - single identity
 from core.process import resolve_binary
-
-
-class HealthError(Exception):
-    """Raised when a preflight health check fails."""
 
 def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
