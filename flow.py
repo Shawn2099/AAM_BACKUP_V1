@@ -14,6 +14,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import contextmanager
 
 import pendulum
 
@@ -53,6 +54,47 @@ def _stable_run_id(mode: str) -> str:
     except Exception:
         pass
     return f"{uuid.uuid4()}-{mode}"
+
+
+@contextmanager
+def _backup_slot(config):
+    """P2-CONC: global serialization slot + watchdog lock, per pipeline.
+
+    The slot lives HERE (inside each pipeline) instead of around the flow
+    body so that EVERY entry path - production flow, manual runs, scripts,
+    tests - serializes on the same "aam-backup" limit. The flow-level wrapper
+    was removed in the same commit; keeping both would self-deadlock a
+    limit=1 resource.
+
+    The watchdog lock is written only while the slot is held, preserving the
+    F13 invariant: lock holder == slot holder, so a second process can never
+    overwrite an active run's PID and then delete the lock.
+    """
+    wait_seconds = int(
+        getattr(
+            getattr(config, "maintenance", None),
+            "concurrency_wait_seconds",
+            3600,
+        )
+    )
+    lock_path = config.paths.backup_lock_path
+
+    with concurrency("aam-backup", occupy=1, timeout_seconds=wait_seconds):
+        try:
+            write_lock(lock_path)
+            logger.info(
+                f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts"
+            )
+        except OSError as e:
+            logger.warning(f"Could not write backup lock file: {e}")
+        try:
+            yield
+        finally:
+            try:
+                lock_path.unlink(missing_ok=True)
+                logger.info("Backup lock released")
+            except OSError:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -407,174 +449,175 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
-    db_path = config.paths.database_path
-    fy_prefix = get_fy_prefix()
+    with _backup_slot(config):
+        db_path = config.paths.database_path
+        fy_prefix = get_fy_prefix()
 
-    # Apply config-driven retries to tasks that benefit from retrying
-    preflight = cloud_preflight_task.with_options(
-        retries=1, retry_delay_seconds=30,
-    )
-    sync = cloud_sync_task.with_options(
-        retries=config.cloud.max_attempts - 1,
-        retry_delay_seconds=config.cloud.retry_delay_seconds,
-    )
-    verify_report = cloud_verify_and_report_task.with_options(
-        retries=1, retry_delay_seconds=60,
-    )
+        # Apply config-driven retries to tasks that benefit from retrying
+        preflight = cloud_preflight_task.with_options(
+            retries=1, retry_delay_seconds=30,
+        )
+        sync = cloud_sync_task.with_options(
+            retries=config.cloud.max_attempts - 1,
+            retry_delay_seconds=config.cloud.retry_delay_seconds,
+        )
+        verify_report = cloud_verify_and_report_task.with_options(
+            retries=1, retry_delay_seconds=60,
+        )
 
-    # Fetch database state before sync to calculate differential transfers
-    db = ManifestDB(
-        db_path,
-        busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-        vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-    )
-    before_dict = {}
-    try:
-        before_dict = db.get_cloud_synced_entries()
-    except Exception as e:
-        logger.warning(f"Could not fetch database state before cloud sync: {e}")
-    finally:
-        db.close()
-
-    status = "CLOUD_SKIPPED"
-    sync_result = {"exit_code": -1}
-    error_msg = None
-    files_copied = 0
-    bytes_copied = 0
-    extended_metrics = None
-    phase = "pre"
-
-    try:
-        health_check_task(config, "cloud")
-        preflight(config, fy_prefix)
-        phase = "sync"
-        sync_result = sync(config, fy_prefix)
-        status = sync_result["status"]
-        phase = "verify"
-        verify_data = verify_report(config, fy_prefix)
-        # M6: a failed manifest query is NEVER recorded as bucket state.
-        # Skip the DB write; the run row + extended_metrics carry the reason.
-        manifest_error = verify_data.get("manifest_error")
-        if manifest_error:
-            logger.error(
-                f"Cloud manifest query failed ({manifest_error}) - file-level "
-                "DB record and transfer metrics are SKIPPED this run; the "
-                "integrity verification above is unaffected."
-            )
-        else:
-            cloud_record_task(
-                db_path, verify_data, sync_result,
-                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-            )
-
-        # F1: verification is part of the backup contract. A failed check must
-        # NOT be recorded as COMPLETE — alert with a distinct, non-skip status
-        # and fail the run so it is visible in the Prefect console.
-        if not verify_data.get("verified"):
-            diff = verify_data.get("diff") or {}
-            verify_err = (
-                "Cloud integrity verification FAILED after sync: rclone check found "
-                f"differences vs source (missing-from-cloud={len(diff.get('removed', []))}, "
-                f"unexpected-in-cloud={len(diff.get('added', []))}, "
-                f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
-                "incomplete or out of sync. rclone sync is resumable — the next "
-                "scheduled run will re-sync the differences."
-            )
-            status = "CLOUD_VERIFY_FAILED"
-            error_msg = verify_err
-            logger.error(verify_err)
-            try:
-                send_failure_alert(
-                    config.notifications, config.firm_name, verify_err,
-                    {"mode": "cloud", "status": status,
-                     "exit_code": sync_result.get("exit_code")},
-                    started_at,
-                )
-            except Exception as alert_err:
-                logger.warning(f"Could not send verify-failure alert: {alert_err}")
-            raise RuntimeError(verify_err)
-
-        phase = "post"
-
-        # Calculate files and bytes copied by comparing old database state with new live GCS manifest
-        manifest = verify_data.get("manifest", [])
-        copied_files_list = []
-        for item in manifest:
-            path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
-            size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
-            mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
-            
-            if path not in before_dict:
-                copied_files_list.append((path, size))
-            else:
-                old_size, old_mtime = before_dict[path]
-                # 0.01-byte threshold: guards against float representation noise
-                # in rclone's size reporting. Accurate for all real file sizes
-                # since actual byte counts are always whole numbers.
-                if abs(float(size) - float(old_size)) > 0.01:
-                    copied_files_list.append((path, size))
-                else:
-                    try:
-                        if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
-                            # Numeric Unix timestamps — compare directly
-                            t1, t2 = float(mtime), float(old_mtime)
-                        else:
-                            t1 = pendulum.parse(str(mtime)).timestamp()
-                            t2 = pendulum.parse(str(old_mtime)).timestamp()
-                        if abs(t1 - t2) > 1.1:
-                            copied_files_list.append((path, size))
-                    except Exception:
-                        if str(mtime) != str(old_mtime):
-                            copied_files_list.append((path, size))
-
-        files_copied = len(copied_files_list)
-        bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
-
-        extended_metrics = json.dumps({
-            "verified": verify_data.get("verified", False),
-            "total_files": verify_data.get("size", {}).get("count", 0),
-            "total_size_gb": verify_data.get("size", {}).get("bytes", 0) / (1024 * 1024 * 1024),
-            # M6: record WHY numbers may be zero on a degraded run
-            "manifest_ok": manifest_error is None,
-            "size_ok": "_error" not in (verify_data.get("size") or {}),
-            "diff_partial": bool((verify_data.get("diff") or {}).get("_partial")),
-        })
-        try:
-            cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
-        except Exception:
-            pass
-
-        logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
-        return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
-
-    except Exception as e:
-        error_msg = str(e)
-        # F2: record the TRUE terminal status. Previously any exception after
-        # initialization left the run recorded as CLOUD_SKIPPED (initial value),
-        # so real failures were invisible in reports and the dashboard.
-        if phase == "sync":
-            status = "CLOUD_FAILED"
-        elif phase == "verify" and status == "CLOUD_COMPLETE":
-            status = "CLOUD_VERIFY_FAILED"
-        elif phase == "pre":
-            status = "CLOUD_SKIPPED"
-        # phase "post" (record/artifact after a successful sync+verify): the
-        # data is safe on GCS — keep the sync status; the bookkeeping error
-        # stays visible in the run record's error_message.
-        raise
-    finally:
-        _record_run(
-            db_path, run_id, "cloud", started_at, status,
-            sync_result.get("exit_code", -1), error_msg,
-            files_copied=files_copied,
-            bytes_copied=bytes_copied,
-            files_failed=0,
-            extended_metrics=extended_metrics,
+        # Fetch database state before sync to calculate differential transfers
+        db = ManifestDB(
+            db_path,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-            monotonic_start=monotonic_start,
         )
+        before_dict = {}
+        try:
+            before_dict = db.get_cloud_synced_entries()
+        except Exception as e:
+            logger.warning(f"Could not fetch database state before cloud sync: {e}")
+        finally:
+            db.close()
+
+        status = "CLOUD_SKIPPED"
+        sync_result = {"exit_code": -1}
+        error_msg = None
+        files_copied = 0
+        bytes_copied = 0
+        extended_metrics = None
+        phase = "pre"
+
+        try:
+            health_check_task(config, "cloud")
+            preflight(config, fy_prefix)
+            phase = "sync"
+            sync_result = sync(config, fy_prefix)
+            status = sync_result["status"]
+            phase = "verify"
+            verify_data = verify_report(config, fy_prefix)
+            # M6: a failed manifest query is NEVER recorded as bucket state.
+            # Skip the DB write; the run row + extended_metrics carry the reason.
+            manifest_error = verify_data.get("manifest_error")
+            if manifest_error:
+                logger.error(
+                    f"Cloud manifest query failed ({manifest_error}) - file-level "
+                    "DB record and transfer metrics are SKIPPED this run; the "
+                    "integrity verification above is unaffected."
+                )
+            else:
+                cloud_record_task(
+                    db_path, verify_data, sync_result,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                )
+
+            # F1: verification is part of the backup contract. A failed check must
+            # NOT be recorded as COMPLETE — alert with a distinct, non-skip status
+            # and fail the run so it is visible in the Prefect console.
+            if not verify_data.get("verified"):
+                diff = verify_data.get("diff") or {}
+                verify_err = (
+                    "Cloud integrity verification FAILED after sync: rclone check found "
+                    f"differences vs source (missing-from-cloud={len(diff.get('removed', []))}, "
+                    f"unexpected-in-cloud={len(diff.get('added', []))}, "
+                    f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
+                    "incomplete or out of sync. rclone sync is resumable — the next "
+                    "scheduled run will re-sync the differences."
+                )
+                status = "CLOUD_VERIFY_FAILED"
+                error_msg = verify_err
+                logger.error(verify_err)
+                try:
+                    send_failure_alert(
+                        config.notifications, config.firm_name, verify_err,
+                        {"mode": "cloud", "status": status,
+                         "exit_code": sync_result.get("exit_code")},
+                        started_at,
+                    )
+                except Exception as alert_err:
+                    logger.warning(f"Could not send verify-failure alert: {alert_err}")
+                raise RuntimeError(verify_err)
+
+            phase = "post"
+
+            # Calculate files and bytes copied by comparing old database state with new live GCS manifest
+            manifest = verify_data.get("manifest", [])
+            copied_files_list = []
+            for item in manifest:
+                path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
+                size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
+                mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
+            
+                if path not in before_dict:
+                    copied_files_list.append((path, size))
+                else:
+                    old_size, old_mtime = before_dict[path]
+                    # 0.01-byte threshold: guards against float representation noise
+                    # in rclone's size reporting. Accurate for all real file sizes
+                    # since actual byte counts are always whole numbers.
+                    if abs(float(size) - float(old_size)) > 0.01:
+                        copied_files_list.append((path, size))
+                    else:
+                        try:
+                            if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
+                                # Numeric Unix timestamps — compare directly
+                                t1, t2 = float(mtime), float(old_mtime)
+                            else:
+                                t1 = pendulum.parse(str(mtime)).timestamp()
+                                t2 = pendulum.parse(str(old_mtime)).timestamp()
+                            if abs(t1 - t2) > 1.1:
+                                copied_files_list.append((path, size))
+                        except Exception:
+                            if str(mtime) != str(old_mtime):
+                                copied_files_list.append((path, size))
+
+            files_copied = len(copied_files_list)
+            bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
+
+            extended_metrics = json.dumps({
+                "verified": verify_data.get("verified", False),
+                "total_files": verify_data.get("size", {}).get("count", 0),
+                "total_size_gb": verify_data.get("size", {}).get("bytes", 0) / (1024 * 1024 * 1024),
+                # M6: record WHY numbers may be zero on a degraded run
+                "manifest_ok": manifest_error is None,
+                "size_ok": "_error" not in (verify_data.get("size") or {}),
+                "diff_partial": bool((verify_data.get("diff") or {}).get("_partial")),
+            })
+            try:
+                cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
+            except Exception:
+                pass
+
+            logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
+            return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
+
+        except Exception as e:
+            error_msg = str(e)
+            # F2: record the TRUE terminal status. Previously any exception after
+            # initialization left the run recorded as CLOUD_SKIPPED (initial value),
+            # so real failures were invisible in reports and the dashboard.
+            if phase == "sync":
+                status = "CLOUD_FAILED"
+            elif phase == "verify" and status == "CLOUD_COMPLETE":
+                status = "CLOUD_VERIFY_FAILED"
+            elif phase == "pre":
+                status = "CLOUD_SKIPPED"
+            # phase "post" (record/artifact after a successful sync+verify): the
+            # data is safe on GCS — keep the sync status; the bookkeeping error
+            # stays visible in the run record's error_message.
+            raise
+        finally:
+            _record_run(
+                db_path, run_id, "cloud", started_at, status,
+                sync_result.get("exit_code", -1), error_msg,
+                files_copied=files_copied,
+                bytes_copied=bytes_copied,
+                files_failed=0,
+                extended_metrics=extended_metrics,
+                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                monotonic_start=monotonic_start,
+            )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -583,124 +626,125 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
     """Execute LAN backup tasks sequentially. Each task is independently tracked."""
-    db_path = config.paths.database_path
+    with _backup_slot(config):
+        db_path = config.paths.database_path
 
-    # Apply config-driven retries to tasks that benefit from retrying
-    preflight = lan_preflight_task.with_options(
-        retries=1, retry_delay_seconds=30,
-    )
-    sync = lan_sync_task.with_options(
-        retries=config.lan.max_attempts - 1,
-        retry_delay_seconds=config.lan.retry_delay_seconds,
-    )
+        # Apply config-driven retries to tasks that benefit from retrying
+        preflight = lan_preflight_task.with_options(
+            retries=1, retry_delay_seconds=30,
+        )
+        sync = lan_sync_task.with_options(
+            retries=config.lan.max_attempts - 1,
+            retry_delay_seconds=config.lan.retry_delay_seconds,
+        )
 
-    status = "LAN_SKIPPED"
-    sync_result = {"exit_code": -1}
-    error_msg = None
-    files_copied = 0
-    bytes_copied = 0
-    files_failed = 0
-    extended_metrics = None
-    phase = "pre"
+        status = "LAN_SKIPPED"
+        sync_result = {"exit_code": -1}
+        error_msg = None
+        files_copied = 0
+        bytes_copied = 0
+        files_failed = 0
+        extended_metrics = None
+        phase = "pre"
 
-    try:
-        health_check_task(config, "lan")
-        wol_check_task(config)
-        preflight(config)
-        before_dict = lan_snapshot_before_task(config)
-        phase = "sync"
-        sync_result = sync(config)
-        status = sync_result["status"]
-        phase = "post"
-        # F12: robocopy per-file failure count (0 on clean/anomaly runs)
-        files_failed = int(sync_result.get("files_failed", 0))
-        after_dict = lan_snapshot_after_task(config)
-        if after_dict is not None:
-            lan_record_task(
-                db_path, sync_result, before_dict, after_dict,
+        try:
+            health_check_task(config, "lan")
+            wol_check_task(config)
+            preflight(config)
+            before_dict = lan_snapshot_before_task(config)
+            phase = "sync"
+            sync_result = sync(config)
+            status = sync_result["status"]
+            phase = "post"
+            # F12: robocopy per-file failure count (0 on clean/anomaly runs)
+            files_failed = int(sync_result.get("files_failed", 0))
+            after_dict = lan_snapshot_after_task(config)
+            if after_dict is not None:
+                lan_record_task(
+                    db_path, sync_result, before_dict, after_dict,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                )
+
+                # Calculate files and bytes copied
+                diff = diff_snapshots(before_dict, after_dict)
+                copied_paths = diff.get("added", []) + diff.get("modified", [])
+                files_copied = len(copied_paths)
+                bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
+
+                extended_metrics = json.dumps({
+                    "added": len(diff.get("added", [])),
+                    "modified": len(diff.get("modified", [])),
+                    "removed": len(diff.get("removed", [])),
+                    "total_files": len(after_dict)
+                })
+                try:
+                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
+                except Exception:
+                    pass
+            else:
+                # G14: metrics unavailable this run — record the sync outcome only
+                logger.error(
+                    "Post-sync snapshot unavailable - diff metrics and file-level "
+                    "DB record skipped for this run; the sync outcome is recorded "
+                    "as-is and the next run re-derives the metrics."
+                )
+
+            logger.info(f"LAN pipeline completed with status {status}")
+            # F3: shut the NAS down ONLY after a fully complete mirror (robocopy
+            # exit 0-3). A PARTIAL run (exit 4-15) means some files did not land —
+            # powering off the NAS now strands them until the next WoL, and the
+            # partial state must be reported, not silent.
+            if status == "LAN_COMPLETE":
+                lan_shutdown_task(config)
+            elif status == "LAN_PARTIAL":
+                logger.error(
+                    f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
+                    "some files were not copied. NAS shutdown SKIPPED - the next "
+                    "run will re-sync the missing files."
+                )
+                try:
+                    send_failure_alert(
+                        config.notifications, config.firm_name,
+                        (
+                            f"LAN backup PARTIAL: robocopy exit code "
+                            f"{sync_result.get('exit_code')} — some files were not "
+                            "copied. The NAS was NOT shut down; the next scheduled "
+                            "run will re-sync. "
+                            f"{sync_result.get('error') or ''}"
+                        ).strip(),
+                        {"mode": "lan", "status": status,
+                         "exit_code": sync_result.get("exit_code")},
+                        started_at,
+                    )
+                except Exception as alert_err:
+                    logger.warning(f"Could not send partial-backup alert: {alert_err}")
+            else:
+                logger.info(f"LAN shutdown skipped - status is {status}")
+            return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
+
+        except Exception as e:
+            error_msg = str(e)
+            # F2: record the TRUE terminal status (previously left as LAN_SKIPPED).
+            # phase "post" = sync already succeeded; keep its status, the
+            # bookkeeping error stays visible in the run record's error_message.
+            if phase == "sync":
+                status = "LAN_FAILED"
+            elif phase == "pre":
+                status = "LAN_SKIPPED"
+            raise
+        finally:
+            _record_run(
+                db_path, run_id, "lan", started_at, status,
+                sync_result.get("exit_code", -1), error_msg,
+                files_copied=files_copied,
+                bytes_copied=bytes_copied,
+                files_failed=files_failed,
+                extended_metrics=extended_metrics,
                 busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
                 vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                monotonic_start=monotonic_start,
             )
-
-            # Calculate files and bytes copied
-            diff = diff_snapshots(before_dict, after_dict)
-            copied_paths = diff.get("added", []) + diff.get("modified", [])
-            files_copied = len(copied_paths)
-            bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
-
-            extended_metrics = json.dumps({
-                "added": len(diff.get("added", [])),
-                "modified": len(diff.get("modified", [])),
-                "removed": len(diff.get("removed", [])),
-                "total_files": len(after_dict)
-            })
-            try:
-                lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
-            except Exception:
-                pass
-        else:
-            # G14: metrics unavailable this run — record the sync outcome only
-            logger.error(
-                "Post-sync snapshot unavailable - diff metrics and file-level "
-                "DB record skipped for this run; the sync outcome is recorded "
-                "as-is and the next run re-derives the metrics."
-            )
-
-        logger.info(f"LAN pipeline completed with status {status}")
-        # F3: shut the NAS down ONLY after a fully complete mirror (robocopy
-        # exit 0-3). A PARTIAL run (exit 4-15) means some files did not land —
-        # powering off the NAS now strands them until the next WoL, and the
-        # partial state must be reported, not silent.
-        if status == "LAN_COMPLETE":
-            lan_shutdown_task(config)
-        elif status == "LAN_PARTIAL":
-            logger.error(
-                f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
-                "some files were not copied. NAS shutdown SKIPPED - the next "
-                "run will re-sync the missing files."
-            )
-            try:
-                send_failure_alert(
-                    config.notifications, config.firm_name,
-                    (
-                        f"LAN backup PARTIAL: robocopy exit code "
-                        f"{sync_result.get('exit_code')} — some files were not "
-                        "copied. The NAS was NOT shut down; the next scheduled "
-                        "run will re-sync. "
-                        f"{sync_result.get('error') or ''}"
-                    ).strip(),
-                    {"mode": "lan", "status": status,
-                     "exit_code": sync_result.get("exit_code")},
-                    started_at,
-                )
-            except Exception as alert_err:
-                logger.warning(f"Could not send partial-backup alert: {alert_err}")
-        else:
-            logger.info(f"LAN shutdown skipped - status is {status}")
-        return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
-
-    except Exception as e:
-        error_msg = str(e)
-        # F2: record the TRUE terminal status (previously left as LAN_SKIPPED).
-        # phase "post" = sync already succeeded; keep its status, the
-        # bookkeeping error stays visible in the run record's error_message.
-        if phase == "sync":
-            status = "LAN_FAILED"
-        elif phase == "pre":
-            status = "LAN_SKIPPED"
-        raise
-    finally:
-        _record_run(
-            db_path, run_id, "lan", started_at, status,
-            sync_result.get("exit_code", -1), error_msg,
-            files_copied=files_copied,
-            bytes_copied=bytes_copied,
-            files_failed=files_failed,
-            extended_metrics=extended_metrics,
-            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-            monotonic_start=monotonic_start,
-        )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -889,53 +933,30 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     except Exception as e:
         logger.warning(f"Orphaned robocopy log cleanup failed (non-fatal): {e}")
 
-    # ── Watchdog lock — signals that a backup is in progress ──
-    # Written INSIDE the concurrency block so only the flow that actually
-    # holds the concurrency slot writes the lock.  This prevents a second
-    # flow from overwriting the first flow's PID, losing the slot, and then
-    # deleting the lock in its finally block — which would leave the active
-    # backup invisible to the watchdog.
-    # Format: "PID:create_time" — the process creation timestamp makes
-    # PID-reuse detection mathematically exact (see core/process.py).
-    _lock_path = config.paths.backup_lock_path
-
+    # ── Watchdog lock + serialization now live INSIDE each pipeline ──
+    # P2-CONC: the concurrency slot and the lock moved into _backup_slot()
+    # (acquired per pipeline) so direct callers - scripts, manual runs,
+    # tests - serialize on the same limit as production flows. The old
+    # flow-level wrapper is intentionally GONE in this same commit; keeping
+    # both would self-deadlock the limit=1 resource.
     excs = []
 
     try:
-        with concurrency("aam-backup", occupy=1, timeout_seconds=3600):
-            # ── Acquire watchdog lock now that we hold the concurrency slot ──
+        # ── Cloud ──
+        if mode in ("cloud", "all") and config.cloud.enabled:
+            logger.info("Starting cloud backup pipeline")
             try:
-                write_lock(_lock_path)
-                logger.info(f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts")
-            except OSError as e:
-                logger.warning(f"Could not write backup lock file: {e}")
+                _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic())
+            except Exception as e:
+                excs.append(e)
 
+        # ── LAN ──
+        if mode in ("lan", "all") and config.lan.enabled:
+            logger.info("Starting LAN backup pipeline")
             try:
-                # ── Cloud ──
-                if mode in ("cloud", "all") and config.cloud.enabled:
-                    logger.info("Starting cloud backup pipeline")
-                    try:
-                        _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic())
-                    except Exception as e:
-                        excs.append(e)
-
-                # ── LAN ──
-                if mode in ("lan", "all") and config.lan.enabled:
-                    logger.info("Starting LAN backup pipeline")
-                    try:
-                        _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic())
-                    except Exception as e:
-                        excs.append(e)
-
-            finally:
-                # Release the watchdog lock as soon as pipelines are done —
-                # inside the concurrency block so the lock lifetime is
-                # strictly bounded to the time we hold the concurrency slot.
-                try:
-                    _lock_path.unlink(missing_ok=True)
-                    logger.info("Backup lock released")
-                except OSError:
-                    pass
+                _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic())
+            except Exception as e:
+                excs.append(e)
 
         # ── Summary ──
         if excs:

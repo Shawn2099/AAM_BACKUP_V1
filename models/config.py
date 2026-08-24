@@ -269,6 +269,16 @@ class NotificationConfig(BaseModel):
 
 class MaintenanceConfig(BaseModel):
     """Operational housekeeping settings."""
+    concurrency_wait_seconds: int = Field(
+        default=3600,
+        ge=1,
+        le=86400,
+        description=(
+            "P2-CONC: max seconds a pipeline waits for the global backup "
+            "concurrency slot before giving up (production default 1h; "
+            "tests pass small values)"
+        ),
+    )
     db_retention_days: int = Field(
         default=90,
         ge=7,

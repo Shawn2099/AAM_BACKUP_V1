@@ -210,40 +210,29 @@ class TestModeRouting:
 # ═══════════════════════════════════════════════════════════════
 
 class TestLockFile:
-    """Watchdog lock file acquired and released."""
+    """Watchdog lock file acquired and released - P2-CONC: the lock lives in
+    _backup_slot (per pipeline), not around the flow body."""
 
-    @patch("flow.send_failure_alert")
-    @patch("flow.ManifestDB")
     @patch("flow.write_lock")
-    @patch("flow.configure_prefect_bridge")
-    @patch("flow.configure_logging")
-    @patch("flow.load_config")
-    @patch("flow._run_cloud_pipeline", return_value={"status": "CLOUD_COMPLETE", "exit_code": 0})
     @patch("flow.concurrency", side_effect=_mock_concurrency)
-    def test_lock_file_written(self, mock_conc, mock_cloud, mock_load,
-                                mock_log, mock_bridge, mock_lock, mock_db, mock_alert):
-        mock_load.return_value = _make_config(cloud_enabled=True, lan_enabled=False)
+    def test_lock_file_written(self, mock_conc, mock_lock):
+        from flow import _backup_slot
 
-        from flow import backup
-        backup(config_path="test.yaml", mode="cloud")
+        cfg = _make_config(cloud_enabled=True, lan_enabled=False)
+        with _backup_slot(cfg):
+            pass
 
         mock_lock.assert_called_once()
 
-    @patch("flow.send_failure_alert")
-    @patch("flow.ManifestDB")
     @patch("flow.write_lock", side_effect=OSError("permission denied"))
-    @patch("flow.configure_prefect_bridge")
-    @patch("flow.configure_logging")
-    @patch("flow.load_config")
-    @patch("flow._run_cloud_pipeline", return_value={"status": "CLOUD_COMPLETE", "exit_code": 0})
     @patch("flow.concurrency", side_effect=_mock_concurrency)
-    def test_lock_failure_does_not_crash(self, mock_conc, mock_cloud, mock_load,
-                                          mock_log, mock_bridge, mock_lock, mock_db, mock_alert):
-        mock_load.return_value = _make_config(cloud_enabled=True, lan_enabled=False)
+    def test_lock_failure_does_not_crash(self, mock_conc, mock_lock):
+        from flow import _backup_slot
 
-        from flow import backup
+        cfg = _make_config(cloud_enabled=True, lan_enabled=False)
         # Should not raise
-        backup(config_path="test.yaml", mode="cloud")
+        with _backup_slot(cfg):
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════
