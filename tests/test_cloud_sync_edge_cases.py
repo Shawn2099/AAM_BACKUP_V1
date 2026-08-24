@@ -22,6 +22,20 @@ import tempfile
 
 _DUMMY_STDERR_PATH = os.path.join(tempfile.gettempdir(), "test_cloud_sync_stderr.log")
 
+
+@pytest.fixture(autouse=True)
+def _pin_rclone_exe():
+    """M7: builder now resolves the binary via core.process.resolve_binary.
+
+    Pin to the bare name so structural assertions (cmd[:2] == ["rclone", "sync"])
+    stay deterministic on machines where rclone IS installed. Dedicated
+    resolution tests override this patch explicitly.
+    """
+    with patch("core.cloud_sync.resolve_binary", create=True, return_value="rclone"):
+        yield
+
+
+
 @contextmanager
 def _mock_temp_config(*args, **kwargs):
     yield os.path.join(tempfile.gettempdir(), "rclone_test.conf")
@@ -417,3 +431,42 @@ class TestRunCloudSyncComprehensive:
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
         assert isinstance(result["status"], str)
         assert result["status"] == "CLOUD_FAILED"
+
+
+# ---------------------------------------------------------------------------
+# M7: binary resolution - builder must honor resolve_binary()
+# ---------------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------------
+# M7: binary resolution - builder must honor resolve_binary()
+# ---------------------------------------------------------------------------
+
+class TestBinaryResolutionEdgeCases:
+    def test_resolved_exe_takes_precedence_over_hardcoded_name(self):
+        exe = r"C:\deploy\bin\rclone.exe"
+        with patch("core.cloud_sync.resolve_binary", create=True, return_value=exe):
+            cmd = build_rclone_sync_command(
+                source="D:\\data", bucket="b", fy_prefix="FY26-27",
+                config_path="c.conf", storage_class="STANDARD",
+            )
+        assert cmd[0] == exe
+
+    def test_none_resolution_falls_back_to_bare_name(self):
+        with patch("core.cloud_sync.resolve_binary", create=True, return_value=None):
+            cmd = build_rclone_sync_command(
+                source="D:\\data", bucket="b", fy_prefix="FY26-27",
+                config_path="c.conf", storage_class="STANDARD",
+            )
+        assert cmd[0] == "rclone"
+
+    def test_second_element_still_sync(self):
+        """Resolution must not shift positional arguments."""
+        with patch("core.cloud_sync.resolve_binary", create=True, return_value="/opt/rclone"):
+            cmd = build_rclone_sync_command(
+                source="D:\\data", bucket="b", fy_prefix="FY26-27",
+                config_path="c.conf", storage_class="STANDARD",
+            )
+        assert cmd[1] == "sync"
+        assert cmd[2] == "D:\\data"

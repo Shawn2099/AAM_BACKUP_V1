@@ -15,6 +15,12 @@ from loguru import logger
 from core.process import resolve_binary
 
 
+class CloudReporterError(RuntimeError):
+    """M6: a GCS state query failed. Raised by get_cloud_manifest so callers
+    can distinguish 'bucket is empty' from 'we could not ask' — a failed
+    listing must never masquerade as an empty bucket."""
+
+
 def _base_args(config_path: str) -> list[str]:
     """Shared rclone flags for all reporter functions.
 
@@ -36,25 +42,49 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int =
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
-            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
-            logger.warning(f"Cloud size rclone exited {result.returncode}: {stderr_output}")
-        data = json.loads(result.stdout.strip())
-        # Use .get() so a malformed-but-valid JSON response (e.g. {}) doesn't escape as KeyError
-        count = data.get("count", 0)
-        size_bytes = data.get("bytes", 0)
-        logger.info(f"Cloud size: {count} files, {size_bytes} bytes")
-        return data
     except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
         logger.warning(f"Cloud size query failed: {e}")
         return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
+    except FileNotFoundError as e:
+        # M6: missing binary is data, not a crash — callers see _error
+        logger.warning(f"Cloud size query failed: rclone not found: {e}")
+        return {"count": 0, "bytes": 0, "sizeless": "0", "_error": f"rclone not found: {e}"}
+    if result.returncode != 0:
+        stderr_output = result.stderr.strip() if result.stderr else "no stderr"
+        logger.warning(f"Cloud size rclone exited {result.returncode}: {stderr_output}")
+        data = None
+    else:
+        try:
+            data = json.loads(result.stdout.strip())
+        except json.JSONDecodeError as e:
+            logger.warning(f"Cloud size query returned unparsable output: {e}")
+            return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
+    if data is None:
+        # Non-zero exit: do NOT parse stdout — report the failure honestly
+        return {
+            "count": 0,
+            "bytes": 0,
+            "sizeless": "0",
+            "_error": f"rclone size exited {result.returncode}: "
+                      f"{(result.stderr or '').strip() or 'no stderr'}",
+        }
+    # Use .get() so a malformed-but-valid JSON response (e.g. {}) doesn't escape as KeyError
+    count = data.get("count", 0)
+    size_bytes = data.get("bytes", 0)
+    logger.info(f"Cloud size: {count} files, {size_bytes} bytes")
+    return data
 
 
 def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: int = 300) -> list[dict]:
-    """rclone lsjson -R → [{Path, Size, ModTime, MimeType, IsDir}, ...].
+    """rclone lsjson -R -> [{Path, Size, ModTime, MimeType, IsDir}, ...].
 
     Files only — directory entries filtered out. No file content read,
     just metadata from GCS listing API.
+
+    M6: raises CloudReporterError on ANY failure (nonzero exit, timeout,
+    missing binary, unparsable output). The old behavior returned [] on
+    failure — indistinguishable from a genuinely empty bucket, which let
+    failed queries silently corrupt downstream metrics.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
     rclone_exe = resolve_binary("rclone") or "rclone"
@@ -62,16 +92,31 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: i
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
-            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
-            logger.warning(f"Cloud manifest rclone exited {result.returncode}: {stderr_output}")
+    except subprocess.TimeoutExpired as e:
+        raise CloudReporterError(
+            f"cloud manifest listing timed out after {timeout}s for {dest}"
+        ) from e
+    except FileNotFoundError as e:
+        raise CloudReporterError(f"rclone not found while listing manifest: {e}") from e
+    except OSError as e:
+        raise CloudReporterError(f"cloud manifest listing failed for {dest}: {e}") from e
+
+    if result.returncode != 0:
+        stderr_output = (result.stderr or "").strip() or "no stderr"
+        raise CloudReporterError(
+            f"rclone lsjson exited {result.returncode} for {dest}: {stderr_output}"
+        )
+
+    try:
         data = json.loads(result.stdout)
-        files = [f for f in data if not f.get("IsDir")]
-        logger.info(f"Cloud manifest: {len(files)} files")
-        return files
-    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
-        logger.warning(f"Cloud manifest query failed: {e}")
-        return []
+    except json.JSONDecodeError as e:
+        raise CloudReporterError(
+            f"unparsable lsjson output for {dest}: {e}"
+        ) from e
+
+    files = [f for f in data if not f.get("IsDir")]
+    logger.info(f"Cloud manifest: {len(files)} files")
+    return files
 
 
 def get_cloud_diff(
@@ -121,9 +166,11 @@ def get_cloud_diff(
         # Even on mismatch (exit 1), the --combined file is valid and useful.
         # On error (exit 2+), the file might be empty or incomplete.
         partial = False
+        error_msg = None
         if result.returncode >= 2:
             partial = True
             stderr_output = result.stderr.strip() if result.stderr else "no stderr"
+            error_msg = f"rclone check exited {result.returncode}: {stderr_output}"
             logger.warning(f"Cloud diff rclone failed (exit {result.returncode}): {stderr_output}")
 
         diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
@@ -150,6 +197,8 @@ def get_cloud_diff(
 
         if partial:
             diff["_partial"] = True
+            if error_msg:
+                diff["_error"] = error_msg
 
         logger.info(
             f"Cloud diff: +{len(diff['added'])} -{len(diff['removed'])} "
@@ -159,8 +208,12 @@ def get_cloud_diff(
         return diff
 
     except (subprocess.TimeoutExpired, OSError) as e:
+        # M6: a timed-out/failed scan must be distinguishable from "no changes"
         logger.warning(f"Cloud diff query failed: {e}")
-        return {"added": [], "removed": [], "modified": [], "unchanged": []}
+        return {
+            "added": [], "removed": [], "modified": [], "unchanged": [],
+            "_partial": True, "_error": str(e),
+        }
     finally:
         if diff_file:
             try:

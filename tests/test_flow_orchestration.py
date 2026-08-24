@@ -401,3 +401,123 @@ class TestFailureAlertPath:
 
         with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
             backup.fn("config.yaml", "cloud")
+
+
+# ---------------------------------------------------------------
+# M6 � cloud reporter degradation: failed queries are never truth
+# ---------------------------------------------------------------
+
+import json
+
+
+class TestCloudVerifyAndReportDegradation:
+    """cloud_verify_and_report_task must catch manifest-query failures and
+    surface them as data (manifest_error), never crash the run and never
+    hand downstream an empty list that looks like an empty bucket."""
+
+    def _run_task(self, manifest_outcome):
+        from flow import cloud_verify_and_report_task
+
+        mock_manifest = MagicMock()
+        if isinstance(manifest_outcome, Exception):
+            mock_manifest.side_effect = manifest_outcome
+        else:
+            mock_manifest.return_value = manifest_outcome
+
+        cm = MagicMock()
+        cm.__enter__.return_value = "/cfg"
+        cm.__exit__.return_value = False
+        with patch("flow.temp_rclone_config", return_value=cm), \
+             patch("flow.verify_cloud_integrity",
+                   return_value={"verified": True, "exit_code": 0, "error": None}), \
+             patch("flow.get_cloud_size",
+                   return_value={"count": 5, "bytes": 500}), \
+             patch("flow.get_cloud_manifest", mock_manifest), \
+             patch("flow.get_cloud_diff",
+                   return_value={"added": [], "removed": [], "modified": [], "unchanged": []}):
+            config = MagicMock()
+            return cloud_verify_and_report_task.fn(config, "FY26-27")
+
+    def test_manifest_failure_degrades_to_error_field(self):
+        result = self._run_task(RuntimeError("timeout after 900s"))
+        assert result["manifest"] == []
+        assert result["manifest_error"] == "timeout after 900s"
+        assert result["verified"] is True  # integrity result untouched
+
+    def test_manifest_success_has_no_error(self):
+        files = [{"Path": "a.txt", "Size": 1, "IsDir": False}]
+        result = self._run_task(files)
+        assert result["manifest"] == files
+        assert result["manifest_error"] is None
+
+
+class TestCloudPipelineSkipsRecordOnManifestError:
+    """_run_cloud_pipeline must not write a degraded manifest into the DB,
+    and extended_metrics must record WHY the metrics are missing."""
+
+    def _run_pipeline(self, verify_data, tmp_path):
+        import flow
+
+        recorded = {}
+
+        def fake_record_run_history(db, **kwargs):
+            recorded.update(kwargs)
+            return True
+
+        mock_preflight = MagicMock()
+        mock_preflight.with_options.return_value = MagicMock(return_value={"ok": True})
+        mock_sync = MagicMock()
+        mock_sync.with_options.return_value = MagicMock(
+            return_value={"status": "CLOUD_COMPLETE", "exit_code": 0, "error": None}
+        )
+        mock_verify = MagicMock()
+        mock_verify.with_options.return_value = MagicMock(return_value=verify_data)
+
+        with patch.object(flow, "health_check_task"), \
+             patch.object(flow, "cloud_preflight_task", mock_preflight), \
+             patch.object(flow, "cloud_sync_task", mock_sync), \
+             patch.object(flow, "cloud_verify_and_report_task", mock_verify), \
+             patch.object(flow, "cloud_record_task") as mock_record, \
+             patch.object(flow, "cloud_publish_artifact_task"), \
+             patch.object(flow, "record_run_history", side_effect=fake_record_run_history), \
+             patch("core.manifest.ManifestDB") as mock_db_cls:
+            mock_db_cls.return_value.get_cloud_synced_entries.return_value = {}
+            config = MagicMock()
+            config.paths.database_path = str(tmp_path / "m.db")
+            config.maintenance.sqlite_busy_timeout_ms = 30000
+            config.maintenance.sqlite_vacuum_freelist_threshold = 10000
+
+            result = flow._run_cloud_pipeline(
+                config, "run-m6", "2026-08-23T00:00:00+05:30", monotonic_start=None
+            )
+        return result, mock_record, recorded
+
+    def test_manifest_error_skips_db_record(self, tmp_path):
+        verify_data = {
+            "verified": True,
+            "size": {"count": 0, "bytes": 0},
+            "manifest": [],
+            "diff": {"added": [], "removed": [], "modified": [], "unchanged": []},
+            "manifest_error": "timeout after 900s",
+        }
+        result, mock_record, recorded = self._run_pipeline(verify_data, tmp_path)
+
+        mock_record.assert_not_called()          # degraded listing NEVER written as truth
+        assert result["status"] == "CLOUD_COMPLETE"
+        assert result["files_copied"] == 0 if "files_copied" in result else True
+        metrics = json.loads(recorded["extended_metrics"])
+        assert metrics["manifest_ok"] is False   # why the numbers are zero
+
+    def test_healthy_manifest_still_records(self, tmp_path):
+        verify_data = {
+            "verified": True,
+            "size": {"count": 2, "bytes": 20},
+            "manifest": [{"Path": "a.txt", "Size": 10, "ModTime": "2026-08-01T00:00:00Z"}],
+            "diff": {"added": ["a.txt"], "removed": [], "modified": [], "unchanged": []},
+            "manifest_error": None,
+        }
+        result, mock_record, recorded = self._run_pipeline(verify_data, tmp_path)
+
+        mock_record.assert_called_once()         # healthy query -> record normally
+        metrics = json.loads(recorded["extended_metrics"])
+        assert metrics["manifest_ok"] is True

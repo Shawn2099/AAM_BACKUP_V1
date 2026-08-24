@@ -15,16 +15,31 @@ def walk_lan_destination(unc_path: str) -> list[dict]:
 
     Skips files where stat() raises OSError (locked/deleted mid-walk).
 
+    H2 failure semantics — an inaccessible destination must be LOUD:
+        - Root enumeration fails (share offline/unauthorized) → OSError raised.
+          A silent [] here is indistinguishable from "destination empty" and
+          corrupts every downstream diff/metric.
+        - Subtree enumeration fails (locked dir, deleted mid-walk) → that
+          subtree is skipped but a warning is logged; partial inventory returned.
+        - Genuinely empty share → returns [] as before.
+
     Args:
         unc_path: UNC path to walk (e.g. "\\\\192.168.10.10\\share$").
 
     Returns:
         [{"path": "rel\\path\\file.txt", "size": 2048, "mtime": 1717200000.0}, ...]
+
+    Raises:
+        OSError: if the root of the share cannot be enumerated at all.
     """
     files: list[dict] = []
+    errors: list[OSError] = []
     base = str(Path(unc_path).resolve())
 
-    for root, _, filenames in os.walk(unc_path):
+    def _on_walk_error(err: OSError) -> None:
+        errors.append(err)
+
+    for root, _, filenames in os.walk(unc_path, onerror=_on_walk_error):
         for name in filenames:
             full = os.path.join(root, name)
             try:
@@ -38,6 +53,22 @@ def walk_lan_destination(unc_path: str) -> list[dict]:
                 "size": stat.st_size,
                 "mtime": stat.st_mtime,
             })
+
+    root_failed = any(
+        getattr(e, "filename", None) in (unc_path, str(Path(unc_path)))
+        for e in errors
+    )
+    if root_failed and not files:
+        raise OSError(
+            f"Cannot enumerate LAN destination {unc_path!r} "
+            f"({len(errors)} access error(s)) - refusing to report an "
+            f"empty inventory; destination may be offline."
+        )
+    if errors:
+        logger.warning(
+            f"LAN manifest: {len(errors)} path(s) unreadable under {unc_path} "
+            f"(first: {errors[0]}) - partial inventory returned ({len(files)} files)"
+        )
 
     logger.info(f"LAN manifest: {len(files)} files at {unc_path}")
     return files

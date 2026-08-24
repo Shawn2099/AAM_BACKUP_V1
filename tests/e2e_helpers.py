@@ -22,14 +22,42 @@ def cfg():
     return load_config(str(CONFIG_PATH))
 
 
+def assert_sandbox_safe(test_root, prod_root) -> None:
+    """P0-DATA guard: refuse any sandbox path that touches the production tree.
+
+    Compares RESOLVED and CASEFOLDED absolute paths in BOTH directions so a
+    sandbox that equals, sits inside, or contains the production root raises
+    AssertionError. resolve() collapses junctions/symlinks on Windows, which
+    closes the mklink /J bypass. This exists because test_e2e_real_hardware
+    once built its fixture tree INSIDE C:\\BackupData\\FY26-27 and wiped the
+    real mirror (incident 2026-08-23, IMPLEMENTATION_FIX_PLAN.md P0-DATA).
+    """
+    t = str(Path(test_root).resolve()).casefold().rstrip("\\")
+    p = str(Path(prod_root).resolve()).casefold().rstrip("\\")
+    if t == p:
+        raise AssertionError(
+            f"Sandbox equals production root: {test_root!r} == {prod_root!r}"
+        )
+    sep = "\\"
+    if t.startswith(p + sep) or p.startswith(t + sep):
+        raise AssertionError(
+            f"Sandbox and production roots overlap (nesting forbidden): "
+            f"sandbox={test_root!r} production={prod_root!r}"
+        )
+
+
 def source_test_dir() -> Path:
-    """Return a safe E2E test folder on the local source drive."""
-    return Path(cfg().paths.source_drive).parent / "E2E_TEST_SOURCE"
+    """Return a safe E2E test folder on the local source drive (OUTSIDE prod)."""
+    d = Path(cfg().paths.source_drive).parent / "E2E_TEST_SOURCE"
+    assert_sandbox_safe(d, cfg().paths.source_drive)
+    return d
 
 
 def nas_test_dir() -> Path:
-    """Return a safe E2E test folder on the NAS destination."""
-    return Path(cfg().paths.lan_destination).parent / "E2E_TEST_DEST"
+    """Return a safe E2E test folder on the NAS destination (OUTSIDE prod FY dir)."""
+    d = Path(cfg().paths.lan_destination).parent / "E2E_TEST_DEST"
+    assert_sandbox_safe(d, cfg().paths.lan_destination)
+    return d
 
 
 def make_file(path: Path, size_bytes: int = 1024):

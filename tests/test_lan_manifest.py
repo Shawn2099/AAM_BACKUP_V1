@@ -1,5 +1,8 @@
 """Tests for lan_manifest — filesystem walk, snapshot, and diff logic."""
 
+import os
+
+import pytest
 
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 
@@ -100,3 +103,58 @@ class TestDiffSnapshots:
         after = {"c.txt": (1, 1.0), "a.txt": (2, 2.0), "b.txt": (3, 3.0)}
         diff = diff_snapshots(before, after)
         assert diff["unchanged"] == ["a.txt", "b.txt", "c.txt"]
+
+
+class TestWalkFailureSemantics:
+    """H2 regression (IMPLEMENTATION_PLAN.md Fix 2).
+
+    An inaccessible destination must be LOUD, never a silent empty list.
+    - Root enumeration failure -> OSError raised
+    - Subtree failure          -> partial results + warning log
+    - Genuinely empty share    -> [] (unchanged; overcorrection guard)
+    """
+
+    def test_root_unreachable_raises(self, tmp_path, monkeypatch):
+        top = str(tmp_path)
+        err = OSError(5, "Access is denied")
+        err.filename = top  # the ROOT itself failed to enumerate
+
+        def fake_walk(top_arg, onerror=None):
+            # Real os.walk: scandir(top) fails -> onerror(err), yields nothing.
+            if onerror is not None:
+                onerror(err)
+            return iter(())
+
+        monkeypatch.setattr(os, "walk", fake_walk)
+        with pytest.raises(OSError, match="Cannot enumerate LAN destination"):
+            walk_lan_destination(top)
+
+    def test_subtree_error_partial_results(self, tmp_path, monkeypatch, capture_logs):
+        top = str(tmp_path)
+        (tmp_path / "ok.txt").write_text("x")  # must exist: prod code stats each entry
+        sub_err = OSError(5, "Access is denied")
+        sub_err.filename = os.path.join(top, "locked")
+
+        def fake_walk(top_arg, onerror=None):
+            yield (top_arg, ["locked"], ["ok.txt"])
+            if onerror is not None:
+                onerror(sub_err)
+
+        monkeypatch.setattr(os, "walk", fake_walk)
+        result = walk_lan_destination(top)
+
+        assert [f["path"] for f in result] == ["ok.txt"]
+        assert any(
+            "unreadable" in line for line in capture_logs.getvalue().splitlines()
+        ), "subtree walk errors must be logged as a warning"
+
+    def test_genuinely_empty_share_still_ok(self, tmp_path):
+        """No stubbed errors - an empty-but-reachable share stays []."""
+        assert walk_lan_destination(str(tmp_path)) == []
+
+    def test_real_tree_happy_path_unchanged(self, tmp_path):
+        (tmp_path / "a.txt").write_text("x")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "b.txt").write_text("y")
+        result = walk_lan_destination(str(tmp_path))
+        assert len(result) == 2

@@ -150,10 +150,19 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             config.cloud.bucket, fy_prefix, rclone_cfg,
             timeout=config.cloud.cloud_size_timeout_seconds,
         )
-        manifest = get_cloud_manifest(
-            config.cloud.bucket, fy_prefix, rclone_cfg,
-            timeout=config.cloud.manifest_timeout_seconds,
-        )
+        # M6: a failed manifest query must never look like an empty bucket.
+        # Catch and carry the failure as data; the pipeline decides policy.
+        manifest_error = None
+        try:
+            manifest = get_cloud_manifest(
+                config.cloud.bucket, fy_prefix, rclone_cfg,
+                timeout=config.cloud.manifest_timeout_seconds,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Cloud manifest query failed - metrics degraded this run: {e}"
+            )
+            manifest, manifest_error = [], str(e)
         cloud_diff = get_cloud_diff(
             config.paths.source_drive,
             config.cloud.bucket,
@@ -161,6 +170,9 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             rclone_cfg,
             timeout=config.cloud.diff_timeout_seconds,
         )
+
+        if "_error" in size:
+            logger.warning(f"Cloud size query degraded this run: {size['_error']}")
 
         logger.info(
             f"Cloud verify complete: {size['count']} files, "
@@ -172,6 +184,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             "size": size,
             "manifest": manifest,
             "diff": cloud_diff,
+            "manifest_error": manifest_error,
         }
 
 
@@ -439,11 +452,21 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         status = sync_result["status"]
         phase = "verify"
         verify_data = verify_report(config, fy_prefix)
-        cloud_record_task(
-            db_path, verify_data, sync_result,
-            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-        )
+        # M6: a failed manifest query is NEVER recorded as bucket state.
+        # Skip the DB write; the run row + extended_metrics carry the reason.
+        manifest_error = verify_data.get("manifest_error")
+        if manifest_error:
+            logger.error(
+                f"Cloud manifest query failed ({manifest_error}) - file-level "
+                "DB record and transfer metrics are SKIPPED this run; the "
+                "integrity verification above is unaffected."
+            )
+        else:
+            cloud_record_task(
+                db_path, verify_data, sync_result,
+                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+            )
 
         # F1: verification is part of the backup contract. A failed check must
         # NOT be recorded as COMPLETE — alert with a distinct, non-skip status
@@ -511,7 +534,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         extended_metrics = json.dumps({
             "verified": verify_data.get("verified", False),
             "total_files": verify_data.get("size", {}).get("count", 0),
-            "total_size_gb": verify_data.get("size", {}).get("bytes", 0) / (1024 * 1024 * 1024)
+            "total_size_gb": verify_data.get("size", {}).get("bytes", 0) / (1024 * 1024 * 1024),
+            # M6: record WHY numbers may be zero on a degraded run
+            "manifest_ok": manifest_error is None,
+            "size_ok": "_error" not in (verify_data.get("size") or {}),
+            "diff_partial": bool((verify_data.get("diff") or {}).get("_partial")),
         })
         try:
             cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)

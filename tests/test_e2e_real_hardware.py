@@ -41,14 +41,30 @@ def _create_test_files(source_dir: Path):
     # 4. Canary file (needed for lan_sync and preflight)
     (source_dir / ".AAM_TARGET_MOUNTED").write_text("CANARY")
 
-def _get_test_paths():
-    config = _get_config()
+def _compute_test_paths(config):
+    """P0-DATA: compute E2E sandbox paths STRICTLY OUTSIDE the production trees.
+
+    The old version built `source_root / "E2E_TEST_FY"` INSIDE the production
+    folder and wiped the real mirror (incident 2026-08-23). Sandboxes are now
+    siblings of the production roots, verified by assert_sandbox_safe.
+    """
+    from tests.e2e_helpers import assert_sandbox_safe
+
     source_root = Path(config.paths.source_drive)
     dest_root = Path(config.paths.lan_destination)
-    
-    test_source = source_root / "E2E_TEST_FY"
-    test_dest = dest_root / "E2E_TEST_FY"
-    
+
+    test_source = source_root.parent / "E2E_TEST_FY"
+    test_dest = dest_root.parent / "E2E_TEST_FY"
+
+    assert_sandbox_safe(test_source, source_root)
+    assert_sandbox_safe(test_dest, dest_root)
+    return test_source, test_dest
+
+
+def _get_test_paths():
+    config = _get_config()
+    test_source, test_dest = _compute_test_paths(config)
+
     try:
         # Try to ensure the NAS is awake and accessible
         ensure_server_online(config)
@@ -58,7 +74,7 @@ def _get_test_paths():
         dest_root = Path("C:\\FAKE_NAS_SHARE")
         test_dest = dest_root / "E2E_TEST_FY"
         test_dest.parent.mkdir(parents=True, exist_ok=True)
-        
+
     return config, test_source, test_dest
 
 import os as _gate_os

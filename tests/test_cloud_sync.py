@@ -10,7 +10,21 @@ from core.cloud_sync import build_rclone_sync_command, classify_rclone_exit, run
 import os
 import tempfile
 
+import pytest
+
 _DUMMY_STDERR_PATH = os.path.join(tempfile.gettempdir(), "test_cloud_sync_stderr.log")
+
+
+@pytest.fixture(autouse=True)
+def _pin_rclone_exe():
+    """M7: builder resolves the binary via core.process.resolve_binary.
+
+    Pin to the bare name so structural assertions stay deterministic on
+    machines where rclone IS installed.
+    """
+    with patch("core.cloud_sync.resolve_binary", create=True, return_value="rclone"):
+        yield
+
 
 @contextmanager
 def _mock_temp_config(*args, **kwargs):

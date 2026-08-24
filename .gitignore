@@ -26,3 +26,5 @@ graphify-out/
 prefect_logs/.~lock*
 .gitnexus
 plan.md
+deploy/bin/google-cloud-sdk/
+deploy/bin/*.zip

@@ -4,6 +4,8 @@ import json
 import subprocess
 from unittest.mock import MagicMock, mock_open, patch
 
+import pytest
+
 from core.cloud_reporter import _base_args, get_cloud_diff, get_cloud_manifest, get_cloud_size
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -159,25 +161,39 @@ class TestGetCloudManifest:
 
     @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
     @patch("core.cloud_reporter.subprocess.run")
-    def test_nonzero_exit_logs_warning_still_parses(self, mock_run, mock_resolve):
+    def test_nonzero_exit_raises_even_with_partial_data(self, mock_run, mock_resolve):
+        """M6 INVERSION: nonzero exit means the listing is unreliable.
+        The old behavior parsed partial data anyway — a failed query must
+        never masquerade as bucket state."""
+        import core.cloud_reporter as _cr
+        if not hasattr(_cr, "CloudReporterError"):
+            pytest.fail("M6 RED: CloudReporterError not implemented yet")
         data = [{"Path": "a.txt", "Size": 10, "IsDir": False}]
         mock_run.return_value = _mock_result(1, stdout=json.dumps(data), stderr="partial listing")
-        result = get_cloud_manifest("bucket", "FY26-27", "/cfg")
-        assert len(result) == 1
+        with pytest.raises(_cr.CloudReporterError):
+            get_cloud_manifest("bucket", "FY26-27", "/cfg")
 
     @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
     @patch("core.cloud_reporter.subprocess.run")
-    def test_timeout_returns_empty(self, mock_run, mock_resolve):
+    def test_timeout_raises(self, mock_run, mock_resolve):
+        """M6 INVERSION: timeout must be loud, not an empty list."""
+        import core.cloud_reporter as _cr
+        if not hasattr(_cr, "CloudReporterError"):
+            pytest.fail("M6 RED: CloudReporterError not implemented yet")
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=300)
-        result = get_cloud_manifest("bucket", "FY26-27", "/cfg")
-        assert result == []
+        with pytest.raises(_cr.CloudReporterError):
+            get_cloud_manifest("bucket", "FY26-27", "/cfg")
 
     @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
     @patch("core.cloud_reporter.subprocess.run")
-    def test_invalid_json_returns_empty(self, mock_run, mock_resolve):
+    def test_invalid_json_raises(self, mock_run, mock_resolve):
+        """M6 INVERSION: unparsable output must be loud, not an empty list."""
+        import core.cloud_reporter as _cr
+        if not hasattr(_cr, "CloudReporterError"):
+            pytest.fail("M6 RED: CloudReporterError not implemented yet")
         mock_run.return_value = _mock_result(0, stdout="not json")
-        result = get_cloud_manifest("bucket", "FY26-27", "/cfg")
-        assert result == []
+        with pytest.raises(_cr.CloudReporterError):
+            get_cloud_manifest("bucket", "FY26-27", "/cfg")
 
     @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
     @patch("core.cloud_reporter.subprocess.run")
@@ -431,6 +447,23 @@ class TestGetCloudDiffTimeout:
         assert result["removed"] == []
         assert result["modified"] == []
         assert result["unchanged"] == []
+        # M6: a timed-out scan must be distinguishable from "no changes"
+        assert result.get("_partial") is True
+        assert result.get("_error")
+
+    @patch("core.cloud_reporter.Path")
+    @patch("core.cloud_reporter.os.close")
+    @patch("core.cloud_reporter.tempfile.mkstemp", return_value=(1, "/tmp/diff.txt"))
+    @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
+    @patch("core.cloud_reporter.subprocess.run")
+    def test_os_error_marks_partial_with_error(
+        self, mock_run, mock_resolve, mock_mkstemp, mock_close, mock_path
+    ):
+        """M6: OS-level launch failure must carry degradation flags too."""
+        mock_run.side_effect = OSError("pipe closed")
+        result = get_cloud_diff("/src", "bucket", "FY26-27", "/cfg")
+        assert result.get("_partial") is True
+        assert result.get("_error")
 
 
 class TestGetCloudDiffCleanup:
@@ -516,3 +549,66 @@ class TestGetCloudDiffReturnStructure:
             result = get_cloud_diff("/src", "bucket", "FY26-27", "/cfg")
         assert "_partial" in result
         assert result["_partial"] is True
+
+
+# -- M6: reporter failure honesty ---------------------------------------------
+
+
+
+# -- M6: reporter failure honesty ---------------------------------------------
+
+import core.cloud_reporter as _cr
+
+
+class TestSizeNeverRaises:
+    """M6: get_cloud_size must never raise - every failure is data."""
+
+    @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
+    @patch("core.cloud_reporter.subprocess.run")
+    def test_file_not_found_returns_error_dict(self, mock_run, mock_resolve):
+        mock_run.side_effect = FileNotFoundError("[WinError 2] rclone")
+        result = get_cloud_size("bucket", "FY26-27", "/cfg")
+        assert result["count"] == 0
+        assert result["bytes"] == 0
+        assert "_error" in result
+        assert "rclone" in result["_error"].lower()
+
+    @patch("core.cloud_reporter.resolve_binary", return_value="/usr/bin/rclone")
+    @patch("core.cloud_reporter.subprocess.run")
+    def test_nonzero_exit_carries_error_flag(self, mock_run, mock_resolve):
+        mock_run.return_value = _mock_result(5, stdout="", stderr="net down")
+        result = get_cloud_size("bucket", "FY26-27", "/cfg")
+        assert result["count"] == 0
+        assert "_error" in result
+
+    def test_success_has_no_error_flag(self):
+        ok_result = _mock_result(0, stdout=json.dumps({"count": 3, "bytes": 99}))
+        with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
+             patch("core.cloud_reporter.subprocess.run", return_value=ok_result):
+            result = get_cloud_size("bucket", "FY26-27", "/cfg")
+        assert result["count"] == 3
+        assert "_error" not in result
+
+
+class TestManifestRaisesOnFailure:
+    """M6: a failed listing may NEVER masquerade as an empty bucket."""
+
+    def test_missing_binary_raises(self):
+        if not hasattr(_cr, "CloudReporterError"):
+            pytest.fail("M6 RED: CloudReporterError not implemented yet")
+        with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
+             patch("core.cloud_reporter.subprocess.run",
+                   side_effect=FileNotFoundError("[WinError 2]")):
+            with pytest.raises(_cr.CloudReporterError, match="rclone"):
+                get_cloud_manifest("b", "FY", "/cfg")
+
+    def test_success_shape_unchanged(self):
+        payload = json.dumps([
+            {"Path": "a.txt", "Size": 1, "IsDir": False},
+            {"Path": "d", "IsDir": True},
+        ])
+        mock_result = _mock_result(0, stdout=payload)
+        with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
+             patch("core.cloud_reporter.subprocess.run", return_value=mock_result):
+            result = get_cloud_manifest("b", "FY", "/cfg")
+        assert result == [{"Path": "a.txt", "Size": 1, "IsDir": False}]

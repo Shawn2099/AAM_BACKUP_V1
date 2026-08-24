@@ -212,8 +212,9 @@ def test_log_08_rclone_not_found_clean_error(monkeypatch):
     # Simulate rclone binary missing by making subprocess.run raise FileNotFoundError.
     # cloud_sync.py catches FileNotFoundError at the subprocess.run call site and
     # returns a clean {status, error} dict — that is exactly what we are testing here.
-    # (There is no resolve_binary call in cloud_sync — it relies on the OS to raise
-    # FileNotFoundError when the executable name is not found.)
+    # (Since M7, build_rclone_sync_command resolves the binary via resolve_binary()
+    # like every other rclone module; when nothing resolves it falls back to the bare
+    # name and the OS still raises FileNotFoundError here.)
     from core import cloud_sync as _cloud_sync
     
     def _mock_run(*args, **kwargs):

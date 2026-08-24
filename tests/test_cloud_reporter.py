@@ -4,7 +4,14 @@ import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
+import pytest
+
+from core.cloud_reporter import (
+    CloudReporterError,
+    get_cloud_diff,
+    get_cloud_manifest,
+    get_cloud_size,
+)
 
 
 def _mock_result(returncode=0, stdout="", stderr=""):
@@ -47,10 +54,11 @@ class TestGetCloudManifest:
         assert result[0]["Path"] == "a.txt"
 
     @patch("core.cloud_reporter.subprocess.run")
-    def test_timeout_returns_empty(self, mock_run):
+    def test_timeout_raises(self, mock_run):
+        """M6 INVERSION: a timed-out listing must be loud, never []."""
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=300)
-        result = get_cloud_manifest("bucket", "FY26-27", "/cfg")
-        assert result == []
+        with pytest.raises(CloudReporterError):
+            get_cloud_manifest("bucket", "FY26-27", "/cfg")
 
 
 class TestGetCloudDiff:

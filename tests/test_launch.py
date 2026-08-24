@@ -97,3 +97,48 @@ class TestCancelOrphanedRuns:
     def test_handles_client_connection_failure(self, mock_get_client):
         # Should handle connection exception gracefully without throwing
         _cancel_orphaned_runs()
+
+
+class TestServeCallCompleteness:
+    """H1 regression guard (IMPLEMENTATION_PLAN.md Fix 1).
+
+    Invariant: launch.main() must serve EVERY deployment produced by
+    serve.deployments(). The original bug created rollover_deployment but
+    never passed it to serve(), so the scheduled FY-rollover check never
+    ran on hosts launched via launch.py.
+    """
+
+    def _run_main(self):
+        import launch
+
+        fake_deployments = tuple(MagicMock(name=f"dep{i}") for i in range(5))
+        with patch("launch._check_prefect_api", return_value=True), \
+             patch("launch._run_dashboard"), \
+             patch("launch._ensure_concurrency_limit"), \
+             patch("launch._cancel_orphaned_runs"), \
+             patch("core.fy_rollover.rollover", return_value=False), \
+             patch("serve.deployments", return_value=fake_deployments), \
+             patch("models.config.load_config") as mock_load_cfg, \
+             patch("prefect.serve") as mock_serve:
+            cfg = MagicMock()
+            cfg.dashboard.bind_address = "127.0.0.1"
+            cfg.dashboard.port = 8080
+            mock_load_cfg.return_value = cfg
+            launch.main()
+        return mock_serve, fake_deployments
+
+    def test_serves_every_deployment_produced(self):
+        mock_serve, fake = self._run_main()
+
+        mock_serve.assert_called_once()
+        args, kwargs = mock_serve.call_args
+        served = list(args)
+
+        assert len(served) == len(fake), (
+            f"H1 DRIFT: serve.deployments() produced {len(fake)} deployments "
+            f"but serve() received {len(served)} - a deployment is not being "
+            f"served (this is how the rollover-check gap happened)"
+        )
+        for dep in fake:
+            assert dep in served
+        assert kwargs.get("pause_on_shutdown") is False

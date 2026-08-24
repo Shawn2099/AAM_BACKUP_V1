@@ -10,6 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
 
 
@@ -62,8 +63,13 @@ def build_rclone_sync_command(
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
+    # M7: resolve the binary like every other rclone-calling module
+    # (preflight, verify, size, manifest, diff) so a bundled deploy/bin copy
+    # is preferred and preflight/sync can never disagree about the binary.
+    rclone_exe = resolve_binary("rclone") or "rclone"
+
     return [
-        "rclone", "sync",
+        rclone_exe, "sync",
         source, dest,
         "--config", config_path,
         "--fast-list",

@@ -1,0 +1,54 @@
+﻿{
+  "generated": "2026-08-23 10:17:36",
+  "system": {
+    "hostname": "WIN-DLOHEGUQHK4",
+    "domain": "WORKGROUP",
+    "windows_version": "Microsoft Windows Server 2016 Standard",
+    "build_number": "14393",
+    "current_user": "Administrator",
+    "is_admin": "yes"
+  },
+  "drives": [
+    {
+      "drive": "B:",
+      "type": "Unknown",
+      "total_gb": 35,
+      "free_gb": 34.8,
+      "filesystem": "NTFS"
+    }
+    ,
+    {
+      "drive": "C:",
+      "type": "Unknown",
+      "total_gb": 188,
+      "free_gb": 165.7,
+      "filesystem": "NTFS"
+    }
+  ],
+  "network": {
+    "primary_ip": "192.168.1.10",
+    "default_gateway": "192.168.1.1",
+    "dns_resolution": "working",
+    "target_server": { "ip": "" }
+  },
+  "software": {
+    "nssm": "not installed"
+  },
+  "permissions": {
+    "firewall": "active",
+    "long_paths": "enabled"
+  },
+  "existing_installation": {"config_yaml": "not found", "logs_dir": "not found", "manifest_db": "not found" },
+  "ports": { "prefect_4200": "available", "dashboard_8080": "available" },
+  "resources": {
+    "total_ram_gb": 31.9,
+    "cpu": "Intel(R) Core(TM) i7-7700 CPU @ 3.60GHz",
+    "cpu_cores": 4
+  },
+  "timezone_power": {
+    "timezone": "(UTC+05:30) Chennai, Kolkata, Mumbai, New Delhi"
+  },
+  "gcs_connectivity": {
+    "reachable": ""
+  },
+}

@@ -244,6 +244,8 @@ def main():
             lan_deployment,
             report_deployment,
             monthly_deployment,
+            rollover_deployment,  # H1 fix: was created but never served — the
+                                  # scheduled FY-rollover check silently never ran
             pause_on_shutdown=False,
         )
         shutdown_clean = True

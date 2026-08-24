@@ -15,6 +15,21 @@ import tempfile
 
 _DUMMY_STDERR_PATH = os.path.join(tempfile.gettempdir(), "test_cloud_sync_stderr.log")
 
+import pytest
+
+@pytest.fixture(autouse=True)
+def _pin_rclone_exe():
+    """M7: builder now resolves the binary via core.process.resolve_binary.
+
+    Pin it to the bare name so command-structure assertions (cmd[0] == "rclone")
+    stay deterministic regardless of whether rclone is installed on the test
+    machine. Dedicated resolution tests override this patch explicitly.
+    """
+    with patch("core.cloud_sync.resolve_binary", create=True, return_value="rclone"):
+        yield
+
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 @contextmanager
@@ -573,3 +588,61 @@ class TestRunCloudSyncEnvAndSubprocess:
         cmd = mock_run.call_args[0][0]
         idx = cmd.index("--buffer-size")
         assert cmd[idx + 1] == "256M"
+
+
+# -- M7: binary resolution -----------------------------------------------------
+
+
+
+# -- M7: binary resolution -----------------------------------------------------
+
+class TestBinaryResolution:
+    """M7 regression: the sync command must honor resolve_binary() like every
+    other rclone-calling module (preflight, verify, size, manifest, diff).
+    Original bug: cmd[0] was hardcoded to "rclone", so a bundled-only binary
+    passed preflight but failed sync with FileNotFoundError."""
+
+    def _build(self, **kwargs):
+        defaults = dict(
+            source="D:\\data",
+            bucket="my-bucket",
+            fy_prefix="FY26-27",
+            config_path="/tmp/rclone.conf",
+            storage_class="COLDLINE",
+        )
+        defaults.update(kwargs)
+        return build_rclone_sync_command(**defaults)
+
+    def test_bundled_binary_preferred(self):
+        exe = os.path.join("deploy", "bin", "rclone.exe")
+        with patch("core.cloud_sync.resolve_binary", create=True, return_value=exe):
+            cmd = self._build()
+        assert cmd[0] == exe
+
+    def test_falls_back_to_path_name_when_unresolved(self):
+        with patch("core.cloud_sync.resolve_binary", create=True, return_value=None):
+            cmd = self._build()
+        assert cmd[0] == "rclone"
+
+    def test_resolution_applies_inside_run_cloud_sync(self):
+        """End-to-end: run_cloud_sync must execute the RESOLVED binary."""
+        exe = os.path.join("custom", "rclone")
+
+        def _fake_cm(*args, **kwargs):
+            cm = MagicMock()
+            cm.__enter__.return_value = os.path.join(
+                tempfile.gettempdir(), "rclone_test.conf"
+            )
+            cm.__exit__.return_value = False
+            return cm
+
+        with patch("core.cloud_sync.resolve_binary", create=True, return_value=exe), \
+             patch("core.cloud_sync.temp_rclone_config", _fake_cm), \
+             patch("core.cloud_sync.subprocess.run",
+                   return_value=_mock_result(0)) as mock_run:
+            run_cloud_sync(
+                source="D:\\data", bucket="b", fy_prefix="FY26-27",
+                gcs_key_path="k.json", project_number="1",
+                storage_class="STANDARD",
+            )
+        assert mock_run.call_args[0][0][0] == exe
