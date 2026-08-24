@@ -40,7 +40,7 @@ def shutdown_server(server_ip: str) -> dict:
         return {"shutdown_initiated": False, "server_ip": server_ip, "error": error_msg}
 
     except FileNotFoundError:
-        logger.warning("shutdown.exe not found — not running on Windows?")
+        logger.warning("shutdown.exe not found - not running on Windows?")
         return {"shutdown_initiated": False, "server_ip": server_ip, "error": "shutdown.exe not found"}
     except subprocess.TimeoutExpired:
         logger.error(f"Shutdown command timed out for {server_ip}")

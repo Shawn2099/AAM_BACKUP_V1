@@ -51,7 +51,7 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
             f"Source drive OK: {source} (contains files, {free_gb:.1f} GB free)"
         )
     except OSError:
-        logger.warning(f"Could not check disk space on {source} — skipping")
+        logger.warning(f"Could not check disk space on {source} - skipping")
 
     return True, ""
 
@@ -107,10 +107,10 @@ def check_clock_skew(
         logger.debug(f"Clock OK: {difference:.1f}s skew from Google (limit: {max_skew_seconds}s)")
         return True, ""
     except OSError as e:
-        logger.warning(f"Could not verify clock skew (Google not reachable): {e} — skipping")
+        logger.warning(f"Could not verify clock skew (Google not reachable): {e} - skipping")
         return True, ""
     except ValueError as e:
-        logger.warning(f"Could not parse Google Date header: {e} — skipping")
+        logger.warning(f"Could not parse Google Date header: {e} - skipping")
         return True, ""
 
 
@@ -138,7 +138,7 @@ def pre_backup_health(
     """
     valid_modes = {"cloud", "lan", "all"}
     if mode not in valid_modes:
-        raise HealthError(f"Invalid mode '{mode}' — expected one of: {', '.join(sorted(valid_modes))}")
+        raise HealthError(f"Invalid mode '{mode}' - expected one of: {', '.join(sorted(valid_modes))}")
 
     ok, reason = check_source_drive(source_path, min_free_gb=min_free_source_gb)
     if not ok:

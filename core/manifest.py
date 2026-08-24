@@ -536,7 +536,7 @@ class ManifestDB:
                 conn.commit()
                 conn.execute("VACUUM")
                 logger.debug(
-                    f"VACUUM triggered — freelist={freelist[0]} pages "
+                    f"VACUUM triggered - freelist={freelist[0]} pages "
                     f"(~{freelist[0] * page_size // 1024} KB)"
                 )
             else:

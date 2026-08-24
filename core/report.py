@@ -35,11 +35,11 @@ def _send_email_with_attachments(
 ) -> bool:
     """Send email via SMTP with optional attachments. Returns True on success."""
     if not all([config.smtp_host, config.sender, config.recipients]):
-        logger.warning("Email not configured — skipping")
+        logger.warning("Email not configured - skipping")
         return False
 
     if not config.smtp_username or not config.smtp_password:
-        logger.warning("SMTP credentials not set — skipping")
+        logger.warning("SMTP credentials not set - skipping")
         return False
 
     msg = MIMEMultipart("mixed")
@@ -86,7 +86,7 @@ def _send_email_with_attachments(
                 wait = max(0.0, delay + jitter)
                 logger.warning(
                     f"Email attempt {attempt}/{_SMTP_MAX_ATTEMPTS} failed: {e} "
-                    f"— retrying in {wait:.1f}s"
+                    f"- retrying in {wait:.1f}s"
                 )
                 time.sleep(wait)
             else:
@@ -117,11 +117,11 @@ def send_failure_alert(
     Attaches the full error log as a text file if the error is extremely long.
     """
     if not config.send_on_failure:
-        logger.info("send_on_failure disabled — skipping alert")
+        logger.info("send_on_failure disabled - skipping alert")
         return False
 
     mode = (run_data.get("mode") or "unknown").upper()
-    subject = f"Backup Failure Alert — {firm_name} ({mode})"
+    subject = f"Backup Failure Alert - {firm_name} ({mode})"
 
     ts_display = f"<p><strong>Time:</strong> {html.escape(timestamp[:19].replace('T', ' '))}</p>" if timestamp else ""
     status_code = html.escape(str(run_data.get("status") or ""))
@@ -336,7 +336,7 @@ def send_summary_report(
     """
     runs = db.get_runs_since(days)
     if not runs:
-        logger.info(f"No runs found in last {days} days — skipping {period} report")
+        logger.info(f"No runs found in last {days} days - skipping {period} report")
         return False
         
     body = body_html or generate_report_html(db, firm_name, days, period, is_email=True)
@@ -352,7 +352,7 @@ def send_summary_report(
         "content": csv_bytes
     }]
 
-    subject = f"Backup {period} Report — {firm_name}"
+    subject = f"Backup {period} Report - {firm_name}"
     return _send_email_with_attachments(config, subject, body, attachments)
 
 

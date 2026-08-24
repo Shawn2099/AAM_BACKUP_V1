@@ -107,7 +107,7 @@ def detect_rollover(source_drive: str, lan_destination: str) -> bool:
         # end up here is now refused at config load — see models/config.py.)
         logger.warning(
             "FY rollover: no FYxx-xx folder name in source_drive or "
-            "lan_destination — rollover is disabled by configuration for this "
+            "lan_destination - rollover is disabled by configuration for this "
             "deployment (not using FY folders is a valid choice; data simply "
             f"accumulates in the same folders). source_drive={source_drive!r}, "
             f"lan_destination={lan_destination!r}"
@@ -374,7 +374,7 @@ def run_archive_transition(
 
     except FileNotFoundError:
         logger.warning(
-            "FY rollover: 'gcloud' CLI not found — archive transition skipped. "
+            "FY rollover: 'gcloud' CLI not found - archive transition skipped. "
             "Searched: deploy/bin/, Program Files, LOCALAPPDATA, and system PATH. "
             "Run setup_system.bat to install the Google Cloud SDK, then place nssm.exe in deploy\\bin\\."
         )

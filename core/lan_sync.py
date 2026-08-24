@@ -31,7 +31,7 @@ _ANOMALY_LOG_TAIL = 100_000 # bytes — full context for anomalies (codes 4-7); 
 def _validate_required_flags(flags: list[str]) -> None:
     for f in flags:
         if f.upper() in ("/NC", "-NC"):
-            raise ValueError("/NC flag suppresses file class labels — parser has nothing to match")
+            raise ValueError("/NC flag suppresses file class labels - parser has nothing to match")
 
 
 _FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
@@ -308,7 +308,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             files_failed = failed_file_count(error_msg, result.returncode)
             marker_count = count_failed_lines(error_msg)
             logger.error(
-                f"LAN sync FAILED (exit {result.returncode}) — "
+                f"LAN sync FAILED (exit {result.returncode}) - "
                 f"{len(error_msg)} bytes of log captured in result['error'], "
                 f"files_failed={files_failed} "
                 f"({marker_count} '** FAILED:' marker(s) visible in tail)"
@@ -321,7 +321,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             # so alert systems are not triggered.
             anomaly_details = _read_log_tail(log_path, _ANOMALY_LOG_TAIL)
             logger.warning(
-                f"LAN sync anomalies detected (exit {result.returncode}) — "
+                f"LAN sync anomalies detected (exit {result.returncode}) - "
                 f"mismatches or extra destination files found. "
                 f"Backup is complete. Check result['anomaly_details'] for context."
             )
@@ -346,7 +346,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "files_failed": 0,
         }
     except FileNotFoundError as exc:
-        logger.error("robocopy.exe not found — is this running on Windows Server?")
+        logger.error("robocopy.exe not found - is this running on Windows Server?")
         return {
             "status": "LAN_FAILED",
             "exit_code": -1,

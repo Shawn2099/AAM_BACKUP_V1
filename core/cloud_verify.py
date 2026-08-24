@@ -69,7 +69,7 @@ def verify_cloud_integrity(
         verified = result.returncode == _EXIT_VERIFIED
 
         if verified:
-            logger.info("Cloud integrity verified — source matches GCS")
+            logger.info("Cloud integrity verified - source matches GCS")
         else:
             # Distinguish mismatch (exit 1) from error (exit 2+)
             if result.returncode == _EXIT_MISMATCH:

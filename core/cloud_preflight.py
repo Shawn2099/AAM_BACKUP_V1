@@ -63,7 +63,7 @@ def run_cloud_dry_run(
 
     if not source_path.exists():
         msg = f"Source drive not accessible: {source}"
-        logger.error(f"Cloud preflight [A] FAILED — {msg}")
+        logger.error(f"Cloud preflight [A] FAILED - {msg}")
         return {"ok": False, "exit_code": -1, "error": msg}
 
     try:
@@ -75,10 +75,10 @@ def run_cloud_dry_run(
         pass
     except OSError as exc:
         msg = f"Source drive read error ({source}): {exc}"
-        logger.error(f"Cloud preflight [A] FAILED — {msg}")
+        logger.error(f"Cloud preflight [A] FAILED - {msg}")
         return {"ok": False, "exit_code": -1, "error": msg}
 
-    logger.info(f"Cloud preflight [A] OK — source drive accessible: {source}")
+    logger.info(f"Cloud preflight [A] OK - source drive accessible: {source}")
 
     # ── Probe B: GCS auth + bucket probe (rclone lsjson, zero HDD IO) ──────
     with temp_rclone_config(gcs_key_path, location, project_number, storage_class) as config_path:
@@ -112,15 +112,15 @@ def run_cloud_dry_run(
             )
         except subprocess.TimeoutExpired:
             msg = f"GCS probe timed out after {timeout}s"
-            logger.error(f"Cloud preflight [B] FAILED — {msg}")
+            logger.error(f"Cloud preflight [B] FAILED - {msg}")
             return {"ok": False, "exit_code": -1, "error": f"Timeout after {timeout}s"}
         except FileNotFoundError:
             msg = "rclone not found in PATH or configured binary path"
-            logger.error(f"Cloud preflight [B] FAILED — {msg}")
+            logger.error(f"Cloud preflight [B] FAILED - {msg}")
             return {"ok": False, "exit_code": -1, "error": "rclone not found"}
         except OSError as exc:
             msg = f"OS error launching rclone: {exc}"
-            logger.error(f"Cloud preflight [B] FAILED — {msg}")
+            logger.error(f"Cloud preflight [B] FAILED - {msg}")
             return {"ok": False, "exit_code": -1, "error": msg}
 
         code = result.returncode
@@ -129,8 +129,8 @@ def run_cloud_dry_run(
             # Log full stderr — truncating hides the actual error in production
             stderr_output = result.stderr.strip() if result.stderr else "no stderr"
             msg = f"Exit {code}: {stderr_output}"
-            logger.error(f"Cloud preflight [B] FAILED — {msg}")
+            logger.error(f"Cloud preflight [B] FAILED - {msg}")
             return {"ok": False, "exit_code": code, "error": msg}
 
-        logger.info("Cloud preflight [B] OK — GCS reachable, credentials valid, bucket accessible")
+        logger.info("Cloud preflight [B] OK - GCS reachable, credentials valid, bucket accessible")
         return {"ok": True, "exit_code": 0, "error": None}

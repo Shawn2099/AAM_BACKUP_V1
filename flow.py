@@ -267,7 +267,7 @@ def lan_snapshot_after_task(config):
         after = snapshot_to_dict(after_files)
     except Exception as e:
         logger.critical(
-            f"Post-sync destination walk failed: {e} — sync result is "
+            f"Post-sync destination walk failed: {e} - sync result is "
             "UNAFFECTED; diff metrics and DB record are skipped for this run"
         )
         return None
@@ -641,7 +641,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         else:
             # G14: metrics unavailable this run — record the sync outcome only
             logger.error(
-                "Post-sync snapshot unavailable — diff metrics and file-level "
+                "Post-sync snapshot unavailable - diff metrics and file-level "
                 "DB record skipped for this run; the sync outcome is recorded "
                 "as-is and the next run re-derives the metrics."
             )
@@ -656,7 +656,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         elif status == "LAN_PARTIAL":
             logger.error(
                 f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
-                "some files were not copied. NAS shutdown SKIPPED — the next "
+                "some files were not copied. NAS shutdown SKIPPED - the next "
                 "run will re-sync the missing files."
             )
             try:
@@ -676,7 +676,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             except Exception as alert_err:
                 logger.warning(f"Could not send partial-backup alert: {alert_err}")
         else:
-            logger.info(f"LAN shutdown skipped — status is {status}")
+            logger.info(f"LAN shutdown skipped - status is {status}")
         return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
     except Exception as e:
@@ -753,7 +753,7 @@ def _record_run(
                 f"Run history persistence failed for run_id={run_id} mode={mode} "
                 f"status={status} exit_code={exit_code}"
             )
-            logger.warning(f"Run {run_id} ({mode}) was not recorded to database — check logs above for details")
+            logger.warning(f"Run {run_id} ({mode}) was not recorded to database - check logs above for details")
     finally:
         db.close()
 
@@ -772,7 +772,7 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     except Exception:
         pass
     if not config.notifications.weekly_enabled:
-        logger.info("Weekly backup report email is disabled in configuration — skipping")
+        logger.info("Weekly backup report email is disabled in configuration - skipping")
         return
     db = ManifestDB(config.paths.database_path)
     try:
@@ -792,7 +792,7 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     except Exception:
         pass
     if not config.notifications.monthly_enabled:
-        logger.info("Monthly backup report email is disabled in configuration — skipping")
+        logger.info("Monthly backup report email is disabled in configuration - skipping")
         return
     db = ManifestDB(config.paths.database_path)
     try:
@@ -827,7 +827,7 @@ def rollover_check_flow(config_path: str = CONFIG_PATH):
 
     try:
         if rollover(config_path=config_path):
-            logger.info("FY rollover completed (scheduled check) — config updated for new FY")
+            logger.info("FY rollover completed (scheduled check) - config updated for new FY")
             return "ROLLOVER_COMPLETED"
         return "NO_ROLLOVER_NEEDED"
     except RolloverError as e:
@@ -876,9 +876,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     try:
         configure_prefect_bridge()
     except Exception as e:
-        logger.debug(f"configure_prefect_bridge skipped: {e} — Prefect UI may not show loguru logs")
+        logger.debug(f"configure_prefect_bridge skipped: {e} - Prefect UI may not show loguru logs")
 
-    logger.info(f"AAM Backup starting — mode={mode}, firm={config.firm_name}")
+    logger.info(f"AAM Backup starting - mode={mode}, firm={config.firm_name}")
 
     # G8: clean up orphaned robocopy temp logs left behind by hard-killed
     # processes (SCM stop, timeout kill, crash). Normal runs delete their own
@@ -906,7 +906,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
             # ── Acquire watchdog lock now that we hold the concurrency slot ──
             try:
                 write_lock(_lock_path)
-                logger.info(f"Backup lock acquired (PID={os.getpid()}) — watchdog will defer restarts")
+                logger.info(f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts")
             except OSError as e:
                 logger.warning(f"Could not write backup lock file: {e}")
 

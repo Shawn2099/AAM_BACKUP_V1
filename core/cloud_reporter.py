@@ -193,7 +193,7 @@ def get_cloud_diff(
                         diff["unchanged"].append(line[2:])
         except FileNotFoundError:
             # Diff file missing — rclone failed to create it
-            logger.warning("Cloud diff file not found after rclone check — rclone may have failed")
+            logger.warning("Cloud diff file not found after rclone check - rclone may have failed")
 
         if partial:
             diff["_partial"] = True

@@ -165,7 +165,7 @@ def _is_backup_running() -> bool:
         # Main loop deferral logic will force-remove after MAX_DEFERRALS.
         logger.warning(
             f"Stale backup lock detected (PID {pid} not running or reused) "
-            f"— deferral counter in main loop will handle cleanup"
+            f"- deferral counter in main loop will handle cleanup"
         )
     # G6: catch EVERY parse/psutil failure, not just OSError. A corrupted
     # lock file must make the watchdog treat the lock as stale, never crash
@@ -235,12 +235,12 @@ def _start_service(service: str) -> bool:
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
-            logger.info(f"sc start {service} accepted — service should be up within ~30-60s")
+            logger.info(f"sc start {service} accepted - service should be up within ~30-60s")
             return True
         logger.error(f"sc start {service} returned {r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
         return False
     except subprocess.TimeoutExpired:
-        logger.error(f"sc start {service} timed out (30s) — service may need manual attention")
+        logger.error(f"sc start {service} timed out (30s) - service may need manual attention")
     except Exception as exc:
         logger.error(f"Start attempt failed for {service}: {exc}")
     return False
@@ -282,11 +282,11 @@ def _stop_service(service: str) -> None:
             capture_output=True, text=True, timeout=30,
         )
         if r.returncode == 0:
-            logger.info("Stop accepted — NSSM will restart within ~30s")
+            logger.info("Stop accepted - NSSM will restart within ~30s")
         else:
             logger.error(f"sc stop returned {r.returncode}: {r.stderr.strip()}")
     except subprocess.TimeoutExpired:
-        logger.error("sc stop timed out (30s) — service may need manual attention")
+        logger.error("sc stop timed out (30s) - service may need manual attention")
     except Exception as exc:
         logger.error(f"Stop attempt failed: {exc}")
 
@@ -337,7 +337,7 @@ def main() -> None:
             if agent_state == "RUNNING":
                 service_start_log.pop(AGENT_SERVICE, None)  # breaker reset
             elif agent_state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
-                logger.info(f"{AGENT_SERVICE} is {agent_state} — waiting for NSSM to finish the transition")
+                logger.info(f"{AGENT_SERVICE} is {agent_state} - waiting for NSSM to finish the transition")
             elif agent_state == "STOPPED":
                 if _start_allowed(AGENT_SERVICE):
                     _start_service(AGENT_SERVICE)
@@ -349,7 +349,7 @@ def main() -> None:
                     )
             else:
                 logger.warning(
-                    f"{AGENT_SERVICE} state unknown ({agent_state!r}) — "
+                    f"{AGENT_SERVICE} state unknown ({agent_state!r}) - "
                     "cannot verify the scheduler is running"
                 )
             time.sleep(CHECK_INTERVAL_SECONDS)
@@ -358,7 +358,7 @@ def main() -> None:
         # ── Unhealthy ────────────────────────────────────────────────────────
         failures += 1
         logger.warning(
-            f"Prefect API unreachable — failure {failures}/{FAILURE_THRESHOLD}"
+            f"Prefect API unreachable - failure {failures}/{FAILURE_THRESHOLD}"
         )
 
         if failures < FAILURE_THRESHOLD:
@@ -392,7 +392,7 @@ def main() -> None:
                     f"Prefect API has been unhealthy for {failures} checks but a real "
                     f"data transfer is in progress (rclone/robocopy detected). "
                     f"Deferring restart. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
-                    f"(deferral {deferrals}/{MAX_TRANSFER_DEFERRALS} — cap at 8 h)"
+                    f"(deferral {deferrals}/{MAX_TRANSFER_DEFERRALS} - cap at 8 h)"
                 )
                 time.sleep(BACKUP_WAIT_INTERVAL)
                 continue
@@ -417,7 +417,7 @@ def main() -> None:
             else:
                 logger.warning(
                     f"Prefect API has been unhealthy for {failures} checks. "
-                    f"Backup lock is held but no transfer process detected — "
+                    f"Backup lock is held but no transfer process detected - "
                     f"possibly between rclone calls. Deferring restart. "
                     f"Will re-check in {BACKUP_WAIT_INTERVAL}s. "
                     f"(deferral {deferrals}/{MAX_DEFERRALS})"
@@ -431,7 +431,7 @@ def main() -> None:
             # NSSM is already handling a restart — wait.
             logger.info(
                 f"{WATCHED_SERVICE} is {state} (transitioning). "
-                "NSSM is already handling a restart — resetting failure counter."
+                "NSSM is already handling a restart - resetting failure counter."
             )
             failures = 0
             time.sleep(CHECK_INTERVAL_SECONDS)
