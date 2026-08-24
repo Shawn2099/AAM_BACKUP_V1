@@ -238,12 +238,14 @@ def cloud_record_task(
     sync_result: dict,
     busy_timeout_ms: int = 30000,
     vacuum_freelist_threshold: int = 10000,
+    synchronous: str = "normal",
 ):
     """Record cloud sync results to ManifestDB."""
     db = ManifestDB(
         db_path,
         busy_timeout_ms=busy_timeout_ms,
         vacuum_freelist_threshold=vacuum_freelist_threshold,
+        synchronous=synchronous,
     )
     try:
         manifest = verify_data.get("manifest", [])
@@ -340,6 +342,7 @@ def lan_record_task(
     after_dict: dict,
     busy_timeout_ms: int = 30000,
     vacuum_freelist_threshold: int = 10000,
+    synchronous: str = "normal",
 ):
     """Compute diff from before/after snapshots, record to ManifestDB."""
     diff = diff_snapshots(before_dict, after_dict)
@@ -348,6 +351,7 @@ def lan_record_task(
         db_path,
         busy_timeout_ms=busy_timeout_ms,
         vacuum_freelist_threshold=vacuum_freelist_threshold,
+        synchronous=synchronous,
     )
     try:
         # snapshot_to_dict returns {path: (size, mtime)} tuples
