@@ -160,6 +160,70 @@ def _cancel_orphaned_runs():
     asyncio.run(_cancel())
 
 
+def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
+    """P2-SCHED: make server-side deployment state match the enabled flags.
+
+    For each backup leg:
+      * disabled in config  -> its deployment (if registered server-side from
+        any previous boot) is PAUSED so the scheduler stops firing it;
+      * enabled in config   -> it is RESUMED if a stale paused state exists.
+
+    Pause is used instead of delete deliberately: it is reversible, preserves
+    run history, and survives operator mistakes. Idempotent - safe on every
+    boot. Returns {deployment_name: outcome} for logging.
+
+    Args:
+        config: Loaded AppConfig - supplies the production legs when `legs`
+            is not given.
+        legs: Optional explicit {deployment_name: enabled} override used by
+            tests/isolated reconciliation of specific deployments.
+    """
+    import asyncio
+
+    from prefect.client.orchestration import get_client
+    from prefect.exceptions import ObjectNotFound
+
+    if legs is None:
+        legs = {
+            "backup-lan": bool(getattr(config.lan, "enabled", False)),
+            "backup-cloud": bool(getattr(config.cloud, "enabled", True)),
+        }
+
+    async def _reconcile() -> dict:
+        results: dict = {}
+        async with get_client() as client:
+            for dep_name, enabled in legs.items():
+                full_name = f"aam-backup/{dep_name}"
+                try:
+                    dep = await client.read_deployment_by_name(full_name)
+                except ObjectNotFound:
+                    results[dep_name] = "absent (nothing to reconcile)"
+                    continue
+                paused = bool(getattr(dep, "paused", False))
+                if enabled and paused:
+                    await client.resume_deployment(dep.id)
+                    results[dep_name] = "resumed (leg enabled)"
+                elif not enabled and not paused:
+                    await client.pause_deployment(dep.id)
+                    results[dep_name] = "PAUSED (leg disabled)"
+                else:
+                    results[dep_name] = (
+                        "active" if enabled else "already-paused"
+                    )
+        return results
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_reconcile())
+    # Already inside an event loop (programmatic/test callers): run on a
+    # worker thread with its own loop instead of nesting asyncio.run.
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+        return _pool.submit(asyncio.run, _reconcile()).result()
+
+
 def main():
     print("=" * 50)
     print("  AAM Backup Automation V1 — Launch")
@@ -213,6 +277,20 @@ def main():
     # Cancel orphaned flow runs from previous crashed/shutdown sessions
     _cancel_orphaned_runs()
 
+    # P2-SCHED: pause deployments whose leg is disabled in config (and resume
+    # re-enabled ones). Filtering registration alone is NOT enough - Prefect's
+    # server-side scheduler keeps firing previously-registered deployments
+    # even when a later serve() omits them. Pause beats delete: reversible,
+    # preserves run history.
+    try:
+        _reconciliation = _reconcile_disabled_legs(_cfg)
+        for dep_name, outcome in _reconciliation.items():
+            print(f"[launch] Deployment {dep_name}: {outcome}")
+    except Exception as exc:
+        # Non-fatal: the flow-level enabled guard still protects the leg, but
+        # the operator should know reconciliation did not complete.
+        print(f"[launch] Deployment reconciliation FAILED (non-fatal): {exc}")
+
     # Run scheduler in main thread — serve() handles SIGINT internally,
     # so it returns cleanly on Ctrl+C. With pause_on_shutdown=False,
     # deployment schedules stay active across restarts.
@@ -229,23 +307,11 @@ def main():
     from prefect import serve
 
     from serve import deployments
-    (
-        cloud_deployment,
-        lan_deployment,
-        report_deployment,
-        monthly_deployment,
-        rollover_deployment,
-    ) = deployments()
 
     shutdown_clean = False
     try:
         serve(
-            cloud_deployment,
-            lan_deployment,
-            report_deployment,
-            monthly_deployment,
-            rollover_deployment,  # H1 fix: was created but never served — the
-                                  # scheduled FY-rollover check silently never ran
+            *deployments(),
             pause_on_shutdown=False,
         )
         shutdown_clean = True
