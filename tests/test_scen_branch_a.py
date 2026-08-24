@@ -884,6 +884,11 @@ class TestLAN15Bit3AlertContract:
             assert result["exit_code"] >= 8, f"op={ops}"
             assert err_tail, f"alert needs non-empty error tail, op={ops}"
             assert ops["victims_absent_on_nas"], f"op={ops}"
+            # P1-COUNT (A-prime): summary row is parsed positionally now -
+            # exactly the 2 locked victims must be counted, not 0.
+            assert result.get("files_failed") == 2, (
+                f"P1-COUNT: expected files_failed==2, op={ops}"
+            )
             record_op(sid, "PASS", ops)
         except Exception as e:
             record_op(sid, "FAIL", _fail_ops(ops, e))

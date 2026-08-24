@@ -36,6 +36,51 @@ def _validate_required_flags(flags: list[str]) -> None:
 
 _FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
 
+# P1-COUNT (A-prime): the job-summary "Files:" row. Column ORDER is fixed by
+# robocopy regardless of locale (Total Copied Skipped Mismatch FAILED Extras),
+# so we parse positionally instead of matching localized header words.
+_SUMMARY_FILES_ROW = re.compile(r"^\s*Files\s*:", re.MULTILINE)
+
+
+def _summary_files_row_values(log_text: str) -> list[int] | None:
+    """Return the numeric columns of the job-summary Files row, or None.
+
+    Fails closed on anything non-numeric (localized separators are stripped;
+    letters or missing columns abort parsing) so callers can fall back to the
+    exit-bitmask floor instead of reporting a false 0.
+    """
+    match = _SUMMARY_FILES_ROW.search(log_text or "")
+    if not match:
+        return None
+    line_end = log_text.find("\n", match.start())
+    row = log_text[match.start(): line_end if line_end != -1 else len(log_text)]
+    values: list[int] = []
+    for token in row.split(":", 1)[1].split():
+        cleaned = token.replace(",", "").replace(".", "")
+        if not cleaned.isdigit():
+            return None
+        values.append(int(cleaned))
+    return values or None
+
+
+def failed_file_count(log_text: str, exit_code: int) -> int:
+    """Authoritative failed-file count for a robocopy run.
+
+    A-prime contract (IMPLEMENTATION_FIX_PLAN.md v1.1):
+      1. Parse the summary "Files:" row positionally; FAILED is column index 4.
+      2. Floor by the exit bitmask: bit 3 set means at least one file could
+         not be copied - if the summary is absent/unparseable, report >= 1
+         rather than the misleading 0 (/NJS blindness, LAN-06/LAN-15).
+      3. Contradictory signals (summary says 0, bit3 set) resolve to the loud
+         side: 1.
+    """
+    bit3_floor = 1 if (exit_code & 8) else 0
+    values = _summary_files_row_values(log_text)
+    parsed_failed = values[4] if values and len(values) > 4 else None
+    if parsed_failed is None:
+        return bit3_floor
+    return max(parsed_failed, bit3_floor)
+
 
 def count_failed_lines(log_text: str) -> int:
     """Count robocopy per-file failure lines ("** FAILED: <path>") in a log tail.
@@ -172,9 +217,10 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         /TS     — Include source file timestamps in log output.
         /FP     — Include full file paths in log (critical for failure diagnosis).
         /NJH    — No job header (reduces log noise).
-        /NJS    — No job summary (we parse exit code, not summary text).
         /NDL    — No directory list (individual file lines are sufficient).
         /NP     — No progress percentage (meaningless in log files).
+        NOTE: /NJS was REMOVED (P1-COUNT) — it suppressed the job summary,
+        which is now the authoritative positional source for files_failed.
         /XD     — Exclude "System Volume Information" to avoid access errors on
                   NTFS system directories.
     """
@@ -187,7 +233,7 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
         "/V", "/TS", "/FP",
-        "/NJH", "/NJS", "/NDL", "/NP",
+        "/NJH", "/NDL", "/NP",
         "/XF", ".AAM_TARGET_MOUNTED",
         "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
@@ -256,14 +302,16 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             # Real failure: bit 4 (fatal) or bit 3 (copy errors) set.
             # Capture full log tail for alert system and operator triage.
             error_msg = _read_log_tail(log_path, _ERROR_LOG_TAIL)
-            # F12: count which files actually failed — robocopy prints one
-            # "** FAILED: <path>" line per failed file, so the operator gets a
-            # number (and the paths in the tail) instead of an opaque code.
-            files_failed = count_failed_lines(error_msg)
+            # P1-COUNT (A-prime): positional summary parse + bit-3 floor.
+            # The old per-marker count reported 0 under /NJS because the
+            # "** FAILED:" lines and summary never reached the tail.
+            files_failed = failed_file_count(error_msg, result.returncode)
+            marker_count = count_failed_lines(error_msg)
             logger.error(
                 f"LAN sync FAILED (exit {result.returncode}) — "
                 f"{len(error_msg)} bytes of log captured in result['error'], "
-                f"{files_failed} failed file line(s) counted in the tail"
+                f"files_failed={files_failed} "
+                f"({marker_count} '** FAILED:' marker(s) visible in tail)"
             )
 
         elif 4 <= result.returncode <= 7:
