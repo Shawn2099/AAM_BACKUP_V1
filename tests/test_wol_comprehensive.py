@@ -1,8 +1,10 @@
-"""Comprehensive tests for core/wol.py — WoL magic packets, SMB polling, server online check."""
+"""Comprehensive tests for core/wol.py — REAL sockets, REAL packets, REAL time."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import socket
+import threading
+import time
 
 import pytest
 
@@ -13,295 +15,191 @@ from core.wol import (
     ensure_server_online,
     wait_for_server,
 )
+from models.config import (
+    AppConfig,
+    CloudConfig,
+    DashboardConfig,
+    PathsConfig,
+    WolConfig,
+)
 
-# ═══════════════════════════════════════════════════════════════
-# 1. _smb_port_open
-# ═══════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def tcp_listener():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    yield srv.getsockname()
+    srv.close()
+
+
+@pytest.fixture
+def udp_magic_receiver():
+    packets = []
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 9))
+    sock.settimeout(0.2)
+
+    def _drain():
+        while True:
+            try:
+                data, addr = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            packets.append((data, addr))
+
+    t = threading.Thread(target=_drain, daemon=True)
+    t.start()
+    yield packets
+    sock.close()
+
+
+def _magic_payload(mac: str) -> bytes:
+    hex_str = mac.replace(":", "").replace("-", "")
+    return b"\xff" * 6 + bytes.fromhex(hex_str) * 16
+
+
+def _wait_for_count(packets: list, n: int, seconds: float = 3.0) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and len(packets) < n:
+        time.sleep(0.05)
+
 
 class TestSmbPortOpen:
-    """TCP connect to SMB port."""
 
-    @patch("core.wol.socket.socket")
-    def test_port_open(self, mock_socket_cls):
-        mock_sock = MagicMock()
-        mock_sock.connect_ex.return_value = 0
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
+    def test_listening_port_returns_true(self, tcp_listener):
+        ip, port = tcp_listener
+        assert _smb_port_open(ip, port=port) is True
 
-        assert _smb_port_open("10.0.0.5") is True
+    @pytest.mark.parametrize("port", [70000, -1])
+    def test_invalid_ports_rejected(self, port):
+        assert _smb_port_open("127.0.0.1", port=port) is False
 
-    @patch("core.wol.socket.socket")
-    def test_port_closed(self, mock_socket_cls):
-        mock_sock = MagicMock()
-        mock_sock.connect_ex.return_value = 1
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
+    def test_string_port_rejected(self):
+        assert _smb_port_open("127.0.0.1", port="445") is False
 
-        assert _smb_port_open("10.0.0.5") is False
+    def test_refused_port_returns_false(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        assert _smb_port_open("127.0.0.1", port=port) is False
 
-    @patch("core.wol.socket.socket")
-    def test_oserror_returns_false(self, mock_socket_cls):
-        mock_socket_cls.return_value.__enter__.side_effect = OSError("unreachable")
+    def test_local_smb_service_detected(self):
+        assert _smb_port_open("127.0.0.1") is True
 
-        assert _smb_port_open("10.0.0.5") is False
+    def test_unroutable_host_returns_false_within_timeout(self):
+        started = time.monotonic()
+        assert _smb_port_open("203.0.113.1", timeout=1.0) is False
+        assert time.monotonic() - started < 10
 
-    @patch("core.wol.socket.socket")
-    def test_connection_refused_returns_false(self, mock_socket_cls):
-        mock_sock = MagicMock()
-        mock_sock.connect_ex.return_value = 111
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-
-        assert _smb_port_open("10.0.0.5") is False
-
-    @patch("core.wol.socket.socket")
-    def test_uses_port_445_default(self, mock_socket_cls):
-        mock_sock = MagicMock()
-        mock_sock.connect_ex.return_value = 0
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-
-        _smb_port_open("10.0.0.5")
-        mock_sock.settimeout.assert_called_once_with(5.0)
-
-    @patch("core.wol.socket.socket")
-    def test_custom_timeout(self, mock_socket_cls):
-        mock_sock = MagicMock()
-        mock_sock.connect_ex.return_value = 0
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-
-        _smb_port_open("10.0.0.5", timeout=10.0)
-        mock_sock.settimeout.assert_called_once_with(10.0)
-
-
-# ═══════════════════════════════════════════════════════════════
-# 2. _send_magic_packet
-# ═══════════════════════════════════════════════════════════════
 
 class TestSendMagicPacket:
-    """Send WoL magic packet to global and subnet broadcast."""
 
-    # G3: _send_magic_packet now sends `repeat` rounds (default 3). These
-    # per-packet-behavior tests pin a single round (repeat=1) to stay precise;
-    # the default retransmit contract is covered in tests/test_wol.py.
+    MAC = "AA-BB-CC-DD-EE-FF"
 
-    @patch("core.wol.wol_send")
-    def test_global_broadcast_sent(self, mock_wol_send):
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
+    def test_single_round_packet_received_byte_exact(self, udp_magic_receiver):
+        _send_magic_packet(self.MAC, "127.0.0.1", repeat=1, interval=1)
+        _wait_for_count(udp_magic_receiver, 1)
+        expected = _magic_payload(self.MAC)
+        assert any(d == expected for d, _a in udp_magic_receiver)
 
-        mock_wol_send.assert_any_call("AA:BB:CC:DD:EE:FF", ip_address="255.255.255.255", port=9)
+    def test_three_rounds_three_packets_real_interval(self, udp_magic_receiver):
+        interval = 2
+        started = time.monotonic()
+        _send_magic_packet(self.MAC, "127.0.0.1", repeat=3, interval=interval)
+        elapsed = time.monotonic() - started
 
-    @patch("core.wol.wol_send")
-    def test_subnet_broadcast_sent(self, mock_wol_send):
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
+        assert elapsed >= interval * 2
+        _wait_for_count(udp_magic_receiver, 3)
+        expected = _magic_payload(self.MAC)
+        hits = [d for d, _a in udp_magic_receiver if d == expected]
+        assert len(hits) == 3
 
-        mock_wol_send.assert_any_call("AA:BB:CC:DD:EE:FF", ip_address="192.168.10.255", port=9)
+    def test_global_broadcast_only_when_subnet_matches(self, udp_magic_receiver):
+        _send_magic_packet(self.MAC, "255.255.255.255", repeat=1, interval=1)
+        time.sleep(0.5)
+        assert udp_magic_receiver == []
 
-    @patch("core.wol.wol_send")
-    def test_both_broadcasts_called(self, mock_wol_send):
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
+    def test_unparseable_mac_swallowed_not_raised(self):
+        _send_magic_packet("ZZ:00:00:00:00:00", "127.0.0.1", repeat=1, interval=1)
 
-        assert mock_wol_send.call_count == 2  # one round, two targets
-
-    @patch("core.wol.wol_send")
-    def test_subnet_255_255_255_255_only_one_send(self, mock_wol_send):
-        """When subnet = 255.255.255.255, only global broadcast sent."""
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "255.255.255.255", repeat=1, interval=1)
-
-        assert mock_wol_send.call_count == 1
-        mock_wol_send.assert_called_once_with("AA:BB:CC:DD:EE:FF", ip_address="255.255.255.255", port=9)
-
-    @patch("core.wol.wol_send")
-    def test_oserror_on_global_broadcast_logged(self, mock_wol_send):
-        mock_wol_send.side_effect = OSError("network unreachable")
-
-        # Should not raise — errors are logged
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
-
-    @patch("core.wol.wol_send")
-    def test_oserror_on_subnet_broadcast_logged(self, mock_wol_send):
-        # First call (global) succeeds, second call (subnet) fails
-        mock_wol_send.side_effect = [None, OSError("subnet fail")]
-
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
-        assert mock_wol_send.call_count == 2
-
-    @patch("core.wol.wol_send")
-    def test_oserror_on_global_still_sends_subnet(self, mock_wol_send):
-        mock_wol_send.side_effect = [OSError("global fail"), None]
-
-        _send_magic_packet("AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=1, interval=1)
-        assert mock_wol_send.call_count == 2
-
-
-# ═══════════════════════════════════════════════════════════════
-# 3. wait_for_server
-# ═══════════════════════════════════════════════════════════════
 
 class TestWaitForServer:
-    """Poll SMB port until server responds."""
 
-    @patch("core.wol.time.sleep")
-    @patch("core.wol._smb_port_open")
-    def test_immediate_success(self, mock_smb, mock_sleep):
-        mock_smb.return_value = True
+    def test_immediate_success_against_live_listener(self, tcp_listener):
+        ip, port = tcp_listener
+        started = time.monotonic()
+        wait_for_server(ip, wake_timeout=300, ping_interval=15, stability_wait=0)
+        assert time.monotonic() - started < 5
 
-        wait_for_server("10.0.0.5", wake_timeout=300, ping_interval=15, stability_wait=0)
-
-        mock_smb.assert_called_once_with("10.0.0.5")
-
-    @patch("core.wol.time.time")
-    @patch("core.wol.time.sleep")
-    @patch("core.wol._smb_port_open")
-    def test_success_after_retries(self, mock_smb, mock_sleep, mock_time):
-        # Simulate 3 failed checks then success
-        mock_time.side_effect = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300]
-        mock_smb.side_effect = [False, False, False, True]
-
-        wait_for_server("10.0.0.5", wake_timeout=300, ping_interval=15, stability_wait=0)
-
-        assert mock_smb.call_count == 4
-
-    @patch("core.wol.time.time")
-    @patch("core.wol.time.sleep")
-    @patch("core.wol._smb_port_open")
-    def test_timeout_raises_wol_timeout(self, mock_smb, mock_sleep, mock_time):
-        mock_smb.return_value = False
-        # Provide enough time values for the loop
-        mock_time.side_effect = list(range(0, 400, 15))
-
+    def test_keeps_probing_refused_port_until_deadline(self):
+        started = time.monotonic()
         with pytest.raises(WolTimeout):
-            wait_for_server("10.0.0.5", wake_timeout=300, ping_interval=15, stability_wait=0)
+            wait_for_server("203.0.113.7", wake_timeout=3, ping_interval=1,
+                            stability_wait=0)
+        assert time.monotonic() - started >= 3
 
-    @patch("core.wol.time.sleep")
-    @patch("core.wol.time.time")
-    @patch("core.wol._smb_port_open")
-    def test_stability_wait_applied(self, mock_smb, mock_time, mock_sleep):
-        mock_smb.return_value = True
-        mock_time.side_effect = [0, 1, 2, 3, 4, 5]
+    def test_error_message_names_the_server_ip(self):
+        with pytest.raises(WolTimeout, match="192\\.0\\.2\\.55"):
+            wait_for_server("192.0.2.55", wake_timeout=3, ping_interval=1,
+                            stability_wait=0)
 
-        wait_for_server("10.0.0.5", wake_timeout=300, ping_interval=15, stability_wait=30)
-
-        # stability_wait should be called
-        mock_sleep.assert_called_with(30)
-
-    @patch("core.wol.time.sleep")
-    @patch("core.wol.time.time")
-    @patch("core.wol._smb_port_open")
-    def test_stability_wait_zero_skipped(self, mock_smb, mock_time, mock_sleep):
-        mock_smb.return_value = True
-        mock_time.side_effect = [0, 1]
-
-        wait_for_server("10.0.0.5", wake_timeout=300, ping_interval=15, stability_wait=0)
-
-        # sleep should NOT be called for stability_wait=0
-        mock_sleep.assert_not_called()
-
-    @patch("core.wol.time.time")
-    @patch("core.wol.time.sleep")
-    @patch("core.wol._smb_port_open")
-    def test_wol_timeout_message(self, mock_smb, mock_sleep, mock_time):
-        mock_smb.return_value = False
-        mock_time.side_effect = list(range(0, 400, 15))
-
-        with pytest.raises(WolTimeout, match="10.0.0.5"):
-            wait_for_server("10.0.0.5", wake_timeout=300, ping_interval=15, stability_wait=0)
+    def test_stability_wait_sleeps_the_full_duration(self, tcp_listener):
+        ip, port = tcp_listener
+        started = time.monotonic()
+        wait_for_server(ip, wake_timeout=300, ping_interval=15, stability_wait=2)
+        assert time.monotonic() - started >= 2.0
 
 
-# ═══════════════════════════════════════════════════════════════
-# 4. ensure_server_online
-# ═══════════════════════════════════════════════════════════════
-
-def _make_config(wol_enabled=True, server_ip="10.0.0.5", mac="AA:BB:CC:DD:EE:FF"):
-    cfg = MagicMock()
-    cfg.wol.enabled = wol_enabled
-    cfg.wol.server_ip = server_ip
-    cfg.wol.mac_address = mac
-    cfg.wol.wake_timeout_seconds = 300
-    cfg.wol.ping_interval_seconds = 15
-    cfg.wol.stability_wait_seconds = 30
-    cfg.wol.get_broadcast_address.return_value = "10.0.0.255"
-    return cfg
+def _make_config(server_ip: str, mac: str = "AA-BB-CC-DD-EE-FF",
+                 enabled: bool = True, broadcast: str = "") -> AppConfig:
+    return AppConfig(
+        paths=PathsConfig(
+            source_drive=r"C:\BackupData\FY26-27",
+            lan_destination=r"\\127.0.0.1\lan_backup\FY26-27",
+            gcs_key_path="unused.json",
+        ),
+        cloud=CloudConfig(enabled=False),
+        wol=WolConfig(
+            enabled=enabled, server_ip=server_ip, mac_address=mac,
+            broadcast_address=broadcast, wake_timeout_seconds=300,
+            ping_interval_seconds=15, stability_wait_seconds=30,
+        ),
+        dashboard=DashboardConfig(auth_enabled=False),
+    )
 
 
 class TestEnsureServerOnline:
-    """High-level WoL orchestrator."""
 
-    @patch("core.wol._smb_port_open")
-    def test_wol_disabled_returns_true(self, mock_smb):
-        cfg = _make_config(wol_enabled=False)
+    def test_disabled_returns_true_immediately(self):
+        cfg = _make_config("192.0.2.9", enabled=False)
+        started = time.monotonic()
+        assert ensure_server_online(cfg) is True
+        assert time.monotonic() - started < 2
 
-        result = ensure_server_online(cfg)
+    def test_online_via_real_local_smb(self):
+        cfg = _make_config("127.0.0.1")
+        started = time.monotonic()
+        assert ensure_server_online(cfg) is True
+        assert time.monotonic() - started < 10
 
-        assert result is True
-        mock_smb.assert_not_called()
+    def test_broadcast_address_auto_derivation_used_in_flow(self):
+        cfg = _make_config("192.168.77.42")
+        assert cfg.wol.get_broadcast_address() == "192.168.77.255"
 
-    @patch("core.wol._smb_port_open")
-    def test_already_online_returns_true(self, mock_smb):
-        mock_smb.return_value = True
-        cfg = _make_config()
+    def test_unreachable_server_times_out_through_public_api(self):
+        cfg = _make_config("198.51.100.77", broadcast="255.255.255.255")
+        cfg.wol.wake_timeout_seconds = 3
+        cfg.wol.ping_interval_seconds = 1
+        cfg.wol.stability_wait_seconds = 0
+        cfg.wol.wake_retry_count = 1
+        cfg.wol.wake_retry_interval_seconds = 1
 
-        result = ensure_server_online(cfg)
-
-        assert result is True
-
-    @patch("core.wol.wait_for_server")
-    @patch("core.wol._send_magic_packet")
-    @patch("core.wol._smb_port_open")
-    def test_sends_wol_and_waits(self, mock_smb, mock_send, mock_wait):
-        mock_smb.return_value = False  # Initially offline
-        mock_wait.return_value = None
-        cfg = _make_config()
-        cfg.wol.wake_retry_count = 3
-        cfg.wol.wake_retry_interval_seconds = 5
-
-        result = ensure_server_online(cfg)
-
-        assert result is True
-        mock_send.assert_called_once_with(
-            "AA:BB:CC:DD:EE:FF", "10.0.0.255", repeat=3, interval=5
-        )
-        mock_wait.assert_called_once()
-
-    @patch("core.wol.wait_for_server")
-    @patch("core.wol._send_magic_packet")
-    @patch("core.wol._smb_port_open")
-    def test_wol_timeout_propagates(self, mock_smb, mock_send, mock_wait):
-        mock_smb.return_value = False
-        mock_wait.side_effect = WolTimeout("timeout")
-        cfg = _make_config()
-
-        with pytest.raises(WolTimeout):
+        started = time.monotonic()
+        with pytest.raises(WolTimeout, match="198\\.51\\.100\\.77"):
             ensure_server_online(cfg)
-
-    @patch("core.wol._smb_port_open")
-    def test_online_skips_wol(self, mock_smb):
-        mock_smb.return_value = True
-        cfg = _make_config()
-
-        with patch("core.wol._send_magic_packet") as mock_send:
-            ensure_server_online(cfg)
-            mock_send.assert_not_called()
-
-    @patch("core.wol.wait_for_server")
-    @patch("core.wol._send_magic_packet")
-    @patch("core.wol._smb_port_open")
-    def test_uses_correct_server_ip(self, mock_smb, mock_send, mock_wait):
-        mock_smb.return_value = False
-        cfg = _make_config(server_ip="192.168.10.100")
-
-        ensure_server_online(cfg)
-
-        mock_smb.assert_called_with("192.168.10.100")
-
-    @patch("core.wol.wait_for_server")
-    @patch("core.wol._send_magic_packet")
-    @patch("core.wol._smb_port_open")
-    def test_uses_correct_broadcast(self, mock_smb, mock_send, mock_wait):
-        mock_smb.return_value = False
-        cfg = _make_config()
-        cfg.wol.get_broadcast_address.return_value = "192.168.10.255"
-        cfg.wol.wake_retry_count = 3
-        cfg.wol.wake_retry_interval_seconds = 5
-
-        ensure_server_online(cfg)
-
-        mock_send.assert_called_once_with(
-            "AA:BB:CC:DD:EE:FF", "192.168.10.255", repeat=3, interval=5
-        )
+        assert time.monotonic() - started >= 3
