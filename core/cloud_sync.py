@@ -3,6 +3,7 @@
 Reference: AAM_BACKUP_V2/core/rclone.py — proven classification and temp config pattern.
 """
 
+import json
 import os
 import subprocess
 import tempfile
@@ -12,6 +13,41 @@ from loguru import logger
 
 from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
+
+
+# P1-EXIT9: severity floor that disqualifies an exit-9 from "no changes".
+_LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+# R1 hardening: some fatal errors bypass the JSON logger (log.Fatalf paths,
+# rclone issue #6038). These plaintext markers are treated as error signals.
+_FATAL_PLAINTEXT_MARKERS = ("failed to", "notices: failed", "notice: failed")
+
+
+def scan_rclone_log_for_errors(log_text: str) -> tuple[bool, str]:
+    """Scan rclone's --use-json-log stream for ERROR/CRITICAL signals.
+
+    Returns (has_error_signal, error_tail). A line counts as an error signal if:
+      * it parses as JSON and its "level" is ERROR or CRITICAL, OR
+      * it does not parse as JSON and carries a known fatal marker
+        ("Failed to ...") - the documented escape hatch of the JSON logger.
+
+    The tail returned for flagged logs contains the offending lines so the
+    operator sees WHY an exit-9 was reclassified instead of trusting it.
+    """
+    bad_lines: list[str] = []
+    for raw_line in (log_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            level = str(entry.get("level", "")).upper()
+            if _LOG_LEVELS.get(level, 0) >= _LOG_LEVELS["ERROR"]:
+                bad_lines.append(line)
+        except (json.JSONDecodeError, ValueError):
+            lowered = line.lower()
+            if any(marker in lowered for marker in _FATAL_PLAINTEXT_MARKERS):
+                bad_lines.append(line)
+    return bool(bad_lines), "\n".join(bad_lines[-10:])
 
 
 def classify_rclone_exit(code: int) -> str:
@@ -145,17 +181,36 @@ def run_cloud_sync(
                 )
 
             status = classify_rclone_exit(result.returncode)
-            logger.info(f"Cloud sync exit {result.returncode} → {status}")
 
             error_msg = None
             if result.returncode == 9:
-                logger.info("Cloud sync: no changes to transfer")
+                # P1-EXIT9: exit 9 only means "no files transferred" when the
+                # log stream is clean. A fatal error (missing bucket, auth,
+                # bad remote) ALSO produces exit 9 under --error-on-no-transfer;
+                # trusting it blindly recorded CLOUD_NO_CHANGES_COMPLETE for
+                # broken runs (CLOUD-06/07). Reclassify when signals exist.
+                try:
+                    stderr_text = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+                    has_error, error_tail = scan_rclone_log_for_errors(stderr_text)
+                except OSError:
+                    has_error, error_tail = False, ""
+                if has_error:
+                    status = "CLOUD_FAILED"
+                    error_msg = (
+                        f"rclone exited 9 but logged fatal errors - reclassified "
+                        f"CLOUD_NO_CHANGES_COMPLETE -> CLOUD_FAILED:\n{error_tail}"
+                    )
+                    logger.error(error_msg)
+                else:
+                    logger.info("Cloud sync: no changes to transfer")
             elif result.returncode != 0:
                 try:
                     error_msg = Path(stderr_path).read_text(encoding="utf-8")
                     logger.error(f"rclone error: {error_msg}")
                 except OSError:
                     error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
+
+            logger.info(f"Cloud sync exit {result.returncode} -> {status}")
 
             return {
                 "status": status,

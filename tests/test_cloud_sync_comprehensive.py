@@ -391,12 +391,15 @@ class TestRunCloudSyncStderr:
     @patch("core.cloud_sync.Path")
     @patch("core.cloud_sync.subprocess.run")
     @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_9_no_stderr_read(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """Exit 9 (no changes) should NOT read stderr."""
+    def test_exit_9_clean_log_stays_no_changes(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
+        """P1-EXIT9: exit 9 + clean log stream = genuine no-changes success."""
         mock_run.return_value = _mock_result(9)
+        mock_path.return_value.read_text.return_value = (
+            '{"level":"INFO","msg":"There was nothing to transfer"}\n'
+        )
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
+        assert result["status"] == "CLOUD_NO_CHANGES_COMPLETE"
         assert result["error"] is None
-        mock_path.return_value.read_text.assert_not_called()
 
 
 class TestRunCloudSyncExceptions:
