@@ -25,7 +25,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
 from prefect.client.orchestration import get_client
-from prefect.client.schemas.filters import FlowRunFilter
+from prefect.client.schemas.filters import (
+    FlowRunFilter,
+    FlowRunFilterState,
+    FlowRunFilterStateType,
+)
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
@@ -175,35 +179,72 @@ def get_db():
 # ── Pipeline status ──────────────────────────────────────────
 
 
-async def _is_running(pipeline: str) -> bool:
-    """Check if a backup pipeline is active (running, pending, or scheduled)."""
+async def _is_running(pipeline: str) -> bool | None:
+    """Check if a backup pipeline is active (running or pending).
+
+    H3: returns None when Prefect is unreachable — callers decide
+    fail-open (status display) vs fail-closed (triggers).
+    """
     return await _prefect_has_active_run(pipeline)
 
 
-async def _prefect_has_active_run(pipeline: str) -> bool:
+async def _prefect_has_active_run(pipeline: str) -> bool | None:
     """Check Prefect API for an active flow run of the given pipeline.
 
     Checks both RUNNING and PENDING states — a PENDING run means
     it's queued behind the concurrency limit and will execute when the slot opens.
     Future SCHEDULED runs are ignored as they are not currently active.
+
+    H3 tri-state contract:
+        True / False  — Prefect answered; result is authoritative.
+        None          — the API could not be reached; "unknown".
+                        Callers decide fail-open vs fail-closed:
+                        trigger endpoints REFUSE (503), /status degrades.
+                        The old code returned False on any exception, which
+                        silently disabled the duplicate-run guard.
+
+    Uses Prefect's typed filter models (same construction as launch.py) —
+    a raw nested dict relied on Pydantic coercion and broke silently if
+    validation tightened. limit=200: >20 queued runs previously could hide
+    an active one from this check.
     """
     try:
         async with get_client() as client:
             runs = await client.read_flow_runs(
                 flow_run_filter=FlowRunFilter(
-                    state={"type": {"any_": [StateType.RUNNING, StateType.PENDING]}}
+                    state=FlowRunFilterState(
+                        type=FlowRunFilterStateType(
+                            any_=[StateType.RUNNING, StateType.PENDING]
+                        )
+                    )
                 ),
-                limit=20,
+                limit=200,
             )
-            for run in runs:
-                tags = run.tags or []
-                parameters = run.parameters or {}
-                if pipeline in tags or parameters.get("mode") == pipeline:
-                    return True
-            return False
     except Exception as e:
         logger.error(f"Failed to query Prefect API: {e}")
-        return False
+        return None
+    for run in runs:
+        tags = run.tags or []
+        parameters = run.parameters or {}
+        if pipeline in tags or parameters.get("mode") == pipeline:
+            return True
+    return False
+
+
+def _run_state_fields(state: bool | None) -> dict:
+    """JSON fields for one pipeline's activity state (H3).
+
+    ``running`` stays a strict boolean — dashboard.js does truthiness on it
+    every 2 s (a string "unknown" would freeze badges at "Running").
+    ``run_state`` carries the honest tri-state for future consumers.
+    """
+    if state is True:
+        run_state = "running"
+    elif state is False:
+        run_state = "idle"
+    else:
+        run_state = "unknown"
+    return {"running": state is True, "run_state": run_state}
 
 
 # ── Trigger pipeline (via Prefect deployment API) ────────────
@@ -352,6 +393,12 @@ async def status(request: Request):
     cloud_last_run = _last_run_summary(db, "cloud")
     lan_last_run = _last_run_summary(db, "lan")
 
+    # H3: None (Prefect unreachable) degrades to running=False + run_state
+    # "unknown". The boolean type is load-bearing — dashboard.js polls this
+    # every 2 s and does truthiness on it.
+    cloud_fields = _run_state_fields(await _is_running("cloud"))
+    lan_fields = _run_state_fields(await _is_running("lan"))
+
     return JSONResponse({
         "firm": cfg.firm_name,
         "fy_prefix": get_fy_prefix(),
@@ -360,13 +407,13 @@ async def status(request: Request):
             "lan_cron": cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
         },
         "cloud": {
-            "running": await _is_running("cloud"),
+            **cloud_fields,
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
             "last_run_formatted": (cloud_last_run["started_at"] or "-")[:19].replace("T", " ") if cloud_last_run else "No data",
         },
         "lan": {
-            "running": await _is_running("lan"),
+            **lan_fields,
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
             "last_run_formatted": (lan_last_run["started_at"] or "-")[:19].replace("T", " ") if lan_last_run else "No data",
@@ -401,7 +448,15 @@ async def trigger_cloud(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-    if await _is_running("cloud"):
+    cloud_running = await _is_running("cloud")
+    if cloud_running is None:
+        # H3: fail-CLOSED. The old code treated an unreachable API as
+        # "nothing running" and queued a duplicate backup.
+        raise HTTPException(
+            status_code=503,
+            detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+        )
+    if cloud_running:
         return JSONResponse({"status": "already_running", "detail": "Cloud backup is already in progress."}, status_code=400)
     # G15: await the actual deployment run creation before answering. The
     # old code returned 200 via background_tasks BEFORE arun_deployment
@@ -428,7 +483,13 @@ async def trigger_lan(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
-    if await _is_running("lan"):
+    lan_running = await _is_running("lan")
+    if lan_running is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+        )
+    if lan_running:
         return JSONResponse({"status": "already_running", "detail": "LAN backup is already in progress."}, status_code=400)
     try:
         flow_run = await arun_deployment(name="aam-backup/backup-lan")
