@@ -174,6 +174,17 @@ class WolConfig(BaseModel):
 
 class CloudConfig(BaseModel):
     enabled: bool = True
+    # C-A: in-rclone duration cap. None = auto (subprocess timeout minus a
+    # 300s margin); 0 disables the flag entirely; explicit value wins.
+    max_duration_seconds: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "rclone --max-duration cap so transfers self-terminate gracefully "
+            "(cutoff-mode SOFT) instead of being hard-killed at the subprocess "
+            "timeout. Auto-derived when omitted."
+        ),
+    )
     # F11: no real-looking default. An empty bucket is only valid when cloud
     # is disabled; an enabled cloud backup must name its bucket explicitly.
     bucket: str = ""
@@ -277,6 +288,16 @@ class MaintenanceConfig(BaseModel):
             "P2-CONC: max seconds a pipeline waits for the global backup "
             "concurrency slot before giving up (production default 1h; "
             "tests pass small values)"
+        ),
+    )
+    sqlite_synchronous: str = Field(
+        default="normal",
+        pattern="^(normal|full)$",
+        description=(
+            "R4: SQLite WAL synchronous level. normal = no corruption risk, "
+            "possible loss of the last commit(s) on power cut; full = per-"
+            "commit WAL fsync for maximum durability. Operators backing up "
+            "critical telemetry may choose full."
         ),
     )
     db_retention_days: int = Field(

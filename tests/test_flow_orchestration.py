@@ -287,6 +287,7 @@ class TestBackupMaintenance:
         config.maintenance.log_retention_days = 7
         config.maintenance.sqlite_busy_timeout_ms = 45000
         config.maintenance.sqlite_vacuum_freelist_threshold = 12345
+        config.maintenance.sqlite_synchronous = "full"
         mock_load_config.return_value = config
 
         concurrency_cm = MagicMock()
@@ -300,6 +301,7 @@ class TestBackupMaintenance:
             "/tmp/test.db",
             busy_timeout_ms=45000,
             vacuum_freelist_threshold=12345,
+            synchronous="full",
         )
 
 
@@ -486,6 +488,8 @@ class TestCloudPipelineSkipsRecordOnManifestError:
             config.paths.database_path = str(tmp_path / "m.db")
             config.maintenance.sqlite_busy_timeout_ms = 30000
             config.maintenance.sqlite_vacuum_freelist_threshold = 10000
+            config.maintenance.sqlite_synchronous = "normal"
+            config.maintenance.concurrency_wait_seconds = 5
 
             result = flow._run_cloud_pipeline(
                 config, "run-m6", "2026-08-23T00:00:00+05:30", monotonic_start=None

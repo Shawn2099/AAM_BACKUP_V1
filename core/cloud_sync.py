@@ -81,6 +81,23 @@ def classify_rclone_exit(code: int) -> str:
     return mapping.get(code, "CLOUD_FAILED")
 
 
+def resolve_max_duration_seconds(timeout: int, configured: int | None) -> int | None:
+    """C-A: compute the effective --max-duration for a cloud sync.
+
+    Precedence:
+      * configured value > 0  -> used as-is (operator override)
+      * configured == 0       -> None (cap disabled)
+      * configured is None    -> auto: timeout minus a 300s margin so rclone
+        self-terminates BEFORE the hard subprocess kill; if the timeout is
+        too small to hold the margin, the cap stays off rather than negative.
+    """
+    if configured is not None:
+        return int(configured) if configured > 0 else None
+    margin = 300
+    auto = int(timeout) - margin
+    return auto if auto > 0 else None
+
+
 def build_rclone_sync_command(
     source: str,
     bucket: str,
@@ -92,6 +109,7 @@ def build_rclone_sync_command(
     transfers: int = 2,
     checkers: int = 4,
     buffer_size: str = "64M",
+    max_duration_seconds: int | None = None,
 ) -> list[str]:
     """Build rclone sync command with GCS-optimized flags.
 
@@ -104,7 +122,7 @@ def build_rclone_sync_command(
     # is preferred and preflight/sync can never disagree about the binary.
     rclone_exe = resolve_binary("rclone") or "rclone"
 
-    return [
+    cmd = [
         rclone_exe, "sync",
         source, dest,
         "--config", config_path,
@@ -132,6 +150,17 @@ def build_rclone_sync_command(
         "--stats", "60s",
     ]
 
+    # C-A: graceful self-termination inside the window. SOFT cutoff lets the
+    # in-flight transfer finish and preserves .partial state; retries-sleep
+    # is pinned above so a retry cannot silently reset the deadline.
+    if max_duration_seconds:
+        cmd.extend([
+            "--max-duration", f"{int(max_duration_seconds)}s",
+            "--cutoff-mode", "SOFT",
+        ])
+
+    return cmd
+
 
 def run_cloud_sync(
     source: str,
@@ -147,15 +176,22 @@ def run_cloud_sync(
     checkers: int = 4,
     buffer_size: str = "64M",
     timeout: int = 21600,
+    max_duration_seconds: int | None = None,
 ) -> dict:
     """Execute rclone sync to mirror source → GCS.
 
     Creates temp config, executes sync, cleans up in finally.
+    max_duration_seconds: C-A override; when None the cap is auto-derived
+    from the subprocess timeout minus a 300s margin (see
+    resolve_max_duration_seconds).
 
     Returns:
         {"status": str, "exit_code": int, "error": str | None}
     """
     stderr_path = None
+    effective_max_duration = resolve_max_duration_seconds(
+        timeout=timeout, configured=max_duration_seconds,
+    )
 
     with temp_rclone_config(
         gcs_key_path, location, project_number, storage_class
@@ -164,6 +200,7 @@ def run_cloud_sync(
             source, bucket, fy_prefix, config_path, storage_class,
             bwlimit, retries, transfers, checkers,
             buffer_size=buffer_size,
+            max_duration_seconds=effective_max_duration,
         )
 
         logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")

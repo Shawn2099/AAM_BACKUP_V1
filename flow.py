@@ -163,6 +163,7 @@ def cloud_sync_task(config, fy_prefix: str):
         checkers=config.cloud.checkers,
         buffer_size=config.cloud.buffer_size,
         timeout=config.cloud.subprocess_timeout_seconds,
+        max_duration_seconds=config.cloud.max_duration_seconds,
     )
     if result["status"] == "CLOUD_FAILED":
         raise RuntimeError(result.get("error", "Cloud sync failed"))
@@ -470,6 +471,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             db_path,
             busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
             vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+            synchronous=config.maintenance.sqlite_synchronous,
         )
         before_dict = {}
         try:
@@ -509,6 +511,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     db_path, verify_data, sync_result,
                     busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
                     vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
                 )
 
             # F1: verification is part of the backup contract. A failed check must
@@ -616,6 +619,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 extended_metrics=extended_metrics,
                 busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
                 vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                synchronous=config.maintenance.sqlite_synchronous,
                 monotonic_start=monotonic_start,
             )
 
@@ -664,6 +668,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     db_path, sync_result, before_dict, after_dict,
                     busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
                     vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
                 )
 
                 # Calculate files and bytes copied
@@ -743,6 +748,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 extended_metrics=extended_metrics,
                 busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
                 vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                synchronous=config.maintenance.sqlite_synchronous,
                 monotonic_start=monotonic_start,
             )
 
@@ -765,6 +771,7 @@ def _record_run(
     extended_metrics: str | None = None,
     busy_timeout_ms: int = 30000,
     vacuum_freelist_threshold: int = 10000,
+    synchronous: str = "normal",
     monotonic_start: float | None = None,
 ):
     """Record run history to ManifestDB."""
@@ -781,6 +788,7 @@ def _record_run(
         db_path,
         busy_timeout_ms=busy_timeout_ms,
         vacuum_freelist_threshold=vacuum_freelist_threshold,
+        synchronous=synchronous,
     )
     try:
         if not record_run_history(
@@ -980,6 +988,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
                 config.paths.database_path,
                 busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
                 vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                synchronous=config.maintenance.sqlite_synchronous,
             )
             db.purge_old_runs(retention_days=config.maintenance.db_retention_days)
             db.close()

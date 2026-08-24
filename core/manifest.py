@@ -71,6 +71,7 @@ class ManifestDB:
         db_path: str | Path,
         busy_timeout_ms: int = 30000,
         vacuum_freelist_threshold: int = 1000,
+        synchronous: str = "normal",
     ):
         """Create or open the manifest database.
 
@@ -80,10 +81,18 @@ class ManifestDB:
                              Override via config.maintenance.sqlite_busy_timeout_ms.
             vacuum_freelist_threshold: Trigger VACUUM when freelist page count exceeds
                                        this value. Override via config.maintenance.sqlite_vacuum_freelist_threshold.
+            synchronous: R4 - PRAGMA synchronous level, "normal" (default; no
+                         corruption risk, possible last-commit loss on power
+                         cut) or "full" (per-commit WAL fsync, maximum
+                         durability). Override via
+                         config.maintenance.sqlite_synchronous.
         """
+        if synchronous not in ("normal", "full"):
+            raise ValueError(f"invalid synchronous level: {synchronous!r}")
         self.db_path = str(db_path)
         self.busy_timeout_ms = busy_timeout_ms
         self.vacuum_freelist_threshold = vacuum_freelist_threshold
+        self.synchronous = synchronous
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = None
@@ -114,6 +123,10 @@ class ManifestDB:
 
             conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
             conn.executescript(DDL)
+            # R4: DDL pins NORMAL as the safe default; an operator-chosen
+            # "full" is applied on top so the toggle takes effect per open.
+            if self.synchronous == "full":
+                conn.execute("PRAGMA synchronous=FULL")
             
             # Safe schema migration for extended_metrics
             try:
