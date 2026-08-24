@@ -6,6 +6,7 @@ state, error text) into docs/SCENARIO_TEST_REPORT.md so QA can audit the
 actual behaviour against the catalog's Expected Operation contract.
 """
 
+import inspect
 import json
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,21 @@ from tests.e2e_helpers import nas_test_dir, source_test_dir  # real prod-derived
 REPORT = Path(__file__).resolve().parent.parent / "docs" / "SCENARIO_TEST_REPORT.md"
 
 GATE_ENV = "AAM_RUN_REAL_HARDWARE"
+
+
+def _caller_branch_tag() -> str | None:
+    """P4-SID: the calling module's BRANCH_TAG, if it declares one.
+
+    Scenario files set e.g. BRANCH_TAG = "A" so ledger rows read "A/LAN-03"
+    and can never collide with RT-xx rows for the same sid.
+    """
+    for frame_info in inspect.stack():
+        if frame_info.filename == __file__:
+            continue
+        tag = frame_info.frame.f_globals.get("BRANCH_TAG")
+        if isinstance(tag, str) and tag:
+            return tag
+    return None
 
 
 def real_gate():
@@ -50,7 +66,9 @@ def record_op(scenario_id: str, result: str, ops: dict) -> None:
         )
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ops_json = json.dumps(ops, default=str, ensure_ascii=False)
+    tag = _caller_branch_tag()
+    full_sid = f"{tag}/{scenario_id}" if tag else scenario_id
     with REPORT.open("a", encoding="utf-8") as f:
-        f.write(f"| {stamp} | {scenario_id} | {result} | `{ops_json}` |\n")
+        f.write(f"| {stamp} | {full_sid} | {result} | `{ops_json}` |\n")
     # Also surface in pytest output (-s) for immediate visibility
-    print(f"\n=== OP[{scenario_id}] {result}: {ops_json}")
+    print(f"\n=== OP[{full_sid}] {result}: {ops_json}")

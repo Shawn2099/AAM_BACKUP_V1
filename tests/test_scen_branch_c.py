@@ -1,3 +1,4 @@
+BRANCH_TAG = "C"  # P4-SID: ledger rows read C/<sid>
 """Branch C scenarios (Health Gate, core/health.py) - catalog HL-xx.
 
 Every test calls the program's own pre_backup_health() and asserts the exact

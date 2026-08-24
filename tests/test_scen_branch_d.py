@@ -1,3 +1,4 @@
+BRANCH_TAG = "D"  # P4-SID: ledger rows read D/<sid>
 """Branch D scenarios (WoL, core/wol.py + models/config.py validators).
 
 Program functions/validators only - no logic re-implemented.

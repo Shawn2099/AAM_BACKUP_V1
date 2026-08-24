@@ -1,3 +1,4 @@
+BRANCH_TAG = "K"  # P4-SID: SYS family
 """SYS-05 - P3-GCP verification: CLOUDSDK_PYTHON machine-scope wiring.
 
 Evidence: REP/FY-10 - bundled deploy/bin/google-cloud-sdk gcloud.cmd needs

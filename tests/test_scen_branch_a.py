@@ -1,3 +1,4 @@
+BRANCH_TAG = "A"  # P4-SID: ledger rows read A/<sid>
 """Branch A - LAN Backup scenarios (docs/SCENARIO_CATALOG_V2.md).
 
 Batch 1: LAN-01 .. LAN-05.
@@ -18,7 +19,10 @@ from pathlib import Path
 import pytest
 
 from core.lan_manifest import snapshot_to_dict, walk_lan_destination
-from core.lan_preflight import HealthError, run_lan_dry_run
+from core.health import HealthError  # P1-EXC canonical
+from core.health import pre_backup_health as _core_health_mod  # noqa: F401
+import core.health as _core_health
+from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import run_lan_sync
 
 from tests.e2e_helpers import clean_test_dirs, make_file, nas_test_dir, source_test_dir
@@ -185,12 +189,12 @@ class TestLAN02IdempotentRerun:
 
 
 class TestLAN03CanaryMissingAbort:
-    """LAN-03: canary deleted -> hard abort BEFORE any transfer, message has full UNC."""
+    """LAN-03: canary deleted -> hard abort BEFORE any transfer, message has full UNC.
+    Canonical pytest.raises form - exception identity is guaranteed by P1-EXC."""
 
     def test_LAN_03_canary_abort(self):
         sid = "LAN-03"
         ops = {}
-        (Path(tempfile.gettempdir()) / "lan03_entered.txt").write_text("in", encoding="utf-8")
         try:
             clean_test_dirs()
             canary = ensure_canary()
@@ -199,24 +203,16 @@ class TestLAN03CanaryMissingAbort:
             make_file(src / "payload.bin", 8192)
 
             canary.unlink()  # trigger condition: operator/mount wiped the marker
-            caught = None
-            try:
+
+            with pytest.raises(HealthError) as exc_info:
                 run_lan_dry_run(str(src), str(nas))
-            except Exception as _he:
-                caught = _he
-                msg = str(_he)
-                import sys as _s2
-                ops['raised_type'] = f'{type(_he).__module__}.{type(_he).__name__}'
-                ops['dup_modules'] = [k for k in _s2.modules if 'lan_preflight' in k]
-            assert caught is not None, 'gate did not raise'
-            import sys as _s
-            ops['lp_modules_loaded'] = [k for k in _s.modules if k.endswith('lan_preflight')]
-            ops['identity_match'] = type(caught) is HealthError
-            ops['caught_is_lp_class'] = type(caught).__module__
+            msg = str(exc_info.value)
+
             copied = [p for p in _nas_files(nas) if p != ".AAM_TARGET_MOUNTED"]
 
             ops.update({
-                "exception": "HealthError",
+                "exception": type(exc_info.value).__name__,
+                "identity_is_core_health": exc_info.value.__class__ is _core_health.HealthError,
                 "message_contains_full_unc": str(nas) in msg,
                 "message_contains_canary_name": ".AAM_TARGET_MOUNTED" in msg,
                 "payload_files_on_nas": copied,
@@ -226,11 +222,6 @@ class TestLAN03CanaryMissingAbort:
             assert copied == [], f"zero bytes must be copied on canary abort, op={ops}"
             record_op(sid, "PASS", ops)
         except Exception as e:
-            import traceback as _tb
-            dump = Path(tempfile.gettempdir()) / "lan03_tb.txt"
-            dump.write_text(_tb.format_exc(), encoding="utf-8")
-            ops["_tb"] = _tb.format_exc()[-200:]
-            ops["_etype"] = f"{type(e).__module__}.{type(e).__name__}"
             record_op(sid, "FAIL", _fail_ops(ops, e))
             raise
         finally:

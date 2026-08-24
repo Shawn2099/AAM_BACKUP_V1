@@ -1,3 +1,4 @@
+BRANCH_TAG = "G"  # P4-SID: ledger rows read G/<sid>
 """Branch G scenarios (Manifest DB, core/manifest.py + backup_repository).
 
 Every scenario drives the real ManifestDB against a throwaway database file.

@@ -1,3 +1,4 @@
+BRANCH_TAG = "J"  # P4-SID: ledger rows read J/<sid>
 """Branch J scenarios (Watchdog)."""
 import os
 import shutil

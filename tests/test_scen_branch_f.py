@@ -1,3 +1,4 @@
+BRANCH_TAG = "F"  # P4-SID: ledger rows read F/<sid>
 """Branch F scenarios (Scheduler & Orchestration)."""
 import os
 

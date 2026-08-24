@@ -1,3 +1,4 @@
+BRANCH_TAG = "I"  # P4-SID: ledger rows read I/<sid>
 """Branch I scenarios (Email Reporting, core/report.py).
 
 The program is exercised against a REAL minimal SMTP server listening on

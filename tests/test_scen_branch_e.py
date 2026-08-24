@@ -1,3 +1,4 @@
+BRANCH_TAG = "E"  # P4-SID: ledger rows read E/<sid>
 """Branch E scenarios (FY Rollover / time utils) - catalog FY-xx.
 
 Program functions only. Rollover EXECUTION (rollover()) is deferred to a

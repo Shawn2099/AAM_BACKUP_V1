@@ -1,3 +1,4 @@
+BRANCH_TAG = "F"  # P4-SID: SCH-16 belongs to the scheduler family
 """P2-CONC - SCH-16: direct pipeline entry must serialize on the slot.
 
 Evidence: tests/scripts calling _run_lan_pipeline/_run_cloud_pipeline

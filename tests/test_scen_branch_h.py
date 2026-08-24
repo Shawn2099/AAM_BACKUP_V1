@@ -1,3 +1,4 @@
+BRANCH_TAG = "H"  # P4-SID: ledger rows read H/<sid>
 """Branch H scenarios (Dashboard UI, ui.py - FastAPI).
 
 In-process TestClient against the real app. PREFECT_TEST_MODE (set by

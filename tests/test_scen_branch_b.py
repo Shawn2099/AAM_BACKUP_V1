@@ -1,3 +1,4 @@
+BRANCH_TAG = "B"  # P4-SID: ledger rows read B/<sid>
 """Branch B scenarios (Cloud) - catalog docs/SCENARIO_CATALOG_V2.md CLOUD-01..
 
 Isolation contract for this branch:
