@@ -1,66 +1,97 @@
-"""Tests for lan_preflight — mock subprocess calls."""
+"""Tests for lan_preflight — REAL robocopy /L runs against the live SMB share."""
 
-import subprocess
-from unittest.mock import MagicMock, patch
+import os
+import time
+from pathlib import Path
 
+import pytest
+
+from core.health import HealthError
 from core.lan_preflight import run_lan_dry_run
 
 
-def _mock_result(returncode=0, stdout="", stderr=""):
-    r = MagicMock()
-    r.returncode = returncode
-    r.stdout = stdout
-    r.stderr = stderr
-    return r
+SMB_ROOT = Path(r"\\127.0.0.1\lan_backup\AAM_PYTEST_LAN")
+
+
+@pytest.fixture
+def smb_dest():
+    d = SMB_ROOT / f"pf_{int(time.time() * 1000)}_{os.getpid()}"
+    d.mkdir(parents=True, exist_ok=True)
+    yield d
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+def src(tmp_path):
+    s = tmp_path / "src"
+    (s / "docs").mkdir(parents=True)
+    (s / "a.txt").write_text("alpha")
+    (s / "docs" / "n.txt").write_text("nested")
+    return s
 
 
 class TestRunLanDryRun:
-    @patch("core.lan_preflight.Path.exists", return_value=True)
-    @patch("core.lan_preflight.subprocess.run")
-    def test_exit_0_returns_ok(self, mock_run, mock_exists):
-        mock_run.return_value = _mock_result(0)
-        result = run_lan_dry_run("/src", "\\\\server\\share")
+
+    def test_exit_ok_when_share_ready(self, src, smb_dest):
+        (smb_dest / ".AAM_TARGET_MOUNTED").write_text("CANARY")
+
+        result = run_lan_dry_run(str(src), str(smb_dest))
+
         assert result["ok"] is True
-        assert result["exit_code"] == 0
+        assert 0 <= result["exit_code"] <= 7
         assert result["error"] is None
 
-    @patch("core.lan_preflight.Path.exists", return_value=True)
-    @patch("core.lan_preflight.subprocess.run")
-    def test_exit_7_returns_ok(self, mock_run, mock_exists):
-        """Exit codes 0-7 are OK (bits 0-2 only)."""
-        mock_run.return_value = _mock_result(7)
-        result = run_lan_dry_run("/src", "\\\\server\\share")
+    def test_copy_pending_still_ok(self, src, smb_dest):
+        """Files waiting to copy set bit 0 (exit 1) - still an OK preflight."""
+        (smb_dest / ".AAM_TARGET_MOUNTED").write_text("CANARY")
+
+        result = run_lan_dry_run(str(src), str(smb_dest))
+
         assert result["ok"] is True
+        # bit0 = copies pending. This robocopy build additionally reports the
+        # /XF-excluded canary in the Extras column (bit1) even though /MIR
+        # will never delete it, so accept 1 or 3 - both are OK preflights.
+        assert result["exit_code"] in (1, 3)
 
-    @patch("core.lan_preflight.Path.exists", return_value=True)
-    @patch("core.lan_preflight.subprocess.run")
-    def test_exit_8_returns_not_ok(self, mock_run, mock_exists):
-        """Bit 3 (8) = copy errors."""
-        mock_run.return_value = _mock_result(8)
-        result = run_lan_dry_run("/src", "\\\\server\\share")
-        assert result["ok"] is False
-        assert result["exit_code"] == 8
+    def test_missing_canary_raises_health_error(self, src, smb_dest):
+        (smb_dest / ".AAM_TARGET_MOUNTED").unlink(missing_ok=True)
 
-    @patch("core.lan_preflight.Path.exists", return_value=True)
-    @patch("core.lan_preflight.subprocess.run")
-    def test_exit_16_returns_not_ok(self, mock_run, mock_exists):
-        """Bit 4 (16) = fatal error."""
-        mock_run.return_value = _mock_result(16)
-        result = run_lan_dry_run("/src", "\\\\server\\share")
-        assert result["ok"] is False
+        with pytest.raises(HealthError, match="Canary"):
+            run_lan_dry_run(str(src), str(smb_dest))
 
-    @patch("core.lan_preflight.Path.exists", return_value=True)
-    @patch("core.lan_preflight.subprocess.run")
-    def test_timeout(self, mock_run, mock_exists):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="robocopy", timeout=300)
-        result = run_lan_dry_run("/src", "\\\\server\\share")
-        assert result["ok"] is False
-        assert "Timeout" in result["error"]
+    def test_unverifiable_destination_refused_before_network(self, src):
+        """An unroutable destination cannot prove the canary — the preflight
+        must refuse locally (HealthError) instead of mirroring into the dark."""
+        with pytest.raises(HealthError):
+            run_lan_dry_run(str(src), r"\\203.0.113.5\noshare")
 
-    @patch("core.lan_preflight.Path.exists", return_value=True)
-    @patch("core.lan_preflight.subprocess.run")
-    def test_robocopy_not_found(self, mock_run, mock_exists):
-        mock_run.side_effect = FileNotFoundError
-        result = run_lan_dry_run("/src", "\\\\server\\share")
+    def test_missing_source_reports_not_ok(self, smb_dest):
+        (smb_dest / ".AAM_TARGET_MOUNTED").write_text("CANARY")
+
+        result = run_lan_dry_run(r"Q:\gone", str(smb_dest))
+
         assert result["ok"] is False
-        assert "robocopy" in result["error"]
+        assert result["exit_code"] >= 8
+        assert result["error"]
+
+    def test_real_timeout_enforced(self, smb_dest):
+        (smb_dest / ".AAM_TARGET_MOUNTED").write_text("CANARY")
+
+        started = time.monotonic()
+        result = run_lan_dry_run(r"\\203.0.113.5\noshare", str(smb_dest), timeout=2)
+        elapsed = time.monotonic() - started
+
+        # Canary gate passes (dest is the real share); the OS then kills the
+        # blocked robocopy at the 2-second deadline.
+        assert result["ok"] is False
+        assert result["exit_code"] == -1
+        assert "Timeout after 2s" in result["error"]
+        assert elapsed < 30
+
+    def test_list_mode_moves_zero_bytes(self, src, smb_dest):
+        (smb_dest / ".AAM_TARGET_MOUNTED").write_text("CANARY")
+
+        run_lan_dry_run(str(src), str(smb_dest))
+
+        assert [p.name for p in smb_dest.iterdir()] == [".AAM_TARGET_MOUNTED"]

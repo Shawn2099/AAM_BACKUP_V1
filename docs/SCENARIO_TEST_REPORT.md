@@ -3900,3 +3900,9 @@ Final gate: TWO CONSECUTIVE full-suite runs 1672 passed / 0 failed / 1 skipped
    - harmless to syncs; cleanup is one explicit command if ever wanted.
  - UI CSRF hardening (R3) and ops.jsonl sink (R8) were plan BACKLOG items -
    not scheduled in this pass.
+| 2026-08-24 19:04:09 | X/ZZ-99 | PASS | `{"probe": 1}` |
+| 2026-08-24 19:04:09 | QQ-01 | PASS | `{"probe": 1}` |
+| 2026-08-24 19:08:12 | X/ZZ-99 | PASS | `{"probe": 1}` |
+| 2026-08-24 19:08:12 | QQ-01 | PASS | `{"probe": 1}` |
+| 2026-08-24 19:12:08 | X/ZZ-99 | PASS | `{"probe": 1}` |
+| 2026-08-24 19:12:09 | QQ-01 | PASS | `{"probe": 1}` |
