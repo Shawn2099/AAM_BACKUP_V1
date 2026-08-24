@@ -6,11 +6,17 @@ different times, no contention).
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from loguru import logger
 
 from core.time_utils import cutoff_iso, now_iso
+
+# Critical-6: version gate for schema migrations. Bump when DDL or the
+# legacy-migration steps below change. Fresh databases are stamped straight
+# to this value; pre-versioning databases run _migrate_legacy_schema once.
+SCHEMA_VERSION = 1
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -61,6 +67,16 @@ CREATE TABLE IF NOT EXISTS db_meta (
 
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
+
+
+class ManifestSchemaError(RuntimeError):
+    """Critical-6: a schema migration could not be applied.
+
+    Raised instead of silently continuing with a schema that insert_run
+    cannot write to (which previously lost every subsequent run_history
+    record with no visible error). Startup fails loudly; NSSM restarts the
+    service and the operator sees the cause in the log.
+    """
 
 
 class ManifestDB:
@@ -119,7 +135,7 @@ class ManifestDB:
                     """)
                     conn.commit()
             except Exception as e:
-                logger.debug(f"Pre-migration dedup skipped: {e}")
+                logger.warning(f"Pre-migration dedup skipped: {e}")
 
             conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
             conn.executescript(DDL)
@@ -127,18 +143,73 @@ class ManifestDB:
             # "full" is applied on top so the toggle takes effect per open.
             if self.synchronous == "full":
                 conn.execute("PRAGMA synchronous=FULL")
-            
-            # Safe schema migration for extended_metrics
-            try:
-                columns = [row['name'] for row in conn.execute("PRAGMA table_info(run_history)").fetchall()]
-                if 'extended_metrics' not in columns:
-                    conn.execute("ALTER TABLE run_history ADD COLUMN extended_metrics TEXT")
-                    conn.commit()
-            except Exception as e:
-                logger.error(f"Migration failed: {e}")
-                
+
+            # Critical-6: version-gated schema migration. Fresh databases are
+            # stamped straight to SCHEMA_VERSION (DDL already creates every
+            # column, so no ALTER is needed); legacy databases — user_version
+            # 0 — run the migration steps exactly once.
+            if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                try:
+                    self._migrate_legacy_schema(conn)
+                except BaseException:
+                    # Never cache a connection whose schema could not be
+                    # brought current — the next open retries from scratch.
+                    conn.close()
+                    raise
+
             self._conn = conn
         return self._conn
+
+    def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
+        """Bring a pre-versioning database up to SCHEMA_VERSION.
+
+        Critical-6: a failed migration must be LOUD. The old code swallowed
+        the ALTER TABLE failure with ``logger.error`` and returned a usable
+        connection — after which every insert_run failed (missing column)
+        and record_run_history silently dropped all run history.
+
+        Retries transient SQLITE_BUSY up to 3 times; permanent failure
+        raises ManifestSchemaError (caller closes the connection).
+
+        Note: sqlite3's implicit transactions cover DML only — DDL would
+        otherwise autocommit and rollback() could not undo it. The ALTER +
+        version stamp therefore run inside an explicit BEGIN IMMEDIATE so
+        they commit atomically or not at all.
+        """
+        last_exc: sqlite3.OperationalError | None = None
+        for attempt in range(1, 4):
+            try:
+                columns = {
+                    row["name"]
+                    for row in conn.execute(
+                        "PRAGMA table_info(run_history)"
+                    ).fetchall()
+                }
+                if "extended_metrics" not in columns:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute(
+                        "ALTER TABLE run_history ADD COLUMN extended_metrics TEXT"
+                    )
+                    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    conn.commit()
+                else:
+                    # Column present but never stamped (legacy database).
+                    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                last_exc = exc
+                if "locked" not in str(exc).lower() or attempt == 3:
+                    break
+                logger.warning(
+                    f"Schema migration attempt {attempt}/3 hit a locked "
+                    "database - retrying"
+                )
+                time.sleep(1.0 * attempt)
+        raise ManifestSchemaError(
+            f"run_history schema migration failed: {last_exc}"
+        ) from last_exc
 
     def close(self):
         with self._lock:
