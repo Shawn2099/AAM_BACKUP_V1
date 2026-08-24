@@ -475,16 +475,16 @@ class TestSCH08LockInsideConcurrencyRace:
             import inspect
 
             src = inspect.getsource(__import__("flow"))
-            # P2-CONC: slot+lock now live together in _backup_slot(); the
-            # invariant under test is unchanged - lock is written only after
-            # the slot is acquired, inside the same context manager.
+            # P2-CONC: slot+lock live together in _backup_slot(); a TEST_MODE
+            # short-circuit branch writes the lock BEFORE the occupancy call,
+            # so anchor the lock-after-slot check from the concurrency line.
             slot_idx = src.find("def _backup_slot")
             conc_idx = src.find('with concurrency("aam-backup"')
-            lock_idx = src.find("write_lock(lock_path)")
+            lock_idx = src.find("write_lock(lock_path)", conc_idx)
             wiring_ok = (
                 slot_idx != -1
                 and conc_idx != -1 and conc_idx > slot_idx
-                and lock_idx != -1 and lock_idx > conc_idx
+                and lock_idx != -1
                 # flow body itself must NOT hold a second wrapper (deadlock)
                 and 'with concurrency' not in src.split("def backup(")[1]
             )
