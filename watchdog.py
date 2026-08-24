@@ -318,7 +318,12 @@ def main() -> None:
     logger.info("=" * 60)
 
     failures = 0
-    deferrals = 0
+    # H4: independent deferral counters. A shared counter let a long stretch
+    # of transfer-deferrals pre-satisfy the stale-lock cap, so the watchdog
+    # force-deleted a LIVE lock the moment the transfer ended (skipping its
+    # intended ~30 min grace) and restarted under an active backup.
+    transfer_deferrals = 0  # capped at MAX_TRANSFER_DEFERRALS (~8 h)
+    lock_deferrals = 0      # capped at MAX_DEFERRALS (~30 min)
 
     while True:
         healthy = _check_health()
@@ -327,7 +332,8 @@ def main() -> None:
             if failures > 0:
                 logger.info(f"Prefect API healthy (recovered after {failures} failure(s))")
             failures = 0
-            deferrals = 0
+            transfer_deferrals = 0
+            lock_deferrals = 0
             # G4: a healthy Prefect API does NOT mean backups are being
             # scheduled. The in-process scheduler + dashboard live in
             # AamBackupAgent; if that service is stopped, deployments never
@@ -375,52 +381,59 @@ def main() -> None:
             # The cap (MAX_TRANSFER_DEFERRALS) guards against a zombie rclone
             # process that is alive but making no progress and somehow escaped
             # Python's subprocess_timeout_seconds kill.
-            deferrals += 1
-            if deferrals >= MAX_TRANSFER_DEFERRALS:
+            transfer_deferrals += 1
+            if transfer_deferrals >= MAX_TRANSFER_DEFERRALS:
                 logger.error(
                     f"Prefect API has been unhealthy for {failures} checks and a "
-                    f"transfer process has been detected for {deferrals} deferrals "
-                    f"(~{deferrals * BACKUP_WAIT_INTERVAL // 3600} h). "
-                    f"Possible zombie rclone/robocopy. Forcing restart."
+                    f"transfer process has been detected for {transfer_deferrals} deferrals "
+                    f"(~{transfer_deferrals * BACKUP_WAIT_INTERVAL // 3600} h). "
+                    f"Possible zombie rclone/robocopy. Forcing restart. "
+                    f"NOTE: the zombie process belongs to {AGENT_SERVICE}, not "
+                    f"{WATCHED_SERVICE} - manual kill may still be required."
                 )
                 with contextlib.suppress(OSError):
                     BACKUP_LOCK_PATH.unlink(missing_ok=True)
-                deferrals = 0
-                # Fall through to restart logic
+                transfer_deferrals = 0
+                # H4: fall straight through to the restart logic below — the
+                # old code entered the lock branch using the stale pre-unlink
+                # value of lock_held and burned one extra cycle sleeping.
             else:
                 logger.warning(
                     f"Prefect API has been unhealthy for {failures} checks but a real "
                     f"data transfer is in progress (rclone/robocopy detected). "
                     f"Deferring restart. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
-                    f"(deferral {deferrals}/{MAX_TRANSFER_DEFERRALS} - cap at 8 h)"
+                    f"(transfer-deferral {transfer_deferrals}/{MAX_TRANSFER_DEFERRALS} - cap at 8 h)"
                 )
                 time.sleep(BACKUP_WAIT_INTERVAL)
                 continue
 
-        if lock_held:
+        elif lock_held:
             # ── Lock exists but no transfer process — suspicious ─────────────
             # Could be: (a) flow is between rclone calls (pre/post-flight steps),
             # or (b) stale lock from PID reuse after a crash.
             # Apply the MAX_DEFERRALS cap to avoid waiting forever on (b).
-            deferrals += 1
-            if deferrals >= MAX_DEFERRALS:
+            # H4: this branch counts its OWN cycles only, so a preceding run of
+            # transfer-deferrals can never pre-satisfy this cap.
+            lock_deferrals += 1
+            if lock_deferrals >= MAX_DEFERRALS:
                 logger.error(
                     f"Prefect API has been unhealthy for {failures} checks and backup "
-                    f"lock has persisted for {deferrals} deferrals (~{deferrals * BACKUP_WAIT_INTERVAL // 60} min) "
+                    f"lock has persisted for {lock_deferrals} deferrals (~{lock_deferrals * BACKUP_WAIT_INTERVAL // 60} min) "
                     f"with no active transfer process. Possible stale lock from PID reuse. "
                     f"Forcing restart."
                 )
-                # Force-remove the lock and fall through to restart logic
+                # Force-remove the lock and proceed to restart logic in the
+                # SAME iteration (no wasted sleep cycle on stale state).
                 with contextlib.suppress(OSError):
                     BACKUP_LOCK_PATH.unlink(missing_ok=True)
-                deferrals = 0
+                lock_deferrals = 0
             else:
                 logger.warning(
                     f"Prefect API has been unhealthy for {failures} checks. "
                     f"Backup lock is held but no transfer process detected - "
                     f"possibly between rclone calls. Deferring restart. "
                     f"Will re-check in {BACKUP_WAIT_INTERVAL}s. "
-                    f"(deferral {deferrals}/{MAX_DEFERRALS})"
+                    f"(lock-deferral {lock_deferrals}/{MAX_DEFERRALS})"
                 )
                 time.sleep(BACKUP_WAIT_INTERVAL)
                 continue
