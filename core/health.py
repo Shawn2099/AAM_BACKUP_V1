@@ -37,7 +37,16 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
         return False, f"Source drive error: {e}"
 
     if not has_files:
-        return False, f"Source drive appears empty: {source}"
+        # M8: fail-closed is DELIBERATE. robocopy /MIR and rclone sync both
+        # propagate an empty source to the destination (deleting everything
+        # there), and an empty source usually means the drive is unmounted or
+        # the wrong path — not "genuinely nothing yet".
+        return False, (
+            f"Source drive appears empty: {source}. Refusing to sync - if the "
+            "drive is unmounted or the path changed, mirroring would delete "
+            "the destination copies. If this is a genuinely new, empty FY "
+            "folder, place at least one file in it (canary) before running."
+        )
 
     try:
         usage = shutil.disk_usage(str(source))
