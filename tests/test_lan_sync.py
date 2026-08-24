@@ -173,7 +173,9 @@ class TestRunLanSync:
         assert result["status"] == "LAN_PARTIAL"
         assert "File in use" in result["error"]
         assert result["anomaly_details"] is None, "real errors must not populate anomaly_details"
-        assert result["files_failed"] == 0
+        # P1-COUNT (A-prime): no summary row in this canned log -> bit 3 floor
+        # guarantees at least 1 failed file (never the misleading 0).
+        assert result["files_failed"] == 1
 
     @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     @patch("core.lan_sync.os.close")

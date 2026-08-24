@@ -53,7 +53,14 @@ class TestCheckSourceDrive:
 
 
 class TestCheckBinaryExists:
-    def test_python_exists(self):
+    def test_python_exists(self, monkeypatch):
+        # Deterministic: make the running interpreter's dir resolvable via
+        # PATH (the pytest process may be launched with a bare PATH).
+        import os as _os
+        import sys as _sys
+        from pathlib import Path as _Path
+        exe_dir = str(_Path(_sys.executable).parent)
+        monkeypatch.setenv("PATH", exe_dir + _os.pathsep + _os.environ.get("PATH", ""))
         assert check_binary_exists("python3") or check_binary_exists("python") is True
 
     def test_nonexistent_binary(self):

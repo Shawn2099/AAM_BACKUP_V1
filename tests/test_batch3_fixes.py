@@ -36,12 +36,19 @@ class TestFilesFailed:
     @patch("core.lan_sync.subprocess.run")
     @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     def test_partial_with_copy_errors_counts_failed_lines(self, mock_resolve, mock_run, tmp_path, lan_cfg):
-        """Exit 9 (bit 3 = copy errors) with 2 '** FAILED:' lines -> files_failed=2."""
+        """Exit 9 (bit 3 = copy errors) with summary FAILED=2 -> files_failed=2.
+
+        P1-COUNT: the count now comes from the positional Files-summary row;
+        the log must carry one for an exact count (bit-3 floor applies when
+        the summary is absent)."""
         log_file = tmp_path / "robocopy_sync_test.log"
         log_file.write_text(
             "      New File:            1 C:\\a\\ok.txt\n"
             "          ** FAILED: \\\\nas\\FY25-26\\big.iso\n"
             "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"
+            "\n"
+            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
+            "    Files :         3         1         0         0         2         0\n"
         )
         mock_run.return_value = MagicMock(returncode=9)
         # point the (mocked) run at our prepared log

@@ -265,7 +265,7 @@ class TestWOL05GlobalBlockedFallbackWiring:
             checks = {
                 "global_first": 'wol_send(mac_address, ip_address="255.255.255.255"' in src,
                 "subnet_second": "ip_address=subnet_broadcast" in src,
-                "per_target_oserror_warn": src.count("except OSError") >= 2
+                "per_target_oserror_warn": src.count("except Exception") >= 2
                                            and src.count("logger.warning") >= 2,
                 "continues_after_failure": "if subnet_broadcast != \"255.255.255.255\"" in src,
             }

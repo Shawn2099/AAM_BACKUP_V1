@@ -474,12 +474,19 @@ class TestREP07WeeklyHtmlMath:
             # +2 failures -> total 12; failures bucket = remainder
             mix += ["CLOUD_FAILED", "LAN_FAILED"]
 
-            day0 = 1755900000  # epoch seconds inside the last-7d window
+            day0 = None  # replaced by dynamic date math below
+            import pendulum as _pd
+            _now = _pd.now()
             for i, status in enumerate(mix):
+                # Dynamic dates: hardcoded August dates silently fell out of
+                # get_runs_since(7) when the wall clock crossed the window
+                # (G1-run flake). All 12 rows stay INSIDE the 7-day window
+                # (spread over the last 0..4 days with distinct hours).
+                started = _now.subtract(days=(i % 5), hours=(23 - i)).strftime("%Y-%m-%dT%H:00:00")
                 db.insert_run({
                     "run_id": f"rep07-{i}", "mode": status.split("_")[0].lower(),
-                    "started_at": f"2026-08-{17 + i % 7:02d}T1{i % 10}:00:00",
-                    "ended_at": "2026-08-23T23:00:00", "status": status,
+                    "started_at": started,
+                    "ended_at": _now.strftime("%Y-%m-%dT%H:00:00"), "status": status,
                     "exit_code": 0 if "COMPLETE" in status else 3,
                     "duration_seconds": 60 + i,
                     "files_copied": 5 + i, "bytes_copied": 1024 * (i + 1),

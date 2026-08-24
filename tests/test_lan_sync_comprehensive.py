@@ -105,7 +105,9 @@ class TestBuildRobocopyCommand:
         assert "/NP" in cmd
         assert "/NDL" in cmd
         assert "/NJH" in cmd
-        assert "/NJS" in cmd
+        # P1-COUNT: /NJS removed - the job summary is now the authoritative
+        # positional source for files_failed and must be present.
+        assert "/NJS" not in cmd
         assert "/TS" in cmd
         assert "/FP" in cmd
         assert "/V" in cmd

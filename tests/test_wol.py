@@ -57,7 +57,7 @@ class TestSendMagicPacket:
     @patch("core.wol.logger.warning")
     def test_os_error_logs_warning(self, mock_logger_warning, mock_wol):
         _send_magic_packet("AA:BB:CC:DD:EE:FF", "255.255.255.255", repeat=1, interval=1)
-        mock_logger_warning.assert_called_with("WoL global broadcast failed: send failed")
+        mock_logger_warning.assert_called_with("WoL global broadcast failed (OSError: send failed)")
 
 
 class TestWaitForServer:
