@@ -196,6 +196,22 @@ All Tier-1 items were implemented on 2026-08-23 with RED-to-GREEN test evidence
 Full suite at fix time: **1442 passed / 0 failed / 53 skipped** (skips are pre-existing
 hardware-gated e2e tests).
 
+### Deploy-risk round — 2026-08-24
+
+Four deployment-blocking findings fixed with RED→GREEN evidence
+(see IMPLEMENTATION_PLAN_DEPLOY_RISKS.md v1.1):
+
+| Finding | Fix | Tests |
+|---------|-----|-------|
+| H4 | Watchdog: independent `transfer_deferrals`/`lock_deferrals` counters; forced restart proceeds same-iteration (`elif` kills stale fall-through); zombie-process ownership noted in log | `test_h4_watchdog_counters.py` |
+| REVIEW Critical-6 | Manifest: schema migration is version-gated (`PRAGMA user_version`), atomic (`BEGIN IMMEDIATE`), retries transient BUSY ×3, raises `ManifestSchemaError` instead of swallowing; broken connection never cached | `test_manifest_migration_c6.py` |
+| M8 | Empty-source contract unified fail-closed (anti-mirror-wipe): actionable HealthError message; preflight's "empty is valid" comment replaced with honest warning. Config escape hatch deliberately NOT added (Option B). | `test_m8_empty_source_contract.py` |
+| H3 | UI: typed Prefect filters (`FlowRunFilterState(Type)`), tri-state helper; trigger endpoints fail-CLOSED with HTTP 503 when Prefect unreachable; `/status` keeps strict booleans + adds `run_state`; `limit=200` | `test_h3_ui_failclosed.py` |
+
+Post-fix suite: **1505 passed / 0 failures attributable to this diff / 202 skipped**
+(skip growth 53→202 is the Aug-23 `AAM_RUN_REAL_HARDWARE`-gated scenario catalog,
+not a regression).
+
 ## Priority Shortlist
 
 If you act on only four things:
