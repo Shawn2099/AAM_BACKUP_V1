@@ -193,7 +193,9 @@ def test_pipe_04_lan_pipeline_canary_missing(temp_config_and_db):
 
 
 def test_pipe_05_backup_lock_lifecycle(tmp_path):
-    """PIPE-05: Backup Lock Written and Released."""
+    """PIPE-05: Backup Lock Written and Released.
+    P2-CONC: the lock lifecycle now lives in _backup_slot (per pipeline);
+    this test holds the slot directly and verifies write + release."""
     import ruamel.yaml
     yaml = ruamel.yaml.YAML()
     
@@ -213,39 +215,20 @@ def test_pipe_05_backup_lock_lifecycle(tmp_path):
         yaml.dump(c, f)
         
     lock_path = db_path.parent / "backup.lock"
-    
-    # We will patch the internal pipeline to just sleep so we can check the lock
-    import flow
-    orig_cloud = flow._run_cloud_pipeline
-    
-    def mock_pipeline(*args, **kwargs):
-        time.sleep(1)
-        
-    flow._run_cloud_pipeline = mock_pipeline
-    
-    lock_was_alive = False
-    
-    def check_lock_in_background():
-        nonlocal lock_was_alive
-        for _ in range(50):
-            alive, pid = read_lock_alive(lock_path)
-            if alive:
-                lock_was_alive = True
-                break
-            time.sleep(0.1)
-            
+
+    from models.config import load_config as _lc
+
+    cfgx = _lc(str(temp_cfg_path))
+    from flow import _backup_slot
+
     try:
-        t = threading.Thread(target=check_lock_in_background)
-        t.start()
-        
-        # Run in main thread so it has Prefect context
-        flow.backup(config_path=str(temp_cfg_path), mode="cloud")
-        
-        t.join()
-        
+        with _backup_slot(cfgx):
+            alive, pid = read_lock_alive(lock_path)
+            lock_was_alive = alive
+
         assert lock_was_alive is True
         
-        # Lock should be deleted after completion
+        # Lock should be deleted after release
         assert not lock_path.exists()
     finally:
-        flow._run_cloud_pipeline = orig_cloud
+        pass
