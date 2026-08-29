@@ -36,7 +36,13 @@ from tests.scenario_support import real_gate, record_op
 
 pytestmark = [real_gate()]
 
-_LOCK = load_config(r"C:\AAM_BACKUP_V1\config.yaml").paths.backup_lock_path
+try:
+    _LOCK = load_config(r"C:\AAM_BACKUP_V1\config.yaml").paths.backup_lock_path
+except Exception:
+    try:
+        _LOCK = load_config("config.yaml").paths.backup_lock_path
+    except Exception:
+        _LOCK = r"C:\AAM_BACKUP_V1\data\backup.lock"
 
 
 def _fail_ops(ops, e):

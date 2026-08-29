@@ -10,7 +10,7 @@ import pendulum
 import pytest
 
 from core.backup_repository import record_run_history, record_sync_results
-from core.fy_router import get_fy_prefix
+from core.time_utils import get_fy_prefix
 from core.health import HealthError, pre_backup_health
 from core.lan_manifest import diff_snapshots
 from core.manifest import ManifestDB

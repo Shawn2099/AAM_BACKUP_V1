@@ -229,6 +229,9 @@ def main():
     print("  AAM Backup Automation V1 — Launch")
     print("=" * 50)
 
+    from models.config import CONFIG_PATH, load_config
+    _cfg = load_config(CONFIG_PATH)
+
     # Wait for Prefect API — retry loop handles the startup race that occurs after
     # a watchdog-triggered service restart (Prefect takes ~45s to be API-ready).
     # 90s total wait ensures zero sc failure recovery actions are consumed on a
@@ -295,9 +298,6 @@ def main():
     # so it returns cleanly on Ctrl+C. With pause_on_shutdown=False,
     # deployment schedules stay active across restarts.
     print("[launch] Starting backup scheduler (main thread)...")
-    from models.config import CONFIG_PATH
-    from models.config import load_config as _lc
-    _cfg = _lc(CONFIG_PATH)
     print(f"[launch] Dashboard: http://{_cfg.dashboard.bind_address}:{_cfg.dashboard.port}")
     print("[launch] Prefect:   http://localhost:4200")
     print("[launch] All services started")

@@ -736,11 +736,9 @@ class TestDB17UpdateChecksumsBulk:
             try:
                 names = [f"chk/{i:03d}.pdf" for i in range(100)]
                 db.bulk_upsert_synced(
-                    [{"path": n, "size": 10, "mtime": 1000.0} for n in names],
+                    [{"path": n, "size": 10, "mtime": 1000.0, "md5_checksum": f"md5_{i:03d}"} for i, n in enumerate(names)],
                     "cloud",
                 )
-                updates = {n: f"md5_{i:03d}" for i, n in enumerate(names)}
-                db.update_checksums(updates)
 
                 sample = db.get_entry(names[0])
                 md5_count = db._get_conn().execute(

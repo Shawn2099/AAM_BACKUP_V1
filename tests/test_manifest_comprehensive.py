@@ -299,26 +299,6 @@ class TestGetEntry:
         assert entry is not None
 
 
-# ── update_checksums ─────────────────────────────────────────────────────────
-
-
-class TestUpdateChecksums:
-    def test_updates_checksums(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0)
-        db.upsert_file_entry("b.txt", 200, 2.0)
-        db.update_checksums({"a.txt": "hash_a", "b.txt": "hash_b"})
-        assert db.get_entry("a.txt")["md5_checksum"] == "hash_a"
-        assert db.get_entry("b.txt")["md5_checksum"] == "hash_b"
-
-    def test_noop_on_empty_dict(self, db):
-        db.update_checksums({})
-
-    def test_normalizes_backslash(self, db):
-        db.upsert_file_entry("sub\\file.txt", 100, 1.0)
-        db.update_checksums({"sub\\file.txt": "hash1"})
-        assert db.get_entry("sub/file.txt")["md5_checksum"] == "hash1"
-
-
 # ── purge_old_runs ───────────────────────────────────────────────────────────
 
 
@@ -350,32 +330,6 @@ class TestPurgeOldRuns:
         })
         db.purge_old_runs(retention_days=365)
         assert len(db.get_recent_runs()) == 1
-
-
-# ── mark_lan_synced / mark_cloud_synced ──────────────────────────────────────
-
-
-class TestMarkSynced:
-    def test_mark_lan_synced(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0)
-        db.upsert_file_entry("b.txt", 200, 2.0)
-        db.mark_lan_synced(["a.txt", "b.txt"])
-        assert db.get_entry("a.txt")["lan_status"] == "synced"
-        assert db.get_entry("b.txt")["lan_status"] == "synced"
-
-    def test_mark_cloud_synced(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0)
-        db.mark_cloud_synced(["a.txt"])
-        assert db.get_entry("a.txt")["cloud_status"] == "synced"
-
-    def test_empty_list_noop(self, db):
-        db.mark_lan_synced([])
-        db.mark_cloud_synced([])
-
-    def test_normalizes_backslash(self, db):
-        db.upsert_file_entry("sub\\file.txt", 100, 1.0)
-        db.mark_lan_synced(["sub\\file.txt"])
-        assert db.get_entry("sub/file.txt")["lan_status"] == "synced"
 
 
 # ── delete_entries ───────────────────────────────────────────────────────────

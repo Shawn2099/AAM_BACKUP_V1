@@ -168,13 +168,13 @@ class TestReportEndpoints:
 
 class TestCronToHuman:
     def test_daily(self):
-        assert cron_to_human("0 18 * * *", "Asia/Kolkata") == "Daily at 18:00 Kolkata"
+        assert cron_to_human("0 18 * * *", "Asia/Kolkata") == "At 18:00 (Kolkata)"
 
     def test_weekly(self):
-        assert cron_to_human("0 8 * * MON", "Asia/Kolkata") == "Every Monday at 08:00 Kolkata"
+        assert cron_to_human("0 8 * * MON", "Asia/Kolkata") == "At 08:00, only on Monday (Kolkata)"
 
     def test_monthly(self):
-        assert cron_to_human("0 8 1 * *", "Asia/Kolkata") == "1st of month at 08:00 Kolkata"
+        assert cron_to_human("0 8 1 * *", "Asia/Kolkata") == "At 08:00, on day 1 of the month (Kolkata)"
 
     def test_short_cron_returns_raw(self):
         assert cron_to_human("invalid", "America/New_York") == "invalid"

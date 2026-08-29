@@ -4,13 +4,46 @@ Validates UNC reachability, permissions, and junction point handling
 before committing to a multi-hour copy.
 """
 
+import socket
 import subprocess
 from pathlib import Path
 
 from loguru import logger
+from tenacity import retry, retry_if_result, stop_after_attempt, wait_fixed
 
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
 from core.process import resolve_binary
+
+
+def _extract_unc_host(path_str: str) -> str | None:
+    """Extract host/IP from a UNC path (e.g. '\\\\192.168.10.10\\share' or '//nas/share').
+
+    Returns None for local drive paths (e.g. 'D:\\...') or relative paths.
+    """
+    clean = str(path_str).replace("/", "\\")
+    if not clean.startswith(r"\\"):
+        return None
+    parts = [p for p in clean.lstrip("\\").split("\\") if p]
+    return parts[0].strip() if parts else None
+
+
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_fixed(3),
+    retry=retry_if_result(lambda ok: not ok),
+    retry_error_callback=lambda retry_state: False,
+)
+def _is_smb_reachable(host: str, port: int = 445, timeout: float = 2.0) -> bool:
+    """Probe SMB port 445 with up to 4 attempts (~15s budget) to survive slow NAS spin-ups.
+
+    Uses retry_error_callback to return False upon exhaustion instead of raising RetryError.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except (OSError, socket.timeout, TimeoutError):
+        return False
+
 
 def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
@@ -28,16 +61,31 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
     Returns:
         {"ok": bool, "exit_code": int, "error": str | None}
     """
+    # 1. Fast SMB Reachability Probe for UNC destinations (bypasses 45s OS hang)
+    host = _extract_unc_host(dest)
+    if host and not _is_smb_reachable(host, port=445, timeout=2.0):
+        msg = (
+            f"Cannot reach LAN host '{host}' on SMB port 445 within 2.0s. "
+            "Verify the backup server/NAS is powered on, Wake-on-LAN succeeded, "
+            "and network connectivity is operational."
+        )
+        logger.error(msg)
+        raise HealthError(msg)
+
+    # 2. Strict Canary File Verification (.is_file() instead of .exists())
     dest_path = Path(dest)
     canary_file = dest_path / ".AAM_TARGET_MOUNTED"
-    if not canary_file.exists():
-        # G11: make the failure self-recovering. The preflight deliberately
-        # refuses to run robocopy /MIR against a destination it cannot prove
-        # is the mounted FY share — but the fix used to be undocumented. The
-        # message now carries the exact recovery command (and the operator can
-        # run deploy/10_recreate_canary.bat <dest>).
+    try:
+        canary_valid = canary_file.is_file()
+    except OSError as e:
+        msg = f"Cannot access LAN destination '{dest}': {e}"
+        logger.error(msg)
+        raise HealthError(msg) from e
+
+    if not canary_valid:
+        # G11: make the failure self-recovering.
         msg = (
-            f"Canary file {canary_file} missing — refusing to mirror into an "
+            f"Canary file {canary_file} missing or is not a regular file — refusing to mirror into an "
             "unverified destination. Recovery: verify the FY share is mounted, "
             f"then create the canary:  cmd /c type nul > \"{canary_file}\"  "
             "(or run deploy\\10_recreate_canary.bat from the project's deploy "
@@ -67,6 +115,8 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
 

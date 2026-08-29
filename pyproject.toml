@@ -21,6 +21,8 @@ dependencies = [
     "ruamel.yaml==0.19.1",
     "humanize==4.15.0",
     "python-multipart==0.0.32",
+    "cron-descriptor==1.4.5",
+    "tenacity>=8.5.0",
 ]
 
 [tool.ruff]

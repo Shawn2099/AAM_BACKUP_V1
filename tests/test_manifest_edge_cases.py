@@ -91,12 +91,6 @@ class TestManifestEdgeCases:
         db.delete_entries(["nonexistent.txt"])  # Should not raise
         db.close()
 
-    def test_mark_synced_empty_paths_noop(self, temp_db_path):
-        db = ManifestDB(temp_db_path)
-        db.mark_lan_synced([])
-        db.mark_cloud_synced([])
-        db.close()
-
     def test_file_count_invalid_field_raises(self, temp_db_path):
         db = ManifestDB(temp_db_path)
         with pytest.raises(ValueError, match="status_field must be"):

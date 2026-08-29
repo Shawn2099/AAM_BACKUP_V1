@@ -702,12 +702,12 @@ class TestUI15CronToHumanDisplay:
             from core.time_utils import cron_to_human
 
             cases = {
-                ("0 22 * * *", "Asia/Kolkata"): "Daily at 22:00 Kolkata",
-                ("0 21 * * *", "Asia/Kolkata"): "Daily at 21:00 Kolkata",
-                ("0 8 * * MON", "Asia/Kolkata"): "Every Monday at 08:00 Kolkata",
-                ("0 8 1 * *", "Asia/Kolkata"): "1st of month at 08:00 Kolkata",
-                ("0 8 11 * *", "Asia/Kolkata"): "11th of month at 08:00 Kolkata",
-                ("0 8 13 * *", "Asia/Kolkata"): "13th of month at 08:00 Kolkata",
+                ("0 22 * * *", "Asia/Kolkata"): "At 22:00 (Kolkata)",
+                ("0 21 * * *", "Asia/Kolkata"): "At 21:00 (Kolkata)",
+                ("0 8 * * MON", "Asia/Kolkata"): "At 08:00, only on Monday (Kolkata)",
+                ("0 8 1 * *", "Asia/Kolkata"): "At 08:00, on day 1 of the month (Kolkata)",
+                ("0 8 11 * *", "Asia/Kolkata"): "At 08:00, on day 11 of the month (Kolkata)",
+                ("0 8 13 * *", "Asia/Kolkata"): "At 08:00, on day 13 of the month (Kolkata)",
             }
             results = {f"{cron} | {tz}": cron_to_human(cron, tz)
                        for (cron, tz) in cases}

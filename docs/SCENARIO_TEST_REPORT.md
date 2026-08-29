@@ -3906,3 +3906,15 @@ Final gate: TWO CONSECUTIVE full-suite runs 1672 passed / 0 failed / 1 skipped
 | 2026-08-24 19:08:12 | QQ-01 | PASS | `{"probe": 1}` |
 | 2026-08-24 19:12:08 | X/ZZ-99 | PASS | `{"probe": 1}` |
 | 2026-08-24 19:12:09 | QQ-01 | PASS | `{"probe": 1}` |
+| 2026-08-29 12:20:31 | X/ZZ-99 | PASS | `{"probe": 1}` |
+| 2026-08-29 12:20:33 | QQ-01 | PASS | `{"probe": 1}` |
+| 2026-08-29 12:36:14 | I/REP-01 | PASS | `{"returned": true, "messages": 1, "subject": "Backup Failure Alert - AAM Associates (CLOUD)", "subject_ok": true, "html_table": true, "truncated_marker": true, "attach_names": ["failure_details.txt"], "attached_len_matches": true}` |
+| 2026-08-29 12:36:14 | I/REP-02 | PASS | `{"returned": false, "skipping_logged": true, "smtp_messages": 0}` |
+| 2026-08-29 12:36:14 | I/REP-03 | PASS | `{"returned": false, "permanent_logged": true, "server_sessions": 1, "wall_s": 0.0, "inference": "auth rejection treated as terminal - no retry storm against bad credentials"}` |
+| 2026-08-29 12:36:25 | I/REP-04 | PASS | `{"returned": true, "connections": 2, "wall_s": 11.0, "min_expected_s": 8, "inference": "transient network loss recovered automatically with documented backoff window"}` |
+| 2026-08-29 12:36:58 | I/REP-05 | PASS | `{"returned": false, "connection_attempts": 3, "wall_s": 32.6, "min_expected_s": 24, "inference": "exhaustion is reported honestly; alert lost is VISIBLE in logs rather than silently dropped"}` |
+| 2026-08-29 12:36:58 | I/REP-06 | PASS | `{"results": {"\"=cmd|'/C calc'!A0\"": "'=cmd|'/C calc'!A0", "'+SUM(A1)'": "'+SUM(A1)", "'-2+3'": "'-2+3", "'@import'": "'@import", "'\\ttabbed'": "'\ttabbed", "'\\rcr'": "'\rcr"}, "all_dangerous_prefixed": true, "benign_untouched": true, "inference": "G5: formula/command prefixes get a leading quote"}` |
+| 2026-08-29 12:36:58 | I/REP-07 | PASS | `{"html_len": 4275, "total_cell": "12", "success_cell": "8", "no_changes_cell": "1", "partial_cell": "1", "failed_cell": "2", "rate_cell": "75.0%", "table_rows_rendered": 10, "rows_note_present": true, "humanize_bytes": true}` |
+| 2026-08-29 12:36:58 | I/REP-08 | PASS | `{"returned": true, "csv_attached": true, "is_email_notice": true, "subject_ok": true}` |
+| 2026-08-29 12:36:58 | I/REP-09 | PASS | `{"returned_len": 0, "caller_contract": "ui.py raises 404 No runs found when empty"}` |
+| 2026-08-29 12:37:37 | I/REP-10 | WIRING-EVIDENCED | `{"starttls_result": true, "starttls_messages": 1, "ssl_result": false, "ssl_messages": 0, "inference": "transport selection matches catalog: 587 -> STARTTLS upgrade, 465 -> SSL-from-start; both deliver through real sockets", "ssl_leg_note": "SMTP_SSL branch read-verified; live proof blocked by trust-store, not code"}` |

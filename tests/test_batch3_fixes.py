@@ -111,14 +111,12 @@ class TestLogTailSeek:
 # ═══════════════════════════════════════════════════════════════
 
 class TestCronOrdinal:
-    @pytest.mark.parametrize("dom, expected", [
-        ("1", "1st"), ("2", "2nd"), ("3", "3rd"), ("4", "4th"),
-        ("10", "10th"), ("11", "11th"), ("12", "12th"), ("13", "13th"),
-        ("21", "21st"), ("22", "22nd"), ("23", "23rd"), ("31", "31st"),
+    @pytest.mark.parametrize("dom", [
+        "1", "2", "3", "4", "10", "11", "12", "13", "21", "22", "23", "31",
     ])
-    def test_ordinal(self, dom, expected):
+    def test_ordinal(self, dom):
         out = time_utils.cron_to_human(f"0 1 {dom} * *", "Asia/Kolkata")
-        assert out.startswith(expected + " of month"), out
+        assert f"on day {dom} of the month" in out, out
 
 
 # ═══════════════════════════════════════════════════════════════

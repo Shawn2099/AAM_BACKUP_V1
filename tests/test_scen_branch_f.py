@@ -202,7 +202,13 @@ from core.process import read_lock_alive
 from models.config import load_config
 from launch import _cancel_orphaned_runs
 
-LOCK = load_config("C:/AAM_BACKUP_V1/config.yaml").paths.backup_lock_path
+try:
+    LOCK = load_config("C:/AAM_BACKUP_V1/config.yaml").paths.backup_lock_path
+except Exception:
+    try:
+        LOCK = load_config("config.yaml").paths.backup_lock_path
+    except Exception:
+        LOCK = "C:/AAM_BACKUP_V1/data/backup.lock"
 
 
 def make_run(state_cls, name):
@@ -471,7 +477,13 @@ class TestSCH08LockInsideConcurrencyRace:
     def test_SCH_08_lock_race(self):
         sid = "SCH-08"
         ops = {}
-        lock = load_config(r"C:\AAM_BACKUP_V1\config.yaml").paths.backup_lock_path
+        try:
+            lock = load_config(r"C:\AAM_BACKUP_V1\config.yaml").paths.backup_lock_path
+        except Exception:
+            try:
+                lock = load_config("config.yaml").paths.backup_lock_path
+            except Exception:
+                lock = r"C:\AAM_BACKUP_V1\data\backup.lock"
         try:
             import inspect
 

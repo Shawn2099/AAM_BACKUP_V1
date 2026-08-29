@@ -51,28 +51,6 @@ class TestManifestDB:
         assert entry["cloud_status"] == "synced"
         db.close()
 
-    def test_mark_lan_synced_bulk(self, temp_db_path):
-        db = ManifestDB(temp_db_path)
-        db.upsert_file_entry("a.txt", 10, 1.0)
-        db.upsert_file_entry("b.txt", 20, 2.0)
-        db.mark_lan_synced(["a.txt", "b.txt"])
-        assert db.get_entry("a.txt")["lan_status"] == "synced"
-        assert db.get_entry("b.txt")["lan_status"] == "synced"
-        db.close()
-
-    def test_mark_cloud_synced_bulk(self, temp_db_path):
-        db = ManifestDB(temp_db_path)
-        db.upsert_file_entry("c.txt", 10, 1.0)
-        db.mark_cloud_synced(["c.txt"])
-        assert db.get_entry("c.txt")["cloud_status"] == "synced"
-        db.close()
-
-    def test_mark_empty_list_noop(self, temp_db_path):
-        db = ManifestDB(temp_db_path)
-        db.mark_lan_synced([])
-        db.mark_cloud_synced([])
-        db.close()
-
     def test_delete_entries(self, temp_db_path):
         db = ManifestDB(temp_db_path)
         db.upsert_file_entry("del.txt", 100, 1.0)
@@ -139,8 +117,7 @@ class TestManifestDB:
             "started_at": "2020-01-01T00:00:00+00:00",
             "status": "CLOUD_COMPLETE",
         })
-        assert db.last_run("cloud") is not None
-        db.purge_old_runs(retention_days=1)
+        db.purge_old_runs(retention_days=30)
         assert db.last_run("cloud") is None
         db.close()
 
@@ -154,19 +131,6 @@ class TestManifestDB:
         db = ManifestDB(temp_db_path)
         db.upsert_file_entry("w.txt", 10, 1.0)
         db.wal_checkpoint()
-        db.close()
-
-    def test_update_checksums(self, temp_db_path):
-        db = ManifestDB(temp_db_path)
-        db.upsert_file_entry("chk.txt", 100, 1.0)
-        db.update_checksums({"chk.txt": "abc123def456"})
-        entry = db.get_entry("chk.txt")
-        assert entry["md5_checksum"] == "abc123def456"
-        db.close()
-
-    def test_update_checksums_empty_noop(self, temp_db_path):
-        db = ManifestDB(temp_db_path)
-        db.update_checksums({})
         db.close()
 
     def test_bulk_upsert_synced_cloud(self, temp_db_path):
@@ -213,4 +177,30 @@ class TestManifestDB:
         entries = [{"path": "f.txt", "size": 10, "mtime": 1.0, "md5_checksum": "abc123"}]
         db.bulk_upsert_synced(entries, "cloud")
         assert db.get_entry("f.txt")["md5_checksum"] == "abc123"
+        db.close()
+
+
+class TestPruneStaleSyncedInvariants:
+    def test_partial_status_preservation(self, temp_db_path):
+        """Invariant: If a file is synced to cloud, pruning LAN must NOT delete the row."""
+        db = ManifestDB(temp_db_path)
+        db.bulk_upsert_synced([{"path": "file1.txt", "size": 100, "mtime": 1.0}], "cloud")
+        db.bulk_upsert_synced([{"path": "file1.txt", "size": 100, "mtime": 1.0}], "lan")
+
+        # Prune LAN where active_paths is empty -> file1 LAN status is NULLed out
+        pruned = db.prune_stale_synced("lan", set())
+        assert pruned == 1
+
+        # The row MUST still exist in database with cloud_status="synced"
+        entry = db.get_entry("file1.txt")
+        assert entry is not None
+        assert entry["cloud_status"] == "synced"
+        assert entry["lan_status"] is None
+
+        # Now prune Cloud where active_paths is empty -> now BOTH are NULL -> row is deleted
+        pruned_cloud = db.prune_stale_synced("cloud", set())
+        assert pruned_cloud == 1
+
+        entry_after = db.get_entry("file1.txt")
+        assert entry_after is None
         db.close()

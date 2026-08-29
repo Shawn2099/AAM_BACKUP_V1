@@ -93,10 +93,13 @@ def test_pipe_01_cloud_pipeline(temp_config_and_db):
     """PIPE-01: Cloud Pipeline — Golden Path, All Steps Record to DB."""
     config = temp_config_and_db
     
-    # Patch the get_fy_prefix used internally by flow.py
-    import core.fy_router
-    orig_prefix = core.fy_router.get_fy_prefix
-    core.fy_router.get_fy_prefix = lambda: "E2E_TEST_FY"
+    # Patch get_fy_prefix used internally by flow.py
+    import core.time_utils
+    import flow
+    orig_prefix_tu = core.time_utils.get_fy_prefix
+    orig_prefix_flow = getattr(flow, "get_fy_prefix", orig_prefix_tu)
+    core.time_utils.get_fy_prefix = lambda: "E2E_TEST_FY"
+    flow.get_fy_prefix = lambda: "E2E_TEST_FY"
     
     try:
         result = _run_cloud_pipeline(config, run_id="e2e-cloud-test", started_at=now_iso())
@@ -119,7 +122,8 @@ def test_pipe_01_cloud_pipeline(temp_config_and_db):
         finally:
             db.close()
     finally:
-        core.fy_router.get_fy_prefix = orig_prefix
+        core.time_utils.get_fy_prefix = orig_prefix_tu
+        flow.get_fy_prefix = orig_prefix_flow
 
 
 def test_pipe_02_lan_pipeline(temp_config_and_db):

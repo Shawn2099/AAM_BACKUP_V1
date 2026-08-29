@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS run_history (
 
 CREATE INDEX IF NOT EXISTS idx_run_history_started_at ON run_history(started_at);
 CREATE INDEX IF NOT EXISTS idx_run_history_mode ON run_history(mode);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_run_history_run_id ON run_history(run_id);
 
 CREATE TABLE IF NOT EXISTS db_meta (
     key     TEXT PRIMARY KEY,
@@ -341,42 +340,6 @@ class ManifestDB:
                 )
             conn.commit()
 
-    def mark_lan_synced(self, paths: list[str]):
-        """Bulk update: set lan_status='synced' on all given paths."""
-        if not paths:
-            return
-        normalized = [p.replace("\\", "/") for p in paths]
-        with self._lock:
-            conn = self._get_conn()
-            now = now_iso()
-            conn.executemany(
-                """UPDATE file_entries
-                   SET lan_status = 'synced',
-                       lan_last_synced_at = ?,
-                       updated_at = ?
-                   WHERE relative_path = ?""",
-                [(now, now, p) for p in normalized],
-            )
-            conn.commit()
-
-    def mark_cloud_synced(self, paths: list[str]):
-        """Bulk update: set cloud_status='synced' on all given paths."""
-        if not paths:
-            return
-        normalized = [p.replace("\\", "/") for p in paths]
-        with self._lock:
-            conn = self._get_conn()
-            now = now_iso()
-            conn.executemany(
-                """UPDATE file_entries
-                   SET cloud_status = 'synced',
-                       cloud_last_synced_at = ?,
-                       updated_at = ?
-                   WHERE relative_path = ?""",
-                [(now, now, p) for p in normalized],
-            )
-            conn.commit()
-
     def delete_entries(self, paths: list[str]):
         """Delete entries for files no longer on destination. Chunk to avoid SQLite variable limit."""
         if not paths:
@@ -391,20 +354,6 @@ class ManifestDB:
                     f"DELETE FROM file_entries WHERE relative_path IN ({placeholders})",
                     chunk,
                 )
-            conn.commit()
-
-    def update_checksums(self, updates: dict[str, str]):
-        """Bulk update md5_checksum for multiple files."""
-        if not updates:
-            return
-        with self._lock:
-            conn = self._get_conn()
-            now = now_iso()
-            conn.executemany(
-                """UPDATE file_entries SET md5_checksum = ?, updated_at = ?
-                   WHERE relative_path = ?""",
-                [(md5, now, path.replace("\\", "/")) for path, md5 in updates.items()],
-            )
             conn.commit()
 
     def get_entry(self, relative_path: str) -> dict | None:
@@ -474,22 +423,25 @@ class ManifestDB:
             raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
         status_field = f"{mode}_status"
         ts_field = f"{mode}_last_synced_at"
-        db_paths = self.get_synced_paths(mode)  # acquires + releases lock
-        stale_paths = [p for p in db_paths if p not in active_paths]
-        if not stale_paths:
-            return 0
         with self._lock:
             conn = self._get_conn()
-            conn.executemany(
-                f"UPDATE file_entries SET {status_field} = NULL, "
-                f"{ts_field} = NULL WHERE relative_path = ?",
-                [(path,) for path in stale_paths],
-            )
-            conn.execute(
-                "DELETE FROM file_entries "
-                "WHERE lan_status IS NULL AND cloud_status IS NULL"
-            )
-            conn.commit()
+            with conn:
+                rows = conn.execute(
+                    f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced'"
+                ).fetchall()
+                db_paths = {r["relative_path"] for r in rows}
+                stale_paths = [p for p in db_paths if p not in active_paths]
+                if not stale_paths:
+                    return 0
+                conn.executemany(
+                    f"UPDATE file_entries SET {status_field} = NULL, "
+                    f"{ts_field} = NULL WHERE relative_path = ?",
+                    [(path,) for path in stale_paths],
+                )
+                conn.execute(
+                    "DELETE FROM file_entries "
+                    "WHERE lan_status IS NULL AND cloud_status IS NULL"
+                )
         return len(stale_paths)
 
     # ── Run History ──────────────────────────────────────────

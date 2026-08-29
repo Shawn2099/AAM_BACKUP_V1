@@ -41,8 +41,15 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int =
     cmd = [rclone_exe, "size", dest, "--json", *_base_args(config_path)]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
         logger.warning(f"Cloud size query failed: {e}")
         return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
     except FileNotFoundError as e:
@@ -91,7 +98,14 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: i
     cmd = [rclone_exe, "lsjson", dest, "-R", *_base_args(config_path)]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired as e:
         raise CloudReporterError(
             f"cloud manifest listing timed out after {timeout}s for {dest}"
@@ -160,7 +174,14 @@ def get_cloud_diff(
             *_base_args(config_path),
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
 
         # rclone check exits 0 on match, 1 on mismatch, 2+ on error.
         # Even on mismatch (exit 1), the --combined file is valid and useful.
