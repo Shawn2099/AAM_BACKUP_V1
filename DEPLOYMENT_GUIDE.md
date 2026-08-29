@@ -294,12 +294,12 @@ Open `config.yaml` and update the following sections using the snippets from Ste
 | `cloud.project_number` | `aam-backup-2026` |
 | `cloud.location` | `asia-south1` |
 | `cloud.storage_class` | `STANDARD` |
-| `notification.smtp_host` | Your SMTP server (e.g. `smtp.gmail.com`) |
-| `notification.smtp_port` | `587` |
-| `notification.smtp_username` | Your Gmail address |
-| `notification.smtp_password` | Gmail app password (NOT your Gmail password) |
-| `notification.email_from` | Sender address |
-| `notification.email_to` | List of recipient addresses |
+| `notifications.smtp_host` | Your SMTP server (e.g. `smtp.gmail.com`) |
+| `notifications.smtp_port` | `587` |
+| `notifications.smtp_username` | Your Gmail address |
+| `notifications.smtp_password` | Gmail app password (NOT your Gmail password) |
+| `notifications.sender` | Sender address |
+| `notifications.recipients` | List of recipient addresses |
 | `wol.mac_address` | MAC address of the NAS/target server |
 | `wol.server_ip` | IP address of the NAS/target server |
 | `wol.broadcast_address` | **(Optional)** Subnet broadcast IP (e.g., `192.168.1.255`). Leave empty to auto-derive from `server_ip`. |
