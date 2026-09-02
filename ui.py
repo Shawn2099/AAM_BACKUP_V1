@@ -290,10 +290,19 @@ async def login_submit(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"login:{client_ip}", _RATE_MAX_LOGIN):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+    if not _auth_enabled():
+        token = _create_session()
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie(
+            key="session", value=token,
+            httponly=True, samesite="lax",
+            max_age=int(_SESSION_TTL.total_seconds()),
+        )
+        return resp
     form = await request.form()
     api_key = form.get("api_key", "")
     configured_key = _get_api_key()
-    if not configured_key or hmac.compare_digest(str(api_key), configured_key):
+    if configured_key and hmac.compare_digest(str(api_key), configured_key):
         token = _create_session()
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(
@@ -306,7 +315,10 @@ async def login_submit(request: Request):
 
 
 @app.get("/logout")
-def logout():
+def logout(request: Request):
+    token = request.cookies.get("session")
+    if token:
+        _sessions.pop(token, None)
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie("session")
     return resp

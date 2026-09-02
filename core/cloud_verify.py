@@ -69,6 +69,7 @@ def verify_cloud_integrity(
         )
 
         verified = result.returncode == _EXIT_VERIFIED
+        stderr_output = (result.stderr or "").strip() if result.stderr else "no stderr"
 
         if verified:
             logger.info("Cloud integrity verified - source matches GCS")
@@ -79,13 +80,12 @@ def verify_cloud_integrity(
             else:
                 label = "error"
             # Log full stderr — truncating hides the actual error in production
-            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
             logger.warning(f"Cloud verify {label} (exit {result.returncode}): {stderr_output}")
 
         return {
             "verified": verified,
             "exit_code": result.returncode,
-            "error": _build_error_message(result.returncode),
+            "error": _build_error_message(result.returncode, stderr_output),
         }
 
     except subprocess.TimeoutExpired:
@@ -99,7 +99,7 @@ def verify_cloud_integrity(
         return {"verified": False, "exit_code": -1, "error": str(e)}
 
 
-def _build_error_message(exit_code: int) -> str | None:
+def _build_error_message(exit_code: int, stderr_detail: str = "") -> str | None:
     """Build a human-readable error message from rclone exit code.
 
     Exit 0 = no error.
@@ -108,6 +108,13 @@ def _build_error_message(exit_code: int) -> str | None:
     """
     if exit_code == _EXIT_VERIFIED:
         return None
+    detail = (stderr_detail or "").strip()
+    if detail and detail != "no stderr":
+        if len(detail) > 2000:
+            detail = detail[:2000] + "..."
+        suffix = f": {detail}"
+    else:
+        suffix = ""
     if exit_code == _EXIT_MISMATCH:
-        return "Integrity mismatch — source and GCS file counts or sizes differ"
-    return f"Rclone check failed with exit code {exit_code} — check rclone logs for details"
+        return f"Integrity mismatch — source and GCS file counts or sizes differ{suffix}"
+    return f"Rclone check failed with exit code {exit_code} — check rclone logs for details{suffix}"

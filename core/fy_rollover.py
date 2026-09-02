@@ -6,6 +6,7 @@ Called by launch.py at startup before normal backup processing.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -78,13 +79,13 @@ def _parent_path(path_str: str) -> str:
     from pathlib import PurePosixPath, PureWindowsPath
     if path_str.startswith("\\\\"):
         p = PureWindowsPath(path_str)
-        return str(p.parent)
+        return str(p.parent).rstrip("\\")
     elif "\\" in path_str:
         p = PureWindowsPath(path_str)
-        return str(p.parent)
+        return str(p.parent).rstrip("\\")
     else:
         p = PurePosixPath(path_str)
-        return str(p.parent)
+        return str(p.parent).rstrip("/")
 
 
 def _child_path(root: str, fy: str) -> str:
@@ -142,7 +143,7 @@ def run_final_backup(source_drive: str, lan_destination: str,
             )
             status = result.get("status", "")
             exit_code = result.get("exit_code", -1)
-            if status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"):
+            if status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE") or (not status and exit_code in (0, 9)):
                 cloud_ok = True
                 logger.info(f"FY rollover: final cloud backup OK (exit {exit_code} → {status})")
             else:
@@ -265,7 +266,8 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
             f"  LAN:     {old_lan} → {new_lan}"
         )
     except Exception:
-        os.unlink(tmp_path)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
         raise
 
 

@@ -8,6 +8,7 @@ import csv
 import html
 import io
 import random
+import re
 import smtplib
 import time
 from email.mime.application import MIMEApplication
@@ -345,7 +346,8 @@ def send_summary_report(
 
     # Generate CSV with all runs for attachment
     csv_bytes = _generate_csv_data(runs)
-    csv_filename = f"{firm_name.replace(' ', '_')}_{period}_Report.csv"
+    safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', firm_name)
+    csv_filename = f"{safe_firm}_{period}_Report.csv"
 
     attachments = [{
         "filename": csv_filename,

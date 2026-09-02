@@ -169,7 +169,7 @@ class TestCloudFailureStatus:
             flow._run_cloud_pipeline(cfg, "run-4", "2026-08-18T18:00:00")
 
         args = mock_record.call_args.args
-        assert args[4] == "CLOUD_SKIPPED"  # genuinely never ran — SKIPPED is honest
+        assert args[4] == "CLOUD_FAILED"  # Preflight failure is recorded as FAILED per status truth semantics
 
 
 class TestLanFailureStatus:
@@ -216,7 +216,7 @@ class TestLanFailureStatus:
             flow._run_lan_pipeline(cfg, "run-6", "2026-08-18T01:00:00")
 
         args = mock_record.call_args.args
-        assert args[4] == "LAN_SKIPPED"
+        assert args[4] == "LAN_FAILED"
 
 
 # ═══════════════════════════════════════════════════════════════

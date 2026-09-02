@@ -94,8 +94,8 @@ def _resolve_paths() -> None:
         cfg = load_config(CONFIG_PATH)
         BACKUP_LOCK_PATH = cfg.paths.backup_lock_path
         LOG_DIR = Path(cfg.paths.log_directory)
-    except Exception:
-        pass  # defaults already set at module level
+    except Exception as exc:
+        logger.warning(f"Could not load config.yaml ({exc}) - using default paths")
 
 
 def _configure_logging() -> None:
@@ -336,156 +336,156 @@ def main() -> None:
             healthy = _check_health()
 
             if healthy:
-            if failures > 0:
-                logger.info(f"Prefect API healthy (recovered after {failures} failure(s))")
-            failures = 0
-            transfer_deferrals = 0
-            lock_deferrals = 0
-            # G4: a healthy Prefect API does NOT mean backups are being
-            # scheduled. The in-process scheduler + dashboard live in
-            # AamBackupAgent; if that service is stopped, deployments never
-            # run and nothing else reports it (the server looks perfectly
-            # fine). Monitor it directly.
-            agent_state = _service_state(AGENT_SERVICE)
-            if agent_state == "RUNNING":
-                service_start_log.pop(AGENT_SERVICE, None)  # breaker reset
-            elif agent_state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
-                logger.info(f"{AGENT_SERVICE} is {agent_state} - waiting for NSSM to finish the transition")
-            elif agent_state == "STOPPED":
-                if _start_allowed(AGENT_SERVICE):
-                    _start_service(AGENT_SERVICE)
+                if failures > 0:
+                    logger.info(f"Prefect API healthy (recovered after {failures} failure(s))")
+                failures = 0
+                transfer_deferrals = 0
+                lock_deferrals = 0
+                # G4: a healthy Prefect API does NOT mean backups are being
+                # scheduled. The in-process scheduler + dashboard live in
+                # AamBackupAgent; if that service is stopped, deployments never
+                # run and nothing else reports it (the server looks perfectly
+                # fine). Monitor it directly.
+                agent_state = _service_state(AGENT_SERVICE)
+                if agent_state == "RUNNING":
+                    service_start_log.pop(AGENT_SERVICE, None)  # breaker reset
+                elif agent_state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
+                    logger.info(f"{AGENT_SERVICE} is {agent_state} - waiting for NSSM to finish the transition")
+                elif agent_state == "STOPPED":
+                    if _start_allowed(AGENT_SERVICE):
+                        _start_service(AGENT_SERVICE)
+                    else:
+                        logger.critical(
+                            f"{AGENT_SERVICE} is STOPPED and auto-start is suppressed "
+                            f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
+                            f"Manual intervention required: sc query {AGENT_SERVICE}"
+                        )
+                else:
+                    logger.warning(
+                        f"{AGENT_SERVICE} state unknown ({agent_state!r}) - "
+                        "cannot verify the scheduler is running"
+                    )
+                time.sleep(CHECK_INTERVAL_SECONDS)
+                continue
+
+            # ── Unhealthy ────────────────────────────────────────────────────────
+            failures += 1
+            logger.warning(
+                f"Prefect API unreachable - failure {failures}/{FAILURE_THRESHOLD}"
+            )
+
+            if failures < FAILURE_THRESHOLD:
+                time.sleep(CHECK_INTERVAL_SECONDS)
+                continue
+
+            # ── Threshold reached — check for active backup before acting ────────
+            lock_held = _is_backup_running()       # PID-validated lock file
+            transferring = _transfer_process_running()  # rclone / robocopy alive
+
+            if transferring:
+                # ── Real transfer detected — defer with an 8-hour safety cap ─────
+                # Protects legitimate multi-hour backups from being interrupted.
+                # The cap (MAX_TRANSFER_DEFERRALS) guards against a zombie rclone
+                # process that is alive but making no progress and somehow escaped
+                # Python's subprocess_timeout_seconds kill.
+                transfer_deferrals += 1
+                if transfer_deferrals >= MAX_TRANSFER_DEFERRALS:
+                    logger.error(
+                        f"Prefect API has been unhealthy for {failures} checks and a "
+                        f"transfer process has been detected for {transfer_deferrals} deferrals "
+                        f"(~{transfer_deferrals * BACKUP_WAIT_INTERVAL // 3600} h). "
+                        f"Possible zombie rclone/robocopy. Forcing restart. "
+                        f"NOTE: the zombie process belongs to {AGENT_SERVICE}, not "
+                        f"{WATCHED_SERVICE} - manual kill may still be required."
+                    )
+                    with contextlib.suppress(OSError):
+                        BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                    transfer_deferrals = 0
+                    # H4: fall straight through to the restart logic below — the
+                    # old code entered the lock branch using the stale pre-unlink
+                    # value of lock_held and burned one extra cycle sleeping.
+                else:
+                    logger.warning(
+                        f"Prefect API has been unhealthy for {failures} checks but a real "
+                        f"data transfer is in progress (rclone/robocopy detected). "
+                        f"Deferring restart. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
+                        f"(transfer-deferral {transfer_deferrals}/{MAX_TRANSFER_DEFERRALS} - cap at 8 h)"
+                    )
+                    time.sleep(BACKUP_WAIT_INTERVAL)
+                    continue
+
+            elif lock_held:
+                # ── Lock exists but no transfer process — suspicious ─────────────
+                # Could be: (a) flow is between rclone calls (pre/post-flight steps),
+                # or (b) stale lock from PID reuse after a crash.
+                # Apply the MAX_DEFERRALS cap to avoid waiting forever on (b).
+                # H4: this branch counts its OWN cycles only, so a preceding run of
+                # transfer-deferrals can never pre-satisfy this cap.
+                lock_deferrals += 1
+                if lock_deferrals >= MAX_DEFERRALS:
+                    logger.error(
+                        f"Prefect API has been unhealthy for {failures} checks and backup "
+                        f"lock has persisted for {lock_deferrals} deferrals (~{lock_deferrals * BACKUP_WAIT_INTERVAL // 60} min) "
+                        f"with no active transfer process. Possible stale lock from PID reuse. "
+                        f"Forcing restart."
+                    )
+                    # Force-remove the lock and proceed to restart logic in the
+                    # SAME iteration (no wasted sleep cycle on stale state).
+                    with contextlib.suppress(OSError):
+                        BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                    lock_deferrals = 0
+                else:
+                    logger.warning(
+                        f"Prefect API has been unhealthy for {failures} checks. "
+                        f"Backup lock is held but no transfer process detected - "
+                        f"possibly between rclone calls. Deferring restart. "
+                        f"Will re-check in {BACKUP_WAIT_INTERVAL}s. "
+                        f"(lock-deferral {lock_deferrals}/{MAX_DEFERRALS})"
+                    )
+                    time.sleep(BACKUP_WAIT_INTERVAL)
+                    continue
+
+            # ── No backup running — safe to act ──────────────────────────────────
+            state = _service_state(WATCHED_SERVICE)
+            if state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
+                # NSSM is already handling a restart — wait.
+                logger.info(
+                    f"{WATCHED_SERVICE} is {state} (transitioning). "
+                    "NSSM is already handling a restart - resetting failure counter."
+                )
+                failures = 0
+                time.sleep(CHECK_INTERVAL_SECONDS)
+                continue
+            if state != "RUNNING":
+                # F6: the service is STOPPED (or unqueryable). SCM failure actions
+                # only fire for services that started and then failed — a stopped
+                # service is never revived by Windows on its own, so the old code
+                # waited here forever. Start it directly (circuit-breaker guarded).
+                if _start_allowed(WATCHED_SERVICE):
+                    _start_service(WATCHED_SERVICE)
+                    failures = 0
                 else:
                     logger.critical(
-                        f"{AGENT_SERVICE} is STOPPED and auto-start is suppressed "
+                        f"{WATCHED_SERVICE} is down and auto-start is suppressed "
                         f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
-                        f"Manual intervention required: sc query {AGENT_SERVICE}"
+                        f"Manual intervention required: sc query {WATCHED_SERVICE}"
                     )
-            else:
-                logger.warning(
-                    f"{AGENT_SERVICE} state unknown ({agent_state!r}) - "
-                    "cannot verify the scheduler is running"
-                )
-            time.sleep(CHECK_INTERVAL_SECONDS)
-            continue
-
-        # ── Unhealthy ────────────────────────────────────────────────────────
-        failures += 1
-        logger.warning(
-            f"Prefect API unreachable - failure {failures}/{FAILURE_THRESHOLD}"
-        )
-
-        if failures < FAILURE_THRESHOLD:
-            time.sleep(CHECK_INTERVAL_SECONDS)
-            continue
-
-        # ── Threshold reached — check for active backup before acting ────────
-        lock_held  = _is_backup_running()       # PID-validated lock file
-        transferring = _transfer_process_running()  # rclone / robocopy alive
-
-        if transferring:
-            # ── Real transfer detected — defer with an 8-hour safety cap ─────
-            # Protects legitimate multi-hour backups from being interrupted.
-            # The cap (MAX_TRANSFER_DEFERRALS) guards against a zombie rclone
-            # process that is alive but making no progress and somehow escaped
-            # Python's subprocess_timeout_seconds kill.
-            transfer_deferrals += 1
-            if transfer_deferrals >= MAX_TRANSFER_DEFERRALS:
-                logger.error(
-                    f"Prefect API has been unhealthy for {failures} checks and a "
-                    f"transfer process has been detected for {transfer_deferrals} deferrals "
-                    f"(~{transfer_deferrals * BACKUP_WAIT_INTERVAL // 3600} h). "
-                    f"Possible zombie rclone/robocopy. Forcing restart. "
-                    f"NOTE: the zombie process belongs to {AGENT_SERVICE}, not "
-                    f"{WATCHED_SERVICE} - manual kill may still be required."
-                )
-                with contextlib.suppress(OSError):
-                    BACKUP_LOCK_PATH.unlink(missing_ok=True)
-                transfer_deferrals = 0
-                # H4: fall straight through to the restart logic below — the
-                # old code entered the lock branch using the stale pre-unlink
-                # value of lock_held and burned one extra cycle sleeping.
-            else:
-                logger.warning(
-                    f"Prefect API has been unhealthy for {failures} checks but a real "
-                    f"data transfer is in progress (rclone/robocopy detected). "
-                    f"Deferring restart. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
-                    f"(transfer-deferral {transfer_deferrals}/{MAX_TRANSFER_DEFERRALS} - cap at 8 h)"
-                )
                 time.sleep(BACKUP_WAIT_INTERVAL)
                 continue
 
-        elif lock_held:
-            # ── Lock exists but no transfer process — suspicious ─────────────
-            # Could be: (a) flow is between rclone calls (pre/post-flight steps),
-            # or (b) stale lock from PID reuse after a crash.
-            # Apply the MAX_DEFERRALS cap to avoid waiting forever on (b).
-            # H4: this branch counts its OWN cycles only, so a preceding run of
-            # transfer-deferrals can never pre-satisfy this cap.
-            lock_deferrals += 1
-            if lock_deferrals >= MAX_DEFERRALS:
-                logger.error(
-                    f"Prefect API has been unhealthy for {failures} checks and backup "
-                    f"lock has persisted for {lock_deferrals} deferrals (~{lock_deferrals * BACKUP_WAIT_INTERVAL // 60} min) "
-                    f"with no active transfer process. Possible stale lock from PID reuse. "
-                    f"Forcing restart."
-                )
-                # Force-remove the lock and proceed to restart logic in the
-                # SAME iteration (no wasted sleep cycle on stale state).
-                with contextlib.suppress(OSError):
-                    BACKUP_LOCK_PATH.unlink(missing_ok=True)
-                lock_deferrals = 0
-            else:
-                logger.warning(
-                    f"Prefect API has been unhealthy for {failures} checks. "
-                    f"Backup lock is held but no transfer process detected - "
-                    f"possibly between rclone calls. Deferring restart. "
-                    f"Will re-check in {BACKUP_WAIT_INTERVAL}s. "
-                    f"(lock-deferral {lock_deferrals}/{MAX_DEFERRALS})"
-                )
-                time.sleep(BACKUP_WAIT_INTERVAL)
-                continue
-
-        # ── No backup running — safe to act ──────────────────────────────────
-        state = _service_state(WATCHED_SERVICE)
-        if state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
-            # NSSM is already handling a restart — wait.
-            logger.info(
-                f"{WATCHED_SERVICE} is {state} (transitioning). "
-                "NSSM is already handling a restart - resetting failure counter."
+            # Service is RUNNING but API is dead — genuine hung state.
+            logger.error(
+                f"{WATCHED_SERVICE} reports RUNNING but Prefect API has been "
+                f"unreachable for {failures} consecutive checks. Triggering restart."
             )
+            _stop_service(WATCHED_SERVICE)
             failures = 0
-            time.sleep(CHECK_INTERVAL_SECONDS)
-            continue
-        if state != "RUNNING":
-            # F6: the service is STOPPED (or unqueryable). SCM failure actions
-            # only fire for services that started and then failed — a stopped
-            # service is never revived by Windows on its own, so the old code
-            # waited here forever. Start it directly (circuit-breaker guarded).
-            if _start_allowed(WATCHED_SERVICE):
-                _start_service(WATCHED_SERVICE)
-                failures = 0
-            else:
-                logger.critical(
-                    f"{WATCHED_SERVICE} is down and auto-start is suppressed "
-                    f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
-                    f"Manual intervention required: sc query {WATCHED_SERVICE}"
-                )
-            time.sleep(BACKUP_WAIT_INTERVAL)
-            continue
 
-        # Service is RUNNING but API is dead — genuine hung state.
-        logger.error(
-            f"{WATCHED_SERVICE} reports RUNNING but Prefect API has been "
-            f"unreachable for {failures} consecutive checks. Triggering restart."
-        )
-        _stop_service(WATCHED_SERVICE)
-        failures = 0
-
-        logger.info(
-            f"Restart triggered. Cooling down {RESTART_COOLDOWN}s before "
-            "resuming health checks (gives Prefect time to fully boot)."
-        )
-        time.sleep(RESTART_COOLDOWN)
+            logger.info(
+                f"Restart triggered. Cooling down {RESTART_COOLDOWN}s before "
+                "resuming health checks (gives Prefect time to fully boot)."
+            )
+            time.sleep(RESTART_COOLDOWN)
         except Exception as exc:
             logger.exception(f"Watchdog main loop error (will retry in {CHECK_INTERVAL_SECONDS}s): {exc}")
             time.sleep(CHECK_INTERVAL_SECONDS)

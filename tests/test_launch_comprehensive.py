@@ -74,7 +74,8 @@ class TestEnsureConcurrencyLimit:
         mock_client.upsert_global_concurrency_limit_by_name.side_effect = Exception("API error")
         with patch("prefect.client.orchestration.get_client") as mock_get_client:
             mock_get_client.return_value.__aenter__.return_value = mock_client
-            _ensure_concurrency_limit()
+            with pytest.raises(Exception, match="API error"):
+                _ensure_concurrency_limit()
 
     def test_handles_tag_limit_already_exists(self):
         from launch import _ensure_concurrency_limit

@@ -10,6 +10,8 @@ Evidence: last night backup-lan fired 21:00 and COMPLETED doing nothing
 import os
 from pathlib import Path
 
+import pytest
+
 from models.config import load_config
 
 os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
@@ -54,11 +56,11 @@ def test_desired_deployments_exclude_disabled_cloud(monkeypatch, tmp_path):
     assert "backup-lan" in names
 
 
-_LIVE_PRELUDE = r'''
+_LIVE_PRELUDE = f'''
 import os, sys, json
 os.environ["PREFECT_TEST_MODE"] = "0"
 os.environ["PREFECT_API_URL"] = "http://127.0.0.1:4200/api"
-sys.path.insert(0, "C:/AAM_BACKUP_V1")
+sys.path.insert(0, {repr(_PROJECT)})
 '''
 
 
@@ -72,8 +74,9 @@ def _live(code: str) -> dict:
     script.write_text(_LIVE_PRELUDE + code, encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("PREFECT_")}
     env["PREFECT_API_URL"] = "http://127.0.0.1:4200/api"
+    env["PYTHONPATH"] = _PROJECT
     proc = _sp.run([_sys.executable, str(script)],
-                   capture_output=True, text=True, timeout=300)
+                   capture_output=True, text=True, timeout=300, env=env)
     lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
     result = _json.loads(lines[-1]) if lines else {}
     result["_rc"] = proc.returncode
@@ -83,7 +86,7 @@ def _live(code: str) -> dict:
     return result
 
 
-_ENSURE_AND_PAUSE = r'''
+_ENSURE_AND_PAUSE = f'''
 import asyncio, json
 from prefect.client.orchestration import get_client
 from flow import backup
@@ -92,27 +95,27 @@ from models.config import load_config
 DEP = "aam-backup/backup-lan-p2scen"
 
 async def main():
-    out = {}
+    out = {{}}
     async with get_client() as client:
         dep = await backup.ato_deployment(
             name="backup-lan-p2scen",
-            parameters={"config_path": "C:/AAM_BACKUP_V1/config.yaml",
-                        "mode": "lan"},
+            parameters={{"config_path": {repr(str(Path(_PROJECT) / "config.yaml"))},
+                        "mode": "lan"}},
         )
         await dep.aapply()
         d = await client.read_deployment_by_name(DEP)
         out["created_paused_state"] = bool(d.paused)
 
-        cfg = load_config("C:/AAM_BACKUP_V1/config.yaml")
+        cfg = load_config({repr(str(Path(_PROJECT) / "config.yaml"))})
         from launch import _reconcile_disabled_legs
         out["recon"] = _reconcile_disabled_legs(
-            cfg, legs={"backup-lan-p2scen": False})
+            cfg, legs={{"backup-lan-p2scen": False}})
 
         d = await client.read_deployment_by_name(DEP)
         out["paused_after_disable"] = bool(d.paused)
 
         out["recon_resume"] = _reconcile_disabled_legs(
-            cfg, legs={"backup-lan-p2scen": True})
+            cfg, legs={{"backup-lan-p2scen": True}})
         d = await client.read_deployment_by_name(DEP)
         out["paused_after_enable"] = bool(d.paused)
 
@@ -124,6 +127,15 @@ asyncio.run(main())
 '''
 
 
+def _is_prefect_live() -> bool:
+    try:
+        import httpx
+        return httpx.get("http://127.0.0.1:4200/api/health", timeout=1.0).status_code == 200
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _is_prefect_live(), reason="Live Prefect server (http://127.0.0.1:4200) not running")
 def test_reconcile_pauses_stale_and_resumes_enabled_live():
     """Live server: stale deployment must end PAUSED when leg disabled,
     RESUMED when re-enabled, then cleaned up."""

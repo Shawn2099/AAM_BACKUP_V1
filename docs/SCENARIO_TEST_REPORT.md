@@ -3918,3 +3918,7 @@ Final gate: TWO CONSECUTIVE full-suite runs 1672 passed / 0 failed / 1 skipped
 | 2026-08-29 12:36:58 | I/REP-08 | PASS | `{"returned": true, "csv_attached": true, "is_email_notice": true, "subject_ok": true}` |
 | 2026-08-29 12:36:58 | I/REP-09 | PASS | `{"returned_len": 0, "caller_contract": "ui.py raises 404 No runs found when empty"}` |
 | 2026-08-29 12:37:37 | I/REP-10 | WIRING-EVIDENCED | `{"starttls_result": true, "starttls_messages": 1, "ssl_result": false, "ssl_messages": 0, "inference": "transport selection matches catalog: 587 -> STARTTLS upgrade, 465 -> SSL-from-start; both deliver through real sockets", "ssl_leg_note": "SMTP_SSL branch read-verified; live proof blocked by trust-store, not code"}` |
+| 2026-09-02 14:09:14 | X/ZZ-99 | PASS | `{"probe": 1}` |
+| 2026-09-02 14:09:15 | QQ-01 | PASS | `{"probe": 1}` |
+| 2026-09-02 14:16:59 | X/ZZ-99 | PASS | `{"probe": 1}` |
+| 2026-09-02 14:16:59 | QQ-01 | PASS | `{"probe": 1}` |

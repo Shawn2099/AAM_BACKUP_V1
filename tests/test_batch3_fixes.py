@@ -53,8 +53,10 @@ class TestFilesFailed:
         mock_run.return_value = MagicMock(returncode=9)
         # point the (mocked) run at our prepared log
         with patch.object(lan_sync, "tempfile") as mock_tf:
-            mock_tf.mkstemp.return_value = (3, str(log_file))
-            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
+            fd = os.open(str(log_file), os.O_RDWR)
+            mock_tf.mkstemp.return_value = (fd, str(log_file))
+            with patch("core.lan_sync._assert_source_not_empty"):
+                result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
 
         assert result["status"] == "LAN_PARTIAL"
         assert result["files_failed"] == 2
