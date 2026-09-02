@@ -619,32 +619,29 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
         except Exception as e:
             error_msg = str(e)
-            # F2: record the TRUE terminal status. Previously any exception after
-            # initialization left the run recorded as CLOUD_SKIPPED (initial value),
-            # so real failures were invisible in reports and the dashboard.
             if phase == "sync":
                 status = "CLOUD_FAILED"
             elif phase == "verify" and status == "CLOUD_COMPLETE":
                 status = "CLOUD_VERIFY_FAILED"
             elif phase == "pre":
-                status = "CLOUD_SKIPPED"
-            # phase "post" (record/artifact after a successful sync+verify): the
-            # data is safe on GCS — keep the sync status; the bookkeeping error
-            # stays visible in the run record's error_message.
+                status = "CLOUD_FAILED"
             raise
         finally:
-            _record_run(
-                db_path, run_id, "cloud", started_at, status,
-                sync_result.get("exit_code", -1), error_msg,
-                files_copied=files_copied,
-                bytes_copied=bytes_copied,
-                files_failed=0,
-                extended_metrics=extended_metrics,
-                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                synchronous=config.maintenance.sqlite_synchronous,
-                monotonic_start=monotonic_start,
-            )
+            try:
+                _record_run(
+                    db_path, run_id, "cloud", started_at, status,
+                    sync_result.get("exit_code", -1), error_msg,
+                    files_copied=files_copied,
+                    bytes_copied=bytes_copied,
+                    files_failed=0,
+                    extended_metrics=extended_metrics,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
+                    monotonic_start=monotonic_start,
+                )
+            except Exception as rec_err:
+                logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -753,27 +750,27 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
 
         except Exception as e:
             error_msg = str(e)
-            # F2: record the TRUE terminal status (previously left as LAN_SKIPPED).
-            # phase "post" = sync already succeeded; keep its status, the
-            # bookkeeping error stays visible in the run record's error_message.
             if phase == "sync":
                 status = "LAN_FAILED"
             elif phase == "pre":
-                status = "LAN_SKIPPED"
+                status = "LAN_FAILED"
             raise
         finally:
-            _record_run(
-                db_path, run_id, "lan", started_at, status,
-                sync_result.get("exit_code", -1), error_msg,
-                files_copied=files_copied,
-                bytes_copied=bytes_copied,
-                files_failed=files_failed,
-                extended_metrics=extended_metrics,
-                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                synchronous=config.maintenance.sqlite_synchronous,
-                monotonic_start=monotonic_start,
-            )
+            try:
+                _record_run(
+                    db_path, run_id, "lan", started_at, status,
+                    sync_result.get("exit_code", -1), error_msg,
+                    files_copied=files_copied,
+                    bytes_copied=bytes_copied,
+                    files_failed=files_failed,
+                    extended_metrics=extended_metrics,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
+                    monotonic_start=monotonic_start,
+                )
+            except Exception as rec_err:
+                logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
 
 
 # ═══════════════════════════════════════════════════════════════

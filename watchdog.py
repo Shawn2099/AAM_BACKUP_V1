@@ -189,23 +189,29 @@ def _service_state(service: str) -> str:
     already restarting it' from 'it is stopped and nothing will ever
     restart it'. Parsing the state makes that distinction possible.
     """
-    try:
-        r = subprocess.run(
-            ["sc", "query", service],
-            capture_output=True, text=True, timeout=5,
-        )
-        for line in r.stdout.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("STATE"):
-                # Format: 'STATE              : 4  RUNNING (STOPPABLE, ...)' —
-                # the state name is the token after the numeric code.
-                tokens = stripped.split(":", 1)[1].split()
-                if len(tokens) >= 2 and tokens[0].isdigit():
-                    return tokens[1].strip()
-                if tokens:
-                    return tokens[0].strip()
-    except Exception as exc:
-        logger.warning(f"sc query {service} failed: {exc}")
+    for attempt in range(2):
+        try:
+            r = subprocess.run(
+                ["sc", "query", service],
+                capture_output=True, text=True, timeout=15,
+            )
+            for line in r.stdout.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("STATE"):
+                    tokens = stripped.split(":", 1)[1].split()
+                    if len(tokens) >= 2 and tokens[0].isdigit():
+                        return tokens[1].strip()
+                    if tokens:
+                        return tokens[0].strip()
+            return ""
+        except subprocess.TimeoutExpired:
+            logger.warning(f"sc query {service} timed out (attempt {attempt+1}/2)")
+            if attempt == 0:
+                time.sleep(2)
+                continue
+        except Exception as exc:
+            logger.warning(f"sc query {service} failed: {exc}")
+            return ""
     return ""
 
 
@@ -326,9 +332,10 @@ def main() -> None:
     lock_deferrals = 0      # capped at MAX_DEFERRALS (~30 min)
 
     while True:
-        healthy = _check_health()
+        try:
+            healthy = _check_health()
 
-        if healthy:
+            if healthy:
             if failures > 0:
                 logger.info(f"Prefect API healthy (recovered after {failures} failure(s))")
             failures = 0
@@ -479,6 +486,9 @@ def main() -> None:
             "resuming health checks (gives Prefect time to fully boot)."
         )
         time.sleep(RESTART_COOLDOWN)
+        except Exception as exc:
+            logger.exception(f"Watchdog main loop error (will retry in {CHECK_INTERVAL_SECONDS}s): {exc}")
+            time.sleep(CHECK_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":

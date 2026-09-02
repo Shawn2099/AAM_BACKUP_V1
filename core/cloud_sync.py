@@ -115,6 +115,10 @@ def build_rclone_sync_command(
 
     All tunable values are passed as parameters — caller draws them from config.
     """
+    from core.health import check_source_drive as _check_src
+    ok, reason = _check_src(source)
+    if not ok and "appears empty" in reason:
+        raise ValueError(reason)
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
     # M7: resolve the binary like every other rclone-calling module
