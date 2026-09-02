@@ -197,6 +197,14 @@ def cleanup_orphaned_robocopy_logs(max_age_hours: int = 24) -> int:
     return removed
 
 
+def _assert_source_not_empty(source: str) -> None:
+    from pathlib import Path as _Path
+    from core.health import check_source_drive as _check_src
+    ok, reason = _check_src(source)
+    if not ok and "appears empty" in reason:
+        raise ValueError(reason)
+
+
 def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> list[str]:
     """Build robocopy /MIR command with production-verified flags.
 
@@ -239,6 +247,7 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
     ]
 
     _validate_required_flags(flags)
+    _assert_source_not_empty(source)
     robocopy_exe = resolve_binary("robocopy") or "robocopy"
     return [robocopy_exe, source, dest, *flags]
 
