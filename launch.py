@@ -164,8 +164,12 @@ def _cancel_orphaned_runs():
                         if len(batch) < limit:
                             break
                         offset += limit
-                    runs = all_runs
-                    runs = [r for r in runs if getattr(r, "flow_id", None) is not None or "aam-backup" in str(getattr(r, "name", "")) or True]
+                    runs = [
+                        r for r in all_runs
+                        if getattr(r, "flow_id", None) is not None
+                        or "aam-backup" in str(getattr(r, "name", ""))
+                        or any(k in str(getattr(r, "name", "")) for k in ("backup-", "report", "rollover"))
+                    ]
                     cancelled = 0
                     for r in runs:
                         try:

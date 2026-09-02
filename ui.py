@@ -290,12 +290,14 @@ async def login_submit(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"login:{client_ip}", _RATE_MAX_LOGIN):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+    is_https = request.url.scheme == "https"
     if not _auth_enabled():
         token = _create_session()
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(
             key="session", value=token,
             httponly=True, samesite="lax",
+            secure=is_https,
             max_age=int(_SESSION_TTL.total_seconds()),
         )
         return resp
@@ -308,6 +310,7 @@ async def login_submit(request: Request):
         resp.set_cookie(
             key="session", value=token,
             httponly=True, samesite="lax",
+            secure=is_https,
             max_age=int(_SESSION_TTL.total_seconds()),
         )
         return resp

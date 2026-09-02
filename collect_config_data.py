@@ -48,8 +48,19 @@ import subprocess
 
 def is_firewall_open(port: int = 8080) -> bool:
     try:
-        cmd = f"powershell -Command \"Get-NetFirewallRule | Where-Object {{ $_.Enabled -eq $true -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' }} | Get-NetFirewallPortFilter | Where-Object {{ $_.LocalPort -eq '{port}' }}\""
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        port_num = int(port)
+        if not (1 <= port_num <= 65535):
+            return False
+        ps_script = (
+            f"Get-NetFirewallRule | Where-Object {{ $_.Enabled -eq $true -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' }} "
+            f"| Get-NetFirewallPortFilter | Where-Object {{ $_.LocalPort -eq '{port_num}' }}"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         return bool(result.stdout.strip())
     except Exception:
         return False
@@ -166,7 +177,8 @@ def main():
         print("      Run this in elevated Command Prompt to open it:")
         print("      netsh advfirewall firewall add rule name=\"AAM Backup Dashboard\" dir=in action=allow protocol=TCP localport=8080")
     print("="*70)
-    input("Press Enter to exit...")
+    if sys.stdin.isatty():
+        input("Press Enter to exit...")
 
 if __name__ == '__main__':
     main()

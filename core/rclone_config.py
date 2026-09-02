@@ -44,6 +44,10 @@ storage_class = {storage_class}
     fd, cfg_path = tempfile.mkstemp(suffix=".conf", prefix="rclone_")
     os.close(fd)
     Path(cfg_path).write_text(content, encoding="utf-8")
+    try:
+        os.chmod(cfg_path, 0o600)
+    except OSError:
+        pass
     return cfg_path
 
 
