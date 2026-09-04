@@ -319,18 +319,36 @@ class TestMainLoop:
             mock_sleep = self._run_loop(total_iters)
             mock_lock.unlink.assert_called()
 
-    def test_lock_deferral_cap_forces_restart(self):
-        """After MAX_DEFERRALS with lock held, force restart."""
+    def test_lock_deferral_cap_preserves_live_lock(self):
+        """Remediation contract: at MAX_DEFERRALS with a PID-live lock owner
+        and no transfer process, the watchdog must NOT unlink the live lock,
+        must NOT restart services, must log CRITICAL, and must keep deferring.
+        This test explicitly proves the old forced-unlock behavior is gone."""
         mock_lock = MagicMock()
+        mock_logger = MagicMock()
         with patch("httpx.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=True), \
              patch("watchdog._transfer_process_running", return_value=False), \
-             patch("watchdog._service_is_running", return_value=True), \
-             patch("watchdog._stop_service"), \
+             patch("watchdog._stop_service") as mock_stop, \
+             patch("watchdog._start_service") as mock_start, \
+             patch("watchdog.logger", mock_logger), \
              patch("watchdog.BACKUP_LOCK_PATH", mock_lock):
-            total_iters = watchdog.FAILURE_THRESHOLD + watchdog.MAX_DEFERRALS
+            # Run past the cap: counter must cycle and deferral must continue.
+            total_iters = watchdog.FAILURE_THRESHOLD + watchdog.MAX_DEFERRALS + 3
             mock_sleep = self._run_loop(total_iters)
-            mock_lock.unlink.assert_called()
+            # Old behavior is gone: live lock never unlinked, never restarted.
+            mock_lock.unlink.assert_not_called()
+            mock_stop.assert_not_called()
+            mock_start.assert_not_called()
+            # CRITICAL event emitted for the live-lock-at-cap condition.
+            critical_msgs = [
+                str(c.args[0]) for c in mock_logger.critical.call_args_list
+            ]
+            assert any(
+                "NOT removing the live lock" in m for m in critical_msgs
+            ), f"expected live-lock CRITICAL, got: {critical_msgs}"
+            # Still deferring after the cap (re-check, not restart).
+            assert mock_sleep.call_args_list[-1][0][0] == watchdog.BACKUP_WAIT_INTERVAL
 
     def test_service_stopped_is_started_not_stopped(self):
         """F6: a STOPPED service is started (sc start), never sc stop.

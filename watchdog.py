@@ -22,13 +22,19 @@ HOW IT WORKS
 2. After FAILURE_THRESHOLD (5) consecutive failures (~5 minutes), considers
    the Prefect server hung-but-alive.
 3. Before acting, ALWAYS checks for an active backup via two signals:
-   - Signal A (real transfer): rclone.exe / robocopy.exe process is alive.
-     → Defer up to MAX_TRANSFER_DEFERRALS (default 240 × 2 min = 8 h).
-       A legitimate transfer (max 6 h by subprocess_timeout_seconds) is
-       never cut short. A zombie/hung rclone is force-restarted after 8 h.
-   - Signal B (lock only, no transfer process): lock file exists + PID alive
-     but no rclone/robocopy detected. Suspicious — PID reuse or crash.
-     Applies MAX_DEFERRALS cap (~30 min), then forces lock removal + restart.
+    - Signal A (real transfer): rclone.exe / robocopy.exe process is alive.
+      → Defer up to MAX_TRANSFER_DEFERRALS (default 240 × 2 min = 8 h).
+        A legitimate transfer (max 6 h by subprocess_timeout_seconds) is
+        never cut short. At the cap with a PID-live lock owner, log a
+        file/log-only CRITICAL and keep deferring (never unlink a live
+        lock, never restart under it). Only a dead/absent lock owner
+        proceeds to restart.
+    - Signal B (lock only, no transfer process): lock file exists + PID alive
+      but no rclone/robocopy detected. Expected between rclone calls
+      (verify/manifest/report phases) — defer indefinitely while the owner
+      is PID-live; at the MAX_DEFERRALS cap (~30 min) log a file/log-only
+      CRITICAL and keep deferring. A PID-dead/reused lock is not a live
+      backup: it is treated as no-backup and collected via restart/boot-heal.
    - No lock and no transfer process → restart promptly.
    - If no backup → issues sc stop AamPrefectServer. NSSM + sc failure
      actions restart both AamPrefectServer and AamBackupAgent automatically.
@@ -390,6 +396,22 @@ def main() -> None:
                 # Python's subprocess_timeout_seconds kill.
                 transfer_deferrals += 1
                 if transfer_deferrals >= MAX_TRANSFER_DEFERRALS:
+                    if lock_held:
+                        # Live lock owner: NEVER unlink a PID-live lock and NEVER
+                        # restart under it — a second backup must not overlap a
+                        # live one. File/log-only CRITICAL (watchdog_svc.log);
+                        # not emailed, not shown in the dashboard.
+                        logger.critical(
+                            f"Prefect API has been unhealthy for {failures} checks and a "
+                            f"transfer process has been detected for {transfer_deferrals} deferrals "
+                            f"(~{transfer_deferrals * BACKUP_WAIT_INTERVAL // 3600} h) while the "
+                            f"backup lock owner is still alive. NOT removing the live lock and NOT "
+                            f"restarting. Possible zombie rclone/robocopy belonging to "
+                            f"{AGENT_SERVICE} - manual review required."
+                        )
+                        transfer_deferrals = 0
+                        time.sleep(BACKUP_WAIT_INTERVAL)
+                        continue
                     logger.error(
                         f"Prefect API has been unhealthy for {failures} checks and a "
                         f"transfer process has been detected for {transfer_deferrals} deferrals "
@@ -423,17 +445,23 @@ def main() -> None:
                 # transfer-deferrals can never pre-satisfy this cap.
                 lock_deferrals += 1
                 if lock_deferrals >= MAX_DEFERRALS:
-                    logger.error(
+                    # lock_held here means the owner PID + creation time is
+                    # confirmed alive: NEVER unlink a live lock and NEVER
+                    # restart under it. File/log-only CRITICAL
+                    # (watchdog_svc.log); not emailed, not in the dashboard.
+                    # (A PID-dead/reused lock never reaches this branch:
+                    # _is_backup_running() reports it stale, so the loop
+                    # treats it as no-backup and boot-heal collects it.)
+                    logger.critical(
                         f"Prefect API has been unhealthy for {failures} checks and backup "
                         f"lock has persisted for {lock_deferrals} deferrals (~{lock_deferrals * BACKUP_WAIT_INTERVAL // 60} min) "
-                        f"with no active transfer process. Possible stale lock from PID reuse. "
-                        f"Forcing restart."
+                        f"with no active transfer process, but the lock owner is still alive. "
+                        f"NOT removing the live lock and NOT restarting. Manual review required "
+                        f"if the backup is wedged in a non-transfer phase."
                     )
-                    # Force-remove the lock and proceed to restart logic in the
-                    # SAME iteration (no wasted sleep cycle on stale state).
-                    with contextlib.suppress(OSError):
-                        BACKUP_LOCK_PATH.unlink(missing_ok=True)
                     lock_deferrals = 0
+                    time.sleep(BACKUP_WAIT_INTERVAL)
+                    continue
                 else:
                     logger.warning(
                         f"Prefect API has been unhealthy for {failures} checks. "

@@ -133,6 +133,67 @@ def read_lock_alive(lock_path: Path) -> tuple[bool, int | None]:
             return False, pid
 
 
+def acquire_lock(lock_path: Path) -> bool:
+    """Atomically acquire the backup lock for this process.
+
+    Filesystem-serialized (O_CREAT|O_EXCL), so two racing processes cannot
+    both believe they own the lock:
+
+      * absent            -> created with our PID:create_time, return True.
+      * present, live     -> return False WITHOUT touching it. A live lock
+        is never overwritten — the caller must abort, never proceed lockless.
+      * present, dead/reused/corrupt (two consecutive dead reads, to absorb
+        AV/parse flaps) -> replaced with our PID:create_time, return True.
+        A lost replace race (FileExistsError) returns False; the winner owns it.
+
+    Raises OSError on genuine I/O failure (caller decides: warn and continue
+    without a lock, as before). Never raises merely because a live owner exists.
+    """
+    pid = os.getpid()
+    ct = _get_create_time(pid)
+    content = str(pid) if ct is None else f"{pid}:{ct:.6f}"
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        pass
+    except OSError:
+        raise
+    else:
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+        return True
+
+    alive, _ = read_lock_alive(lock_path)
+    if alive:
+        return False
+    alive, _ = read_lock_alive(lock_path)
+    if alive:
+        return False
+
+    try:
+        lock_path.unlink()
+    except OSError:
+        return False
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        return False
+    try:
+        os.write(fd, content.encode())
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return False
+    os.close(fd)
+    return True
+
+
 # ── Backward-compat alias (used by tests) ─────────────────────────────────────
 
 def pid_alive(pid: int) -> bool:

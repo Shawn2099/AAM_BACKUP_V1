@@ -35,7 +35,7 @@ from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
-from core.process import write_lock
+from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
 from core.shutdown import shutdown_server
@@ -99,8 +99,18 @@ def _backup_slot(config):
         return
 
     with concurrency("aam-backup", occupy=1, timeout_seconds=wait_seconds):
+        # Exclusive acquisition: a live lock owned by another pipeline aborts
+        # this one BEFORE any transfer starts (slot is released by the raise).
+        # The finally below only removes the lock if it is still ours, so a
+        # successor's lock can never be deleted by a finishing predecessor.
+        acquired = False
         try:
-            write_lock(lock_path)
+            acquired = acquire_lock(lock_path)
+            if not acquired:
+                raise RuntimeError(
+                    "Backup lock is held by a live process - refusing to "
+                    "overwrite it or run without it"
+                )
             logger.info(
                 f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts"
             )
@@ -109,11 +119,18 @@ def _backup_slot(config):
         try:
             yield
         finally:
-            try:
-                lock_path.unlink(missing_ok=True)
-                logger.info("Backup lock released")
-            except OSError:
-                pass
+            if acquired:
+                try:
+                    _, owner_pid = read_lock_alive(lock_path)
+                    if owner_pid == os.getpid():
+                        lock_path.unlink(missing_ok=True)
+                        logger.info("Backup lock released")
+                    else:
+                        logger.warning(
+                            "Backup lock changed during run - leaving it in place"
+                        )
+                except OSError:
+                    pass
 
 
 # ═══════════════════════════════════════════════════════════════
