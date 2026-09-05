@@ -13,35 +13,50 @@ def _mock_config():
     mock_config.schedule.weekly_cron = "0 8 * * MON"
     mock_config.schedule.monthly_cron = "0 8 1 * *"
     mock_config.schedule.rollover_cron = "0 6 * * *"
+    mock_config.schedule.audit_cron = "0 3 * * SUN"
     return mock_config
+
+
+def _patched_flows():
+    return (
+        patch("serve.backup"),
+        patch("serve.weekly_report_flow"),
+        patch("serve.monthly_report_flow"),
+        patch("serve.rollover_check_flow"),
+        patch("serve.integrity_audit_flow"),
+    )
 
 
 class TestDeployments:
     @patch("serve.load_config")
-    def test_returns_five_deployments(self, mock_cfg):
+    def test_returns_six_deployments(self, mock_cfg):
         mock_cfg.return_value = _mock_config()
 
-        with patch("serve.backup") as mock_backup, \
-             patch("serve.weekly_report_flow") as mock_weekly, \
-             patch("serve.monthly_report_flow") as mock_monthly, \
-             patch("serve.rollover_check_flow") as mock_rollover:
+        patches = _patched_flows()
+        with patches[0] as mock_backup, \
+             patches[1] as mock_weekly, \
+             patches[2] as mock_monthly, \
+             patches[3] as mock_rollover, \
+             patches[4] as mock_audit:
 
-            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover):
+            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover, mock_audit):
                 m.to_deployment.return_value = MagicMock()
 
             result = _deployments()
-            assert len(result) == 5
+            assert len(result) == 6
 
     @patch("serve.load_config")
     def test_cloud_deployment_has_correct_params(self, mock_cfg):
         mock_cfg.return_value = _mock_config()
 
-        with patch("serve.backup") as mock_backup, \
-             patch("serve.weekly_report_flow") as mock_weekly, \
-             patch("serve.monthly_report_flow") as mock_monthly, \
-             patch("serve.rollover_check_flow") as mock_rollover:
+        patches = _patched_flows()
+        with patches[0] as mock_backup, \
+             patches[1] as mock_weekly, \
+             patches[2] as mock_monthly, \
+             patches[3] as mock_rollover, \
+             patches[4] as mock_audit:
 
-            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover):
+            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover, mock_audit):
                 m.to_deployment.return_value = MagicMock()
 
             _deployments()
@@ -55,12 +70,14 @@ class TestDeployments:
     def test_lan_deployment_has_correct_params(self, mock_cfg):
         mock_cfg.return_value = _mock_config()
 
-        with patch("serve.backup") as mock_backup, \
-             patch("serve.weekly_report_flow") as mock_weekly, \
-             patch("serve.monthly_report_flow") as mock_monthly, \
-             patch("serve.rollover_check_flow") as mock_rollover:
+        patches = _patched_flows()
+        with patches[0] as mock_backup, \
+             patches[1] as mock_weekly, \
+             patches[2] as mock_monthly, \
+             patches[3] as mock_rollover, \
+             patches[4] as mock_audit:
 
-            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover):
+            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover, mock_audit):
                 m.to_deployment.return_value = MagicMock()
 
             _deployments()
@@ -75,12 +92,14 @@ class TestDeployments:
         """G10: the 5th deployment is the scheduled FY-rollover check."""
         mock_cfg.return_value = _mock_config()
 
-        with patch("serve.backup") as mock_backup, \
-             patch("serve.weekly_report_flow") as mock_weekly, \
-             patch("serve.monthly_report_flow") as mock_monthly, \
-             patch("serve.rollover_check_flow") as mock_rollover:
+        patches = _patched_flows()
+        with patches[0] as mock_backup, \
+             patches[1] as mock_weekly, \
+             patches[2] as mock_monthly, \
+             patches[3] as mock_rollover, \
+             patches[4] as mock_audit:
 
-            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover):
+            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover, mock_audit):
                 m.to_deployment.return_value = MagicMock()
 
             _deployments()
@@ -92,4 +111,30 @@ class TestDeployments:
             schedules = kwargs["schedules"]
             assert len(schedules) == 1
             assert schedules[0].cron == "0 6 * * *"
+            assert schedules[0].timezone == "Asia/Kolkata"
+
+    @patch("serve.load_config")
+    def test_audit_deployment_uses_audit_cron(self, mock_cfg):
+        """Integrity audit: 6th deployment, weekly read-only schedule."""
+        mock_cfg.return_value = _mock_config()
+
+        patches = _patched_flows()
+        with patches[0] as mock_backup, \
+             patches[1] as mock_weekly, \
+             patches[2] as mock_monthly, \
+             patches[3] as mock_rollover, \
+             patches[4] as mock_audit:
+
+            for m in (mock_backup, mock_weekly, mock_monthly, mock_rollover, mock_audit):
+                m.to_deployment.return_value = MagicMock()
+
+            _deployments()
+
+            mock_audit.to_deployment.assert_called_once()
+            kwargs = mock_audit.to_deployment.call_args.kwargs
+            assert kwargs["name"] == "integrity-audit"
+            assert kwargs["parameters"]["mode"] == "all"
+            schedules = kwargs["schedules"]
+            assert len(schedules) == 1
+            assert schedules[0].cron == "0 3 * * SUN"
             assert schedules[0].timezone == "Asia/Kolkata"

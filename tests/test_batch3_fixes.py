@@ -42,13 +42,19 @@ class TestFilesFailed:
         the log must carry one for an exact count (bit-3 floor applies when
         the summary is absent)."""
         log_file = tmp_path / "robocopy_sync_test.log"
+        # Completed job summary (Files row + Ended line): proves normal
+        # termination, so the bit-3 exit is PARTIAL rather than SUSPECT.
         log_file.write_text(
             "      New File:            1 C:\\a\\ok.txt\n"
             "          ** FAILED: \\\\nas\\FY25-26\\big.iso\n"
             "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"
             "\n"
             "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
+            "    Dirs :         1         1         0         0         0         0\n"
             "    Files :         3         1         0         0         2         0\n"
+            "    Bytes :       100        50        50         0         0         0\n"
+            "    Times :   0:00:01   0:00:00                       0:00:00   0:00:00\n"
+            "    Ended : Tuesday, September 01, 2026 1:00:01 AM\n"
         )
         mock_run.return_value = MagicMock(returncode=9)
         # point the (mocked) run at our prepared log
@@ -64,9 +70,18 @@ class TestFilesFailed:
     @patch("core.lan_sync.subprocess.run")
     @patch("core.lan_sync.resolve_binary", return_value="robocopy")
     def test_clean_run_files_failed_zero(self, mock_resolve, mock_run, lan_cfg):
+        # A mocked process writes no /LOG; feed the completed summary the
+        # real process would have written — COMPLETE requires log evidence.
+        completed_log = (
+            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
+            "    Files :         2         2         0         0         0         0\n"
+            "    Ended : Tuesday, September 01, 2026 1:00:01 AM\n"
+        )
         mock_run.return_value = MagicMock(returncode=1)
-        result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
+        with patch("core.lan_sync._read_log_tail", return_value=completed_log):
+            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
         assert result["status"] == "LAN_COMPLETE"
+        assert result["termination"] == "normal"
         assert result["files_failed"] == 0
 
     @patch("core.lan_sync.subprocess.run")

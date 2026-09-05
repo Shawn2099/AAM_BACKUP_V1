@@ -389,9 +389,13 @@ class ScheduleConfig(BaseModel):
         default="0 6 * * *",
         description="Daily FY rollover check cron (no-op except on the fiscal-year boundary)",
     )
+    audit_cron: str = Field(
+        default="0 3 * * SUN",
+        description="Weekly read-only integrity audit (Sunday low-load window, single checker)",
+    )
     timezone: str = Field(default="Asia/Kolkata", description="IANA timezone for all schedules")
 
-    @field_validator("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron")
+    @field_validator("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron", "audit_cron")
     @classmethod
     def valid_cron(cls, v: str) -> str:
         parts = v.strip().split()
@@ -417,7 +421,7 @@ class ScheduleConfig(BaseModel):
         """
         from prefect.server.schemas.schedules import CronSchedule
 
-        for field_name in ("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron"):
+        for field_name in ("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron", "audit_cron"):
             try:
                 CronSchedule(cron=getattr(self, field_name), timezone=self.timezone)
             except Exception as e:

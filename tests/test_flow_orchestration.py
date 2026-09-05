@@ -504,24 +504,23 @@ class TestCloudPipelineSkipsRecordOnManifestError:
             "diff": {"added": [], "removed": [], "modified": [], "unchanged": []},
             "manifest_error": "timeout after 900s",
         }
-        result, mock_record, recorded = self._run_pipeline(verify_data, tmp_path)
-
-        mock_record.assert_not_called()          # degraded listing NEVER written as truth
-        assert result["status"] == "CLOUD_COMPLETE"
-        assert result["files_copied"] == 0 if "files_copied" in result else True
-        metrics = json.loads(recorded["extended_metrics"])
-        assert metrics["manifest_ok"] is False   # why the numbers are zero
+        # Evidence-gate policy: a degraded manifest query is verification
+        # uncertainty and fails closed (CLOUD_VERIFY_FAILED), while the
+        # degraded listing is still never written as truth.
+        with pytest.raises(RuntimeError, match="verification FAILED"):
+            self._run_pipeline(verify_data, tmp_path)
 
     def test_healthy_manifest_still_records(self, tmp_path):
         verify_data = {
             "verified": True,
             "size": {"count": 2, "bytes": 20},
             "manifest": [{"Path": "a.txt", "Size": 10, "ModTime": "2026-08-01T00:00:00Z"}],
-            "diff": {"added": ["a.txt"], "removed": [], "modified": [], "unchanged": []},
+            "diff": {"added": [], "removed": [], "modified": [], "unchanged": ["a.txt"]},
             "manifest_error": None,
         }
         result, mock_record, recorded = self._run_pipeline(verify_data, tmp_path)
 
         mock_record.assert_called_once()         # healthy query -> record normally
+        assert result["status"] == "CLOUD_COMPLETE"
         metrics = json.loads(recorded["extended_metrics"])
         assert metrics["manifest_ok"] is True

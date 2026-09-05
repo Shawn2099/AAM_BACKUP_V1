@@ -426,12 +426,18 @@ async def status(request: Request):
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
             "last_run_formatted": (cloud_last_run["started_at"] or "-")[:19].replace("T", " ") if cloud_last_run else "No data",
+            # Integrity status is a SEPARATE fact from the backup result:
+            # VERIFIED only after a passing audit; NOT_VERIFIED when no
+            # audit has run; VERIFICATION_FAILED on divergence. A COMPLETE
+            # backup does NOT imply VERIFIED.
+            "integrity": _integrity_summary(db, "cloud"),
         },
         "lan": {
             **lan_fields,
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
             "last_run_formatted": (lan_last_run["started_at"] or "-")[:19].replace("T", " ") if lan_last_run else "No data",
+            "integrity": _integrity_summary(db, "lan"),
         },
         "manifest": {
             "lan_files": db.file_count("lan_status"),
@@ -656,6 +662,25 @@ def _get_last_success(db: ManifestDB, mode: str) -> str | None:
     if run:
         return run.get("ended_at")
     return None
+
+
+def _integrity_summary(db: ManifestDB, mode: str) -> dict:
+    """Return the integrity-verification status for a mode.
+
+    Backup result and integrity are separate facts: a COMPLETE backup with
+    no audit yet reports NOT_VERIFIED (never implied VERIFIED).
+    """
+    try:
+        audit = db.latest_audit(mode)
+    except Exception:
+        audit = None
+    if not isinstance(audit, dict):
+        return {"status": "NOT_VERIFIED", "checked_at": None, "detail": None}
+    return {
+        "status": audit.get("status", "NOT_VERIFIED"),
+        "checked_at": audit.get("ended_at") or audit.get("started_at"),
+        "detail": audit.get("detail"),
+    }
 
 
 def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:

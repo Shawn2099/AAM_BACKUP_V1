@@ -499,7 +499,9 @@ class TestRunCloudSyncReturnStructure:
     def test_return_has_status_exit_code_error(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
         mock_run.return_value = _mock_result(0)
         result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert set(result.keys()) == {"status", "exit_code", "error"}
+        # suspect_reason is the C-DK-001 hardening field (None on clean runs).
+        assert set(result.keys()) == {"status", "exit_code", "error", "suspect_reason"}
+        assert result["suspect_reason"] is None
 
     @patch("core.cloud_sync.os.close")
     @patch("core.cloud_sync.tempfile.mkstemp", return_value=(99, _DUMMY_STDERR_PATH))
@@ -512,7 +514,7 @@ class TestRunCloudSyncReturnStructure:
         mock_path.return_value.read_text.return_value = "fatal error"
         try:
             result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-            assert set(result.keys()) == {"status", "exit_code", "error"}
+            assert set(result.keys()) == {"status", "exit_code", "error", "suspect_reason"}
         finally:
             mock_path_patcher.stop()
 

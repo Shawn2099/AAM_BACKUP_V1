@@ -36,6 +36,19 @@ def _validate_required_flags(flags: list[str]) -> None:
 
 _FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
 
+# Integrity-verification contract: a robocopy run that terminated normally
+# ALWAYS ends its /LOG with the job-summary table ("Files :" row + "Ended :"
+# line). An externally killed run (taskkill, WMI Terminate, NtTerminateProcess,
+# supervisor kill) is truncated mid-transfer and has no summary — even though
+# the inherited exit code can be 0-3 (T04/A1). Summary presence is therefore
+# the normal-vs-abnormal termination signal; the exit code is only interpreted
+# when the log proves the process lived to finish.
+_ENDED_LINE = re.compile(r"^\s*Ended\s*:", re.MULTILINE)
+
+# Positional columns of the job-summary "Files:" row (fixed order, locale
+# independent): Total Copied Skipped Mismatch FAILED Extras.
+_SUMMARY_COLUMN_NAMES = ("total", "copied", "skipped", "mismatch", "failed", "extras")
+
 # P1-COUNT (A-prime): the job-summary "Files:" row. Column ORDER is fixed by
 # robocopy regardless of locale (Total Copied Skipped Mismatch FAILED Extras),
 # so we parse positionally instead of matching localized header words.
@@ -118,6 +131,113 @@ def _read_log_tail(log_path: Path, max_bytes: int) -> str:
         return data.decode("utf-8", errors="replace").lstrip("\ufffd")
     except OSError as exc:
         return f"robocopy log unreadable: {exc}"
+
+
+def log_shows_completed_summary(log_text: str) -> bool:
+    """True only if the log ends with a completed robocopy job summary.
+
+    Requires BOTH the positional "Files :" row and the "Ended :" line.
+    A truncated (externally killed) log has neither, regardless of the
+    exit code the terminated process happened to inherit.
+    """
+    text = log_text or ""
+    return bool(_SUMMARY_FILES_ROW.search(text) and _ENDED_LINE.search(text))
+
+
+def summarize_log_counts(log_text: str) -> dict | None:
+    """Parse the job-summary "Files :" row into a counts dict, or None.
+
+    Returns {"total","copied","skipped","mismatch","failed","extras"} or
+    None when the summary is absent/unparseable (killed or corrupt log).
+    """
+    values = _summary_files_row_values(log_text)
+    if not values or len(values) < len(_SUMMARY_COLUMN_NAMES):
+        return None
+    return dict(zip(_SUMMARY_COLUMN_NAMES, values[:len(_SUMMARY_COLUMN_NAMES)]))
+
+
+def decide_lan_result(exit_code: int, log_text: str) -> dict:
+    """Transfer-result contract: exit code + log evidence -> final result.
+
+    COMPLETE means "transfer terminated normally and its own evidence says
+    the scheduled work finished" — NOT cryptographic verification (that is
+    the weekly audit's job). Returns {"status","termination","log_complete",
+    "counts","reason"} where status is LAN_COMPLETE | LAN_PARTIAL |
+    LAN_SUSPECT | LAN_FAILED and termination is "normal" | "abnormal".
+
+    Rules:
+      * negative / unexpected codes, bit 4 (16+)  -> LAN_FAILED (abnormal).
+      * no completed summary in the log          -> LAN_SUSPECT (abnormal):
+        the process did not live to finish; its exit code (even 0-3)
+        carries no information (T04/A1).
+      * bit 3 (copy errors) with a complete log  -> LAN_PARTIAL.
+      * bit 2 (mismatch/extras) with complete log-> LAN_PARTIAL.
+      * 0-3 with a complete log                  -> LAN_COMPLETE, unless the
+        summary contradicts the code (failed/mismatch > 0, FAILED markers
+        present) -> LAN_SUSPECT (fail closed on contradictory evidence).
+    """
+    text = log_text or ""
+    log_complete = log_shows_completed_summary(text)
+    counts = summarize_log_counts(text)
+    failed_markers = count_failed_lines(text)
+
+    if exit_code is None or not isinstance(exit_code, int) or exit_code < 0:
+        return {
+            "status": "LAN_FAILED", "termination": "abnormal",
+            "log_complete": log_complete, "counts": counts,
+            "reason": f"unusable exit code {exit_code!r} (timeout/spawn failure sentinel)",
+        }
+    if exit_code & 16:
+        return {
+            "status": "LAN_FAILED", "termination": "abnormal",
+            "log_complete": log_complete, "counts": counts,
+            "reason": f"robocopy fatal error (exit {exit_code}, bit 4 set)",
+        }
+    if not log_complete:
+        return {
+            "status": "LAN_SUSPECT", "termination": "abnormal",
+            "log_complete": False, "counts": counts,
+            "reason": (
+                f"robocopy exit {exit_code} WITHOUT a completed job summary - "
+                "log is truncated (external kill/crash). Exit code is not "
+                "evidence of success (T04/A1)."
+            ),
+        }
+    if exit_code & 8:
+        return {
+            "status": "LAN_PARTIAL", "termination": "normal",
+            "log_complete": True, "counts": counts,
+            "reason": f"robocopy copy errors (exit {exit_code}, bit 3 set)",
+        }
+    if 4 <= exit_code <= 7:
+        return {
+            "status": "LAN_PARTIAL", "termination": "normal",
+            "log_complete": True, "counts": counts,
+            "reason": f"robocopy mismatches/extras (exit {exit_code}, bit 2 set)",
+        }
+    if exit_code in (0, 1, 2, 3):
+        contradiction = (
+            (counts is not None and (counts.get("failed", 0) > 0 or counts.get("mismatch", 0) > 0))
+            or failed_markers > 0
+        )
+        if contradiction:
+            return {
+                "status": "LAN_SUSPECT", "termination": "abnormal",
+                "log_complete": True, "counts": counts,
+                "reason": (
+                    f"robocopy exit {exit_code} contradicts its own log "
+                    f"(summary={counts}, FAILED markers={failed_markers})"
+                ),
+            }
+        return {
+            "status": "LAN_COMPLETE", "termination": "normal",
+            "log_complete": True, "counts": counts, "reason": None,
+        }
+    return {
+        "status": "LAN_FAILED", "termination": "abnormal",
+        "log_complete": log_complete, "counts": counts,
+        "reason": f"unexpected robocopy exit code {exit_code}",
+    }
 
 
 def classify_exit_code(code: int) -> str:
@@ -261,15 +381,30 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
 
     Return dict schema:
         {
-            "status":          str        — "LAN_COMPLETE" | "LAN_PARTIAL" | "LAN_FAILED"
+            "status":          str        — "LAN_COMPLETE" | "LAN_PARTIAL" |
+                                            "LAN_SUSPECT" | "LAN_FAILED"
             "exit_code":       int        — Raw robocopy exit code (or -1 for exceptions)
             "error":           str|None   — Log tail (up to 100KB) for genuine failures
-                                           (exit codes 8–15 and 16+). None otherwise.
+                                           (exit codes 8–15 and 16+) and for SUSPECT
+                                           runs (truncated-log explanation + tail).
+                                           None otherwise.
             "anomaly_details": str|None   — Log tail (up to 5KB) for anomaly-only runs
                                            (exit codes 4–7: mismatches/extras, no copy
                                            failure). None on clean success or real errors
                                            (real errors are captured in `error` instead).
+            "termination":     str        — "normal" | "abnormal" (process-lifetime
+                                           signal; abnormal = killed/timed out/spawn
+                                           failure, or success-band exit with a
+                                           truncated log — T04/A1).
+            "log_complete":    bool       — completed job summary present in the log.
+            "counts":          dict|None  — parsed Files-row counters when available.
+            "log_retained":    str|None   — path of the retained forensic log on
+                                           SUSPECT runs (reaped by G8 cleanup).
         }
+
+    COMPLETE here means "transfer terminated normally and its own evidence
+    says the scheduled work finished" — it does NOT mean independently or
+    cryptographically verified (see the weekly integrity audit).
 
     Severity contract:
         - `error` populated      → alert system MUST notify. Backup is incomplete.
@@ -283,6 +418,7 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
     """
     cmd = build_robocopy_command(source, dest, lan_config)
     log_path = None
+    log_retained = None
 
     try:
         log_fd, log_path_str = tempfile.mkstemp(suffix=".log", prefix="robocopy_sync_")
@@ -300,14 +436,37 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             timeout=lan_config.subprocess_timeout_seconds,
         )
 
-        status = classify_exit_code(result.returncode)
-        logger.info(f"LAN sync exit {result.returncode} → {status}")
+        # Integrity contract: the exit code is only interpreted together
+        # with the log's own completion evidence (decide_lan_result). A
+        # killed process can inherit exit 0-3 with a truncated log — that
+        # is SUSPECT, never COMPLETE (T04/A1).
+        decision_tail = _read_log_tail(log_path, _ERROR_LOG_TAIL)
+        decision = decide_lan_result(result.returncode, decision_tail)
+        status = decision["status"]
+        logger.info(
+            f"LAN sync exit {result.returncode} → {status} "
+            f"(termination={decision['termination']}, "
+            f"log_complete={decision['log_complete']})"
+        )
 
         error_msg = None
         anomaly_details = None
         files_failed = 0
+        log_retained = None
 
-        if status == "LAN_FAILED" or (result.returncode & 8):
+        if status == "LAN_SUSPECT":
+            # Abnormal termination: keep the (truncated) log for forensics
+            # instead of deleting it; the 24h G8 cleanup reaps it later.
+            error_msg = (
+                f"{decision['reason']}\n"
+                f"--- robocopy log tail ({len(decision_tail)} bytes retained) ---\n"
+                f"{decision_tail}"
+            )
+            files_failed = failed_file_count(decision_tail, result.returncode)
+            log_retained = str(log_path)
+            logger.error(f"LAN sync SUSPECT (exit {result.returncode}) - {decision['reason']}")
+
+        elif status == "LAN_FAILED" or (result.returncode & 8):
             # Real failure: bit 4 (fatal) or bit 3 (copy errors) set.
             # Capture full log tail for alert system and operator triage.
             error_msg = _read_log_tail(log_path, _ERROR_LOG_TAIL)
@@ -343,6 +502,12 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             # F12: failed-file count from the tail (0 on clean/anomaly runs);
             # persisted to run_history for reports and the dashboard.
             "files_failed": files_failed,
+            # Integrity-verification contract fields (additive; existing
+            # consumers ignore them).
+            "termination": decision["termination"],
+            "log_complete": decision["log_complete"],
+            "counts": decision["counts"],
+            "log_retained": log_retained,
         }
 
     except subprocess.TimeoutExpired:
@@ -353,6 +518,10 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "error": f"Timeout after {lan_config.subprocess_timeout_seconds}s — robocopy process killed",
             "anomaly_details": None,
             "files_failed": 0,
+            "termination": "abnormal",
+            "log_complete": False,
+            "counts": None,
+            "log_retained": None,
         }
     except FileNotFoundError as exc:
         logger.error("robocopy.exe not found - is this running on Windows Server?")
@@ -362,6 +531,10 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "error": f"robocopy.exe not found: {exc}",
             "anomaly_details": None,
             "files_failed": 0,
+            "termination": "abnormal",
+            "log_complete": False,
+            "counts": None,
+            "log_retained": None,
         }
     except OSError as exc:
         logger.error(f"LAN sync OS error: {exc}")
@@ -371,10 +544,20 @@ def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
             "error": str(exc),
             "anomaly_details": None,
             "files_failed": 0,
+            "termination": "abnormal",
+            "log_complete": False,
+            "counts": None,
+            "log_retained": None,
         }
     finally:
+        # SUSPECT runs retain their (truncated) log for forensics; the
+        # 24h G8 orphaned-log cleanup reaps it later. All other runs
+        # delete their log as before.
         if log_path and log_path.exists():
             try:
-                log_path.unlink()
+                if log_retained and str(log_path) == log_retained:
+                    logger.warning(f"Retaining suspect robocopy log for forensics: {log_path}")
+                else:
+                    log_path.unlink()
             except OSError:
                 pass  # Temp file cleanup is best-effort; OS will eventually reclaim it

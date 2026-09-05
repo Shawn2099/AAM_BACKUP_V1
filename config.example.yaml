@@ -117,6 +117,8 @@ schedule:
   weekly_cron: "0 8 * * MON"
   # Monthly email report: 1st of every month at 8:00 AM
   monthly_cron: "0 8 1 * *"
+  # Weekly read-only integrity audit: Sunday 3:00 AM low-load window
+  audit_cron: "0 3 * * SUN"
   timezone: "Asia/Kolkata"
 
 # ═══════════════════════════════════════════════════

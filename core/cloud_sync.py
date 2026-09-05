@@ -190,7 +190,13 @@ def run_cloud_sync(
     resolve_max_duration_seconds).
 
     Returns:
-        {"status": str, "exit_code": int, "error": str | None}
+        {"status": str, "exit_code": int, "error": str | None,
+         "suspect_reason": str | None}
+
+    status may be CLOUD_SUSPECT when exit 0 is contradicted by ERROR/CRITICAL
+    log signals (C-DK-001 hardening). A clean kill with no log signals still
+    exits 0 here — incompleteness is then caught by the flow's evidence gate
+    (diff/size), which is the authoritative completeness check.
     """
     stderr_path = None
     effective_max_duration = resolve_max_duration_seconds(
@@ -224,17 +230,34 @@ def run_cloud_sync(
             status = classify_rclone_exit(result.returncode)
 
             error_msg = None
+            suspect_reason = None
+            try:
+                stderr_text = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                stderr_text = ""
+            if result.returncode == 0:
+                # C-DK-001 hardening: a killed rclone can inherit exit 0.
+                # The kill itself leaves no log lines, so the evidence gate
+                # (diff/size, flow F1) remains the authoritative completeness
+                # check — but error signals in the log on a "clean" exit are
+                # contradictory evidence and must not pass silently.
+                has_error, error_tail = scan_rclone_log_for_errors(stderr_text)
+                if has_error:
+                    status = "CLOUD_SUSPECT"
+                    suspect_reason = (
+                        "rclone exited 0 but logged ERROR/CRITICAL signals - "
+                        "reclassified CLOUD_COMPLETE -> CLOUD_SUSPECT:\n"
+                        f"{error_tail}"
+                    )
+                    error_msg = suspect_reason
+                    logger.error(suspect_reason)
             if result.returncode == 9:
                 # P1-EXIT9: exit 9 only means "no files transferred" when the
                 # log stream is clean. A fatal error (missing bucket, auth,
                 # bad remote) ALSO produces exit 9 under --error-on-no-transfer;
                 # trusting it blindly recorded CLOUD_NO_CHANGES_COMPLETE for
                 # broken runs (CLOUD-06/07). Reclassify when signals exist.
-                try:
-                    stderr_text = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
-                    has_error, error_tail = scan_rclone_log_for_errors(stderr_text)
-                except OSError:
-                    has_error, error_tail = False, ""
+                has_error, error_tail = scan_rclone_log_for_errors(stderr_text)
                 if has_error:
                     status = "CLOUD_FAILED"
                     error_msg = (
@@ -245,10 +268,10 @@ def run_cloud_sync(
                 else:
                     logger.info("Cloud sync: no changes to transfer")
             elif result.returncode != 0:
-                try:
-                    error_msg = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+                if stderr_text:
+                    error_msg = stderr_text
                     logger.error(f"rclone error: {error_msg}")
-                except OSError:
+                else:
                     error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
 
             logger.info(f"Cloud sync exit {result.returncode} -> {status}")
@@ -257,6 +280,7 @@ def run_cloud_sync(
                 "status": status,
                 "exit_code": result.returncode,
                 "error": error_msg,
+                "suspect_reason": suspect_reason,
             }
 
         except subprocess.TimeoutExpired:
@@ -266,13 +290,15 @@ def run_cloud_sync(
             return {"status": "CLOUD_FAILED", "exit_code": -1, "error": (
                 f"Timeout after {timeout}s — rclone sync is resumable; progress is "
                 "preserved and the next run continues from where this one left off"
-            )}
+            ), "suspect_reason": None}
         except FileNotFoundError:
             logger.error("rclone not found")
-            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": "rclone not found"}
+            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": "rclone not found",
+                    "suspect_reason": None}
         except OSError as e:
             logger.error(f"Cloud sync OS error: {e}")
-            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": str(e)}
+            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": str(e),
+                    "suspect_reason": None}
         finally:
             if stderr_path:
                 try:

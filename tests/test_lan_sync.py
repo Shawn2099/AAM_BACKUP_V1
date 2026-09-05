@@ -327,6 +327,8 @@ class TestRunLanSyncReal:
         result = run_lan_sync(str(tmp_path / "src"), str(smb_dest), lan_cfg)
         assert set(result.keys()) == {
             "status", "exit_code", "error", "anomaly_details", "files_failed",
+            # Integrity-verification contract fields (T04/A1 hardening).
+            "termination", "log_complete", "counts", "log_retained",
         }
 
 

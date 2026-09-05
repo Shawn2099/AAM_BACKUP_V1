@@ -74,11 +74,15 @@ class TestCloudVerifyFailure:
         # True terminal status recorded (F1+F2)
         args = mock_record.call_args.args
         assert args[4] == "CLOUD_VERIFY_FAILED"
-        assert "missing-from-cloud=2" in args[6]
+        # C-F1INV-002: rclone `+`/added = missing from cloud (1), `-`/removed
+        # = extra in cloud (2). The old fixture codified the swap.
+        assert "missing-from-cloud=1" in args[6]
+        assert "unexpected-in-cloud=2" in args[6]
         # Alert fired with the verify details
         mock_alert.assert_called_once()
         alert_err = mock_alert.call_args.args[2]
-        assert "missing-from-cloud=2" in alert_err
+        assert "missing-from-cloud=1" in alert_err
+        assert "unexpected-in-cloud=2" in alert_err
         assert "size-changed=1" in alert_err
         # Observed cloud state still recorded to the DB before failing
         mock_record_task.assert_called_once()
@@ -245,9 +249,10 @@ class TestLanPartialShutdown:
         }
         cfg = _make_config()
 
-        result = flow._run_lan_pipeline(cfg, "run-7", "2026-08-18T01:00:00")
+        # Terminal-state policy: PARTIAL raises (never Prefect COMPLETED).
+        with pytest.raises(flow.PartialRun):
+            flow._run_lan_pipeline(cfg, "run-7", "2026-08-18T01:00:00")
 
-        assert result["status"] == "LAN_PARTIAL"
         mock_shutdown.assert_not_called()  # THE F3 BUG: used to shut the NAS down
         mock_alert.assert_called_once()
         alert_msg = mock_alert.call_args.args[2]

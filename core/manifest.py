@@ -64,6 +64,29 @@ CREATE TABLE IF NOT EXISTS db_meta (
     value   TEXT NOT NULL
 );
 
+-- Independent integrity-audit record (weekly audit; read-only checks).
+-- Kept SEPARATE from run_history on purpose: a backup result
+-- (COMPLETE/PARTIAL/FAILED) and its integrity-verification status
+-- (NOT_VERIFIED/VERIFIED/VERIFICATION_FAILED) are different facts.
+-- An audit never rewrites a historical backup row; absence of a row
+-- for a mode/scope means NOT_VERIFIED.
+CREATE TABLE IF NOT EXISTS integrity_audits (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    audit_id        TEXT NOT NULL UNIQUE,
+    mode            TEXT NOT NULL,          -- 'lan' | 'cloud'
+    scope           TEXT NOT NULL DEFAULT 'full',
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    status          TEXT NOT NULL,          -- 'VERIFIED' | 'VERIFICATION_FAILED'
+    files_checked   INTEGER DEFAULT 0,
+    bytes_checked   INTEGER DEFAULT 0,
+    mismatches      INTEGER DEFAULT 0,
+    detail          TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_integrity_audits_mode ON integrity_audits(mode, started_at);
+
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
 
@@ -538,6 +561,71 @@ class ManifestDB:
                 (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── Integrity audits ─────────────────────────────────────
+
+    def record_audit(self, data: dict):
+        """Persist one integrity-audit execution (upsert on audit_id)."""
+        required = ("audit_id", "mode", "started_at", "status")
+        missing = [k for k in required if k not in data]
+        if missing:
+            raise KeyError(f"record_audit missing required keys: {missing}")
+        if data["status"] not in ("VERIFIED", "VERIFICATION_FAILED"):
+            raise ValueError(f"invalid audit status: {data['status']!r}")
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO integrity_audits
+                   (audit_id, mode, scope, started_at, ended_at, status,
+                    files_checked, bytes_checked, mismatches, detail, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(audit_id) DO UPDATE SET
+                       ended_at = excluded.ended_at,
+                       status = excluded.status,
+                       files_checked = excluded.files_checked,
+                       bytes_checked = excluded.bytes_checked,
+                       mismatches = excluded.mismatches,
+                       detail = excluded.detail""",
+                (
+                    data["audit_id"],
+                    data["mode"],
+                    data.get("scope", "full"),
+                    data["started_at"],
+                    data.get("ended_at"),
+                    data["status"],
+                    data.get("files_checked", 0),
+                    data.get("bytes_checked", 0),
+                    data.get("mismatches", 0),
+                    data.get("detail"),
+                    data.get("created_at", data["started_at"]),
+                ),
+            )
+            conn.commit()
+
+    def latest_audit(self, mode: str, scope: str | None = None) -> dict | None:
+        """Return the newest audit row for a mode (and optional scope).
+
+        Returns None when no audit has ever run — callers render that as
+        NOT_VERIFIED. A VERIFICATION_FAILED row stays authoritative until a
+        later audit passes; audits never touch run_history.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            if scope is not None:
+                row = conn.execute(
+                    """SELECT * FROM integrity_audits
+                       WHERE mode = ? AND scope = ?
+                       ORDER BY started_at DESC LIMIT 1""",
+                    (mode, scope),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """SELECT * FROM integrity_audits
+                       WHERE mode = ?
+                       ORDER BY started_at DESC LIMIT 1""",
+                    (mode,),
+                ).fetchone()
+            return dict(row) if row else None
 
     # ── Maintenance ──────────────────────────────────────────
 

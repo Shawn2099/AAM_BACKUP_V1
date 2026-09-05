@@ -284,7 +284,26 @@ def generate_report_html(
         row_count += 1
 
     now = now_formatted("YYYY-MM-DD HH:mm z")
-    
+
+    integrity_rows = ""
+    for leg in ("cloud", "lan"):
+        try:
+            audit = db.latest_audit(leg)
+        except Exception:
+            audit = None
+        if not audit:
+            status_text, checked, detail = "NOT VERIFIED", "-", "No independent audit has run yet."
+        else:
+            status_text = audit.get("status", "UNKNOWN")
+            checked = (audit.get("ended_at") or audit.get("started_at") or "-")[:19].replace("T", " ")
+            detail = html.escape(str(audit.get("detail") or "-"))
+        integrity_rows += (
+            f"<tr><td style=\"padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;width:180px\">"
+            f"{leg.upper()} Integrity</td><td style=\"padding:6px 12px;border:1px solid #e5e7eb\">"
+            f"{html.escape(status_text)} (checked: {html.escape(str(checked))})<br>"
+            f"<span style=\"color:#6b7280;font-size:0.85rem\">{detail}</span></td></tr>"
+        )
+
     csv_notice = ""
     if is_email:
         csv_notice = '<p style="color:#059669;font-weight:600;font-size:0.9rem;margin:16px 0;">A complete CSV with full error logs is attached to this email.</p>'
@@ -310,6 +329,12 @@ def generate_report_html(
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Success Rate</td><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600">{success_rate:.1f}%</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Files Backed Up</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_files:,}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Data Transferred</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_bytes:,} ({humanize.naturalsize(total_bytes, binary=True)})</td></tr>
+</table>
+
+<h3 style="color:#374151;margin:0 0 8px 0">Integrity Verification (independent weekly audit)</h3>
+<p style="color:#6b7280;font-size:0.85rem;margin:0 0 8px 0">A COMPLETE backup means the transfer finished normally — it does not imply independent content verification. Integrity below reflects the latest read-only audit only.</p>
+<table style="width:100%;border-collapse:collapse;margin:0 0 24px 0">
+{integrity_rows}
 </table>
 
 <h3 style="color:#374151;margin:0 0 8px 0">Recent Backups (Last 10)</h3>
