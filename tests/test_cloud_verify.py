@@ -5,8 +5,15 @@ from unittest.mock import MagicMock, patch
 
 from core.cloud_verify import verify_cloud_integrity
 
+# Realistic rclone v1.74.2 stderr for a completed clean check
+# (--one-way --size-only): the completion summary VERIFIED requires.
+CLEAN_STDERR = (
+    "2026/09/06 18:18:48 NOTICE: Local file system at //?/C:/dst: 0 differences found\n"
+    "2026/09/06 18:18:48 NOTICE: Local file system at //?/C:/dst: 1 matching files\n"
+)
 
-def _mock_result(returncode=0, stdout="", stderr=""):
+
+def _mock_result(returncode=0, stdout="", stderr=CLEAN_STDERR):
     r = MagicMock()
     r.returncode = returncode
     r.stdout = stdout
@@ -25,7 +32,7 @@ class TestVerifyCloudIntegrity:
 
     @patch("core.cloud_verify.subprocess.run")
     def test_exit_1_not_verified(self, mock_run):
-        mock_run.return_value = _mock_result(1, stderr="mismatch")
+        mock_run.return_value = _mock_result(1, stderr="mismatch\n1 differences found")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         assert result["verified"] is False
         assert result["exit_code"] == 1

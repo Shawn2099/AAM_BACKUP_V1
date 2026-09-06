@@ -7,7 +7,15 @@ from core.cloud_verify import _build_error_message, verify_cloud_integrity
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _mock_result(returncode=0, stdout="", stderr=""):
+# Realistic rclone v1.74.2 stderr for a completed clean check
+# (--one-way --size-only): the completion summary VERIFIED requires.
+CLEAN_STDERR = (
+    "2026/09/06 18:18:48 NOTICE: Local file system at //?/C:/dst: 0 differences found\n"
+    "2026/09/06 18:18:48 NOTICE: Local file system at //?/C:/dst: 1 matching files\n"
+)
+
+
+def _mock_result(returncode=0, stdout="", stderr=CLEAN_STDERR):
     r = MagicMock()
     r.returncode = returncode
     r.stdout = stdout
@@ -223,19 +231,22 @@ class TestVerifyReturnStructure:
     def test_return_keys_on_success(self, mock_run):
         mock_run.return_value = _mock_result(0)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
-        assert set(result.keys()) == {"verified", "exit_code", "error"}
+        assert {"verified", "exit_code", "error", "termination",
+                "completion", "differences", "reason"} <= set(result.keys())
 
     @patch("core.cloud_verify.subprocess.run")
     def test_return_keys_on_failure(self, mock_run):
         mock_run.return_value = _mock_result(1, stderr="mismatch")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
-        assert set(result.keys()) == {"verified", "exit_code", "error"}
+        assert {"verified", "exit_code", "error", "termination",
+                "completion", "differences", "reason"} <= set(result.keys())
 
     @patch("core.cloud_verify.subprocess.run")
     def test_return_keys_on_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=600)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
-        assert set(result.keys()) == {"verified", "exit_code", "error"}
+        assert {"verified", "exit_code", "error", "termination",
+                "completion", "differences", "reason"} <= set(result.keys())
 
 
 class TestVerifyStderrHandling:
@@ -250,7 +261,8 @@ class TestVerifyStderrHandling:
         mock_run.return_value = _mock_result(1, stderr="")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         assert result["verified"] is False
-        assert result["error"] == "Integrity mismatch — source and GCS file counts or sizes differ"
+        assert result["error"].startswith(
+            "Integrity mismatch — source and GCS file counts or sizes differ")
 
     @patch("core.cloud_verify.subprocess.run")
     def test_none_stderr_on_error(self, mock_run):

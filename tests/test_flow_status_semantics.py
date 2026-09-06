@@ -108,6 +108,7 @@ class TestCloudVerifyFailure:
         }
         mock_verify.with_options.return_value.return_value = {
             "verified": True,
+            "verify_termination": "normal", "verify_completion": True,
             "size": {"count": 5, "bytes": 5000},
             "manifest": [{"Path": "a.txt", "Size": 100, "ModTime": "2026-08-18T10:00:00Z"}],
             "diff": {"added": [], "removed": [], "modified": [], "unchanged": ["a.txt"]},

@@ -33,6 +33,7 @@ Concurrency is NEVER raised to shorten the audit.
 """
 
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -42,6 +43,15 @@ from pathlib import Path, PureWindowsPath
 from loguru import logger
 
 from core.process import resolve_binary
+
+# Completion evidence (F-08 class): rclone check's own final verdict line
+# ("N differences found"). The --combined diff file is pre-created by
+# mkstemp, so its mere presence proves nothing — an exit-0 kill leaves an
+# empty diff file behind. VERIFIED additionally requires the summary in
+# the process's own log stream plus consistency between the summary
+# count and the parsed diff (measured on rclone v1.74.2: summary N ==
+# added + modified + removed for a completed run).
+_SUMMARY_RE = re.compile(r"(\d+)\s+differences found")
 
 # Alert/detail payload bound: full mismatch COUNTS are always recorded;
 # the path list is truncated so a large divergence cannot blow up the
@@ -102,7 +112,10 @@ def _run_rclone_check(
 
     NEVER passes sync/copy/delete/move flags. Returns a result dict with
     an explicit capability label; VERIFIED requires hash capability AND a
-    clean diff AND a completed process (exit 0/1 with a present diff file).
+    clean diff AND a completed process (exit 0/1 with a present diff file
+    AND rclone's own "N differences found" summary in its log stream,
+    consistent with the parsed diff). A killed/interrupted run — even one
+    the OS reports as exit 0 — has no summary and fails closed.
     """
     started = time.monotonic()
     rclone_exe = resolve_binary("rclone") or "rclone"
@@ -136,11 +149,25 @@ def _run_rclone_check(
         added, removed, modified, _unchanged, present = _parse_combined_file(diff_file)
         elapsed = time.monotonic() - started
         capability = CAPABILITY_SIZE_ONLY if size_only else CAPABILITY_HASH_LOCAL
+        log_text = f"{result.stderr or ''}\n{result.stdout or ''}"
+        summaries = _SUMMARY_RE.findall(log_text)
+        termination = "normal" if summaries and result.returncode in (0, 1) else "abnormal"
         if result.returncode >= 2 or not present:
             status = "VERIFICATION_FAILED"
             detail = (
                 f"capability={capability} audit process error "
                 f"(exit {result.returncode}): {(result.stderr or '').strip()[:2000]}"
+            )
+            mismatches = -1
+        elif not summaries:
+            # F-08 class: the check did not emit its completion verdict
+            # (killed/crashed/truncated — the pre-created diff file may
+            # still exist but proves nothing on its own).
+            status = "VERIFICATION_FAILED"
+            detail = (
+                f"capability={capability} audit process has no completion "
+                f"summary (exit {result.returncode}, termination={termination}): "
+                "interrupted before rclone reported a verdict"
             )
             mismatches = -1
         elif size_only:
@@ -154,16 +181,27 @@ def _run_rclone_check(
             )
         else:
             mismatches = len(added) + len(modified) + len(removed)
-            status = "VERIFIED" if mismatches == 0 else "VERIFICATION_FAILED"
-            detail_paths = (added + modified + removed)[:_MAX_DETAIL_PATHS]
-            detail = (
-                f"capability={capability} missing-from-dest={len(added)} "
-                f"extra-in-dest={len(removed)} content-changed={len(modified)} "
-                f"elapsed_s={elapsed:.0f} paths={detail_paths}"
-            )
+            summary_n = int(summaries[-1])
+            if (summary_n == 0) != (mismatches == 0):
+                # The process finished but its verdict contradicts the diff
+                # it wrote — fail closed rather than trusting either side.
+                status = "VERIFICATION_FAILED"
+                detail = (
+                    f"capability={capability} contradictory audit evidence "
+                    f"(summary={summary_n} differences, parsed mismatches={mismatches})"
+                )
+            else:
+                status = "VERIFIED" if mismatches == 0 else "VERIFICATION_FAILED"
+                detail_paths = (added + modified + removed)[:_MAX_DETAIL_PATHS]
+                detail = (
+                    f"capability={capability} missing-from-dest={len(added)} "
+                    f"extra-in-dest={len(removed)} content-changed={len(modified)} "
+                    f"elapsed_s={elapsed:.0f} paths={detail_paths}"
+                )
         logger.info(f"Integrity audit ({scope}) {status}: {detail}")
         return {
             "status": status, "scope": scope, "capability": capability,
+            "termination": termination,
             "files_checked": -1, "bytes_checked": -1,
             "mismatches": mismatches, "missing": added, "extra": removed,
             "detail": detail, "elapsed_s": round(elapsed, 1),
@@ -173,6 +211,7 @@ def _run_rclone_check(
         return {
             "status": "VERIFICATION_FAILED", "scope": scope,
             "capability": CAPABILITY_HASH_LOCAL,
+            "termination": "abnormal",
             "files_checked": -1, "bytes_checked": -1, "mismatches": -1,
             "missing": [], "extra": [],
             "detail": f"audit execution failed: {e}", "elapsed_s": 0.0,

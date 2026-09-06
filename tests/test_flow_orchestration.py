@@ -430,8 +430,10 @@ class TestCloudVerifyAndReportDegradation:
         cm.__enter__.return_value = "/cfg"
         cm.__exit__.return_value = False
         with patch("flow.temp_rclone_config", return_value=cm), \
-             patch("flow.verify_cloud_integrity",
-                   return_value={"verified": True, "exit_code": 0, "error": None}), \
+              patch("flow.verify_cloud_integrity",
+                    return_value={"verified": True, "exit_code": 0, "error": None,
+                                  "termination": "normal", "completion": True,
+                                  "differences": 0, "reason": None}), \
              patch("flow.get_cloud_size",
                    return_value={"count": 5, "bytes": 500}), \
              patch("flow.get_cloud_manifest", mock_manifest), \
@@ -513,6 +515,8 @@ class TestCloudPipelineSkipsRecordOnManifestError:
     def test_healthy_manifest_still_records(self, tmp_path):
         verify_data = {
             "verified": True,
+            "verify_termination": "normal", "verify_completion": True,
+            "verify_differences": 0, "verify_reason": None,
             "size": {"count": 2, "bytes": 20},
             "manifest": [{"Path": "a.txt", "Size": 10, "ModTime": "2026-08-01T00:00:00Z"}],
             "diff": {"added": [], "removed": [], "modified": [], "unchanged": ["a.txt"]},

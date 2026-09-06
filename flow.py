@@ -280,6 +280,13 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
 
         return {
             "verified": verify_result["verified"],
+            # F-08 liveness: the check process's own completion evidence,
+            # NOT its (killable) exit code. Missing keys default to
+            # abnormal/incomplete so older mocked results fail closed.
+            "verify_termination": verify_result.get("termination", "abnormal"),
+            "verify_completion": verify_result.get("completion", False),
+            "verify_differences": verify_result.get("differences"),
+            "verify_reason": verify_result.get("reason"),
             # C-DK-001 liveness: carried so the pipeline can distinguish a
             # genuine check pass (exit 0) from a killed-verify lucky pass
             # flagged via the evidence gate.
@@ -586,10 +593,18 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             # not just the killable verified boolean. A killed verify process
             # inherits exit 0 (verified=True) but cannot forge the independent
             # diff/size listings collected in the same task.
+            #
+            # F-08 hardening: the gate ALSO requires the check process's own
+            # completion evidence (verify_termination == "normal"). Over
+            # clean destination data the independent listings are
+            # legitimately clean, so they corroborate DATA state but not
+            # verifier COMPLETION — without this clause a killed check
+            # over clean data was indistinguishable from a genuine pass.
             diff = verify_data.get("diff") or {}
             size = verify_data.get("size") or {}
             evidence_ok = (
                 verify_data.get("verified") is True
+                and verify_data.get("verify_termination", "abnormal") == "normal"
                 and len(diff.get("added", [])) == 0
                 and len(diff.get("modified", [])) == 0
                 and not diff.get("_partial")
@@ -659,11 +674,13 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
             extended_metrics = json.dumps({
                 "verified": verify_data.get("verified", False),
-                # verify_liveness=false on a COMPLETE run means the boolean
-                # passed via corroborating evidence while the check process
-                # itself did not exit 0 — data-true, trust-limited (RT-3).
+                # F-08: liveness is the check process's own completion
+                # evidence, never the killable exit code. A killed check
+                # (TerminateProcess with exit 0) reports abnormal
+                # termination, so verify_liveness is false and — via the
+                # gate above — the run itself fails closed.
                 "verify_liveness": bool(verify_data.get("verified", False))
-                and verify_data.get("verify_exit_code", -1) == 0,
+                and verify_data.get("verify_termination", "abnormal") == "normal",
                 "total_files": verify_data.get("size", {}).get("count", 0),
                 "total_size_gb": verify_data.get("size", {}).get("bytes", 0) / (1024 * 1024 * 1024),
                 # M6: record WHY numbers may be zero on a degraded run
@@ -1111,15 +1128,22 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                     get_fy_prefix(), rclone_cfg,
                     timeout=config.cloud.verify_timeout_seconds,
                 )
-            db.record_audit({
-                "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
-                "started_at": started_at, "ended_at": now_iso(),
-                "status": result["status"],
-                "files_checked": max(result["files_checked"], 0),
-                "bytes_checked": max(result["bytes_checked"], 0),
-                "mismatches": max(result["mismatches"], 0),
-                "detail": result["detail"], "created_at": now_iso(),
-            })
+            # A VERIFIED verdict is durable only once persisted: a failed
+            # DB write must fail the audit loudly (alert + FAILED flow),
+            # never silently drop a passing result or leave NOT_VERIFIED
+            # behind a COMPLETED run.
+            try:
+                db.record_audit({
+                    "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
+                    "started_at": started_at, "ended_at": now_iso(),
+                    "status": result["status"],
+                    "files_checked": max(result["files_checked"], 0),
+                    "bytes_checked": max(result["bytes_checked"], 0),
+                    "mismatches": max(result["mismatches"], 0),
+                    "detail": result["detail"], "created_at": now_iso(),
+                })
+            except Exception as e:
+                excs.append(RuntimeError(f"Cloud audit persistence failed: {e}"))
             if result["status"] != "VERIFIED":
                 excs.append(RuntimeError(f"Cloud integrity audit FAILED: {result['detail']}"))
 
@@ -1127,21 +1151,24 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             audit_id = new_audit_id("lan", "full")
             started_at = now_iso()
             result = audit_lan(config.paths.source_drive, config.paths.lan_destination)
-            db.record_audit({
-                "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
-                "started_at": started_at, "ended_at": now_iso(),
-                "status": result["status"],
-                "files_checked": result["files_checked"],
-                "bytes_checked": result["bytes_checked"],
-                "mismatches": result["mismatches"],
-                "detail": result["detail"], "created_at": now_iso(),
-            })
+            try:
+                db.record_audit({
+                    "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
+                    "started_at": started_at, "ended_at": now_iso(),
+                    "status": result["status"],
+                    "files_checked": result["files_checked"],
+                    "bytes_checked": result["bytes_checked"],
+                    "mismatches": result["mismatches"],
+                    "detail": result["detail"], "created_at": now_iso(),
+                })
+            except Exception as e:
+                excs.append(RuntimeError(f"LAN audit persistence failed: {e}"))
             if result["status"] != "VERIFIED":
                 excs.append(RuntimeError(f"LAN integrity audit FAILED: {result['detail']}"))
 
         if excs:
             error_summary = '; '.join(str(e) for e in excs)
-            logger.error(f"Integrity audit found divergence: {error_summary}")
+            logger.error(f"Integrity audit failed: {error_summary}")
             try:
                 send_failure_alert(
                     config.notifications, config.firm_name, error_summary,

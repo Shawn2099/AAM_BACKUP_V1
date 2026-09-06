@@ -168,7 +168,10 @@ def run_final_backup(source_drive: str, lan_destination: str,
                 lan_config=lan_config,
             )
             exit_code = result.get("exit_code", -1)
-            lan_status = classify_lan_exit(exit_code)
+            # T04/A1: never re-derive success from the killable exit code
+            # alone — run_lan_sync already applied the log-completion
+            # contract (decide_lan_result); its status is authoritative.
+            lan_status = result.get("status") or classify_lan_exit(exit_code)
             if lan_status == "LAN_COMPLETE" or (lan_status == "LAN_PARTIAL" and not (exit_code & 8)):
                 lan_ok = True
                 logger.info(f"FY rollover: final LAN backup OK (exit {exit_code} → {lan_status})")

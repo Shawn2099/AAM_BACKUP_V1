@@ -63,6 +63,8 @@ def _run_with(sync_result, verify_data):
 def _clean_verify():
     return {
         "verified": True, "verify_exit_code": 0,
+        "verify_termination": "normal", "verify_completion": True,
+        "verify_differences": 0, "verify_reason": None,
         "size": {"count": 5, "bytes": 5000},
         "manifest": [{"Path": "a.txt", "Size": 100, "ModTime": "2026-09-06T10:00:00Z"}],
         "diff": {"added": [], "removed": [], "modified": [], "unchanged": ["a.txt"]},
@@ -78,6 +80,7 @@ class TestDoubleKillGate:
             {"status": "CLOUD_COMPLETE", "exit_code": 0, "error": None},
             {
                 "verified": True, "verify_exit_code": 0,
+                "verify_termination": "normal", "verify_completion": True,
                 "size": {"count": 374, "bytes": 379984},
                 "manifest": [],
                 "diff": {"added": [f"f{i}.dat" for i in range(4627)],
@@ -115,14 +118,63 @@ class TestDoubleKillGate:
         mock_alert.assert_not_called()
 
     def test_verify_kill_lucky_pass_flagged_in_metrics(self):
-        import json
         verify = _clean_verify()
         verify["verify_exit_code"] = -1  # check process died; evidence clean
+        verify["verify_termination"] = "abnormal"
+        verify["verify_completion"] = False
+        verify["verified"] = False
+        out, mock_record, mock_alert = _run_with(
+            {"status": "CLOUD_COMPLETE", "exit_code": 0, "error": None}, verify)
+        # F-08: a killed verifier fails closed even over clean data.
+        assert isinstance(out, RuntimeError)
+        assert mock_record.call_args.args[4] == "CLOUD_VERIFY_FAILED"
+        mock_alert.assert_called()
+
+    def test_killed_verifier_over_clean_data_fails_gate(self):
+        # F-08 regression: TerminateProcess(pid, 0) forges exit 0, the
+        # destination happens to be clean, so diff/size are legitimately
+        # clean — the run must still fail on missing completion evidence.
+        verify = _clean_verify()
+        verify["verified"] = False
+        verify["verify_termination"] = "abnormal"
+        verify["verify_completion"] = False
+        verify["verify_reason"] = "no rclone completion summary"
+        out, mock_record, mock_alert = _run_with(
+            {"status": "CLOUD_NO_CHANGES_COMPLETE", "exit_code": 9, "error": None},
+            verify)
+        assert isinstance(out, RuntimeError)
+        assert mock_record.call_args.args[4] == "CLOUD_VERIFY_FAILED"
+        mock_alert.assert_called()
+
+    def test_forged_boolean_without_liveness_fails_gate(self):
+        # Defense in depth: even verified=True must not pass without the
+        # check process's own completion evidence.
+        verify = _clean_verify()
+        verify["verify_termination"] = "abnormal"
+        verify["verify_completion"] = False
         out, mock_record, _ = _run_with(
             {"status": "CLOUD_COMPLETE", "exit_code": 0, "error": None}, verify)
+        assert isinstance(out, RuntimeError)
+        assert mock_record.call_args.args[4] == "CLOUD_VERIFY_FAILED"
+
+    def test_missing_liveness_keys_fail_closed(self):
+        # Older/mocked verify payloads without the new keys fail closed.
+        verify = _clean_verify()
+        verify.pop("verify_termination", None)
+        out, mock_record, _ = _run_with(
+            {"status": "CLOUD_COMPLETE", "exit_code": 0, "error": None}, verify)
+        assert isinstance(out, RuntimeError)
+        assert mock_record.call_args.args[4] == "CLOUD_VERIFY_FAILED"
+
+    def test_healthy_run_reports_liveness_true(self):
+        import json
+        out, mock_record, mock_alert = _run_with(
+            {"status": "CLOUD_COMPLETE", "exit_code": 0, "error": None},
+            _clean_verify())
         assert isinstance(out, dict) and out["status"] == "CLOUD_COMPLETE"
         metrics = json.loads(mock_record.call_args.kwargs.get("extended_metrics"))
-        assert metrics["verify_liveness"] is False
+        assert metrics["verify_liveness"] is True
+        mock_alert.assert_not_called()
 
 
 class TestSuspectAndPartialPolicy:
