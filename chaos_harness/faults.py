@@ -181,3 +181,38 @@ def restore_variant(record_path: str) -> dict:
     shutil.copy2(orig, dest)
     ok = sha256_file(dest) == rec["pre_sha256"]
     return {"dest": dest, "restored_ok": ok}
+
+
+def _rclone(args: list[str], rclone_exe: str | None,
+            rclone_conf: str, timeout: int = 300) -> subprocess.CompletedProcess:
+    safety.assert_chaos_path(rclone_conf)
+    exe = rclone_exe or shutil.which("rclone") or "rclone"
+    cmd = [exe, *args, "--config", rclone_conf]
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
+
+
+def cloud_plant(local_crafted: str, bucket: str, prefix: str, relpath: str,
+                rclone_conf: str, rclone_exe: str | None = None) -> dict:
+    """B3-1: upload a crafted object over a chaos-bucket path (T3/P10
+    plant procedure, parameterized). Used for same-size GCS plants and
+    extra-object plants. Refuses any non-chaos bucket."""
+    safety.assert_chaos_bucket(bucket)
+    safety.assert_chaos_path(local_crafted)
+    remote = f"aam_gcs:{bucket}/{prefix}/{relpath}"
+    r = _rclone(["copyto", local_crafted, remote], rclone_exe, rclone_conf)
+    if r.returncode != 0:
+        raise RuntimeError(f"cloud plant failed rc={r.returncode}: {r.stderr.strip()[:500]}")
+    return {"remote": remote, "planted_ok": True, "log": r.stderr.strip()[-500:]}
+
+
+def cloud_remove(bucket: str, prefix: str, relpath: str,
+                 rclone_conf: str, rclone_exe: str | None = None) -> dict:
+    """B3-1: delete a chaos-bucket object (plant cleanup / missing-case
+    setup). Refuses any non-chaos bucket."""
+    safety.assert_chaos_bucket(bucket)
+    remote = f"aam_gcs:{bucket}/{prefix}/{relpath}"
+    r = _rclone(["deletefile", remote], rclone_exe, rclone_conf)
+    if r.returncode != 0:
+        raise RuntimeError(f"cloud remove failed rc={r.returncode}: {r.stderr.strip()[:500]}")
+    return {"remote": remote, "removed_ok": True}

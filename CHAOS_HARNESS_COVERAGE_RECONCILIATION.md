@@ -29,7 +29,7 @@ P11 F1 mapping| gate truth table | PASS Batch B | — | — | valid live | No (d
 P12 cloud audit| clean VERIFIED, read-only | PASS Batch B (8/8) | — | — | valid live | Row detail/counters (F-T4-2/3) | 6,7,9 | 🟠 | light revalidation
 P13-part1 arg probes| exit-code contract | DONE (9 probes) | — | — | valid live | No | 2,3 | 🟢 | none
 P13-part2 live LAN matrix| per-class verdicts | NOT EXECUTED | H4 (1 class) | B2-3 | harness-ready | YES (target of F-T4-1/2/3) | 1,6,7,9,13,14 | 🔵 | live run required
-P14 cloud matrix| deployment-level classes | NOT EXECUTED | pattern only | B2-3 pattern | harness-ready | YES (same code) | 6,9,13 | 🔵 | live run required (lower pri than LAN)
+P14 cloud matrix| deployment-level classes | NOT EXECUTED | pattern only | B2-3 pattern + B3-1 plant helpers | harness-ready | YES (same code) | 6,9,13 | 🔵 | live run required (lower pri than LAN)
 P15 benchmark| relative numbers | NOT EXECUTED | — | — | none | No | — | 🔴 | low value; defer
 P16 sharding| no false global VERIFIED | NOT EXECUTED | — | B2-4 | harness-ready | YES (audit code) | 4,6 | 🔵 | live run required
 P17 state model| separation surfacing | NOT EXECUTED | — | B2-5 | harness-ready | YES (row shapes) | 6,7,13 | 🔵 | observational run required
@@ -37,8 +37,8 @@ P18 recovery| heal→VERIFIED | NOT EXECUTED | H4 T4-C pattern | B2-3 pattern | 
 P19 lock×audit| overlap semantics | NOT EXECUTED | — | — | none | Partial | 10 | 🔴 | needs semantics review; defer
 P20 watchdog| no live-lock kill | NOT EXECUTED | — | — | none | No | 10 | 🔴 | needs watchdog-fault review; defer
 P21 boot| boot-heal | NOT EXECUTED | — | — | none | No | 5,14 | 🔴 | service risk; defer
-P22 xbackend| serialization | NOT EXECUTED (`ph22_xbackend.py` exists) | — | — | none | No | 10 | 🔴 | nondeterministic; defer
-P23/P24 exhaustion/endurance| boundedness | NOT EXECUTED | — | — | none | No | 10,14 | 🔴 | needs Batch-1/2 primitives first; defer
+P22 xbackend| serialization | NOT EXECUTED (`ph22_xbackend.py` exists) | — | B3-2 record | harness-ready | No | 10 | 🔵 | nondeterministic; run with care
+P23/P24 exhaustion/endurance| boundedness | NOT EXECUTED | — | B3-3/B3-4 records (runner primitives) | harness-ready | No | 10,14 | 🔵 | live loops only; no new code needed
 P25 scheduling| no accidental audit | PASS 9/9 | — | — | valid live | No | 13 | 🟢 | none
 P26 report/UI| truthful surfacing | NOT EXECUTED | — | B2-5 fold-in | harness-ready | YES | 13 | 🔵 | folds into B2-5
 P27/P28 prod/convergence| procedural | per-campaign | — | — | live-duty | — | 16 | 🟡 | performed each live session
@@ -130,10 +130,10 @@ reports; then target only empirically observed gaps.
 
 TOTAL CATALOG TESTS: 47 (28 phases + T1–T4 + H1–H5 + B2-1–B2-5 counted once; overlapping shapes noted, not double-counted as gaps)
 VALID LIVE COVERAGE: 22 (P0–P7, P9–P12, P13-part1, P25, T2, T3B-verdict, P8-verdicts)
-HARNESS-READY / NOT LIVE: 9 (H1–H4, B2-1–B2-5 minus overlaps → B2-1, B2-2, B2-3, B2-4, B2-5, H1–H4 shapes)
+HARNESS-READY / NOT LIVE: 13 (prior 9 + B3-1..B3-4 records)
 PARTIAL: 4 (P10-V2b/c, P12, T3B-message, P8-message)
 REMEDIATION REVALIDATION REQUIRED: 7 (T4-A/B/C, P12, P10-V2b/c, T3B-msg, P8-msg)
-NOT COVERED: 6 (P15, P19, P20, P21, P22, P23/P24)
+NOT COVERED: 4 (P15, P19, P20, P21) — P22/P23/P24 moved to harness-ready via Batch 3; P14 remains harness-ready
 BLOCKED / INVALID: 4 (H5, T1, T3A + P26-standalone folded)
 
 BUSINESS-CONTRACT RULES: 16

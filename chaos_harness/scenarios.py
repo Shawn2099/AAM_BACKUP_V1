@@ -151,4 +151,12 @@ def get(sid: str) -> Scenario:
     for s in _extra:
         if s.sid == sid:
             return s
+    try:
+        from chaos_harness import scenarios_batch3 as _b3
+        _extra3 = _b3.ALL3
+    except ImportError:
+        _extra3 = ()
+    for s in _extra3:
+        if s.sid == sid:
+            return s
     raise KeyError(f"unknown scenario {sid!r}")
