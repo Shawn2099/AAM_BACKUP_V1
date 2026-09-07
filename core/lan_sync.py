@@ -210,6 +210,20 @@ def decide_lan_result(exit_code: int, log_text: str) -> dict:
             "reason": f"robocopy copy errors (exit {exit_code}, bit 3 set)",
         }
     if 0 <= exit_code <= 7:
+        # BUG-05 analysis (post-pull adversarial campaign T1, INVALID):
+        # RC 4-7 (bit 2: mismatches/extras, zero copy errors) with a
+        # completed summary stays LAN_COMPLETE here. Rationale: robocopy
+        # finished its /MIR pass with FAILED=0 and no bit 3 — nothing
+        # failed to copy; the anomaly tail is retained for forensics and
+        # a warning is logged, but no failure alert fires. The live T1
+        # harness proved RC 4-7 UNREACHABLE in a real /MIR run (in-sync +
+        # lock -> RC 2; divergent + lock -> RC 10 FAILED; type collision
+        # -> RC 11), so re-mapping this branch to PARTIAL would invent
+        # production behavior (alerts + PartialRun + optional NAS
+        # shutdown) with no live evidence. COMPLETE here explicitly does
+        # NOT mean cryptographically verified — that is the weekly
+        # integrity audit's independent job. Failed files, however, can
+        # never be COMPLETE: any contradiction fails closed to SUSPECT.
         contradiction = (
             (counts is not None and counts.get("failed", 0) > 0)
             or failed_markers > 0

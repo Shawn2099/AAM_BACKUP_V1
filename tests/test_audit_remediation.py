@@ -133,8 +133,8 @@ class TestBug02And03AuditOrchestration:
             "bytes_checked": 1000, "mismatches": 0, "detail": "cloud verified",
         }
         mock_audit_lan.return_value = {
-            "status": "VERIFIED", "scope": "lan/full", "files_checked": -1,
-            "bytes_checked": -1, "mismatches": 0, "detail": "lan verified",
+            "status": "VERIFIED", "scope": "lan/full", "files_checked": None,
+            "bytes_checked": None, "mismatches": 0, "detail": "lan verified",
         }
 
         cfg = _make_mock_config()
@@ -152,14 +152,17 @@ class TestBug02And03AuditOrchestration:
         )
         # 4. LAN shutdown task called in finally
         mock_shutdown.assert_called_once_with(cfg)
-        # 5. BUG-08: Negative numbers clamped to 0
+        # 5. BUG-08/F-T4-3: unknown counts persist as NULL (never a
+        # false zero); legacy negative sentinels still clamp to 0.
         lan_record_call = [
             c for c in mock_db_inst.record_audit.call_args_list
             if c[0][0]["mode"] == "lan"
         ][0][0][0]
-        assert lan_record_call["files_checked"] == 0
-        assert lan_record_call["bytes_checked"] == 0
+        assert lan_record_call["files_checked"] is None
+        assert lan_record_call["bytes_checked"] is None
         assert lan_record_call["mismatches"] == 0
+        from flow import _nullable_audit_count
+        assert _nullable_audit_count(-1) == 0
 
 
 # ── BUG-04: False-positive VERIFIED on read errors ───────────────────────────

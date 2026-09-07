@@ -519,6 +519,78 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
+def _nullable_audit_count(value):
+    """Pass through a populated audit counter; preserve unknown as NULL.
+
+    F-T4-3: a genuinely unknown count must not become a false zero in
+    the manifest. Negative sentinels (legacy -1) still clamp to 0 so no
+    negative ever reaches the DB (BUG-08 intent preserved).
+    """
+    if value is None:
+        return None
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> str:
+    """Explain WHY the cloud evidence gate failed, accurately.
+
+    F-T3-2: the old fixed template blamed "differences vs source" even
+    when the diff was clean and the real cause was an abnormally
+    terminated check, a missing completion summary, or incomplete
+    manifest/size evidence. The fail-closed DECISION is unchanged here —
+    only the primary-cause attribution. Categories, in precedence order:
+      1. abnormal termination / missing completion summary (process never
+         proved anything — data diffs are not the cause);
+      2. content mismatch (dirty diff: missing/modified/partial);
+      3. manifest/size evidence error (cannot prove the cloud state).
+    The checker's own reason string is always appended verbatim.
+    """
+    verify_data = verify_data or {}
+    diff = diff or {}
+    size = size or {}
+    reason = verify_data.get("verify_reason")
+    termination = verify_data.get("verify_termination", "abnormal")
+    completion = verify_data.get("verify_completion", False)
+    added = len(diff.get("added", []))
+    modified = len(diff.get("modified", []))
+    removed = len(diff.get("removed", []))
+    reason_suffix = f" Verify detail: {reason}." if reason else ""
+    if termination != "normal" or not completion:
+        primary = (
+            "verification did not complete normally "
+            f"(termination={termination}, completion={bool(completion)}"
+            f"{f', differences={verify_data.get('verify_differences')}' if verify_data.get('verify_differences') is not None else ''})"
+            f". Diff state at gate: missing-from-cloud={added}, "
+            f"unexpected-in-cloud={removed}, size-changed={modified} — "
+            "these counts are not the cause; the check process itself "
+            "never reported a verdict (killed/crashed/truncated, F-08)."
+        )
+    elif added or modified or diff.get("_partial"):
+        primary = (
+            "rclone check found differences vs source "
+            f"(missing-from-cloud={added}, "
+            f"unexpected-in-cloud={removed}, "
+            f"size-changed={modified}). The cloud copy may be "
+            "incomplete or out of sync."
+        )
+    else:
+        manifest_error = verify_data.get("manifest_error")
+        size_error = size.get("_error") if isinstance(size, dict) else None
+        primary = (
+            "manifest/evidence error "
+            f"(manifest_error={manifest_error!r}, size_error={size_error!r}). "
+            "The cloud state could not be proven to match source."
+        )
+    return (
+        "Cloud integrity verification FAILED after sync: "
+        f"{primary}.{reason_suffix} rclone sync is resumable — the next "
+        "scheduled run will re-sync the differences."
+    )
+
+
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
     with _backup_slot(config):
@@ -582,14 +654,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             if not evidence_ok:
                 # NOTE: rclone `+` (diff["added"]) = missing from cloud,
                 # `-` (diff["removed"]) = extra in cloud (C-F1INV-002 fix).
-                verify_err = (
-                    "Cloud integrity verification FAILED after sync: rclone check found "
-                    f"differences vs source (missing-from-cloud={len(diff.get('added', []))}, "
-                    f"unexpected-in-cloud={len(diff.get('removed', []))}, "
-                    f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
-                    "incomplete or out of sync. rclone sync is resumable — the next "
-                    "scheduled run will re-sync the differences."
-                )
+                # F-T3-2: the message attributes the PRIMARY failure
+                # category (abnormal termination vs mismatch vs evidence
+                # error); the fail-closed decision itself is unchanged.
+                verify_err = _cloud_gate_failure_message(verify_data, diff, size)
                 status = "CLOUD_VERIFY_FAILED"
                 error_msg = verify_err
                 logger.error(verify_err)
@@ -1139,8 +1207,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                         "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
                         "started_at": started_at, "ended_at": now_iso(),
                         "status": result["status"],
-                        "files_checked": max(result["files_checked"], 0),
-                        "bytes_checked": max(result["bytes_checked"], 0),
+                        "files_checked": _nullable_audit_count(result.get("files_checked")),
+                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
                         "mismatches": max(result["mismatches"], 0),
                         "detail": result["detail"], "created_at": now_iso(),
                     })
@@ -1167,8 +1235,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                         "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
                         "started_at": started_at, "ended_at": now_iso(),
                         "status": result["status"],
-                        "files_checked": max(result["files_checked"], 0),
-                        "bytes_checked": max(result["bytes_checked"], 0),
+                        "files_checked": _nullable_audit_count(result.get("files_checked")),
+                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
                         "mismatches": max(result["mismatches"], 0),
                         "detail": result["detail"], "created_at": now_iso(),
                     })

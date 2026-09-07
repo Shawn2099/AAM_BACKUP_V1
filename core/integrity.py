@@ -56,6 +56,36 @@ _FAILED_CHECK_RE = re.compile(r"Failed to check", re.IGNORECASE)
 _ERROR_LINE_RE = re.compile(r"(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} (?:ERROR|CRITICAL)\s*:")
 _ERRORS_CHECKING_RE = re.compile(r"(\d+)\s+errors while checking", re.IGNORECASE)
 
+# F-T4-2: rclone's NORMAL mismatch output contains "Failed to check:
+# N differences found", "N errors while checking" (NOTICE level), and
+# per-file ERROR lines such as "ERROR : f1.txt: sizes differ" /
+# "md5 differ" (measured live, rclone v1.74.2). None of those, by
+# themselves, is a file read/check error — a completed check that found
+# differences always emits them. A genuine read/check error is signalled
+# by a `!` marker in the --combined file (authoritative) or by an
+# ERROR/CRITICAL log line carrying an I/O signal that never describes a
+# plain content mismatch (permission/denial, failed read/open, transport
+# failure). Anything else fails closed as before; only the CLASSIFICATION
+# changed, never the fail-closed verdict.
+_IO_ERROR_LINE_RE = re.compile(
+    r"permission denied|access (is )?denied|failed to (read|open|lstat|stat)"
+    r"|i/o error|input/output error|too many open files|broken pipe"
+    r"|connection (refused|reset|timed out)|timed out|unauthori[sz]ed"
+    r"|checksum failure|crc error|corrupt(?!\s*diff)|cannot read",
+    re.IGNORECASE,
+)
+
+# F-T4-1: dest-side mount-health sentinel. Required on every LAN
+# destination by preflight (core/lan_preflight.py: strict is_file gate —
+# a missing canary refuses the mirror), excluded from every /MIR
+# transfer by /XF (core/lan_sync.py + dry-run), and created on new FY
+# shares by rollover. It is operational layout, NOT backup data: the
+# source never carries it and the transfer never converges it, so the
+# bidirectional audit must not treat it as divergent backup content.
+# Narrow exact-match exclusion (root-level rel path only — never a
+# basename sweep, never dotfiles in general).
+_CANARY_REL_PATHS = frozenset({".AAM_TARGET_MOUNTED"})
+
 # Alert/detail payload bound: full mismatch COUNTS are always recorded;
 # the path list is truncated so a large divergence cannot blow up the
 # manifest row or the alert email.
@@ -153,16 +183,45 @@ def _run_rclone_check(
             cmd, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=timeout,
         )
-        added, removed, modified, _unchanged, errors, present = _parse_combined_file(diff_file)
+        added, removed, modified, unchanged, errors, present = _parse_combined_file(diff_file)
         elapsed = time.monotonic() - started
         capability = CAPABILITY_SIZE_ONLY if size_only else CAPABILITY_HASH_LOCAL
         log_text = f"{result.stderr or ''}\n{result.stdout or ''}"
         summaries = _SUMMARY_RE.findall(log_text)
-        failed_verdict = bool(_FAILED_CHECK_RE.search(log_text))
-        error_lines = bool(_ERROR_LINE_RE.search(log_text))
-        errors_checking = bool(_ERRORS_CHECKING_RE.search(log_text))
+        error_log_lines = [ln for ln in log_text.splitlines() if _ERROR_LINE_RE.match(ln)]
+        io_error_lines = [ln for ln in error_log_lines if _IO_ERROR_LINE_RE.search(ln)]
+        read_error = bool(errors) or bool(io_error_lines)
 
-        termination = "normal" if summaries and result.returncode in (0, 1) and not error_lines else "abnormal"
+        # F-T4-1: drop the operational mount sentinel from the dest-extra
+        # set before verdict/counts. Added/modified/error markers are
+        # never filtered — only a dest-side extra of this exact artifact
+        # is contractually not backup content. The summary-consistency
+        # check below uses the RAW (pre-filter) count: rclone itself
+        # counts the canary as a difference, so comparing its verdict
+        # against the filtered set would false-positive as
+        # "contradictory" on every canary-carrying destination.
+        canary_excluded = [p for p in removed if p in _CANARY_REL_PATHS]
+        if canary_excluded:
+            removed = [p for p in removed if p not in _CANARY_REL_PATHS]
+        raw_mismatches = (
+            len(added) + len(modified) + len(removed) + len(canary_excluded)
+        )
+
+        # F-T4-3: files actually compared = every classified combined
+        # entry (matched `=` rows included — rclone compared them).
+        # bytes_checked stays unknown: the checker emits no byte
+        # accounting, and stat-based inference would misattribute
+        # (both sides are read for hashing; the far side may be remote).
+        files_checked = (
+            len(added) + len(modified) + len(removed)
+            + len(unchanged) + len(errors)
+        ) if present else None
+
+        termination = (
+            "normal"
+            if summaries and result.returncode in (0, 1) and present
+            else "abnormal"
+        )
         if result.returncode >= 2 or not present:
             status = "VERIFICATION_FAILED"
             detail = (
@@ -170,6 +229,7 @@ def _run_rclone_check(
                 f"(exit {result.returncode}): {(result.stderr or '').strip()[:2000]}"
             )
             mismatches = -1
+            files_checked = None
         elif not summaries:
             # F-08 class: the check did not emit its completion verdict
             # (killed/crashed/truncated — the pre-created diff file may
@@ -181,9 +241,12 @@ def _run_rclone_check(
                 "interrupted before rclone reported a verdict"
             )
             mismatches = -1
-        elif errors or failed_verdict or error_lines or errors_checking:
-            # BUG-04: read/permission errors or process failure verdicts must
-            # NEVER be recorded as VERIFIED. Fail closed.
+            files_checked = None
+        elif read_error:
+            # BUG-04: read/permission errors must NEVER be recorded as
+            # VERIFIED. Fail closed. (F-T4-2: normal mismatch wording —
+            # "Failed to check", "N errors while checking", per-file
+            # "sizes/md5 differ" ERROR lines — no longer routes here.)
             status = "VERIFICATION_FAILED"
             mismatches = len(added) + len(modified) + len(removed) + len(errors)
             detail = (
@@ -202,7 +265,7 @@ def _run_rclone_check(
         else:
             mismatches = len(added) + len(modified) + len(removed)
             summary_n = int(summaries[-1])
-            if (summary_n == 0) != (mismatches == 0):
+            if (summary_n == 0) != (raw_mismatches == 0):
                 # The process finished but its verdict contradicts the diff
                 # it wrote — fail closed rather than trusting either side.
                 status = "VERIFICATION_FAILED"
@@ -211,18 +274,35 @@ def _run_rclone_check(
                     f"(summary={summary_n} differences, parsed mismatches={mismatches})"
                 )
             else:
+                # F-T4-2: this branch is now REACHABLE for normal content
+                # mismatches (previously dead code — every diverged run
+                # was swallowed by the read-error branch above). The
+                # verdict stays fail-closed; only the explanation is now
+                # truthful and the divergent paths are preserved.
                 status = "VERIFIED" if mismatches == 0 else "VERIFICATION_FAILED"
                 detail_paths = (added + modified + removed)[:_MAX_DETAIL_PATHS]
-                detail = (
-                    f"capability={capability} missing-from-dest={len(added)} "
-                    f"extra-in-dest={len(removed)} content-changed={len(modified)} "
-                    f"elapsed_s={elapsed:.0f} paths={detail_paths}"
-                )
+                if mismatches == 0:
+                    detail = (
+                        f"capability={capability} verified clean "
+                        f"(checked={files_checked}"
+                        f"{f', canary_excluded={len(canary_excluded)}' if canary_excluded else ''} "
+                        f"elapsed_s={elapsed:.0f})"
+                    )
+                else:
+                    detail = (
+                        f"capability={capability} content mismatch detected "
+                        f"(missing-from-dest={len(added)} "
+                        f"extra-in-dest={len(removed)} content-changed={len(modified)} "
+                        f"elapsed_s={elapsed:.0f} paths={detail_paths})"
+                    )
         logger.info(f"Integrity audit ({scope}) {status}: {detail}")
         return {
             "status": status, "scope": scope, "capability": capability,
             "termination": termination,
-            "files_checked": -1, "bytes_checked": -1,
+            # F-T4-3: files_checked is the parsed compared-file count
+            # (None when the check never completed). bytes_checked is
+            # genuinely unknown — the checker emits no byte accounting.
+            "files_checked": files_checked, "bytes_checked": None,
             "mismatches": mismatches, "missing": added, "extra": removed,
             "errors": errors,
             "detail": detail, "elapsed_s": round(elapsed, 1),
@@ -233,7 +313,7 @@ def _run_rclone_check(
             "status": "VERIFICATION_FAILED", "scope": scope,
             "capability": CAPABILITY_HASH_LOCAL,
             "termination": "abnormal",
-            "files_checked": -1, "bytes_checked": -1, "mismatches": -1,
+            "files_checked": None, "bytes_checked": None, "mismatches": -1,
             "missing": [], "extra": [],
             "detail": f"audit execution failed: {e}", "elapsed_s": 0.0,
         }
@@ -258,6 +338,11 @@ def audit_lan(
     size + MD5 content (measured). No --size-only: size-only can never
     yield VERIFIED. UNC destinations (\\\\server\\share) work through the
     local backend like any other path.
+
+    F-T4-1: the dest-side mount sentinel `.AAM_TARGET_MOUNTED`
+    (preflight-required, /XF-excluded from every transfer) is filtered
+    from the dest-extra set before the verdict — it is operational
+    layout, not backup data. A clean mirror therefore reaches VERIFIED.
     """
     scope = "full" if not scope_prefixes else f"shard:{','.join(sorted(scope_prefixes))}"
     extra = None
