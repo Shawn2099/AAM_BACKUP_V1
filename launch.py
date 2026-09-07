@@ -214,16 +214,27 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
     from prefect.exceptions import ObjectNotFound
 
     if legs is None:
+        audit_enabled = bool(
+            getattr(config.lan, "enabled", False) or getattr(config.cloud, "enabled", True)
+        )
         legs = {
             "backup-lan": bool(getattr(config.lan, "enabled", False)),
             "backup-cloud": bool(getattr(config.cloud, "enabled", True)),
+            "integrity-audit": audit_enabled,
         }
+
+    flow_map = {
+        "backup-lan": "aam-backup",
+        "backup-cloud": "aam-backup",
+        "integrity-audit": "integrity-audit",
+    }
 
     async def _reconcile() -> dict:
         results: dict = {}
         async with get_client() as client:
             for dep_name, enabled in legs.items():
-                full_name = f"aam-backup/{dep_name}"
+                flow_name = flow_map.get(dep_name, "aam-backup")
+                full_name = f"{flow_name}/{dep_name}"
                 try:
                     dep = await client.read_deployment_by_name(full_name)
                 except ObjectNotFound:

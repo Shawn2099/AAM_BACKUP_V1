@@ -84,8 +84,8 @@ class TestCloudVerifyFailure:
         assert "missing-from-cloud=1" in alert_err
         assert "unexpected-in-cloud=2" in alert_err
         assert "size-changed=1" in alert_err
-        # Observed cloud state still recorded to the DB before failing
-        mock_record_task.assert_called_once()
+        # BUG-01: Cloud state must NOT be recorded to DB when verify fails
+        mock_record_task.assert_not_called()
         # No artifact on failure
         mock_artifact.assert_not_called()
 

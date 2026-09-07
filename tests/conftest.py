@@ -39,6 +39,11 @@ def pytest_configure(config):
     # Suppress noisy teardown logs from the ephemeral Prefect server
     logging.getLogger("prefect.server").setLevel(logging.ERROR)
 
+    # BUG-10: Inject deploy\bin into PATH so bundled rclone.exe is discovered by tests
+    deploy_bin = Path(__file__).resolve().parent.parent / "deploy" / "bin"
+    if deploy_bin.exists() and str(deploy_bin) not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{deploy_bin};{os.environ.get('PATH', '')}"
+
 
 @pytest.fixture
 def temp_db_path():

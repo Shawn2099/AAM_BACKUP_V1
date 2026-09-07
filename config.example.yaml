@@ -36,6 +36,9 @@ lan:
   subprocess_timeout_seconds: 14400
   # Shut down the NAS server after a successful LAN sync
   shutdown_after_backup: true
+  # When true, shuts down the NAS even if the backup ended in LAN_PARTIAL or LAN_FAILED
+  # once all retry attempts are exhausted. Failure alert is always sent before shutdown.
+  shutdown_on_all_retries_exhausted: false
   # Flow-level retry attempts (full robocopy re-runs on failure)
   max_attempts: 2
   # Seconds between flow-level retry attempts

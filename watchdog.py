@@ -303,6 +303,23 @@ def _stop_service(service: str) -> None:
         logger.error(f"Stop attempt failed: {exc}")
 
 
+def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
+    """Send an alert if watchdog deferrals hit their cap on a live lock owner."""
+    try:
+        from models.config import CONFIG_PATH, load_config
+        from core.notifications import send_failure_alert
+
+        cfg = load_config(CONFIG_PATH)
+        send_failure_alert(
+            cfg.notifications,
+            cfg.firm_name,
+            f"Watchdog alert: backup lock held by live PID {pid} while Prefect API is unhealthy: {reason}. Manual review required.",
+            {"mode": "watchdog", "status": "LIVE_LOCK_CAP_EXCEEDED", "pid": pid},
+        )
+    except Exception as e:
+        logger.debug(f"Watchdog alert delivery skipped/failed: {e}")
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 
 def _check_health() -> bool:
@@ -336,6 +353,8 @@ def main() -> None:
     # intended ~30 min grace) and restarted under an active backup.
     transfer_deferrals = 0  # capped at MAX_TRANSFER_DEFERRALS (~8 h)
     lock_deferrals = 0      # capped at MAX_DEFERRALS (~30 min)
+    _alert_sentinel = object()
+    _alerted_deadlock_pid = _alert_sentinel
 
     while True:
         try:
@@ -347,6 +366,7 @@ def main() -> None:
                 failures = 0
                 transfer_deferrals = 0
                 lock_deferrals = 0
+                _alerted_deadlock_pid = _alert_sentinel
                 # G4: a healthy Prefect API does NOT mean backups are being
                 # scheduled. The in-process scheduler + dashboard live in
                 # AamBackupAgent; if that service is stopped, deployments never
@@ -409,6 +429,14 @@ def main() -> None:
                             f"restarting. Possible zombie rclone/robocopy belonging to "
                             f"{AGENT_SERVICE} - manual review required."
                         )
+                        try:
+                            from core.process import read_lock_alive
+                            _, pid = read_lock_alive(BACKUP_LOCK_PATH)
+                        except Exception:
+                            pid = None
+                        if _alerted_deadlock_pid != pid:
+                            _alert_wedged_lock("Transfer process persists at deferral cap", pid)
+                            _alerted_deadlock_pid = pid
                         transfer_deferrals = 0
                         time.sleep(BACKUP_WAIT_INTERVAL)
                         continue
@@ -459,6 +487,14 @@ def main() -> None:
                         f"NOT removing the live lock and NOT restarting. Manual review required "
                         f"if the backup is wedged in a non-transfer phase."
                     )
+                    try:
+                        from core.process import read_lock_alive
+                        _, pid = read_lock_alive(BACKUP_LOCK_PATH)
+                    except Exception:
+                        pid = None
+                    if _alerted_deadlock_pid != pid:
+                        _alert_wedged_lock("Lock persisted with no transfer process at deferral cap", pid)
+                        _alerted_deadlock_pid = pid
                     lock_deferrals = 0
                     time.sleep(BACKUP_WAIT_INTERVAL)
                     continue

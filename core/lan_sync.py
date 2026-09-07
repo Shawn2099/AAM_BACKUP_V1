@@ -209,15 +209,9 @@ def decide_lan_result(exit_code: int, log_text: str) -> dict:
             "log_complete": True, "counts": counts,
             "reason": f"robocopy copy errors (exit {exit_code}, bit 3 set)",
         }
-    if 4 <= exit_code <= 7:
-        return {
-            "status": "LAN_PARTIAL", "termination": "normal",
-            "log_complete": True, "counts": counts,
-            "reason": f"robocopy mismatches/extras (exit {exit_code}, bit 2 set)",
-        }
-    if exit_code in (0, 1, 2, 3):
+    if 0 <= exit_code <= 7:
         contradiction = (
-            (counts is not None and (counts.get("failed", 0) > 0 or counts.get("mismatch", 0) > 0))
+            (counts is not None and counts.get("failed", 0) > 0)
             or failed_markers > 0
         )
         if contradiction:
@@ -229,9 +223,10 @@ def decide_lan_result(exit_code: int, log_text: str) -> dict:
                     f"(summary={counts}, FAILED markers={failed_markers})"
                 ),
             }
+        reason = f"robocopy mismatches/extras (exit {exit_code})" if exit_code >= 4 else None
         return {
             "status": "LAN_COMPLETE", "termination": "normal",
-            "log_complete": True, "counts": counts, "reason": None,
+            "log_complete": True, "counts": counts, "reason": reason,
         }
     return {
         "status": "LAN_FAILED", "termination": "abnormal",

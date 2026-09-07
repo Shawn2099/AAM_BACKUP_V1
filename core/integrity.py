@@ -52,6 +52,9 @@ from core.process import resolve_binary
 # count and the parsed diff (measured on rclone v1.74.2: summary N ==
 # added + modified + removed for a completed run).
 _SUMMARY_RE = re.compile(r"(\d+)\s+differences found")
+_FAILED_CHECK_RE = re.compile(r"Failed to check", re.IGNORECASE)
+_ERROR_LINE_RE = re.compile(r"(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} (?:ERROR|CRITICAL)\s*:")
+_ERRORS_CHECKING_RE = re.compile(r"(\d+)\s+errors while checking", re.IGNORECASE)
 
 # Alert/detail payload bound: full mismatch COUNTS are always recorded;
 # the path list is truncated so a large divergence cannot blow up the
@@ -69,16 +72,18 @@ def _norm_rel(rel: str) -> str:
     return PureWindowsPath(rel).as_posix().lstrip("/")
 
 
-def _parse_combined_file(diff_file: str | None) -> tuple[list, list, list, list, bool]:
+def _parse_combined_file(diff_file: str | None) -> tuple[list, list, list, list, list, bool]:
     """Parse `rclone check --combined` output. Returns (added, removed,
-    modified, unchanged, file_present). added=`+` missing-from-dest,
-    removed=`-` extra-in-dest, modified=`*` differ, unchanged=`=`."""
+    modified, unchanged, errors, file_present). added=`+` missing-from-dest,
+    removed=`-` extra-in-dest, modified=`*` differ, unchanged=`=`,
+    errors=`!` read/access error."""
     added: list[str] = []
     removed: list[str] = []
     modified: list[str] = []
     unchanged: list[str] = []
+    errors: list[str] = []
     if not diff_file or not os.path.exists(diff_file):
-        return added, removed, modified, unchanged, False
+        return added, removed, modified, unchanged, errors, False
     try:
         with open(diff_file, encoding="utf-8") as f:
             for line in f:
@@ -95,9 +100,11 @@ def _parse_combined_file(diff_file: str | None) -> tuple[list, list, list, list,
                         modified.append(p)
                     elif line[0] == "=":
                         unchanged.append(p)
+                    elif line[0] == "!":
+                        errors.append(p)
     except OSError:
-        return added, removed, modified, unchanged, False
-    return added, removed, modified, unchanged, True
+        return added, removed, modified, unchanged, errors, False
+    return added, removed, modified, unchanged, errors, True
 
 
 def _run_rclone_check(
@@ -146,12 +153,16 @@ def _run_rclone_check(
             cmd, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=timeout,
         )
-        added, removed, modified, _unchanged, present = _parse_combined_file(diff_file)
+        added, removed, modified, _unchanged, errors, present = _parse_combined_file(diff_file)
         elapsed = time.monotonic() - started
         capability = CAPABILITY_SIZE_ONLY if size_only else CAPABILITY_HASH_LOCAL
         log_text = f"{result.stderr or ''}\n{result.stdout or ''}"
         summaries = _SUMMARY_RE.findall(log_text)
-        termination = "normal" if summaries and result.returncode in (0, 1) else "abnormal"
+        failed_verdict = bool(_FAILED_CHECK_RE.search(log_text))
+        error_lines = bool(_ERROR_LINE_RE.search(log_text))
+        errors_checking = bool(_ERRORS_CHECKING_RE.search(log_text))
+
+        termination = "normal" if summaries and result.returncode in (0, 1) and not error_lines else "abnormal"
         if result.returncode >= 2 or not present:
             status = "VERIFICATION_FAILED"
             detail = (
@@ -170,6 +181,15 @@ def _run_rclone_check(
                 "interrupted before rclone reported a verdict"
             )
             mismatches = -1
+        elif errors or failed_verdict or error_lines or errors_checking:
+            # BUG-04: read/permission errors or process failure verdicts must
+            # NEVER be recorded as VERIFIED. Fail closed.
+            status = "VERIFICATION_FAILED"
+            mismatches = len(added) + len(modified) + len(removed) + len(errors)
+            detail = (
+                f"capability={capability} file read or check errors occurred during audit "
+                f"(error_files={len(errors)}: {errors[:_MAX_DETAIL_PATHS]}, exit {result.returncode})"
+            )
         elif size_only:
             # §11/acceptance-15: a size-only comparison is NOT deep
             # verification and must never be recorded VERIFIED.
@@ -204,6 +224,7 @@ def _run_rclone_check(
             "termination": termination,
             "files_checked": -1, "bytes_checked": -1,
             "mismatches": mismatches, "missing": added, "extra": removed,
+            "errors": errors,
             "detail": detail, "elapsed_s": round(elapsed, 1),
         }
     except (subprocess.TimeoutExpired, OSError) as e:

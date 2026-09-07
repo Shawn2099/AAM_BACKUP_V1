@@ -568,38 +568,6 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             status = sync_result["status"]
             phase = "verify"
             verify_data = verify_report(config, fy_prefix)
-            # M6: a failed manifest query is NEVER recorded as bucket state.
-            # Skip the DB write; the run row + extended_metrics carry the reason.
-            manifest_error = verify_data.get("manifest_error")
-            if manifest_error:
-                logger.error(
-                    f"Cloud manifest query failed ({manifest_error}) - file-level "
-                    "DB record and transfer metrics are SKIPPED this run; the "
-                    "integrity verification above is unaffected."
-                )
-            else:
-                cloud_record_task(
-                    db_path, verify_data, sync_result,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
-                )
-
-            # F1: verification is part of the backup contract. A failed check must
-            # NOT be recorded as COMPLETE — alert with a distinct, non-skip status
-            # and fail the run so it is visible in the Prefect console.
-            #
-            # C-DK-001 hardening: the gate consumes the full evidence bundle,
-            # not just the killable verified boolean. A killed verify process
-            # inherits exit 0 (verified=True) but cannot forge the independent
-            # diff/size listings collected in the same task.
-            #
-            # F-08 hardening: the gate ALSO requires the check process's own
-            # completion evidence (verify_termination == "normal"). Over
-            # clean destination data the independent listings are
-            # legitimately clean, so they corroborate DATA state but not
-            # verifier COMPLETION — without this clause a killed check
-            # over clean data was indistinguishable from a genuine pass.
             diff = verify_data.get("diff") or {}
             size = verify_data.get("size") or {}
             evidence_ok = (
@@ -637,6 +605,23 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 raise RuntimeError(verify_err)
 
             phase = "post"
+
+            # BUG-01: ManifestDB record MUST only happen after evidence_ok passes.
+            # M6: a failed manifest query is NEVER recorded as bucket state.
+            manifest_error = verify_data.get("manifest_error")
+            if manifest_error:
+                logger.error(
+                    f"Cloud manifest query failed ({manifest_error}) - file-level "
+                    "DB record and transfer metrics are SKIPPED this run; the "
+                    "integrity verification above is unaffected."
+                )
+            else:
+                cloud_record_task(
+                    db_path, verify_data, sync_result,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
+                )
 
             # Calculate files and bytes copied by comparing old database state with new live GCS manifest
             manifest = verify_data.get("manifest", [])
@@ -851,10 +836,15 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             if status == "LAN_COMPLETE":
                 lan_shutdown_task(config)
             elif status == "LAN_PARTIAL":
+                shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
+                nas_msg = (
+                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
+                    if shutdown_on_fail
+                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
+                )
                 logger.error(
                     f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
-                    "some files were not copied. NAS shutdown SKIPPED - the next "
-                    "run will re-sync the missing files."
+                    f"some files were not copied. {nas_msg}"
                 )
                 try:
                     send_failure_alert(
@@ -862,8 +852,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                         (
                             f"LAN backup PARTIAL: robocopy exit code "
                             f"{sync_result.get('exit_code')} — some files were not "
-                            "copied. The NAS was NOT shut down; the next scheduled "
-                            "run will re-sync. "
+                            f"copied. {nas_msg} "
                             f"{sync_result.get('error') or ''}"
                         ).strip(),
                         {"mode": "lan", "status": status,
@@ -872,6 +861,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     )
                 except Exception as alert_err:
                     logger.warning(f"Could not send partial-backup alert: {alert_err}")
+                if shutdown_on_fail:
+                    logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
+                    lan_shutdown_task(config)
             else:
                 logger.info(f"LAN shutdown skipped - status is {status}")
             # Terminal-state policy (single authoritative decision point):
@@ -895,24 +887,33 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     status = sync_result["status"]
             elif phase == "pre":
                 status = "LAN_FAILED"
+            shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
             if status == "LAN_SUSPECT":
                 # Abnormal transfer termination (killed/timeout-ambiguous):
                 # alert specifically — the backup() tail skips its generic
                 # alert for PartialRun-wrapped legs, and SUSPECT must never
-                # be silent. NAS shutdown is skipped (F3 else-branch already
-                # ran or never will — shutdown only fires on LAN_COMPLETE).
+                # be silent.
+                nas_msg = (
+                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
+                    if shutdown_on_fail
+                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
+                )
                 try:
                     send_failure_alert(
                         config.notifications, config.firm_name,
                         f"LAN backup SUSPECT: {error_msg} The transfer did not "
-                        "terminate normally; completion is unproven. The NAS was "
-                        "NOT shut down; the next scheduled run will re-sync.",
+                        f"terminate normally; completion is unproven. {nas_msg}",
                         {"mode": "lan", "status": status,
                          "exit_code": sync_result.get("exit_code")},
                         started_at,
                     )
                 except Exception as alert_err:
                     logger.warning(f"Could not send suspect-backup alert: {alert_err}")
+            if shutdown_on_fail and not isinstance(e, PartialRun):
+                logger.info(
+                    f"shutdown_on_all_retries_exhausted enabled: powering down NAS after {status} failure alert"
+                )
+                lan_shutdown_task(config)
             raise
         finally:
             try:
@@ -1114,71 +1115,81 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
     db = ManifestDB(config.paths.database_path)
     excs = []
     try:
-        if mode in ("cloud", "all") and config.cloud.enabled:
-            audit_id = new_audit_id("cloud", "full")
-            started_at = now_iso()
-            with temp_rclone_config(
-                config.paths.gcs_key_path,
-                config.cloud.location,
-                config.cloud.project_number,
-                config.cloud.storage_class,
-            ) as rclone_cfg:
-                result = audit_cloud(
-                    config.paths.source_drive, config.cloud.bucket,
-                    get_fy_prefix(), rclone_cfg,
-                    timeout=config.cloud.verify_timeout_seconds,
-                )
-            # A VERIFIED verdict is durable only once persisted: a failed
-            # DB write must fail the audit loudly (alert + FAILED flow),
-            # never silently drop a passing result or leave NOT_VERIFIED
-            # behind a COMPLETED run.
-            try:
-                db.record_audit({
-                    "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
-                    "started_at": started_at, "ended_at": now_iso(),
-                    "status": result["status"],
-                    "files_checked": max(result["files_checked"], 0),
-                    "bytes_checked": max(result["bytes_checked"], 0),
-                    "mismatches": max(result["mismatches"], 0),
-                    "detail": result["detail"], "created_at": now_iso(),
-                })
-            except Exception as e:
-                excs.append(RuntimeError(f"Cloud audit persistence failed: {e}"))
-            if result["status"] != "VERIFIED":
-                excs.append(RuntimeError(f"Cloud integrity audit FAILED: {result['detail']}"))
+        with _backup_slot(config):
+            if mode in ("cloud", "all") and config.cloud.enabled:
+                audit_id = new_audit_id("cloud", "full")
+                started_at = now_iso()
+                with temp_rclone_config(
+                    config.paths.gcs_key_path,
+                    config.cloud.location,
+                    config.cloud.project_number,
+                    config.cloud.storage_class,
+                ) as rclone_cfg:
+                    result = audit_cloud(
+                        config.paths.source_drive, config.cloud.bucket,
+                        get_fy_prefix(), rclone_cfg,
+                        timeout=config.cloud.verify_timeout_seconds,
+                    )
+                # A VERIFIED verdict is durable only once persisted: a failed
+                # DB write must fail the audit loudly (alert + FAILED flow),
+                # never silently drop a passing result or leave NOT_VERIFIED
+                # behind a COMPLETED run.
+                try:
+                    db.record_audit({
+                        "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
+                        "started_at": started_at, "ended_at": now_iso(),
+                        "status": result["status"],
+                        "files_checked": max(result["files_checked"], 0),
+                        "bytes_checked": max(result["bytes_checked"], 0),
+                        "mismatches": max(result["mismatches"], 0),
+                        "detail": result["detail"], "created_at": now_iso(),
+                    })
+                except Exception as e:
+                    excs.append(RuntimeError(f"Cloud audit persistence failed: {e}"))
+                if result["status"] != "VERIFIED":
+                    excs.append(RuntimeError(f"Cloud integrity audit FAILED: {result['detail']}"))
 
-        if mode in ("lan", "all") and config.lan.enabled:
-            audit_id = new_audit_id("lan", "full")
-            started_at = now_iso()
-            result = audit_lan(config.paths.source_drive, config.paths.lan_destination)
-            try:
-                db.record_audit({
-                    "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
-                    "started_at": started_at, "ended_at": now_iso(),
-                    "status": result["status"],
-                    "files_checked": result["files_checked"],
-                    "bytes_checked": result["bytes_checked"],
-                    "mismatches": result["mismatches"],
-                    "detail": result["detail"], "created_at": now_iso(),
-                })
-            except Exception as e:
-                excs.append(RuntimeError(f"LAN audit persistence failed: {e}"))
-            if result["status"] != "VERIFIED":
-                excs.append(RuntimeError(f"LAN integrity audit FAILED: {result['detail']}"))
+            if mode in ("lan", "all") and config.lan.enabled:
+                audit_id = new_audit_id("lan", "full")
+                started_at = now_iso()
+                wol_check_task(config)
+                lan_timeout = int(getattr(config.lan, "subprocess_timeout_seconds", 14400))
+                try:
+                    result = audit_lan(
+                        config.paths.source_drive, config.paths.lan_destination,
+                        timeout=lan_timeout,
+                    )
+                finally:
+                    if config.lan.shutdown_after_backup and config.wol.enabled:
+                        lan_shutdown_task(config)
+                try:
+                    db.record_audit({
+                        "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
+                        "started_at": started_at, "ended_at": now_iso(),
+                        "status": result["status"],
+                        "files_checked": max(result["files_checked"], 0),
+                        "bytes_checked": max(result["bytes_checked"], 0),
+                        "mismatches": max(result["mismatches"], 0),
+                        "detail": result["detail"], "created_at": now_iso(),
+                    })
+                except Exception as e:
+                    excs.append(RuntimeError(f"LAN audit persistence failed: {e}"))
+                if result["status"] != "VERIFIED":
+                    excs.append(RuntimeError(f"LAN integrity audit FAILED: {result['detail']}"))
 
-        if excs:
-            error_summary = '; '.join(str(e) for e in excs)
-            logger.error(f"Integrity audit failed: {error_summary}")
-            try:
-                send_failure_alert(
-                    config.notifications, config.firm_name, error_summary,
-                    {"mode": mode, "status": "VERIFICATION_FAILED"},
-                    timestamp=now_iso(),
-                )
-            except Exception:
-                pass
-            raise ExceptionGroup("Integrity audit found divergence", excs)
-        logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
+            if excs:
+                error_summary = '; '.join(str(e) for e in excs)
+                logger.error(f"Integrity audit failed: {error_summary}")
+                try:
+                    send_failure_alert(
+                        config.notifications, config.firm_name, error_summary,
+                        {"mode": mode, "status": "VERIFICATION_FAILED"},
+                        timestamp=now_iso(),
+                    )
+                except Exception:
+                    pass
+                raise ExceptionGroup("Integrity audit found divergence", excs)
+            logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
     finally:
         db.close()
 

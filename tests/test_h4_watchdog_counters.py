@@ -101,15 +101,15 @@ def _unhealthy_httpx():
 
 def test_transfer_deferrals_do_not_presatisfy_lock_cap(mock_sc_run, temp_lock_file):
     """20 transfer-deferrals (< 240 cap) followed by a held lock must still
-    get its full 15-cycle grace — the old shared counter forced immediately."""
-    seq = _Sequences(transfer=[True] * 20, lock=[False] * 20 + [True] * 30)
+    get its full 14-cycle grace before a stale/absent lock forces restart."""
+    seq = _Sequences(transfer=[True] * 20, lock=[False] * 20 + [True] * 14 + [False] * 30)
     events: list = []
 
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
          patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
          patch("httpx.get", side_effect=httpx.ConnectError("dead")):
         # sleeps: 4 threshold + 20 transfer-deferral + 14 lock-deferral grace,
-        # then the 15th lock deferral forces -> stop. Budget covers it all.
+        # then the 15th cycle (lock stale/dead) forces -> stop. Budget covers it all.
         _run_loop(60, events, temp_lock_file)
 
     stops = [i for i, e in enumerate(events) if e[0] == "sc" and "stop" in e[1]]
@@ -121,18 +121,16 @@ def test_transfer_deferrals_do_not_presatisfy_lock_cap(mock_sc_run, temp_lock_fi
     # 4 (failure threshold) + 20 (transfer deferrals) + 14 (lock grace) = 38.
     # The old shared counter forced at sleeps_before == 24 (lock cycle 1).
     assert sleeps_before == 38, (
-        "forced restart must happen only after the FULL 15-cycle lock grace; "
+        "forced restart must happen only after the FULL 14-cycle lock grace; "
         f"restart fired after {sleeps_before} sleeps"
     )
-    # The live lock was removed by the watchdog itself at force time.
-    assert not temp_lock_file.exists()
 
 
 def test_transfer_cap_force_restarts_in_same_iteration(mock_sc_run, temp_lock_file):
-    """When the 8 h transfer cap fires, the restart must proceed immediately —
+    """When the 8 h transfer cap fires with a dead lock, the restart must proceed immediately —
     no wasted BACKUP_WAIT_INTERVAL cycle on stale lock_held state."""
     seq = _Sequences(transfer=[True] * 240 + [False] * 30,
-                     lock=[True] * 240 + [False] * 30)
+                     lock=[False] * 270)
     events: list = []
 
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
@@ -152,6 +150,24 @@ def test_transfer_cap_force_restarts_in_same_iteration(mock_sc_run, temp_lock_fi
         "stale fall-through detected: an extra BACKUP_WAIT cycle burned "
         "between the forced unlink and the restart"
     )
+
+
+def test_live_lock_owner_never_unlinked_or_restarted(mock_sc_run, temp_lock_file):
+    """5fd209a contract: a PID-live lock owner must NEVER be unlinked and NEVER restarted."""
+    seq = _Sequences(transfer=[False] * 50, lock=[True] * 50)
+    events: list = []
+
+    with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
+         patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
+         patch("watchdog._alert_wedged_lock") as mock_alert, \
+         patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+        # Run beyond MAX_DEFERRALS (15)
+        _run_loop(25, events, temp_lock_file)
+
+    stops = [i for i, e in enumerate(events) if e[0] == "sc" and "stop" in e[1]]
+    assert len(stops) == 0, "live lock owner must never be restarted"
+    assert temp_lock_file.exists(), "live lock must never be unlinked"
+    assert mock_alert.call_count >= 1, "alert must fire when deferral cap is exceeded"
 
 
 def test_healthy_cycle_resets_both_counters(mock_sc_run, temp_lock_file):
