@@ -9,7 +9,7 @@ Edit the `schedule:` section in config.yaml to change cron expressions and timez
 from prefect import serve
 from prefect.schedules import Cron
 
-from flow import backup, monthly_report_flow, rollover_check_flow, weekly_report_flow
+from flow import backup, integrity_audit_flow, monthly_report_flow, rollover_check_flow, weekly_report_flow
 from models.config import CONFIG_PATH, load_config
 
 
@@ -84,6 +84,19 @@ def _deployments():
             schedules=[Cron(config.schedule.rollover_cron, tz)],
             tags=["maintenance"],
             description="Daily FY rollover check - idempotent; runs the real rollover on April 1",
+        )
+    )
+
+    # Integrity audit: weekly READ-ONLY deep verification (source↔backup
+    # content comparison). Report-only: records integrity_audits rows and
+    # alerts on divergence; never modifies data or rewrites backup history.
+    deployments_out.append(
+        integrity_audit_flow.to_deployment(
+            name="integrity-audit",
+            parameters={"config_path": CONFIG_PATH, "mode": "all"},
+            schedules=[Cron(config.schedule.audit_cron, tz)],
+            tags=["maintenance", "integrity"],
+            description="Weekly read-only integrity audit - content verification, single checker",
         )
     )
 

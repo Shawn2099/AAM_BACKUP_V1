@@ -8,7 +8,7 @@ import json
 import os
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from loguru import logger
 
@@ -166,8 +166,6 @@ def get_cloud_diff(
             "--combined", diff_file,   # Write unified diff to file (not stderr)
             "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
             "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
-            # NOTE: --check-first and --transfers are intentionally omitted here.
-            # rclone check does no file transfers, so both flags are no-ops.
             "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits
             "--retries", "3",          # Retry transient network errors
             "--retries-sleep", "10s",  # Back off between retries
@@ -183,9 +181,6 @@ def get_cloud_diff(
             timeout=timeout,
         )
 
-        # rclone check exits 0 on match, 1 on mismatch, 2+ on error.
-        # Even on mismatch (exit 1), the --combined file is valid and useful.
-        # On error (exit 2+), the file might be empty or incomplete.
         partial = False
         error_msg = None
         if result.returncode >= 2:
@@ -204,14 +199,20 @@ def get_cloud_diff(
                         continue
                     # rclone check --combined format: <prefix> <filename>
                     # Prefix: + (added to dest), - (removed from dest), * (modified), = (unchanged)
-                    if line[0] == "+":
-                        diff["added"].append(line[2:])
-                    elif line[0] == "-":
-                        diff["removed"].append(line[2:])
-                    elif line[0] == "*":
-                        diff["modified"].append(line[2:])
-                    elif line[0] == "=":
-                        diff["unchanged"].append(line[2:])
+                    if len(line) >= 3 and line[1] == " ":
+                        symbol = line[0]
+                        raw_p = line[2:].strip()
+                        p = PureWindowsPath(raw_p).as_posix().lstrip("/")
+                        if not p or p == ".":
+                            continue
+                        if symbol == "+":
+                            diff["added"].append(p)
+                        elif symbol == "-":
+                            diff["removed"].append(p)
+                        elif symbol == "*":
+                            diff["modified"].append(p)
+                        elif symbol == "=":
+                            diff["unchanged"].append(p)
         except FileNotFoundError:
             # Diff file missing — rclone failed to create it
             logger.warning("Cloud diff file not found after rclone check - rclone may have failed")

@@ -69,7 +69,8 @@ def _ensure_concurrency_limit():
                 )
                 print("[launch] Ensured global concurrency limit 'aam-backup' (limit=1)")
             except Exception as e:
-                print(f"[launch] Warning: failed to create global concurrency limit: {e}")
+                print(f"[launch] ERROR: failed to create global concurrency limit: {e}")
+                raise
 
             # 2. Create Tag-based Concurrency Limit (used by tagged runs/tasks)
             try:
@@ -78,11 +79,22 @@ def _ensure_concurrency_limit():
                     concurrency_limit=1,
                 )
                 print("[launch] Ensured tag-based concurrency limit 'aam-backup' (limit=1)")
-            except Exception:
-                # Limit already exists — expected on subsequent runs
-                pass
+            except Exception as e:
+                msg = str(e).lower()
+                if "already exists" in msg or "conflict" in msg or "409" in msg:
+                    pass
+                else:
+                    print(f"[launch] ERROR: failed to create tag concurrency limit: {e}")
+                    raise
 
-    asyncio.run(_create())
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_create())
+    else:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            _pool.submit(asyncio.run, _create()).result()
 
 
 def _cancel_orphaned_runs():
@@ -133,13 +145,31 @@ def _cancel_orphaned_runs():
                         print("[launch] Skipping RUNNING flows — backup lock is active")
                         continue
 
-                    runs = await client.read_flow_runs(
-                        flow_run_filter=FlowRunFilter(
-                            state=FlowRunFilterState(
-                                type=FlowRunFilterStateType(any_=[state_type])
-                            )
+                    offset = 0
+                    limit = 200
+                    all_runs = []
+                    while True:
+                        batch = await client.read_flow_runs(
+                            flow_run_filter=FlowRunFilter(
+                                state=FlowRunFilterState(
+                                    type=FlowRunFilterStateType(any_=[state_type])
+                                )
+                            ),
+                            offset=offset,
+                            limit=limit,
                         )
-                    )
+                        if not batch:
+                            break
+                        all_runs.extend(batch)
+                        if len(batch) < limit:
+                            break
+                        offset += limit
+                    runs = [
+                        r for r in all_runs
+                        if getattr(r, "flow_id", None) is not None
+                        or "aam-backup" in str(getattr(r, "name", ""))
+                        or any(k in str(getattr(r, "name", "")) for k in ("backup-", "report", "rollover"))
+                    ]
                     cancelled = 0
                     for r in runs:
                         try:
@@ -184,16 +214,27 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
     from prefect.exceptions import ObjectNotFound
 
     if legs is None:
+        audit_enabled = bool(
+            getattr(config.lan, "enabled", False) or getattr(config.cloud, "enabled", True)
+        )
         legs = {
             "backup-lan": bool(getattr(config.lan, "enabled", False)),
             "backup-cloud": bool(getattr(config.cloud, "enabled", True)),
+            "integrity-audit": audit_enabled,
         }
+
+    flow_map = {
+        "backup-lan": "aam-backup",
+        "backup-cloud": "aam-backup",
+        "integrity-audit": "integrity-audit",
+    }
 
     async def _reconcile() -> dict:
         results: dict = {}
         async with get_client() as client:
             for dep_name, enabled in legs.items():
-                full_name = f"aam-backup/{dep_name}"
+                flow_name = flow_map.get(dep_name, "aam-backup")
+                full_name = f"{flow_name}/{dep_name}"
                 try:
                     dep = await client.read_deployment_by_name(full_name)
                 except ObjectNotFound:
@@ -257,6 +298,9 @@ def main():
     # Start dashboard in daemon thread
     dash_thread = threading.Thread(target=_run_dashboard, daemon=True)
     dash_thread.start()
+    time.sleep(0.5)
+    if not dash_thread.is_alive():
+        print("[launch] Warning: Dashboard thread not alive after start (may be race in tests)")
 
     # Check for FY rollover before starting normal operations.
     # On April 1, this runs a final backup of the closing FY, transitions

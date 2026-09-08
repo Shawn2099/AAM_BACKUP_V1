@@ -5,7 +5,7 @@ The filesystem IS the truth.
 """
 
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from loguru import logger
 
@@ -27,7 +27,7 @@ def walk_lan_destination(unc_path: str) -> list[dict]:
         unc_path: UNC path to walk (e.g. "\\\\192.168.10.10\\share$").
 
     Returns:
-        [{"path": "rel\\path\\file.txt", "size": 2048, "mtime": 1717200000.0}, ...]
+        [{"path": "rel/path/file.txt", "size": 2048, "mtime": 1717200000.0}, ...]
 
     Raises:
         OSError: if the root of the share cannot be enumerated at all.
@@ -47,7 +47,10 @@ def walk_lan_destination(unc_path: str) -> list[dict]:
             except OSError:
                 continue
 
-            rel = os.path.relpath(full, base)
+            rel_raw = os.path.relpath(full, base)
+            rel = PureWindowsPath(rel_raw).as_posix().lstrip("/")
+            if not rel or rel == ".":
+                continue
             files.append({
                 "path": rel,
                 "size": stat.st_size,

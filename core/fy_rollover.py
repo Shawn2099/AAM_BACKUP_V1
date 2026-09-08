@@ -6,6 +6,7 @@ Called by launch.py at startup before normal backup processing.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -74,21 +75,17 @@ def _fy_name(path_str: str) -> str | None:
 
 
 def _parent_path(path_str: str) -> str:
-    """Get parent directory preserving separator style.
-
-    'E:\\SOURCE\\FY26-27' → 'E:\\SOURCE'
-    '\\\\server\\share\\FY26-27' → '\\\\server\\share'
-    '/mnt/source/FY26-27' → '/mnt/source'
-    """
-    parts = path_str.replace("\\", "/").rstrip("/").split("/")
-    parent_parts = parts[:-1] if len(parts) > 1 else parts
-
+    """Get parent directory preserving separator style."""
+    from pathlib import PurePosixPath, PureWindowsPath
     if path_str.startswith("\\\\"):
-        return "\\\\" + "\\".join(parent_parts[2:]) if len(parent_parts) > 3 else path_str
+        p = PureWindowsPath(path_str)
+        return str(p.parent).rstrip("\\")
     elif "\\" in path_str:
-        return "\\".join(parent_parts)
+        p = PureWindowsPath(path_str)
+        return str(p.parent).rstrip("\\")
     else:
-        return "/".join(parent_parts)
+        p = PurePosixPath(path_str)
+        return str(p.parent).rstrip("/")
 
 
 def _child_path(root: str, fy: str) -> str:
@@ -144,12 +141,13 @@ def run_final_backup(source_drive: str, lan_destination: str,
                 buffer_size=cloud_config.buffer_size,
                 timeout=cloud_config.subprocess_timeout_seconds,
             )
+            status = result.get("status", "")
             exit_code = result.get("exit_code", -1)
-            if exit_code in (0, 9):
+            if status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE") or (not status and exit_code in (0, 9)):
                 cloud_ok = True
-                logger.info(f"FY rollover: final cloud backup OK (exit {exit_code})")
+                logger.info(f"FY rollover: final cloud backup OK (exit {exit_code} → {status})")
             else:
-                logger.error(f"FY rollover: final cloud backup failed (exit {exit_code})")
+                logger.error(f"FY rollover: final cloud backup failed (exit {exit_code} → {status})")
         except (OSError, subprocess.SubprocessError, RuntimeError) as e:
             # Narrow to runtime/IO errors only.  Config typos (AttributeError,
             # TypeError) should propagate loudly so operators fix them.
@@ -170,8 +168,11 @@ def run_final_backup(source_drive: str, lan_destination: str,
                 lan_config=lan_config,
             )
             exit_code = result.get("exit_code", -1)
-            lan_status = classify_lan_exit(exit_code)
-            if lan_status in ("LAN_COMPLETE", "LAN_PARTIAL"):
+            # T04/A1: never re-derive success from the killable exit code
+            # alone — run_lan_sync already applied the log-completion
+            # contract (decide_lan_result); its status is authoritative.
+            lan_status = result.get("status") or classify_lan_exit(exit_code)
+            if lan_status == "LAN_COMPLETE" or (lan_status == "LAN_PARTIAL" and not (exit_code & 8)):
                 lan_ok = True
                 logger.info(f"FY rollover: final LAN backup OK (exit {exit_code} → {lan_status})")
             else:
@@ -268,7 +269,8 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
             f"  LAN:     {old_lan} → {new_lan}"
         )
     except Exception:
-        os.unlink(tmp_path)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
         raise
 
 

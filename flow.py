@@ -35,13 +35,33 @@ from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
-from core.process import write_lock
+from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
 from core.shutdown import shutdown_server
 from core.time_utils import now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
+
+
+class PartialRun(RuntimeError):
+    """A pipeline ended PARTIAL: transfer ran but work is incomplete.
+
+    Raised (instead of returning normally) so a partial backup can never
+    present as Prefect COMPLETED. The in-pipeline partial alert already
+    fired; backup() skips the duplicate generic alert for this type but
+    still fails the flow via ExceptionGroup.
+    """
+
+
+# Terminal-status policy: Prefect COMPLETED is allowed ONLY for these row
+# statuses. Every other terminal status raises before the pipeline returns,
+# so a non-success backup can never hide behind a successful orchestration
+# result. COMPLETE means "transfer evidence says the scheduled work
+# finished" — it does NOT mean independently/cryptographically verified
+# (see the weekly integrity audit).
+_CLOUD_OK_STATUSES = frozenset({"CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"})
+_LAN_OK_STATUSES = frozenset({"LAN_COMPLETE"})
 
 
 def _stable_run_id(mode: str) -> str:
@@ -99,8 +119,18 @@ def _backup_slot(config):
         return
 
     with concurrency("aam-backup", occupy=1, timeout_seconds=wait_seconds):
+        # Exclusive acquisition: a live lock owned by another pipeline aborts
+        # this one BEFORE any transfer starts (slot is released by the raise).
+        # The finally below only removes the lock if it is still ours, so a
+        # successor's lock can never be deleted by a finishing predecessor.
+        acquired = False
         try:
-            write_lock(lock_path)
+            acquired = acquire_lock(lock_path)
+            if not acquired:
+                raise RuntimeError(
+                    "Backup lock is held by a live process - refusing to "
+                    "overwrite it or run without it"
+                )
             logger.info(
                 f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts"
             )
@@ -109,11 +139,18 @@ def _backup_slot(config):
         try:
             yield
         finally:
-            try:
-                lock_path.unlink(missing_ok=True)
-                logger.info("Backup lock released")
-            except OSError:
-                pass
+            if acquired:
+                try:
+                    _, owner_pid = read_lock_alive(lock_path)
+                    if owner_pid == os.getpid():
+                        lock_path.unlink(missing_ok=True)
+                        logger.info("Backup lock released")
+                    else:
+                        logger.warning(
+                            "Backup lock changed during run - leaving it in place"
+                        )
+                except OSError:
+                    pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -184,7 +221,7 @@ def cloud_sync_task(config, fy_prefix: str):
         timeout=config.cloud.subprocess_timeout_seconds,
         max_duration_seconds=config.cloud.max_duration_seconds,
     )
-    if result["status"] == "CLOUD_FAILED":
+    if result["status"] in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
         raise RuntimeError(result.get("error", "Cloud sync failed"))
     return result
 
@@ -243,6 +280,17 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
 
         return {
             "verified": verify_result["verified"],
+            # F-08 liveness: the check process's own completion evidence,
+            # NOT its (killable) exit code. Missing keys default to
+            # abnormal/incomplete so older mocked results fail closed.
+            "verify_termination": verify_result.get("termination", "abnormal"),
+            "verify_completion": verify_result.get("completion", False),
+            "verify_differences": verify_result.get("differences"),
+            "verify_reason": verify_result.get("reason"),
+            # C-DK-001 liveness: carried so the pipeline can distinguish a
+            # genuine check pass (exit 0) from a killed-verify lucky pass
+            # flagged via the evidence gate.
+            "verify_exit_code": verify_result.get("exit_code", -1),
             "size": size,
             "manifest": manifest,
             "diff": cloud_diff,
@@ -348,7 +396,7 @@ def lan_sync_task(config):
         dest=config.paths.lan_destination,
         lan_config=config.lan,
     )
-    if result["status"] == "LAN_FAILED":
+    if result["status"] in ("LAN_FAILED", "LAN_SUSPECT"):
         raise RuntimeError(result.get("error", "LAN sync failed"))
     return result
 
@@ -471,6 +519,78 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
+def _nullable_audit_count(value):
+    """Pass through a populated audit counter; preserve unknown as NULL.
+
+    F-T4-3: a genuinely unknown count must not become a false zero in
+    the manifest. Negative sentinels (legacy -1) still clamp to 0 so no
+    negative ever reaches the DB (BUG-08 intent preserved).
+    """
+    if value is None:
+        return None
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> str:
+    """Explain WHY the cloud evidence gate failed, accurately.
+
+    F-T3-2: the old fixed template blamed "differences vs source" even
+    when the diff was clean and the real cause was an abnormally
+    terminated check, a missing completion summary, or incomplete
+    manifest/size evidence. The fail-closed DECISION is unchanged here —
+    only the primary-cause attribution. Categories, in precedence order:
+      1. abnormal termination / missing completion summary (process never
+         proved anything — data diffs are not the cause);
+      2. content mismatch (dirty diff: missing/modified/partial);
+      3. manifest/size evidence error (cannot prove the cloud state).
+    The checker's own reason string is always appended verbatim.
+    """
+    verify_data = verify_data or {}
+    diff = diff or {}
+    size = size or {}
+    reason = verify_data.get("verify_reason")
+    termination = verify_data.get("verify_termination", "abnormal")
+    completion = verify_data.get("verify_completion", False)
+    added = len(diff.get("added", []))
+    modified = len(diff.get("modified", []))
+    removed = len(diff.get("removed", []))
+    reason_suffix = f" Verify detail: {reason}." if reason else ""
+    if termination != "normal" or not completion:
+        primary = (
+            "verification did not complete normally "
+            f"(termination={termination}, completion={bool(completion)}"
+            f"{f', differences={verify_data.get('verify_differences')}' if verify_data.get('verify_differences') is not None else ''})"
+            f". Diff state at gate: missing-from-cloud={added}, "
+            f"unexpected-in-cloud={removed}, size-changed={modified} — "
+            "these counts are not the cause; the check process itself "
+            "never reported a verdict (killed/crashed/truncated, F-08)."
+        )
+    elif added or modified or diff.get("_partial"):
+        primary = (
+            "rclone check found differences vs source "
+            f"(missing-from-cloud={added}, "
+            f"unexpected-in-cloud={removed}, "
+            f"size-changed={modified}). The cloud copy may be "
+            "incomplete or out of sync."
+        )
+    else:
+        manifest_error = verify_data.get("manifest_error")
+        size_error = size.get("_error") if isinstance(size, dict) else None
+        primary = (
+            "manifest/evidence error "
+            f"(manifest_error={manifest_error!r}, size_error={size_error!r}). "
+            "The cloud state could not be proven to match source."
+        )
+    return (
+        "Cloud integrity verification FAILED after sync: "
+        f"{primary}.{reason_suffix} rclone sync is resumable — the next "
+        "scheduled run will re-sync the differences."
+    )
+
+
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
     with _backup_slot(config):
@@ -520,36 +640,24 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             status = sync_result["status"]
             phase = "verify"
             verify_data = verify_report(config, fy_prefix)
-            # M6: a failed manifest query is NEVER recorded as bucket state.
-            # Skip the DB write; the run row + extended_metrics carry the reason.
-            manifest_error = verify_data.get("manifest_error")
-            if manifest_error:
-                logger.error(
-                    f"Cloud manifest query failed ({manifest_error}) - file-level "
-                    "DB record and transfer metrics are SKIPPED this run; the "
-                    "integrity verification above is unaffected."
-                )
-            else:
-                cloud_record_task(
-                    db_path, verify_data, sync_result,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
-                )
-
-            # F1: verification is part of the backup contract. A failed check must
-            # NOT be recorded as COMPLETE — alert with a distinct, non-skip status
-            # and fail the run so it is visible in the Prefect console.
-            if not verify_data.get("verified"):
-                diff = verify_data.get("diff") or {}
-                verify_err = (
-                    "Cloud integrity verification FAILED after sync: rclone check found "
-                    f"differences vs source (missing-from-cloud={len(diff.get('removed', []))}, "
-                    f"unexpected-in-cloud={len(diff.get('added', []))}, "
-                    f"size-changed={len(diff.get('modified', []))}). The cloud copy may be "
-                    "incomplete or out of sync. rclone sync is resumable — the next "
-                    "scheduled run will re-sync the differences."
-                )
+            diff = verify_data.get("diff") or {}
+            size = verify_data.get("size") or {}
+            evidence_ok = (
+                verify_data.get("verified") is True
+                and verify_data.get("verify_termination", "abnormal") == "normal"
+                and len(diff.get("added", [])) == 0
+                and len(diff.get("modified", [])) == 0
+                and not diff.get("_partial")
+                and verify_data.get("manifest_error") is None
+                and "_error" not in size
+            )
+            if not evidence_ok:
+                # NOTE: rclone `+` (diff["added"]) = missing from cloud,
+                # `-` (diff["removed"]) = extra in cloud (C-F1INV-002 fix).
+                # F-T3-2: the message attributes the PRIMARY failure
+                # category (abnormal termination vs mismatch vs evidence
+                # error); the fail-closed decision itself is unchanged.
+                verify_err = _cloud_gate_failure_message(verify_data, diff, size)
                 status = "CLOUD_VERIFY_FAILED"
                 error_msg = verify_err
                 logger.error(verify_err)
@@ -565,6 +673,23 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 raise RuntimeError(verify_err)
 
             phase = "post"
+
+            # BUG-01: ManifestDB record MUST only happen after evidence_ok passes.
+            # M6: a failed manifest query is NEVER recorded as bucket state.
+            manifest_error = verify_data.get("manifest_error")
+            if manifest_error:
+                logger.error(
+                    f"Cloud manifest query failed ({manifest_error}) - file-level "
+                    "DB record and transfer metrics are SKIPPED this run; the "
+                    "integrity verification above is unaffected."
+                )
+            else:
+                cloud_record_task(
+                    db_path, verify_data, sync_result,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
+                )
 
             # Calculate files and bytes copied by comparing old database state with new live GCS manifest
             manifest = verify_data.get("manifest", [])
@@ -602,6 +727,13 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
             extended_metrics = json.dumps({
                 "verified": verify_data.get("verified", False),
+                # F-08: liveness is the check process's own completion
+                # evidence, never the killable exit code. A killed check
+                # (TerminateProcess with exit 0) reports abnormal
+                # termination, so verify_liveness is false and — via the
+                # gate above — the run itself fails closed.
+                "verify_liveness": bool(verify_data.get("verified", False))
+                and verify_data.get("verify_termination", "abnormal") == "normal",
                 "total_files": verify_data.get("size", {}).get("count", 0),
                 "total_size_gb": verify_data.get("size", {}).get("bytes", 0) / (1024 * 1024 * 1024),
                 # M6: record WHY numbers may be zero on a degraded run
@@ -615,36 +747,82 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 pass
 
             logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
+            if status == "CLOUD_PARTIAL":
+                # Transient rclone outcome (rc 4/5/10) over a destination the
+                # evidence gate just approved: data-true, but incomplete work
+                # remains. Alert specifically (LAN F3 equivalent — cloud had
+                # no partial alert), then fail via the terminal policy below.
+                # The backup() tail skips its generic alert for PartialRun.
+                try:
+                    send_failure_alert(
+                        config.notifications, config.firm_name,
+                        f"Cloud backup PARTIAL: rclone exit "
+                        f"{sync_result.get('exit_code')} — some work did not "
+                        "complete. rclone sync is resumable; the next scheduled "
+                        "run continues from where this one left off.",
+                        {"mode": "cloud", "status": status,
+                         "exit_code": sync_result.get("exit_code")},
+                        started_at,
+                    )
+                except Exception as alert_err:
+                    logger.warning(f"Could not send partial-backup alert: {alert_err}")
+            # Terminal-state policy (single authoritative decision point):
+            # a non-success status must never return normally (which the
+            # engine would record as Prefect COMPLETED).
+            if status not in _CLOUD_OK_STATUSES:
+                raise PartialRun(
+                    f"Cloud run ended {status} - incomplete/interrupted, "
+                    "not a successful backup"
+                )
             return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
         except Exception as e:
             error_msg = str(e)
-            # F2: record the TRUE terminal status. Previously any exception after
-            # initialization left the run recorded as CLOUD_SKIPPED (initial value),
-            # so real failures were invisible in reports and the dashboard.
             if phase == "sync":
-                status = "CLOUD_FAILED"
+                # Preserve the sync task's own verdict (FAILED/SUSPECT);
+                # only default to FAILED when it carries no usable status.
+                if sync_result.get("status") not in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
+                    status = "CLOUD_FAILED"
+                else:
+                    status = sync_result["status"]
             elif phase == "verify" and status == "CLOUD_COMPLETE":
                 status = "CLOUD_VERIFY_FAILED"
             elif phase == "pre":
-                status = "CLOUD_SKIPPED"
-            # phase "post" (record/artifact after a successful sync+verify): the
-            # data is safe on GCS — keep the sync status; the bookkeeping error
-            # stays visible in the run record's error_message.
+                status = "CLOUD_FAILED"
+            if status == "CLOUD_SUSPECT":
+                # Abnormal transfer termination (killed/timeout-ambiguous):
+                # alert specifically — the backup() tail skips its generic
+                # alert for PartialRun-wrapped legs, and SUSPECT must never
+                # be silent.
+                try:
+                    send_failure_alert(
+                        config.notifications, config.firm_name,
+                        f"Cloud backup SUSPECT: {error_msg} The transfer did not "
+                        "terminate normally; completion is unproven. The next "
+                        "scheduled run will re-sync.",
+                        {"mode": "cloud", "status": status,
+                         "exit_code": sync_result.get("exit_code")},
+                        started_at,
+                    )
+                except Exception as alert_err:
+                    logger.warning(f"Could not send suspect-backup alert: {alert_err}")
             raise
         finally:
-            _record_run(
-                db_path, run_id, "cloud", started_at, status,
-                sync_result.get("exit_code", -1), error_msg,
-                files_copied=files_copied,
-                bytes_copied=bytes_copied,
-                files_failed=0,
-                extended_metrics=extended_metrics,
-                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                synchronous=config.maintenance.sqlite_synchronous,
-                monotonic_start=monotonic_start,
-            )
+            try:
+                _record_run(
+                    db_path, run_id, "cloud", started_at, status,
+                    sync_result.get("exit_code", -1), error_msg,
+                    files_copied=files_copied,
+                    bytes_copied=bytes_copied,
+                    files_failed=0,
+                    extended_metrics=extended_metrics,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
+                    monotonic_start=monotonic_start,
+                )
+            except Exception as rec_err:
+                logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -726,10 +904,15 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             if status == "LAN_COMPLETE":
                 lan_shutdown_task(config)
             elif status == "LAN_PARTIAL":
+                shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
+                nas_msg = (
+                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
+                    if shutdown_on_fail
+                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
+                )
                 logger.error(
                     f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
-                    "some files were not copied. NAS shutdown SKIPPED - the next "
-                    "run will re-sync the missing files."
+                    f"some files were not copied. {nas_msg}"
                 )
                 try:
                     send_failure_alert(
@@ -737,8 +920,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                         (
                             f"LAN backup PARTIAL: robocopy exit code "
                             f"{sync_result.get('exit_code')} — some files were not "
-                            "copied. The NAS was NOT shut down; the next scheduled "
-                            "run will re-sync. "
+                            f"copied. {nas_msg} "
                             f"{sync_result.get('error') or ''}"
                         ).strip(),
                         {"mode": "lan", "status": status,
@@ -747,33 +929,76 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     )
                 except Exception as alert_err:
                     logger.warning(f"Could not send partial-backup alert: {alert_err}")
+                if shutdown_on_fail:
+                    logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
+                    lan_shutdown_task(config)
             else:
                 logger.info(f"LAN shutdown skipped - status is {status}")
+            # Terminal-state policy (single authoritative decision point):
+            # a non-success status must never return normally (which the
+            # engine would record as Prefect COMPLETED).
+            if status not in _LAN_OK_STATUSES:
+                raise PartialRun(
+                    f"LAN run ended {status} - incomplete/interrupted, "
+                    "not a successful backup"
+                )
             return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
         except Exception as e:
             error_msg = str(e)
-            # F2: record the TRUE terminal status (previously left as LAN_SKIPPED).
-            # phase "post" = sync already succeeded; keep its status, the
-            # bookkeeping error stays visible in the run record's error_message.
             if phase == "sync":
-                status = "LAN_FAILED"
+                # Preserve the sync task's own verdict (FAILED/SUSPECT);
+                # only default to FAILED when it carries no usable status.
+                if sync_result.get("status") not in ("LAN_FAILED", "LAN_SUSPECT"):
+                    status = "LAN_FAILED"
+                else:
+                    status = sync_result["status"]
             elif phase == "pre":
-                status = "LAN_SKIPPED"
+                status = "LAN_FAILED"
+            shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
+            if status == "LAN_SUSPECT":
+                # Abnormal transfer termination (killed/timeout-ambiguous):
+                # alert specifically — the backup() tail skips its generic
+                # alert for PartialRun-wrapped legs, and SUSPECT must never
+                # be silent.
+                nas_msg = (
+                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
+                    if shutdown_on_fail
+                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
+                )
+                try:
+                    send_failure_alert(
+                        config.notifications, config.firm_name,
+                        f"LAN backup SUSPECT: {error_msg} The transfer did not "
+                        f"terminate normally; completion is unproven. {nas_msg}",
+                        {"mode": "lan", "status": status,
+                         "exit_code": sync_result.get("exit_code")},
+                        started_at,
+                    )
+                except Exception as alert_err:
+                    logger.warning(f"Could not send suspect-backup alert: {alert_err}")
+            if shutdown_on_fail and not isinstance(e, PartialRun):
+                logger.info(
+                    f"shutdown_on_all_retries_exhausted enabled: powering down NAS after {status} failure alert"
+                )
+                lan_shutdown_task(config)
             raise
         finally:
-            _record_run(
-                db_path, run_id, "lan", started_at, status,
-                sync_result.get("exit_code", -1), error_msg,
-                files_copied=files_copied,
-                bytes_copied=bytes_copied,
-                files_failed=files_failed,
-                extended_metrics=extended_metrics,
-                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                synchronous=config.maintenance.sqlite_synchronous,
-                monotonic_start=monotonic_start,
-            )
+            try:
+                _record_run(
+                    db_path, run_id, "lan", started_at, status,
+                    sync_result.get("exit_code", -1), error_msg,
+                    files_copied=files_copied,
+                    bytes_copied=bytes_copied,
+                    files_failed=files_failed,
+                    extended_metrics=extended_metrics,
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
+                    monotonic_start=monotonic_start,
+                )
+            except Exception as rec_err:
+                logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -926,6 +1151,118 @@ def rollover_check_flow(config_path: str = CONFIG_PATH):
 
 
 # ═══════════════════════════════════════════════════════════════
+# Weekly independent integrity audit (read-only deep verification)
+# ═══════════════════════════════════════════════════════════════
+
+@flow(name="integrity-audit", log_prints=True)
+def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
+    """Read-only weekly integrity audit: source↔backup content verification.
+
+    This flow NEVER modifies source or destination and NEVER rewrites
+    historical backup rows. It records one `integrity_audits` manifest row
+    per enabled leg (VERIFIED | VERIFICATION_FAILED) and alerts + fails on
+    divergence. Absence of an audit row means NOT_VERIFIED.
+
+    Modes: cloud | lan | all (both sequentially, cloud first).
+    """
+    from core.integrity import audit_cloud, audit_lan, new_audit_id
+
+    valid_modes = {"cloud", "lan", "all"}
+    mode = mode.lower()
+    if mode not in valid_modes:
+        raise ValueError(f"Invalid mode '{mode}'. Must be one of: {sorted(valid_modes)}")
+
+    config = load_config(config_path)
+    configure_logging(config.paths.log_directory, log_retention_days=config.maintenance.log_retention_days)
+    try:
+        configure_prefect_bridge()
+    except Exception as e:
+        logger.debug(f"configure_prefect_bridge skipped: {e}")
+
+    logger.info(f"AAM integrity audit starting - mode={mode}, firm={config.firm_name}")
+    db = ManifestDB(config.paths.database_path)
+    excs = []
+    try:
+        with _backup_slot(config):
+            if mode in ("cloud", "all") and config.cloud.enabled:
+                audit_id = new_audit_id("cloud", "full")
+                started_at = now_iso()
+                with temp_rclone_config(
+                    config.paths.gcs_key_path,
+                    config.cloud.location,
+                    config.cloud.project_number,
+                    config.cloud.storage_class,
+                ) as rclone_cfg:
+                    result = audit_cloud(
+                        config.paths.source_drive, config.cloud.bucket,
+                        get_fy_prefix(), rclone_cfg,
+                        timeout=config.cloud.verify_timeout_seconds,
+                    )
+                # A VERIFIED verdict is durable only once persisted: a failed
+                # DB write must fail the audit loudly (alert + FAILED flow),
+                # never silently drop a passing result or leave NOT_VERIFIED
+                # behind a COMPLETED run.
+                try:
+                    db.record_audit({
+                        "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
+                        "started_at": started_at, "ended_at": now_iso(),
+                        "status": result["status"],
+                        "files_checked": _nullable_audit_count(result.get("files_checked")),
+                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
+                        "mismatches": max(result["mismatches"], 0),
+                        "detail": result["detail"], "created_at": now_iso(),
+                    })
+                except Exception as e:
+                    excs.append(RuntimeError(f"Cloud audit persistence failed: {e}"))
+                if result["status"] != "VERIFIED":
+                    excs.append(RuntimeError(f"Cloud integrity audit FAILED: {result['detail']}"))
+
+            if mode in ("lan", "all") and config.lan.enabled:
+                audit_id = new_audit_id("lan", "full")
+                started_at = now_iso()
+                wol_check_task(config)
+                lan_timeout = int(getattr(config.lan, "subprocess_timeout_seconds", 14400))
+                try:
+                    result = audit_lan(
+                        config.paths.source_drive, config.paths.lan_destination,
+                        timeout=lan_timeout,
+                    )
+                finally:
+                    if config.lan.shutdown_after_backup and config.wol.enabled:
+                        lan_shutdown_task(config)
+                try:
+                    db.record_audit({
+                        "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
+                        "started_at": started_at, "ended_at": now_iso(),
+                        "status": result["status"],
+                        "files_checked": _nullable_audit_count(result.get("files_checked")),
+                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
+                        "mismatches": max(result["mismatches"], 0),
+                        "detail": result["detail"], "created_at": now_iso(),
+                    })
+                except Exception as e:
+                    excs.append(RuntimeError(f"LAN audit persistence failed: {e}"))
+                if result["status"] != "VERIFIED":
+                    excs.append(RuntimeError(f"LAN integrity audit FAILED: {result['detail']}"))
+
+            if excs:
+                error_summary = '; '.join(str(e) for e in excs)
+                logger.error(f"Integrity audit failed: {error_summary}")
+                try:
+                    send_failure_alert(
+                        config.notifications, config.firm_name, error_summary,
+                        {"mode": mode, "status": "VERIFICATION_FAILED"},
+                        timestamp=now_iso(),
+                    )
+                except Exception:
+                    pass
+                raise ExceptionGroup("Integrity audit found divergence", excs)
+            logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
+    finally:
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════
 # Main backup flow — entry point for all modes
 # ═══════════════════════════════════════════════════════════════
 
@@ -993,16 +1330,20 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         if excs:
             error_summary = '; '.join(str(e) for e in excs)
             logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
-            try:
-                send_failure_alert(
-                    config.notifications,
-                    config.firm_name,
-                    error_summary,
-                    {"mode": mode},
-                    timestamp=now_iso(),
-                )
-            except Exception:
-                pass
+            # PartialRun legs already sent their specific (partial/suspect)
+            # alert in-pipeline; a duplicate generic alert would page twice
+            # for one event. Generic alert fires for all other failures.
+            if any(not isinstance(e, PartialRun) for e in excs):
+                try:
+                    send_failure_alert(
+                        config.notifications,
+                        config.firm_name,
+                        error_summary,
+                        {"mode": mode},
+                        timestamp=now_iso(),
+                    )
+                except Exception:
+                    pass
             raise ExceptionGroup("Backup completed with errors", excs)
 
         # ── Maintenance ──

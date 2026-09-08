@@ -82,6 +82,14 @@ class LanConfig(BaseModel):
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
     shutdown_after_backup: bool = True
+    shutdown_on_all_retries_exhausted: bool = Field(
+        default=False,
+        description=(
+            "If true, initiates NAS shutdown even if the LAN backup ended in LAN_PARTIAL "
+            "or LAN_FAILED after all retry attempts are exhausted. Failure alerts are always "
+            "dispatched before shutdown is initiated."
+        ),
+    )
     max_attempts: int = Field(default=2, ge=1, le=10, description="Flow-level retry attempts for LAN backup orchestration")
     retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
     mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
@@ -389,9 +397,13 @@ class ScheduleConfig(BaseModel):
         default="0 6 * * *",
         description="Daily FY rollover check cron (no-op except on the fiscal-year boundary)",
     )
+    audit_cron: str = Field(
+        default="0 3 * * SUN",
+        description="Weekly read-only integrity audit (Sunday low-load window, single checker)",
+    )
     timezone: str = Field(default="Asia/Kolkata", description="IANA timezone for all schedules")
 
-    @field_validator("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron")
+    @field_validator("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron", "audit_cron")
     @classmethod
     def valid_cron(cls, v: str) -> str:
         parts = v.strip().split()
@@ -417,7 +429,7 @@ class ScheduleConfig(BaseModel):
         """
         from prefect.server.schemas.schedules import CronSchedule
 
-        for field_name in ("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron"):
+        for field_name in ("cloud_cron", "lan_cron", "weekly_cron", "monthly_cron", "rollover_cron", "audit_cron"):
             try:
                 CronSchedule(cron=getattr(self, field_name), timezone=self.timezone)
             except Exception as e:

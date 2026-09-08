@@ -4,9 +4,21 @@ Extracts duplicated ManifestDB interaction from flow.py tasks.
 Centralizes file entry upserts, run history recording, and maintenance.
 """
 
+from pathlib import PureWindowsPath
 from loguru import logger
 
 from core.manifest import ManifestDB
+
+
+def _clean_path(raw_path: str | None) -> str:
+    """Normalize path to POSIX forward-slash format and strip whitespace/leading slashes.
+
+    Returns '' for empty, root, dot, or whitespace-only paths.
+    """
+    if not raw_path or not str(raw_path).strip():
+        return ""
+    p = PureWindowsPath(str(raw_path).strip()).as_posix().lstrip("/")
+    return "" if p in (".", "") else p
 
 
 def record_sync_results(
@@ -27,28 +39,34 @@ def record_sync_results(
         removed: List of relative paths removed from destination.
     """
     if entries:
-        normalized = [
-            {
-                "path": e.get("Path") if e.get("Path") is not None else e.get("path", ""),
+        normalized = []
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            raw_path = e.get("Path") if e.get("Path") is not None else e.get("path")
+            cleaned_p = _clean_path(raw_path)
+            if not cleaned_p:
+                continue
+            normalized.append({
+                "path": cleaned_p,
                 "size": e.get("Size") if e.get("Size") is not None else e.get("size", 0),
                 "mtime": e.get("ModTime") if e.get("ModTime") is not None else e.get("mtime", 0),
-            }
-            for e in entries
-        ]
-        db.bulk_upsert_synced(normalized, mode)
+                "md5_checksum": e.get("md5_checksum") or e.get("MD5") or e.get("md5"),
+            })
 
-        # Self-healing: prune stale entries that are marked synced in DB but no longer exist.
-        # Normalize to forward slashes to match what bulk_upsert_synced stores in the DB.
-        # On Windows, os.path.relpath() on a UNC share returns backslash-delimited paths,
-        # but bulk_upsert_synced converts them to forward slashes before INSERT.
-        # Without this, all subdirectory files compare unequal and are pruned every run.
-        active_paths = {item["path"].replace("\\", "/") for item in normalized}
-        pruned = db.prune_stale_synced(mode, active_paths)
-        if pruned:
-            logger.info(f"Pruned {pruned} stale {mode} entries from manifest")
+        if normalized:
+            db.bulk_upsert_synced(normalized, mode)
+
+            # Self-healing: prune stale entries that are marked synced in DB but no longer exist.
+            active_paths = {item["path"] for item in normalized}
+            pruned = db.prune_stale_synced(mode, active_paths)
+            if pruned:
+                logger.info(f"Pruned {pruned} stale {mode} entries from manifest")
 
     if removed:
-        db.delete_entries(removed)
+        clean_removed = [_clean_path(p) for p in removed if _clean_path(p)]
+        if clean_removed:
+            db.delete_entries(clean_removed)
 
 
 def record_run_history(

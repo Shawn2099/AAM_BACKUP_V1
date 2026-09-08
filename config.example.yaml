@@ -36,6 +36,9 @@ lan:
   subprocess_timeout_seconds: 14400
   # Shut down the NAS server after a successful LAN sync
   shutdown_after_backup: true
+  # When true, shuts down the NAS even if the backup ended in LAN_PARTIAL or LAN_FAILED
+  # once all retry attempts are exhausted. Failure alert is always sent before shutdown.
+  shutdown_on_all_retries_exhausted: false
   # Flow-level retry attempts (full robocopy re-runs on failure)
   max_attempts: 2
   # Seconds between flow-level retry attempts
@@ -117,6 +120,8 @@ schedule:
   weekly_cron: "0 8 * * MON"
   # Monthly email report: 1st of every month at 8:00 AM
   monthly_cron: "0 8 1 * *"
+  # Weekly read-only integrity audit: Sunday 3:00 AM low-load window
+  audit_cron: "0 3 * * SUN"
   timezone: "Asia/Kolkata"
 
 # ═══════════════════════════════════════════════════
