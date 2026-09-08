@@ -53,10 +53,10 @@ previous crash do not prevent restarts indefinitely.
 Zero new dependencies: httpx and loguru are already project requirements.
 """
 
+import contextlib
 import subprocess
 import sys
 import time
-import contextlib
 from pathlib import Path
 
 from loguru import logger
@@ -306,8 +306,8 @@ def _stop_service(service: str) -> None:
 def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
     """Send an alert if watchdog deferrals hit their cap on a live lock owner."""
     try:
+        from core.report import send_failure_alert
         from models.config import CONFIG_PATH, load_config
-        from core.notifications import send_failure_alert
 
         cfg = load_config(CONFIG_PATH)
         send_failure_alert(
@@ -317,7 +317,7 @@ def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
             {"mode": "watchdog", "status": "LIVE_LOCK_CAP_EXCEEDED", "pid": pid},
         )
     except Exception as e:
-        logger.debug(f"Watchdog alert delivery skipped/failed: {e}")
+        logger.warning(f"Watchdog alert delivery skipped/failed: {e}")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────

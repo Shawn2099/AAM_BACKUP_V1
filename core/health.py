@@ -15,6 +15,20 @@ class HealthError(RuntimeError):
     """Raised when a pre-backup health check fails."""
 
 
+# Windows NTFS volumes and folders always contain these OS-managed entries
+# even when having zero user files. Robocopy and rclone exclude them via /XD,
+# so the source gate must also exclude them to avoid falsely treating an empty
+# drive as populated.
+_WINDOWS_SYSTEM_ENTRIES = {
+    "system volume information",
+    "$recycle.bin",
+    "recycler",
+    "recycled",
+    "desktop.ini",
+    "thumbs.db",
+}
+
+
 def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, str]:
     """Verify source drive exists, has files, and has free space.
 
@@ -30,7 +44,10 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
         return False, f"Source drive not accessible: {source}"
 
     try:
-        has_files = any(source.iterdir())
+        has_files = any(
+            p for p in source.iterdir()
+            if p.name.lower() not in _WINDOWS_SYSTEM_ENTRIES
+        )
     except PermissionError:
         return False, f"Source drive permission denied: {source}"
     except OSError as e:

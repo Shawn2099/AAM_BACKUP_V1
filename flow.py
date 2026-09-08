@@ -17,7 +17,6 @@ import uuid
 from contextlib import contextmanager
 
 import pendulum
-
 from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
@@ -27,7 +26,6 @@ from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
 from core.cloud_sync import run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
-from core.time_utils import get_fy_prefix
 from core.health import pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 from core.lan_preflight import run_lan_dry_run
@@ -39,7 +37,7 @@ from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
 from core.shutdown import shutdown_server
-from core.time_utils import now_iso
+from core.time_utils import get_fy_prefix, now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
 
@@ -356,11 +354,24 @@ def lan_preflight_task(config):
 
 @task(name="lan-snapshot-before")
 def lan_snapshot_before_task(config):
-    """Snapshot LAN destination before sync for diff comparison."""
+    """Snapshot LAN destination before sync for diff comparison.
+
+    Defensive pre-sync walk: if a transient SMB network blip occurs,
+    the sync proceeds with an empty before-dict rather than aborting
+    before Robocopy can run. Diff metrics will over-count additions
+    for this run only; the subsequent run re-derives accurate metrics.
+    """
     logger.info("Taking LAN snapshot (before sync)")
-    before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
-    logger.info(f"LAN snapshot: {len(before)} files before sync")
-    return before
+    try:
+        before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
+        logger.info(f"LAN snapshot: {len(before)} files before sync")
+        return before
+    except Exception as e:
+        logger.warning(
+            f"Pre-sync destination walk failed: {e} — sync will proceed; "
+            "diff metrics will over-count additions for this run only"
+        )
+        return {}
 
 
 @task(name="lan-snapshot-after")

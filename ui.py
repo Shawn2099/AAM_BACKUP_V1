@@ -226,7 +226,11 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
     for run in runs:
         tags = run.tags or []
         parameters = run.parameters or {}
-        if pipeline in tags or parameters.get("mode") == pipeline:
+        # Exclude read-only integrity audits from hijacking backup status
+        if "integrity" in tags:
+            continue
+        run_mode = parameters.get("mode", "")
+        if pipeline in tags or run_mode == pipeline or run_mode == "all":
             return True
     return False
 

@@ -130,6 +130,8 @@ def _cancel_orphaned_runs():
     async def _cancel():
         from prefect.client.orchestration import get_client
         from prefect.client.schemas.filters import (
+            FlowFilter,
+            FlowFilterName,
             FlowRunFilter,
             FlowRunFilterState,
             FlowRunFilterStateType,
@@ -139,6 +141,21 @@ def _cancel_orphaned_runs():
 
         try:
             async with get_client() as client:
+                aam_flow_names = [
+                    "aam-backup",
+                    "weekly-report",
+                    "monthly-report",
+                    "rollover-check",
+                    "integrity-audit",
+                ]
+                aam_flows = await client.read_flows(
+                    flow_filter=FlowFilter(name=FlowFilterName(any_=aam_flow_names))
+                )
+                aam_flow_ids = {f.id for f in aam_flows}
+                if not aam_flow_ids:
+                    print("[launch] No registered AAM flows found on server — skipping orphan run cleanup")
+                    return
+
                 for state_type in [StateType.PENDING, StateType.RUNNING]:
                     # If a backup is actively running, only cancel PENDING flows
                     if state_type == StateType.RUNNING and backup_active:
@@ -166,9 +183,7 @@ def _cancel_orphaned_runs():
                         offset += limit
                     runs = [
                         r for r in all_runs
-                        if getattr(r, "flow_id", None) is not None
-                        or "aam-backup" in str(getattr(r, "name", ""))
-                        or any(k in str(getattr(r, "name", "")) for k in ("backup-", "report", "rollover"))
+                        if getattr(r, "flow_id", None) in aam_flow_ids
                     ]
                     cancelled = 0
                     for r in runs:

@@ -5,6 +5,7 @@ Centralizes file entry upserts, run history recording, and maintenance.
 """
 
 from pathlib import PureWindowsPath
+
 from loguru import logger
 
 from core.manifest import ManifestDB
@@ -66,7 +67,9 @@ def record_sync_results(
     if removed:
         clean_removed = [_clean_path(p) for p in removed if _clean_path(p)]
         if clean_removed:
-            db.delete_entries(clean_removed)
+            cleared = db.clear_mode_status(mode, clean_removed)
+            if cleared:
+                logger.info(f"Cleared {cleared} removed {mode} entries from manifest")
 
 
 def record_run_history(

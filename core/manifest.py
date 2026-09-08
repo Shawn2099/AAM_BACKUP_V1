@@ -379,6 +379,42 @@ class ManifestDB:
                 )
             conn.commit()
 
+    def clear_mode_status(self, mode: str, paths: list[str]) -> int:
+        """Null-out sync status for one mode; delete row only when both modes are NULL.
+
+        Replaces the unconditional DELETE used by record_sync_results so that pruning
+        a file from LAN does not destroy its cloud_status (and vice-versa).
+
+        Returns:
+            Number of requested paths processed.
+        """
+        if mode not in ("cloud", "lan"):
+            raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
+        if not paths:
+            return 0
+        status_field = f"{mode}_status"
+        ts_field = f"{mode}_last_synced_at"
+        normalized = [p.replace("\\", "/") for p in paths]
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                for i in range(0, len(normalized), 500):
+                    chunk = normalized[i : i + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    conn.execute(
+                        f"UPDATE file_entries SET {status_field} = NULL, "
+                        f"{ts_field} = NULL "
+                        f"WHERE relative_path IN ({placeholders})",
+                        chunk,
+                    )
+                # Orphan cleanup: delete rows that are truly gone from both destinations
+                conn.execute(
+                    "DELETE FROM file_entries "
+                    "WHERE lan_status IS NULL AND cloud_status IS NULL"
+                )
+        return len(normalized)
+
+
     def get_entry(self, relative_path: str) -> dict | None:
         relative_path = relative_path.replace("\\", "/")
         with self._lock:

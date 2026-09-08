@@ -34,7 +34,11 @@ def walk_lan_destination(unc_path: str) -> list[dict]:
     """
     files: list[dict] = []
     errors: list[OSError] = []
-    base = str(Path(unc_path).resolve())
+    # Do NOT call Path.resolve() on UNC paths on Windows:
+    # it issues live SMB queries (blocking on unresponsive servers) and returns
+    # the \\?\UNC\ extended prefix, causing os.path.relpath to raise ValueError.
+    # Use the normalized raw path as-is.
+    base = unc_path.rstrip("\\/")
 
     def _on_walk_error(err: OSError) -> None:
         errors.append(err)
