@@ -15,7 +15,7 @@ import secrets
 import shutil
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pendulum
@@ -214,7 +214,7 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
                 flow_run_filter=FlowRunFilter(
                     state=FlowRunFilterState(
                         type=FlowRunFilterStateType(
-                            any_=[StateType.RUNNING, StateType.PENDING]
+                            any_=[StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]
                         )
                     )
                 ),
@@ -230,8 +230,32 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
         if "integrity" in tags:
             continue
         run_mode = parameters.get("mode", "")
-        if pipeline in tags or run_mode == pipeline or run_mode == "all":
+        if not (pipeline in tags or run_mode == pipeline or run_mode == "all"):
+            continue
+        state = getattr(run, "state", None)
+        state_type = getattr(state, "type", None) or getattr(run, "state_type", None)
+        if state_type in (StateType.RUNNING, StateType.PENDING):
             return True
+        if state_type == StateType.SCHEDULED:
+            # F2: a just-triggered run is SCHEDULED until the runner picks it
+            # up (~poll frequency). Count only due-now runs as active so a
+            # double-click cannot create a duplicate backup, while future
+            # cron-scheduled runs never block manual triggers.
+            nxt = getattr(run, "next_scheduled_start_time", None)
+            if nxt is None:
+                return True
+            try:
+                now = datetime.now(timezone.utc)
+                nxt_dt = nxt if nxt.tzinfo else nxt.replace(tzinfo=timezone.utc)
+                if nxt_dt <= now + timedelta(seconds=60):
+                    return True
+            except Exception:
+                return True
+            continue
+        # Fail-closed (H3): an unrecognized/missing state on a matching run
+        # must not read as idle — refusing a trigger is safe, a duplicate
+        # backup is not.
+        return True
     return False
 
 
@@ -254,6 +278,53 @@ def _run_state_fields(state: bool | None) -> dict:
 # ── Trigger pipeline (via Prefect deployment API) ────────────
 # (G15: the endpoints now await arun_deployment inline and surface failures
 # as HTTP 500 — the old fire-and-forget _run_in_background helper is gone.)
+#
+# F2: bounded synchronous wait. arun_deployment is called with a finite
+# timeout (TRIGGER_WAIT_SECONDS) so the HTTP response never hangs for the
+# whole backup (50s-hours) and proxies never 504. Deployment-lookup errors
+# still raise before run creation (G15 preserved: timeout=0/180 only bounds
+# the post-creation poll). The returned FlowRun is mapped truthfully:
+# terminal states reported as completed/failed/cancelled; a still-running
+# run after the bound returns 202 + authoritative flow_run_id and keeps
+# running server-side (arun_deployment never cancels on timeout).
+
+TRIGGER_WAIT_SECONDS = 180
+
+
+def _trigger_timeout(request: Request) -> float:
+    wait = request.query_params.get("wait", "true").lower()
+    if wait in ("false", "0", "no", "off"):
+        return 0
+    return TRIGGER_WAIT_SECONDS
+
+
+def _trigger_result(label: str, flow_run) -> JSONResponse:
+    run_id = str(flow_run.id)
+    state = getattr(flow_run, "state", None)
+    state_type = getattr(state, "type", None)
+    if state is not None and state.is_final():
+        if state_type == StateType.COMPLETED:
+            return JSONResponse({
+                "status": "completed",
+                "flow_run_id": run_id,
+                "detail": f"{label} backup completed (flow run {run_id}).",
+            })
+        if state_type in (StateType.CANCELLED, StateType.CANCELLING):
+            return JSONResponse({
+                "status": "cancelled",
+                "flow_run_id": run_id,
+                "detail": f"{label} backup was cancelled (flow run {run_id}).",
+            }, status_code=409)
+        return JSONResponse({
+            "status": "failed",
+            "flow_run_id": run_id,
+            "detail": f"{label} backup run {state.name if state else 'failed'} (flow run {run_id}).",
+        }, status_code=500)
+    return JSONResponse({
+        "status": "running",
+        "flow_run_id": run_id,
+        "detail": f"{label} backup started (flow run {run_id}).",
+    }, status_code=202)
 
 
 # ── API endpoints ────────────────────────────────────────────
@@ -487,8 +558,12 @@ async def trigger_cloud(request: Request):
     # old code returned 200 via background_tasks BEFORE arun_deployment
     # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
     # API error showed as "triggered successfully" while nothing ran.
+    # F2: bound the post-creation wait (?wait=false returns instantly).
     try:
-        flow_run = await arun_deployment(name="aam-backup/backup-cloud")
+        flow_run = await arun_deployment(
+            name="aam-backup/backup-cloud",
+            timeout=_trigger_timeout(request),
+        )
     except Exception as e:
         logger.error(f"Manual cloud trigger failed: {e}")
         return JSONResponse(
@@ -496,10 +571,7 @@ async def trigger_cloud(request: Request):
              "detail": f"Could not start the cloud backup run: {e}"},
             status_code=500,
         )
-    return JSONResponse({
-        "status": "triggered",
-        "detail": f"Cloud backup started (flow run {flow_run.id}).",
-    })
+    return _trigger_result("Cloud", flow_run)
 
 
 @app.post("/trigger/lan")
@@ -517,7 +589,10 @@ async def trigger_lan(request: Request):
     if lan_running:
         return JSONResponse({"status": "already_running", "detail": "LAN backup is already in progress."}, status_code=400)
     try:
-        flow_run = await arun_deployment(name="aam-backup/backup-lan")
+        flow_run = await arun_deployment(
+            name="aam-backup/backup-lan",
+            timeout=_trigger_timeout(request),
+        )
     except Exception as e:
         logger.error(f"Manual LAN trigger failed: {e}")
         return JSONResponse(
@@ -525,10 +600,7 @@ async def trigger_lan(request: Request):
              "detail": f"Could not start the LAN backup run: {e}"},
             status_code=500,
         )
-    return JSONResponse({
-        "status": "triggered",
-        "detail": f"LAN backup started (flow run {flow_run.id}).",
-    })
+    return _trigger_result("LAN", flow_run)
 
 
 # ── Report endpoints ────────────────────────────────────────

@@ -17,17 +17,18 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure project root is on sys.path and deploy/bin is in PATH for rclone
-PROJECT_ROOT = Path(r"c:\Users\Shawn A\Desktop\bk").resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 os.environ["PATH"] = str(PROJECT_ROOT / "deploy" / "bin") + os.pathsep + os.environ.get("PATH", "")
 os.environ.pop("PREFECT_TEST_MODE", None)
 
 CHAOS_ROOT = Path(r"C:\ChaosTest")
 SOURCE_DIR = CHAOS_ROOT / "source" / "FY25-26"
-DEST_DIR = CHAOS_ROOT / "lan_dest" / "FY25-26"
+# Self-loop LAN only: share aam_test -> C:\lan_dest_test; wipe-scoped subtree.
+DEST_DIR = Path(r"C:\lan_dest_test\CHAOS_SUITE\FY25-26")
 RUNTIME_DIR = CHAOS_ROOT / "runtime"
 CONFIG_FILE = CHAOS_ROOT / "config_chaos.yaml"
-UNC_DEST = r"\\localhost\c$\ChaosTest\lan_dest\FY25-26"
+UNC_DEST = r"\\127.0.0.1\aam_test\CHAOS_SUITE\FY25-26"
 
 
 def setup_chaos_environment():
@@ -366,7 +367,7 @@ def run_suite():
         from core.health import HealthError
         from core.lan_preflight import run_lan_dry_run
 
-        broken_unc = r"\\localhost\c$\ChaosTest\nonexistent_folder_xyz\FY25-26"
+        broken_unc = r"\\127.0.0.1\aam_test\nonexistent_folder_xyz\FY25-26"
         failed_as_expected = False
         try:
             run_lan_dry_run(str(SOURCE_DIR), broken_unc)
