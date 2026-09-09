@@ -59,10 +59,33 @@ function formatFullDate(isoStr) {
 }
 
 var _lastStatusErr = 0;
+function setSessionExpired(expired) {
+    var banner = document.getElementById('session-banner');
+    if (banner) banner.style.display = expired ? 'block' : 'none';
+    if (!expired) return;
+    ['cloud', 'lan'].forEach(function(mode) {
+        var badge = document.getElementById('badge-' + mode);
+        var desc = document.getElementById('desc-' + mode);
+        var card = document.getElementById('card-' + mode);
+        if (badge) { badge.innerText = 'Unknown'; badge.className = 'status-badge unknown'; }
+        if (desc) desc.innerText = 'Status unavailable — session may have expired. Sign in again.';
+        if (card) card.className = 'card unknown';
+    });
+}
+function integrityText(integrity) {
+    if (!integrity || !integrity.status) return 'Integrity: NOT VERIFIED — no audit recorded';
+    var s = integrity.status;
+    var when = integrity.checked_at ? ' (checked ' + integrity.checked_at + ')' : '';
+    if (s === 'VERIFIED') return 'Integrity: VERIFIED' + when;
+    if (s === 'VERIFICATION_FAILED') return 'Integrity: VERIFICATION FAILED' + when + ' — see audit detail';
+    return 'Integrity: NOT VERIFIED — no audit recorded';
+}
 async function updateStatus() {
     try {
         const response = await fetch('/status');
+        if (response.status === 401) { setSessionExpired(true); return; }
         if (!response.ok) return;
+        setSessionExpired(false);
         _lastStatusErr = 0;
         const data = await response.json();
 
@@ -104,30 +127,58 @@ async function updateStatus() {
         const descCloud = document.getElementById('desc-cloud');
         const lastCloud = document.getElementById('last-cloud');
         const btnCloud = document.getElementById('btn-cloud');
-        if (cardCloud && badgeCloud && descCloud && lastCloud && btnCloud) {
-            const isCloudRunning = data.cloud.running;
-            badgeCloud.innerText = isCloudRunning ? 'Running' : 'Idle';
-            if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
-            else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
-            if (data.cloud.last_run) { descCloud.innerText = statusDescription(data.cloud.last_run.status, data.cloud.last_run.files, data.cloud.last_run.files_failed || 0); lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
-            const cloudClass = isCloudRunning ? 'running' : (data.cloud.last_run ? (data.cloud.last_run.status.endsWith('_COMPLETE') ? 'success' : 'failed') : 'unknown');
-            cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
-            showLastSuccess('cloud', data.cloud.last_success);
+        if (cardCloud && badgeCloud && descCloud && lastCloud) {
+            const integCloud = document.getElementById('integrity-cloud');
+            if (integCloud) integCloud.innerText = integrityText(data.cloud.integrity);
+            if (data.cloud.enabled === false) {
+                badgeCloud.innerText = 'Disabled'; badgeCloud.className = 'status-badge unknown';
+                cardCloud.className = 'card unknown';
+                descCloud.innerText = 'Cloud backup is disabled in configuration.';
+                if (btnCloud) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.innerText = 'Disabled'; }
+                showLastSuccess('cloud', data.cloud.last_success);
+            } else {
+                const isCloudRunning = data.cloud.running;
+                const cloudUnknown = data.cloud.run_state === 'unknown';
+                badgeCloud.innerText = isCloudRunning ? 'Running' : (cloudUnknown ? 'Unknown' : 'Idle');
+                if (btnCloud) {
+                    if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
+                    else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
+                }
+                if (data.cloud.last_run) { descCloud.innerText = (cloudUnknown ? 'Status unavailable — ' : '') + statusDescription(data.cloud.last_run.status, data.cloud.last_run.files, data.cloud.last_run.files_failed || 0); lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
+                else if (cloudUnknown) { descCloud.innerText = 'Status unavailable — could not reach Prefect API.'; }
+                const cloudClass = isCloudRunning ? 'running' : (cloudUnknown ? 'unknown' : (data.cloud.last_run ? (data.cloud.last_run.status.endsWith('_COMPLETE') ? 'success' : 'failed') : 'unknown'));
+                cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
+                showLastSuccess('cloud', data.cloud.last_success);
+            }
         }
         const cardLan = document.getElementById('card-lan');
         const badgeLan = document.getElementById('badge-lan');
         const descLan = document.getElementById('desc-lan');
         const lastLan = document.getElementById('last-lan');
         const btnLan = document.getElementById('btn-lan');
-        if (cardLan && badgeLan && descLan && lastLan && btnLan) {
-            const isLanRunning = data.lan.running;
-            badgeLan.innerText = isLanRunning ? 'Running' : 'Idle';
-            if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
-            else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
-            if (data.lan.last_run) { descLan.innerText = statusDescription(data.lan.last_run.status, data.lan.last_run.files, data.lan.last_run.files_failed || 0); lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
-            const lanClass = isLanRunning ? 'running' : (data.lan.last_run ? (data.lan.last_run.status.endsWith('_COMPLETE') ? 'success' : 'failed') : 'unknown');
-            cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
-            showLastSuccess('lan', data.lan.last_success);
+        if (cardLan && badgeLan && descLan && lastLan) {
+            const integLan = document.getElementById('integrity-lan');
+            if (integLan) integLan.innerText = integrityText(data.lan.integrity);
+            if (data.lan.enabled === false) {
+                badgeLan.innerText = 'Disabled'; badgeLan.className = 'status-badge unknown';
+                cardLan.className = 'card unknown';
+                descLan.innerText = 'LAN backup is disabled in configuration.';
+                if (btnLan) { btnLan.setAttribute('disabled', 'disabled'); btnLan.innerText = 'Disabled'; }
+                showLastSuccess('lan', data.lan.last_success);
+            } else {
+                const isLanRunning = data.lan.running;
+                const lanUnknown = data.lan.run_state === 'unknown';
+                badgeLan.innerText = isLanRunning ? 'Running' : (lanUnknown ? 'Unknown' : 'Idle');
+                if (btnLan) {
+                    if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
+                    else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
+                }
+                if (data.lan.last_run) { descLan.innerText = (lanUnknown ? 'Status unavailable — ' : '') + statusDescription(data.lan.last_run.status, data.lan.last_run.files, data.lan.last_run.files_failed || 0); lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
+                else if (lanUnknown) { descLan.innerText = 'Status unavailable — could not reach Prefect API.'; }
+                const lanClass = isLanRunning ? 'running' : (lanUnknown ? 'unknown' : (data.lan.last_run ? (data.lan.last_run.status.endsWith('_COMPLETE') ? 'success' : 'failed') : 'unknown'));
+                cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
+                showLastSuccess('lan', data.lan.last_success);
+            }
         }
         if (data.health && !data.health.error) { document.getElementById('health-info').innerText = 'Source: ' + data.health.source_free_gb + ' GB free | FY: ' + data.fy_prefix; }
         const tbody = document.getElementById('history-tbody');
@@ -161,7 +212,7 @@ async function updateStatus() {
                             badges += '<span class="metrics-badge removed">Pruned: ' + (metrics.removed || 0) + '</span>';
                             badges += '<span class="metrics-badge">Active Destination Files: ' + (metrics.total_files || 0) + '</span>';
                         } else if (r.mode === 'cloud') {
-                            badges += '<span class="metrics-badge verified">' + (metrics.verified ? 'Verification Passed' : 'Verification Failed') + '</span>';
+                            badges += '<span class="metrics-badge verified">' + (!('verified' in metrics) ? 'Verification Unknown' : (metrics.verified ? 'Verification Passed' : 'Verification Failed')) + '</span>';
                             badges += '<span class="metrics-badge">Total Tracked Files: ' + (metrics.total_files || 0) + '</span>';
                             badges += '<span class="metrics-badge size">Space Consumed: ' + (metrics.total_size_gb || 0).toFixed(3) + ' GB</span>';
                         }

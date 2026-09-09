@@ -203,18 +203,18 @@ class CloudConfig(BaseModel):
     storage_class: str = "STANDARD"
     bandwidth_limit: str = "10M"
     retry_count: int = Field(default=3, ge=1, le=10)
-    subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
+    subprocess_timeout_seconds: int = Field(default=18000, ge=3600)
     max_attempts: int = Field(default=3, ge=1, le=10, description="Flow-level retry attempts for cloud backup orchestration")
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
-    verify_timeout_seconds: int = Field(default=14400, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Increase to 14400+ for large datasets on HDD.")
+    verify_timeout_seconds: int = Field(default=18000, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
     # F7: listing timeouts sized for the target scale (200GB / ~1M files, growing
     # to ~2.5M by yr-5). Measured order-of-magnitude: rclone size over GCS takes
     # ~40-150s at 1M objects, the lsjson manifest ~2-5 min, the diff ~3-8 min —
     # the old defaults (30/300/600) were tuned for a demo-sized bucket and
     # would time out (and misreport "0 files") at the real scale.
-    diff_timeout_seconds: int = Field(default=1800, ge=30, le=7200, description="Timeout for rclone check --combined diff report (seconds)")
-    manifest_timeout_seconds: int = Field(default=900, ge=30, le=7200, description="Timeout for rclone lsjson manifest listing (seconds)")
+    diff_timeout_seconds: int = Field(default=18000, ge=30, le=86400, description="Timeout for rclone check --combined diff report (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
+    manifest_timeout_seconds: int = Field(default=18000, ge=30, le=86400, description="Timeout for rclone lsjson manifest listing (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     cloud_size_timeout_seconds: int = Field(default=300, ge=10, le=3600, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")

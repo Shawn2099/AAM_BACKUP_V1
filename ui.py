@@ -444,6 +444,8 @@ async def dashboard(request: Request, status: str = ""):
         "auth_enabled": _auth_enabled(),
         "cloud_schedule": cloud_schedule,
         "lan_schedule": lan_schedule,
+        "cloud_enabled": cfg.cloud.enabled,
+        "lan_enabled": cfg.lan.enabled,
     }
     try:
         # Starlette >= 0.28
@@ -498,6 +500,7 @@ async def status(request: Request):
         },
         "cloud": {
             **cloud_fields,
+            "enabled": cfg.cloud.enabled,
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
             "last_run_formatted": (cloud_last_run["started_at"] or "-")[:19].replace("T", " ") if cloud_last_run else "No data",
@@ -509,6 +512,7 @@ async def status(request: Request):
         },
         "lan": {
             **lan_fields,
+            "enabled": cfg.lan.enabled,
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
             "last_run_formatted": (lan_last_run["started_at"] or "-")[:19].replace("T", " ") if lan_last_run else "No data",
@@ -544,6 +548,8 @@ async def trigger_cloud(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    if not _cfg().cloud.enabled:
+        return JSONResponse({"status": "disabled", "detail": "Cloud backup leg is disabled in configuration; not started."}, status_code=409)
     cloud_running = await _is_running("cloud")
     if cloud_running is None:
         # H3: fail-CLOSED. The old code treated an unreachable API as
@@ -580,6 +586,8 @@ async def trigger_lan(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    if not _cfg().lan.enabled:
+        return JSONResponse({"status": "disabled", "detail": "LAN backup leg is disabled in configuration; not started."}, status_code=409)
     lan_running = await _is_running("lan")
     if lan_running is None:
         raise HTTPException(

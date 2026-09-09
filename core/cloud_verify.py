@@ -117,7 +117,7 @@ def verify_cloud_integrity(
     bucket: str,
     fy_prefix: str,
     config_path: str,
-    timeout: int = 14400,
+    timeout: int = 18000,
 ) -> dict:
     """Run rclone check --one-way --size-only to verify source matches GCS.
 

@@ -159,6 +159,6 @@ def test_k_fallbacks_match_model():
     from core import lan_preflight as lp
     from models.config import CloudConfig, LanConfig
     assert inspect.signature(cr.get_cloud_size).parameters["timeout"].default == CloudConfig.model_fields["cloud_size_timeout_seconds"].default == 300
-    assert inspect.signature(cr.get_cloud_manifest).parameters["timeout"].default == CloudConfig.model_fields["manifest_timeout_seconds"].default == 900
-    assert inspect.signature(cr.get_cloud_diff).parameters["timeout"].default == CloudConfig.model_fields["diff_timeout_seconds"].default == 1800
+    assert inspect.signature(cr.get_cloud_manifest).parameters["timeout"].default == CloudConfig.model_fields["manifest_timeout_seconds"].default == 18000
+    assert inspect.signature(cr.get_cloud_diff).parameters["timeout"].default == CloudConfig.model_fields["diff_timeout_seconds"].default == 18000
     assert inspect.signature(lp.run_lan_dry_run).parameters["timeout"].default == LanConfig.model_fields["dry_run_timeout_seconds"].default == 900

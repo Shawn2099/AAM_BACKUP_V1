@@ -84,22 +84,22 @@ cloud:
   bandwidth_limit: "10M"
   # rclone --retries per failed file transfer
   retry_count: 3
-  # Hard timeout for the entire rclone sync process (seconds). 21600 = 6 hours
-  subprocess_timeout_seconds: 21600
+  # Hard timeout for the entire rclone sync process (seconds). 18000 = 5 hours (conservative initial limit)
+  subprocess_timeout_seconds: 18000
   # Flow-level retry attempts (full rclone re-runs on failure)
   max_attempts: 3
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 300
-  # Timeout for post-sync rclone check/verify step (seconds)
-  verify_timeout_seconds: 14400
+  # Timeout for post-sync rclone check/verify step (seconds). 18000 = 5 hours (conservative initial limit)
+  verify_timeout_seconds: 18000
   # Timeout for pre-sync rclone check dry-run (seconds)
   preflight_timeout_seconds: 300
-  # Timeout for rclone check --combined diff report (seconds)
-  diff_timeout_seconds: 600
-  # Timeout for rclone lsjson manifest listing (seconds)
-  manifest_timeout_seconds: 300
+  # Timeout for rclone check --combined diff report (seconds). 18000 = 5 hours (conservative initial limit)
+  diff_timeout_seconds: 18000
+  # Timeout for rclone lsjson manifest listing (seconds). 18000 = 5 hours (conservative initial limit)
+  manifest_timeout_seconds: 18000
   # Timeout for rclone size GCS object count query (seconds)
-  cloud_size_timeout_seconds: 30
+  cloud_size_timeout_seconds: 300
   # rclone --transfers: concurrent file uploads
   transfers: 2
   # rclone --checkers: concurrent file comparison workers

@@ -583,8 +583,10 @@ class ManifestDB:
         """Return the last successful run for this mode (status ends with _COMPLETE)."""
         with self._lock:
             conn = self._get_conn()
+            # GLOB, not LIKE: `_` is a single-char wildcard in LIKE and
+            # would also match e.g. `INCOMPLETE`. `_` is literal in GLOB.
             row = conn.execute(
-                "SELECT * FROM run_history WHERE mode = ? AND status LIKE '%_COMPLETE' ORDER BY started_at DESC LIMIT 1",
+                "SELECT * FROM run_history WHERE mode = ? AND status GLOB '*_COMPLETE' ORDER BY started_at DESC LIMIT 1",
                 (mode,),
             ).fetchone()
             return dict(row) if row else None

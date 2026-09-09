@@ -12,6 +12,7 @@ Two deployments from one codebase:
 
 import json
 import os
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -60,6 +61,40 @@ class PartialRun(RuntimeError):
 # (see the weekly integrity audit).
 _CLOUD_OK_STATUSES = frozenset({"CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"})
 _LAN_OK_STATUSES = frozenset({"LAN_COMPLETE"})
+
+
+_FY_LEAF_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
+
+
+def _effective_fy_prefix(config) -> str:
+    """Cloud FY scope: configured source leaf when it is a valid FY dir.
+
+    Normal days the leaf equals the date-derived prefix (no behavior
+    change). Around FY rollover the configured leaf is authoritative: it
+    matches the LAN destination leaf and the final-backup prefix, so a
+    daily run can never sync old-FY data into the new-FY cloud prefix
+    before the rollover executes. Non-FY sources fall back to the date.
+    Enumeration scope is unchanged (source_drive is still the root).
+    """
+    leaf = config.paths.source_drive.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if _FY_LEAF_PATTERN.match(leaf):
+        return leaf.upper()
+    return get_fy_prefix()
+
+
+def _failure_telemetry(stage_seconds: dict, phase: str, verified: bool = False) -> str | None:
+    """Build failure-path extended_metrics from stages actually measured.
+
+    Supplementary evidence only: unexecuted stages stay absent (never
+    fabricated); business state is decided elsewhere and untouched.
+    """
+    try:
+        payload: dict = {"stage_seconds": dict(stage_seconds), "failure_phase": phase}
+        if verified:
+            payload["verified"] = True
+        return json.dumps(payload)
+    except Exception:
+        return None
 
 
 def _stable_run_id(mode: str) -> str:
@@ -234,6 +269,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
         config.cloud.storage_class,
     ) as rclone_cfg:
         logger.info("Verifying cloud integrity")
+        _t_verify = time.monotonic()
         verify_result = verify_cloud_integrity(
             source=config.paths.source_drive,
             bucket=config.cloud.bucket,
@@ -241,15 +277,19 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             config_path=rclone_cfg,
             timeout=config.cloud.verify_timeout_seconds,
         )
+        verify_s = time.monotonic() - _t_verify
 
         logger.info("Gathering cloud report data")
+        _t_size = time.monotonic()
         size = get_cloud_size(
             config.cloud.bucket, fy_prefix, rclone_cfg,
             timeout=config.cloud.cloud_size_timeout_seconds,
         )
+        size_s = time.monotonic() - _t_size
         # M6: a failed manifest query must never look like an empty bucket.
         # Catch and carry the failure as data; the pipeline decides policy.
         manifest_error = None
+        _t_manifest = time.monotonic()
         try:
             manifest = get_cloud_manifest(
                 config.cloud.bucket, fy_prefix, rclone_cfg,
@@ -260,6 +300,8 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
                 f"Cloud manifest query failed - metrics degraded this run: {e}"
             )
             manifest, manifest_error = [], str(e)
+        manifest_s = time.monotonic() - _t_manifest
+        _t_diff = time.monotonic()
         cloud_diff = get_cloud_diff(
             config.paths.source_drive,
             config.cloud.bucket,
@@ -267,6 +309,14 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             rclone_cfg,
             timeout=config.cloud.diff_timeout_seconds,
         )
+        diff_s = time.monotonic() - _t_diff
+        stage_seconds = {
+            "verify_s": round(verify_s, 1),
+            "size_s": round(size_s, 1),
+            "manifest_s": round(manifest_s, 1),
+            "diff_s": round(diff_s, 1),
+        }
+        logger.info(f"Cloud stage timings (s): {stage_seconds}")
 
         if "_error" in size:
             logger.warning(f"Cloud size query degraded this run: {size['_error']}")
@@ -293,6 +343,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             "manifest": manifest,
             "diff": cloud_diff,
             "manifest_error": manifest_error,
+            "stage_seconds": stage_seconds,
         }
 
 
@@ -606,7 +657,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
     with _backup_slot(config):
         db_path = config.paths.database_path
-        fy_prefix = get_fy_prefix()
+        fy_prefix = _effective_fy_prefix(config)
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = cloud_preflight_task.with_options(
@@ -641,16 +692,29 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         files_copied = 0
         bytes_copied = 0
         extended_metrics = None
+        # Failure-path telemetry: accumulate per-stage durations as stages
+        # complete so a failed run still records what was measured. Stages
+        # that never execute stay absent (never fabricated).
+        stage_seconds: dict = {}
+        sync_seconds: float | None = None
+        verify_report_seconds: float | None = None
         phase = "pre"
 
         try:
             health_check_task(config, "cloud")
             preflight(config, fy_prefix)
             phase = "sync"
+            _t_sync = time.monotonic()
             sync_result = sync(config, fy_prefix)
+            sync_seconds = round(time.monotonic() - _t_sync, 1)
+            stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
             phase = "verify"
+            _t_verify_report = time.monotonic()
             verify_data = verify_report(config, fy_prefix)
+            verify_report_seconds = round(time.monotonic() - _t_verify_report, 1)
+            stage_seconds.update(verify_data.get("stage_seconds") or {})
+            stage_seconds["verify_report_s"] = verify_report_seconds
             diff = verify_data.get("diff") or {}
             size = verify_data.get("size") or {}
             evidence_ok = (
@@ -737,6 +801,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
 
             extended_metrics = json.dumps({
+                "stage_seconds": dict(stage_seconds),
                 "verified": verify_data.get("verified", False),
                 # F-08: liveness is the check process's own completion
                 # evidence, never the killable exit code. A killed check
@@ -817,6 +882,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     )
                 except Exception as alert_err:
                     logger.warning(f"Could not send suspect-backup alert: {alert_err}")
+            if extended_metrics is None:
+                # Failure-path telemetry: persist whatever stages were
+                # actually measured (possibly none). Business state above
+                # is unchanged; this only preserves evidence for tuning.
+                extended_metrics = _failure_telemetry(stage_seconds, phase)
             raise
         finally:
             try:
@@ -861,6 +931,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         bytes_copied = 0
         files_failed = 0
         extended_metrics = None
+        # Failure-path telemetry (same contract as cloud): measured stages
+        # persist even when the run fails; unexecuted stages stay absent.
+        stage_seconds: dict = {}
         phase = "pre"
 
         try:
@@ -869,7 +942,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             preflight(config)
             before_dict = lan_snapshot_before_task(config)
             phase = "sync"
+            _t_sync = time.monotonic()
             sync_result = sync(config)
+            sync_seconds = round(time.monotonic() - _t_sync, 1)
+            stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
             phase = "post"
             # F12: robocopy per-file failure count (0 on clean/anomaly runs)
@@ -893,7 +969,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     "added": len(diff.get("added", [])),
                     "modified": len(diff.get("modified", [])),
                     "removed": len(diff.get("removed", [])),
-                    "total_files": len(after_dict)
+                    "total_files": len(after_dict),
+                    "stage_seconds": dict(stage_seconds),
                 })
                 try:
                     lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
@@ -993,6 +1070,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     f"shutdown_on_all_retries_exhausted enabled: powering down NAS after {status} failure alert"
                 )
                 lan_shutdown_task(config)
+            if extended_metrics is None:
+                extended_metrics = _failure_telemetry(stage_seconds, phase)
             raise
         finally:
             try:
@@ -1206,7 +1285,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 ) as rclone_cfg:
                     result = audit_cloud(
                         config.paths.source_drive, config.cloud.bucket,
-                        get_fy_prefix(), rclone_cfg,
+                        _effective_fy_prefix(config), rclone_cfg,
                         timeout=config.cloud.verify_timeout_seconds,
                     )
                 # A VERIFIED verdict is durable only once persisted: a failed
@@ -1302,6 +1381,15 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         logger.debug(f"configure_prefect_bridge skipped: {e} - Prefect UI may not show loguru logs")
 
     logger.info(f"AAM Backup starting - mode={mode}, firm={config.firm_name}")
+
+    # Disabled-leg guard: an explicit single-leg request for a disabled leg
+    # must fail loudly (Prefect FAILED, no run_history row, no success
+    # appearance) rather than no-op into a successful run. mode="all" still
+    # runs whichever legs are enabled (config validation forbids both off).
+    if mode == "cloud" and not config.cloud.enabled:
+        raise ValueError("Cloud backup leg is disabled in configuration; refusing to run.")
+    if mode == "lan" and not config.lan.enabled:
+        raise ValueError("LAN backup leg is disabled in configuration; refusing to run.")
 
     # G8: clean up orphaned robocopy temp logs left behind by hard-killed
     # processes (SCM stop, timeout kill, crash). Normal runs delete their own

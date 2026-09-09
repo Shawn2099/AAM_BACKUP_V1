@@ -179,7 +179,7 @@ def run_cloud_sync(
     transfers: int = 2,
     checkers: int = 4,
     buffer_size: str = "64M",
-    timeout: int = 21600,
+    timeout: int = 18000,
     max_duration_seconds: int | None = None,
 ) -> dict:
     """Execute rclone sync to mirror source → GCS.
