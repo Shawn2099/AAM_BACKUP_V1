@@ -31,7 +31,7 @@ class PathsConfig(BaseModel):
     )
     database_path: str = Field(default="", description="Path to SQLite manifest database (auto-derived from runtime_dir if empty)")
     log_directory: str = Field(default="", description="Log directory (auto-derived from runtime_dir if empty)")
-    gcs_key_path: str = Field(..., description="Path to GCS service account JSON key file")
+    gcs_key_path: str = Field(default="", description="Path to GCS service account JSON key file (required when cloud is enabled; leave empty for LAN-only)")
 
     @model_validator(mode="after")
     def derive_runtime_paths(self) -> "PathsConfig":
@@ -71,8 +71,8 @@ class PathsConfig(BaseModel):
     @field_validator("gcs_key_path")
     @classmethod
     def gcs_key_exists(cls, v: str) -> str:
-        if not v:
-            raise ValueError("gcs_key_path must not be empty when cloud is enabled")
+        # LAN-only deployments leave this empty; cloud-enabled enforcement
+        # lives in AppConfig.cross_field_validation (fail-closed there).
         return v
 
 
@@ -100,6 +100,8 @@ class LanConfig(BaseModel):
 
 
 class WolConfig(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     enabled: bool = True
     # F11: empty default + conditional validation below. The MAC is only
     # meaningful when WoL is enabled; requiring it for disabled pipelines made
@@ -196,7 +198,7 @@ class CloudConfig(BaseModel):
     # F11: no real-looking default. An empty bucket is only valid when cloud
     # is disabled; an enabled cloud backup must name its bucket explicitly.
     bucket: str = ""
-    project_number: str = "920173882190"
+    project_number: str = ""
     location: str = "asia-south1"
     storage_class: str = "STANDARD"
     bandwidth_limit: str = "10M"
@@ -233,6 +235,12 @@ class CloudConfig(BaseModel):
             raise ValueError(
                 "cloud.bucket is required when cloud.enabled is true — "
                 f"got {self.bucket!r}. Set it to the real GCS bucket name."
+            )
+        if self.enabled and not self.project_number.strip():
+            raise ValueError(
+                "cloud.project_number is required when cloud.enabled is true — "
+                "got empty. Set it to the real GCP project number; "
+                "LAN-only deployments should set cloud.enabled=false instead."
             )
         return self
 

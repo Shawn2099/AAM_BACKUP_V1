@@ -45,7 +45,7 @@ def _is_smb_reachable(host: str, port: int = 445, timeout: float = 2.0) -> bool:
         return False
 
 
-def run_lan_dry_run(source: str, dest: str, timeout: int = 300) -> dict:
+def run_lan_dry_run(source: str, dest: str, timeout: int = 900) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
 
     /L = list-only — reports what WOULD happen, zero bytes moved.

@@ -173,6 +173,8 @@ def pre_backup_health(
     if mode in ("cloud", "all"):
         if not check_binary_exists("rclone"):
             raise HealthError("rclone not found in PATH")
+        if not gcs_key_path:
+            raise HealthError("GCS key path is required for cloud mode")
         if gcs_key_path:
             ok, reason = check_gcs_key(gcs_key_path)
             if not ok:

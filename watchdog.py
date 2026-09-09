@@ -448,8 +448,21 @@ def main() -> None:
                         f"NOTE: the zombie process belongs to {AGENT_SERVICE}, not "
                         f"{WATCHED_SERVICE} - manual kill may still be required."
                     )
-                    with contextlib.suppress(OSError):
-                        BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                    try:
+                        from core.process import read_lock_alive as _read_lock
+                        _alive, _pid = _read_lock(BACKUP_LOCK_PATH)
+                    except Exception:
+                        _alive, _pid = False, None
+                    if _pid is not None and not _alive:
+                        # Definitely-dead owner only. UNKNOWN (None/unreadable)
+                        # fails closed — never blindly delete.
+                        with contextlib.suppress(OSError):
+                            BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                    else:
+                        logger.warning(
+                            "Transfer-cap reached but lock owner is UNKNOWN or live — "
+                            "leaving lock in place (fail-closed)."
+                        )
                     transfer_deferrals = 0
                     # H4: fall straight through to the restart logic below — the
                     # old code entered the lock branch using the stale pre-unlink

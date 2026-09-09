@@ -31,7 +31,7 @@ def _base_args(config_path: str) -> list[str]:
     return ["--config", config_path, "--gcs-no-check-bucket", "--fast-list"]
 
 
-def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int = 30) -> dict:
+def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int = 300) -> dict:
     """rclone size --json → {"count": int, "bytes": int, "sizeless": str}.
 
     Instant — GCS returns pre-computed object counts. No file traversal.
@@ -82,7 +82,7 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int =
     return data
 
 
-def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: int = 300) -> list[dict]:
+def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: int = 900) -> list[dict]:
     """rclone lsjson -R -> [{Path, Size, ModTime, MimeType, IsDir}, ...].
 
     Files only — directory entries filtered out. No file content read,
@@ -138,7 +138,7 @@ def get_cloud_diff(
     bucket: str,
     fy_prefix: str,
     config_path: str,
-    timeout: int = 600,  # override via config.cloud.diff_timeout_seconds
+    timeout: int = 1800,  # override via config.cloud.diff_timeout_seconds
 ) -> dict:
     """rclone check --combined --size-only → {added, removed, modified, unchanged}.
 

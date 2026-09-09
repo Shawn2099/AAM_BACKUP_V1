@@ -36,6 +36,29 @@ def _run_dashboard():
     uvicorn.run(app, host=bind, port=port, log_level="warning")
 
 
+def _supervise_dashboard(thread: threading.Thread, interval_seconds: int = 60) -> threading.Thread:
+    """Lightweight dashboard monitor: log a warning if the thread dies.
+
+    Does NOT restart or kill anything — dashboard failure must never affect
+    backup correctness. Observability only; backups continue via scheduler.
+    Returns the monitor thread (daemon).
+    """
+    def _watch() -> None:
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                alive = thread.is_alive()
+            except Exception:
+                alive = False
+            if not alive:
+                print("[launch] WARNING: dashboard thread is not alive — scheduler continues; restart service to restore UI")
+                return
+
+    mon = threading.Thread(target=_watch, daemon=True, name="dashboard-monitor")
+    mon.start()
+    return mon
+
+
 def _check_prefect_api(url="http://127.0.0.1:4200/api"):
     """Verify Prefect API server is running. Raises if not reachable."""
     import httpx
@@ -316,6 +339,7 @@ def main():
     time.sleep(0.5)
     if not dash_thread.is_alive():
         print("[launch] Warning: Dashboard thread not alive after start (may be race in tests)")
+    _supervise_dashboard(dash_thread)
 
     # Check for FY rollover before starting normal operations.
     # On April 1, this runs a final backup of the closing FY, transitions
