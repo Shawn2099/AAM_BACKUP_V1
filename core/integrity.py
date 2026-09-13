@@ -80,11 +80,21 @@ _IO_ERROR_LINE_RE = re.compile(
 # a missing canary refuses the mirror), excluded from every /MIR
 # transfer by /XF (core/lan_sync.py + dry-run), and created on new FY
 # shares by rollover. It is operational layout, NOT backup data: the
-# source never carries it and the transfer never converges it, so the
-# bidirectional audit must not treat it as divergent backup content.
-# Narrow exact-match exclusion (root-level rel path only — never a
-# basename sweep, never dotfiles in general).
+# transfer never converges it, so the bidirectional audit must not
+# treat it as divergent backup content.
+# Exclusion is by exact basename at ANY depth (never dotfiles in
+# general): robocopy /XF matches the filename in every directory, so a
+# canary under an FY subdir (e.g. `E2E_TEST_FY/.AAM_TARGET_MOUNTED`) is
+# excluded from the transfer exactly like the root one and must be
+# excluded from the audit verdict on BOTH sides (missing-from-dest `+`
+# as well as extra-in-dest `-` and content-changed `*`).
 _CANARY_REL_PATHS = frozenset({".AAM_TARGET_MOUNTED"})
+_CANARY_BASENAME = ".AAM_TARGET_MOUNTED"
+
+
+def _is_canary(rel: str) -> bool:
+    """True iff rel path is the operational mount sentinel (any depth)."""
+    return PureWindowsPath(rel).name == _CANARY_BASENAME
 
 # Alert/detail payload bound: full mismatch COUNTS are always recorded;
 # the path list is truncated so a large divergence cannot blow up the
@@ -192,17 +202,36 @@ def _run_rclone_check(
         io_error_lines = [ln for ln in error_log_lines if _IO_ERROR_LINE_RE.search(ln)]
         read_error = bool(errors) or bool(io_error_lines)
 
-        # F-T4-1: drop the operational mount sentinel from the dest-extra
-        # set before verdict/counts. Added/modified/error markers are
-        # never filtered — only a dest-side extra of this exact artifact
-        # is contractually not backup content. The summary-consistency
+        # F-T4-1: drop the operational mount sentinel from the verdict
+        # before verdict/counts. /XF excludes this basename at EVERY
+        # depth from the transfer, so the audit must mirror that on both
+        # sides: source-only canary (`+` missing-from-dest, e.g.
+        # `E2E_TEST_FY/.AAM_TARGET_MOUNTED`), dest-only canary (`-`
+        # extra-in-dest), and same-path content difference (`*`) are all
+        # contractually not backup content. The summary-consistency
         # check below uses the RAW (pre-filter) count: rclone itself
         # counts the canary as a difference, so comparing its verdict
         # against the filtered set would false-positive as
         # "contradictory" on every canary-carrying destination.
-        canary_excluded = [p for p in removed if p in _CANARY_REL_PATHS]
-        if canary_excluded:
-            removed = [p for p in removed if p not in _CANARY_REL_PATHS]
+        # Phase-3 evidence preservation: snapshot the RAW parse (exactly
+        # what rclone reported) BEFORE any control-plane filtering, so the
+        # raw_* evidence fields below can never be reconstructed from -- or
+        # be lost behind -- the filtered verdict counts.
+        raw_added, raw_removed, raw_modified = list(added), list(removed), list(modified)
+
+        added_canary = [p for p in added if _is_canary(p)]
+        removed_canary = [p for p in removed if _is_canary(p)]
+        modified_canary = [p for p in modified if _is_canary(p)]
+        canary_excluded = added_canary + removed_canary + modified_canary
+        if added_canary:
+            added = [p for p in added if not _is_canary(p)]
+        if removed_canary:
+            removed = [p for p in removed if not _is_canary(p)]
+        if modified_canary:
+            modified = [p for p in modified if not _is_canary(p)]
+        unchanged_canary = [p for p in unchanged if _is_canary(p)]
+        if unchanged_canary:
+            unchanged = [p for p in unchanged if not _is_canary(p)]
         raw_mismatches = (
             len(added) + len(modified) + len(removed) + len(canary_excluded)
         )
@@ -289,11 +318,22 @@ def _run_rclone_check(
                         f"elapsed_s={elapsed:.0f})"
                     )
                 else:
+                    # Phase-3 evidence integrity: `mismatches` and the
+                    # counts below are the EFFECTIVE (canary-filtered)
+                    # numbers. The excluded control-plane count and the RAW
+                    # pre-filter counts are appended so the durable
+                    # telemetry (flow.py persists `detail` into the
+                    # integrity_audits manifest row) never loses them.
+                    canary_note = (
+                        f" canary_excluded={len(canary_excluded)}"
+                        f" raw_mismatches={raw_mismatches}"
+                        if canary_excluded else ""
+                    )
                     detail = (
                         f"capability={capability} content mismatch detected "
                         f"(missing-from-dest={len(added)} "
                         f"extra-in-dest={len(removed)} content-changed={len(modified)} "
-                        f"elapsed_s={elapsed:.0f} paths={detail_paths})"
+                        f"elapsed_s={elapsed:.0f}{canary_note} paths={detail_paths})"
                     )
         logger.info(f"Integrity audit ({scope}) {status}: {detail}")
         return {
@@ -304,7 +344,18 @@ def _run_rclone_check(
             # genuinely unknown — the checker emits no byte accounting.
             "files_checked": files_checked, "bytes_checked": None,
             "mismatches": mismatches, "missing": added, "extra": removed,
-            "errors": errors,
+            "modified": modified, "errors": errors,
+            # Phase-3 evidence integrity: the verdict fields above are
+            # EFFECTIVE (canary-filtered). These are the RAW pre-filter
+            # results rclone actually reported, plus the control-plane
+            # subset removed from the verdict. Raw evidence is ADDITIVE
+            # here and is never replaced by the filtered result.
+            "raw_missing": len(raw_added),
+            "raw_extra": len(raw_removed),
+            "raw_changed": len(raw_modified),
+            "raw_mismatches": raw_mismatches,
+            "canary_excluded": len(canary_excluded),
+            "canary_excluded_paths": canary_excluded[:_MAX_DETAIL_PATHS],
             "detail": detail, "elapsed_s": round(elapsed, 1),
         }
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -314,7 +365,13 @@ def _run_rclone_check(
             "capability": CAPABILITY_HASH_LOCAL,
             "termination": "abnormal",
             "files_checked": None, "bytes_checked": None, "mismatches": -1,
-            "missing": [], "extra": [],
+            "missing": [], "extra": [], "modified": [],
+            # Phase-3 schema uniformity: the raw/canary evidence keys exist
+            # on EVERY return path (empty here — the check never produced a
+            # parse), so consumers never need to guard for a missing key.
+            "raw_missing": 0, "raw_extra": 0, "raw_changed": 0,
+            "raw_mismatches": 0, "canary_excluded": 0,
+            "canary_excluded_paths": [],
             "detail": f"audit execution failed: {e}", "elapsed_s": 0.0,
         }
     finally:
@@ -339,10 +396,11 @@ def audit_lan(
     yield VERIFIED. UNC destinations (\\\\server\\share) work through the
     local backend like any other path.
 
-    F-T4-1: the dest-side mount sentinel `.AAM_TARGET_MOUNTED`
-    (preflight-required, /XF-excluded from every transfer) is filtered
-    from the dest-extra set before the verdict — it is operational
-    layout, not backup data. A clean mirror therefore reaches VERIFIED.
+    F-T4-1: the mount sentinel `.AAM_TARGET_MOUNTED`
+    (preflight-required, /XF-excluded from every transfer at any depth)
+    is filtered by exact basename from both sides before the verdict —
+    it is operational layout, not backup data. A clean mirror therefore
+    reaches VERIFIED.
     """
     scope = "full" if not scope_prefixes else f"shard:{','.join(sorted(scope_prefixes))}"
     extra = None
