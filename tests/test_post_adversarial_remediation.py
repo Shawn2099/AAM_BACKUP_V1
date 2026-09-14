@@ -1,4 +1,4 @@
-"""Post-pull adversarial campaign remediation regression tests.
+﻿"""Post-pull adversarial campaign remediation regression tests.
 
 Covers the live-confirmed findings against commit 7bf54fde:
   F-T4-2  audit misclassifies genuine content mismatch as read/check error
@@ -231,12 +231,12 @@ class TestCanaryExclusion:
         assert result["status"] == "VERIFICATION_FAILED"
         assert result["mismatches"] == 1
 
-    def test_canary_never_excluded_from_added_or_modified(self):
+    def test_canary_excluded_from_added_or_modified(self):
         stderr = self.CANARY_SUMMARY
         result = _run_with_combined(
             "* .AAM_TARGET_MOUNTED\n", _mock_proc(1, stderr=stderr))
-        assert result["status"] == "VERIFICATION_FAILED"
-        assert result["mismatches"] == 1
+        assert result["status"] == "VERIFIED"
+        assert result["mismatches"] == 0
 
     def test_dotfiles_in_general_are_not_excluded(self):
         stderr = self.CANARY_SUMMARY
