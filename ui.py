@@ -15,7 +15,7 @@ import secrets
 import shutil
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pendulum
@@ -193,7 +193,9 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
 
     Checks both RUNNING and PENDING states — a PENDING run means
     it's queued behind the concurrency limit and will execute when the slot opens.
-    Future SCHEDULED runs are ignored as they are not currently active.
+    SCHEDULED runs are fetched for inspection: future ones are ignored,
+    but due-now SCHEDULED runs are counted as active to prevent double-click
+    duplicates.
 
     H3 tri-state contract:
         True / False  — Prefect answered; result is authoritative.
@@ -214,7 +216,7 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
                 flow_run_filter=FlowRunFilter(
                     state=FlowRunFilterState(
                         type=FlowRunFilterStateType(
-                            any_=[StateType.RUNNING, StateType.PENDING]
+                            any_=[StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]
                         )
                     )
                 ),
@@ -226,8 +228,32 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
     for run in runs:
         tags = run.tags or []
         parameters = run.parameters or {}
-        if pipeline in tags or parameters.get("mode") == pipeline:
+        # Exclude read-only integrity audits from hijacking backup status
+        if "integrity" in tags:
+            continue
+        run_mode = parameters.get("mode", "")
+        if not (pipeline in tags or run_mode == pipeline or run_mode == "all"):
+            continue
+        state = getattr(run, "state", None)
+        state_type = getattr(state, "type", None) or getattr(run, "state_type", None)
+        if state_type in (StateType.RUNNING, StateType.PENDING):
             return True
+        if state_type == StateType.SCHEDULED:
+            nxt = getattr(run, "next_scheduled_start_time", None)
+            if nxt is None:
+                return True
+            try:
+                now = datetime.now(timezone.utc)
+                nxt_dt = nxt if nxt.tzinfo else nxt.replace(tzinfo=timezone.utc)
+                if nxt_dt <= now + timedelta(seconds=60):
+                    return True
+            except Exception:
+                return True
+            continue
+        # Fail-closed (H3): an unrecognized/missing state on a matching run
+        # must not read as idle — refusing a trigger is safe, a duplicate
+        # backup is not.
+        return True
     return False
 
 
@@ -273,6 +299,9 @@ async def _is_verify_running() -> bool | None:
             except Exception:
                 return True
             continue
+        # Fail-closed (H3): an unrecognized/missing state on a matching run
+        # must not read as idle — refusing a trigger is safe, a duplicate
+        # audit is not.
         return True
     return False
 
@@ -618,6 +647,7 @@ async def trigger_verify(mode: str, request: Request):
         flow_run = await arun_deployment(
             name="integrity-audit/integrity-audit",
             parameters={"mode": mode},
+            tags=["integrity"],
         )
     except Exception as e:
         logger.error(f"Manual verification trigger failed: {e}")
