@@ -259,6 +259,52 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
     return False
 
 
+async def _is_verify_running() -> bool | None:
+    """Check if an integrity-audit flow run is active (running or pending).
+
+    Mirrors _prefect_has_active_run but matches the read-only audit runs
+    (``"integrity"`` tag) that _is_running deliberately skips. Tri-state:
+    True / False / None (Prefect unreachable — callers fail closed).
+    """
+    try:
+        async with get_client() as client:
+            runs = await client.read_flow_runs(
+                flow_run_filter=FlowRunFilter(
+                    state=FlowRunFilterState(
+                        type=FlowRunFilterStateType(
+                            any_=[StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]
+                        )
+                    )
+                ),
+                limit=200,
+            )
+    except Exception as e:
+        logger.error(f"Failed to query Prefect API: {e}")
+        return None
+    for run in runs:
+        tags = run.tags or []
+        if "integrity" not in tags:
+            continue
+        state = getattr(run, "state", None)
+        state_type = getattr(state, "type", None) or getattr(run, "state_type", None)
+        if state_type in (StateType.RUNNING, StateType.PENDING):
+            return True
+        if state_type == StateType.SCHEDULED:
+            nxt = getattr(run, "next_scheduled_start_time", None)
+            if nxt is None:
+                return True
+            try:
+                now = datetime.now(timezone.utc)
+                nxt_dt = nxt if nxt.tzinfo else nxt.replace(tzinfo=timezone.utc)
+                if nxt_dt <= now + timedelta(seconds=60):
+                    return True
+            except Exception:
+                return True
+            continue
+        return True
+    return False
+
+
 def _run_state_fields(state: bool | None) -> dict:
     """JSON fields for one pipeline's activity state (H3).
 
@@ -298,7 +344,7 @@ def _trigger_timeout(request: Request) -> float:
     return TRIGGER_WAIT_SECONDS
 
 
-def _trigger_result(label: str, flow_run) -> JSONResponse:
+def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
     run_id = str(flow_run.id)
     state = getattr(flow_run, "state", None)
     state_type = getattr(state, "type", None)
@@ -307,23 +353,23 @@ def _trigger_result(label: str, flow_run) -> JSONResponse:
             return JSONResponse({
                 "status": "completed",
                 "flow_run_id": run_id,
-                "detail": f"{label} backup completed (flow run {run_id}).",
+                "detail": f"{label} {noun} completed (flow run {run_id}).",
             })
         if state_type in (StateType.CANCELLED, StateType.CANCELLING):
             return JSONResponse({
                 "status": "cancelled",
                 "flow_run_id": run_id,
-                "detail": f"{label} backup was cancelled (flow run {run_id}).",
+                "detail": f"{label} {noun} was cancelled (flow run {run_id}).",
             }, status_code=409)
         return JSONResponse({
             "status": "failed",
             "flow_run_id": run_id,
-            "detail": f"{label} backup run {state.name if state else 'failed'} (flow run {run_id}).",
+            "detail": f"{label} {noun} run {state.name if state else 'failed'} (flow run {run_id}).",
         }, status_code=500)
     return JSONResponse({
         "status": "running",
         "flow_run_id": run_id,
-        "detail": f"{label} backup started (flow run {run_id}).",
+        "detail": f"{label} {noun} started (flow run {run_id}).",
     }, status_code=202)
 
 
@@ -609,6 +655,64 @@ async def trigger_lan(request: Request):
             status_code=500,
         )
     return _trigger_result("LAN", flow_run)
+
+
+# ── Verification trigger (read-only integrity audit) ─────────
+# Exposes the scheduled integrity-audit deployment on demand. The audit
+# never modifies source or destination; it records integrity_audits rows
+# and alerts on divergence. Refuses while a backup is active (the audit
+# takes the same backup lock and would queue behind it) or while another
+# audit is already running.
+
+
+@app.post("/trigger/verify/{mode}")
+async def trigger_verify(mode: str, request: Request):
+    _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    mode = mode.lower()
+    if mode not in ("lan", "cloud", "all"):
+        raise HTTPException(status_code=400, detail=f"Invalid mode '{mode}'. Must be one of: lan, cloud, all.")
+    cfg = _cfg()
+    if mode == "lan" and not cfg.lan.enabled:
+        return JSONResponse({"status": "disabled", "detail": "LAN leg is disabled in configuration; verification not started."}, status_code=409)
+    if mode == "cloud" and not cfg.cloud.enabled:
+        return JSONResponse({"status": "disabled", "detail": "Cloud leg is disabled in configuration; verification not started."}, status_code=409)
+    if mode == "all" and not (cfg.lan.enabled or cfg.cloud.enabled):
+        return JSONResponse({"status": "disabled", "detail": "Both legs are disabled in configuration; verification not started."}, status_code=409)
+    for leg in ("lan", "cloud"):
+        running = await _is_running(leg)
+        if running is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+            )
+        if running:
+            return JSONResponse({"status": "already_running", "detail": "A backup is already in progress; verification refused to avoid lock contention."}, status_code=400)
+    verifying = await _is_verify_running()
+    if verifying is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+        )
+    if verifying:
+        return JSONResponse({"status": "already_running", "detail": "A verification audit is already in progress."}, status_code=400)
+    try:
+        flow_run = await arun_deployment(
+            name="integrity-audit/integrity-audit",
+            parameters={"mode": mode},
+            timeout=_trigger_timeout(request),
+        )
+    except Exception as e:
+        logger.error(f"Manual verification trigger failed: {e}")
+        return JSONResponse(
+            {"status": "trigger_failed",
+             "detail": f"Could not start the verification run: {e}"},
+            status_code=500,
+        )
+    label = {"lan": "LAN", "cloud": "Cloud", "all": "Full"}[mode]
+    return _trigger_result(label, flow_run, noun="verification")
 
 
 # ── Report endpoints ────────────────────────────────────────
