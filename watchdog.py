@@ -53,10 +53,10 @@ previous crash do not prevent restarts indefinitely.
 Zero new dependencies: httpx and loguru are already project requirements.
 """
 
+import contextlib
 import subprocess
 import sys
 import time
-import contextlib
 from pathlib import Path
 
 from loguru import logger
@@ -306,8 +306,8 @@ def _stop_service(service: str) -> None:
 def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
     """Send an alert if watchdog deferrals hit their cap on a live lock owner."""
     try:
+        from core.report import send_failure_alert
         from models.config import CONFIG_PATH, load_config
-        from core.notifications import send_failure_alert
 
         cfg = load_config(CONFIG_PATH)
         send_failure_alert(
@@ -317,7 +317,7 @@ def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
             {"mode": "watchdog", "status": "LIVE_LOCK_CAP_EXCEEDED", "pid": pid},
         )
     except Exception as e:
-        logger.debug(f"Watchdog alert delivery skipped/failed: {e}")
+        logger.warning(f"Watchdog alert delivery skipped/failed: {e}")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -448,8 +448,21 @@ def main() -> None:
                         f"NOTE: the zombie process belongs to {AGENT_SERVICE}, not "
                         f"{WATCHED_SERVICE} - manual kill may still be required."
                     )
-                    with contextlib.suppress(OSError):
-                        BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                    try:
+                        from core.process import read_lock_alive as _read_lock
+                        _alive, _pid = _read_lock(BACKUP_LOCK_PATH)
+                    except Exception:
+                        _alive, _pid = False, None
+                    if _pid is not None and not _alive:
+                        # Definitely-dead owner only. UNKNOWN (None/unreadable)
+                        # fails closed — never blindly delete.
+                        with contextlib.suppress(OSError):
+                            BACKUP_LOCK_PATH.unlink(missing_ok=True)
+                    else:
+                        logger.warning(
+                            "Transfer-cap reached but lock owner is UNKNOWN or live — "
+                            "leaving lock in place (fail-closed)."
+                        )
                     transfer_deferrals = 0
                     # H4: fall straight through to the restart logic below — the
                     # old code entered the lock branch using the stale pre-unlink

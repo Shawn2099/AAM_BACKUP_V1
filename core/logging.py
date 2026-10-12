@@ -19,10 +19,13 @@ def configure(log_dir: str | Path, log_retention_days: int = 30) -> None:
         log_retention_days: Days before log files are auto-deleted.
                             Override via config.maintenance.log_retention_days.
     """
+    global _bridge_configured
+
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     logger.remove()
+    _bridge_configured = False
 
     logger.add(
         sys.stderr,

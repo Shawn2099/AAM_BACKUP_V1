@@ -193,9 +193,7 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
 
     Checks both RUNNING and PENDING states — a PENDING run means
     it's queued behind the concurrency limit and will execute when the slot opens.
-    SCHEDULED runs are fetched for inspection: future ones are ignored,
-    but due-now SCHEDULED runs are counted as active to prevent double-click
-    duplicates.
+    Future SCHEDULED runs are ignored as they are not currently active.
 
     H3 tri-state contract:
         True / False  — Prefect answered; result is authoritative.
@@ -239,6 +237,10 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
         if state_type in (StateType.RUNNING, StateType.PENDING):
             return True
         if state_type == StateType.SCHEDULED:
+            # F2: a just-triggered run is SCHEDULED until the runner picks it
+            # up (~poll frequency). Count only due-now runs as active so a
+            # double-click cannot create a duplicate backup, while future
+            # cron-scheduled runs never block manual triggers.
             nxt = getattr(run, "next_scheduled_start_time", None)
             if nxt is None:
                 return True
@@ -260,7 +262,7 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
 async def _is_verify_running() -> bool | None:
     """Check if an integrity-audit flow run is active (running or pending).
 
-    Mirrors _is_running but matches the read-only audit runs
+    Mirrors _prefect_has_active_run but matches the read-only audit runs
     (``"integrity"`` tag) that _is_running deliberately skips. Tri-state:
     True / False / None (Prefect unreachable — callers fail closed).
     """
@@ -299,9 +301,6 @@ async def _is_verify_running() -> bool | None:
             except Exception:
                 return True
             continue
-        # Fail-closed (H3): an unrecognized/missing state on a matching run
-        # must not read as idle — refusing a trigger is safe, a duplicate
-        # audit is not.
         return True
     return False
 
@@ -325,6 +324,53 @@ def _run_state_fields(state: bool | None) -> dict:
 # ── Trigger pipeline (via Prefect deployment API) ────────────
 # (G15: the endpoints now await arun_deployment inline and surface failures
 # as HTTP 500 — the old fire-and-forget _run_in_background helper is gone.)
+#
+# F2: bounded synchronous wait. arun_deployment is called with a finite
+# timeout (TRIGGER_WAIT_SECONDS) so the HTTP response never hangs for the
+# whole backup (50s-hours) and proxies never 504. Deployment-lookup errors
+# still raise before run creation (G15 preserved: timeout=0/180 only bounds
+# the post-creation poll). The returned FlowRun is mapped truthfully:
+# terminal states reported as completed/failed/cancelled; a still-running
+# run after the bound returns 202 + authoritative flow_run_id and keeps
+# running server-side (arun_deployment never cancels on timeout).
+
+TRIGGER_WAIT_SECONDS = 180
+
+
+def _trigger_timeout(request: Request) -> float:
+    wait = request.query_params.get("wait", "true").lower()
+    if wait in ("false", "0", "no", "off"):
+        return 0
+    return TRIGGER_WAIT_SECONDS
+
+
+def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
+    run_id = str(flow_run.id)
+    state = getattr(flow_run, "state", None)
+    state_type = getattr(state, "type", None)
+    if state is not None and state.is_final():
+        if state_type == StateType.COMPLETED:
+            return JSONResponse({
+                "status": "completed",
+                "flow_run_id": run_id,
+                "detail": f"{label} {noun} completed (flow run {run_id}).",
+            })
+        if state_type in (StateType.CANCELLED, StateType.CANCELLING):
+            return JSONResponse({
+                "status": "cancelled",
+                "flow_run_id": run_id,
+                "detail": f"{label} {noun} was cancelled (flow run {run_id}).",
+            }, status_code=409)
+        return JSONResponse({
+            "status": "failed",
+            "flow_run_id": run_id,
+            "detail": f"{label} {noun} run {state.name if state else 'failed'} (flow run {run_id}).",
+        }, status_code=500)
+    return JSONResponse({
+        "status": "running",
+        "flow_run_id": run_id,
+        "detail": f"{label} {noun} started (flow run {run_id}).",
+    }, status_code=202)
 
 
 # ── API endpoints ────────────────────────────────────────────
@@ -444,6 +490,8 @@ async def dashboard(request: Request, status: str = ""):
         "auth_enabled": _auth_enabled(),
         "cloud_schedule": cloud_schedule,
         "lan_schedule": lan_schedule,
+        "cloud_enabled": cfg.cloud.enabled,
+        "lan_enabled": cfg.lan.enabled,
     }
     try:
         # Starlette >= 0.28
@@ -498,6 +546,7 @@ async def status(request: Request):
         },
         "cloud": {
             **cloud_fields,
+            "enabled": cfg.cloud.enabled,
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
             "last_run_formatted": (cloud_last_run["started_at"] or "-")[:19].replace("T", " ") if cloud_last_run else "No data",
@@ -509,6 +558,7 @@ async def status(request: Request):
         },
         "lan": {
             **lan_fields,
+            "enabled": cfg.lan.enabled,
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
             "last_run_formatted": (lan_last_run["started_at"] or "-")[:19].replace("T", " ") if lan_last_run else "No data",
@@ -544,6 +594,8 @@ async def trigger_cloud(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    if not _cfg().cloud.enabled:
+        return JSONResponse({"status": "disabled", "detail": "Cloud backup leg is disabled in configuration; not started."}, status_code=409)
     cloud_running = await _is_running("cloud")
     if cloud_running is None:
         # H3: fail-CLOSED. The old code treated an unreachable API as
@@ -558,8 +610,12 @@ async def trigger_cloud(request: Request):
     # old code returned 200 via background_tasks BEFORE arun_deployment
     # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
     # API error showed as "triggered successfully" while nothing ran.
+    # F2: bound the post-creation wait (?wait=false returns instantly).
     try:
-        flow_run = await arun_deployment(name="aam-backup/backup-cloud")
+        flow_run = await arun_deployment(
+            name="aam-backup/backup-cloud",
+            timeout=_trigger_timeout(request),
+        )
     except Exception as e:
         logger.error(f"Manual cloud trigger failed: {e}")
         return JSONResponse(
@@ -567,10 +623,7 @@ async def trigger_cloud(request: Request):
              "detail": f"Could not start the cloud backup run: {e}"},
             status_code=500,
         )
-    return JSONResponse({
-        "status": "triggered",
-        "detail": f"Cloud backup started (flow run {flow_run.id}).",
-    })
+    return _trigger_result("Cloud", flow_run)
 
 
 @app.post("/trigger/lan")
@@ -579,6 +632,8 @@ async def trigger_lan(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    if not _cfg().lan.enabled:
+        return JSONResponse({"status": "disabled", "detail": "LAN backup leg is disabled in configuration; not started."}, status_code=409)
     lan_running = await _is_running("lan")
     if lan_running is None:
         raise HTTPException(
@@ -588,7 +643,10 @@ async def trigger_lan(request: Request):
     if lan_running:
         return JSONResponse({"status": "already_running", "detail": "LAN backup is already in progress."}, status_code=400)
     try:
-        flow_run = await arun_deployment(name="aam-backup/backup-lan")
+        flow_run = await arun_deployment(
+            name="aam-backup/backup-lan",
+            timeout=_trigger_timeout(request),
+        )
     except Exception as e:
         logger.error(f"Manual LAN trigger failed: {e}")
         return JSONResponse(
@@ -596,10 +654,7 @@ async def trigger_lan(request: Request):
              "detail": f"Could not start the LAN backup run: {e}"},
             status_code=500,
         )
-    return JSONResponse({
-        "status": "triggered",
-        "detail": f"LAN backup started (flow run {flow_run.id}).",
-    })
+    return _trigger_result("LAN", flow_run)
 
 
 # ── Verification trigger (read-only integrity audit) ─────────
@@ -647,7 +702,7 @@ async def trigger_verify(mode: str, request: Request):
         flow_run = await arun_deployment(
             name="integrity-audit/integrity-audit",
             parameters={"mode": mode},
-            tags=["integrity"],
+            timeout=_trigger_timeout(request),
         )
     except Exception as e:
         logger.error(f"Manual verification trigger failed: {e}")
@@ -657,10 +712,7 @@ async def trigger_verify(mode: str, request: Request):
             status_code=500,
         )
     label = {"lan": "LAN", "cloud": "Cloud", "all": "Full"}[mode]
-    return JSONResponse({
-        "status": "triggered",
-        "detail": f"{label} verification started (flow run {flow_run.id}).",
-    })
+    return _trigger_result(label, flow_run, noun="verification")
 
 
 # ── Report endpoints ────────────────────────────────────────

@@ -16,6 +16,7 @@
     {{ flash_html | safe }}
     {% endif %}
 </div>
+<div id="session-banner" style="display:none;background:#7f1d1d;color:#fecaca;padding:0.75rem 1rem;border-radius:0.5rem;margin-bottom:1rem;font-size:0.875rem">Session expired — status unavailable. Refresh the page and sign in again to view current backup state.</div>
 <div class="stats">
     <div class="stat"><div class="num" id="stat-lan-files">...</div><div class="label">Files on NAS</div></div>
     <div class="stat"><div class="num" id="stat-cloud-files">...</div><div class="label">Files on Cloud</div></div>
@@ -28,9 +29,14 @@
         <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last backup: Loading...</p>
         <p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p>
         <p style="font-size:0.75rem;color:#6b7280" id="cloud-last-success">Last success: Loading...</p>
+        <p style="font-size:0.75rem;color:#9ca3af" id="integrity-cloud">Integrity: Loading...</p>
+        {% if not cloud_enabled %}
+        <p style="font-size:0.875rem;color:#fbbf24;margin-top:0.5rem">Cloud backup is disabled in configuration — manual runs are rejected by the server.</p>
+        {% else %}
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'cloud')">
             <button class="btn-trigger btn-cloud" id="btn-cloud" disabled>Loading...</button>
         </form>
+        {% endif %}
     </div>
     <div class="card unknown" id="card-lan">
         <h2>LAN Backup <span class="status-badge unknown" id="badge-lan">Loading...</span></h2>
@@ -38,9 +44,14 @@
         <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last backup: Loading...</p>
         <p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p>
         <p style="font-size:0.75rem;color:#6b7280" id="lan-last-success">Last success: Loading...</p>
+        <p style="font-size:0.75rem;color:#9ca3af" id="integrity-lan">Integrity: Loading...</p>
+        {% if not lan_enabled %}
+        <p style="font-size:0.875rem;color:#fbbf24;margin-top:0.5rem">LAN backup is disabled in configuration — manual runs are rejected by the server.</p>
+        {% else %}
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'lan')">
             <button class="btn-trigger btn-lan" id="btn-lan" disabled>Loading...</button>
         </form>
+        {% endif %}
     </div>
 </div>
 <div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">

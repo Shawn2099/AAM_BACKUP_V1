@@ -31,7 +31,7 @@ class PathsConfig(BaseModel):
     )
     database_path: str = Field(default="", description="Path to SQLite manifest database (auto-derived from runtime_dir if empty)")
     log_directory: str = Field(default="", description="Log directory (auto-derived from runtime_dir if empty)")
-    gcs_key_path: str = Field(..., description="Path to GCS service account JSON key file")
+    gcs_key_path: str = Field(default="", description="Path to GCS service account JSON key file (required when cloud is enabled; leave empty for LAN-only)")
 
     @model_validator(mode="after")
     def derive_runtime_paths(self) -> "PathsConfig":
@@ -71,8 +71,8 @@ class PathsConfig(BaseModel):
     @field_validator("gcs_key_path")
     @classmethod
     def gcs_key_exists(cls, v: str) -> str:
-        if not v:
-            raise ValueError("gcs_key_path must not be empty when cloud is enabled")
+        # LAN-only deployments leave this empty; cloud-enabled enforcement
+        # lives in AppConfig.cross_field_validation (fail-closed there).
         return v
 
 
@@ -100,6 +100,8 @@ class LanConfig(BaseModel):
 
 
 class WolConfig(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     enabled: bool = True
     # F11: empty default + conditional validation below. The MAC is only
     # meaningful when WoL is enabled; requiring it for disabled pipelines made
@@ -196,23 +198,23 @@ class CloudConfig(BaseModel):
     # F11: no real-looking default. An empty bucket is only valid when cloud
     # is disabled; an enabled cloud backup must name its bucket explicitly.
     bucket: str = ""
-    project_number: str = "920173882190"
+    project_number: str = ""
     location: str = "asia-south1"
     storage_class: str = "STANDARD"
     bandwidth_limit: str = "10M"
     retry_count: int = Field(default=3, ge=1, le=10)
-    subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
+    subprocess_timeout_seconds: int = Field(default=18000, ge=3600)
     max_attempts: int = Field(default=3, ge=1, le=10, description="Flow-level retry attempts for cloud backup orchestration")
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
-    verify_timeout_seconds: int = Field(default=14400, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Increase to 14400+ for large datasets on HDD.")
+    verify_timeout_seconds: int = Field(default=18000, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
     # F7: listing timeouts sized for the target scale (200GB / ~1M files, growing
     # to ~2.5M by yr-5). Measured order-of-magnitude: rclone size over GCS takes
     # ~40-150s at 1M objects, the lsjson manifest ~2-5 min, the diff ~3-8 min —
     # the old defaults (30/300/600) were tuned for a demo-sized bucket and
     # would time out (and misreport "0 files") at the real scale.
-    diff_timeout_seconds: int = Field(default=1800, ge=30, le=7200, description="Timeout for rclone check --combined diff report (seconds)")
-    manifest_timeout_seconds: int = Field(default=900, ge=30, le=7200, description="Timeout for rclone lsjson manifest listing (seconds)")
+    diff_timeout_seconds: int = Field(default=18000, ge=30, le=86400, description="Timeout for rclone check --combined diff report (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
+    manifest_timeout_seconds: int = Field(default=18000, ge=30, le=86400, description="Timeout for rclone lsjson manifest listing (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     cloud_size_timeout_seconds: int = Field(default=300, ge=10, le=3600, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
@@ -233,6 +235,12 @@ class CloudConfig(BaseModel):
             raise ValueError(
                 "cloud.bucket is required when cloud.enabled is true — "
                 f"got {self.bucket!r}. Set it to the real GCS bucket name."
+            )
+        if self.enabled and not self.project_number.strip():
+            raise ValueError(
+                "cloud.project_number is required when cloud.enabled is true — "
+                "got empty. Set it to the real GCP project number; "
+                "LAN-only deployments should set cloud.enabled=false instead."
             )
         return self
 

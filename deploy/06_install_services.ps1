@@ -172,7 +172,11 @@ Write-Host "[setup] Installing $SVC_SERVER..."
 & $NSSM set $SVC_SERVER AppStdoutCreationDisposition 4
 & $NSSM set $SVC_SERVER AppStderrCreationDisposition 4
 & $NSSM set $SVC_SERVER AppRotateFiles 1
-& $NSSM set $SVC_SERVER AppRotateOnline 1
+# F4: online rotation DISABLED. NSSM's online-rotation pipe-reader thread
+# blocks service stop (STOP_PENDING with children already exited; reproduced
+# on the isolated rig with the identical nssm binary + config pattern).
+# Restart-time rotation (AppRotateFiles + AppRotateBytes) is retained.
+& $NSSM set $SVC_SERVER AppRotateOnline 0
 & $NSSM set $SVC_SERVER AppRotateBytes 10485760
 
 # Graceful shutdown timeouts
@@ -217,13 +221,21 @@ Write-Host "[setup] Installing $SVC_AGENT..."
 & $NSSM set $SVC_AGENT AppStdoutCreationDisposition 4
 & $NSSM set $SVC_AGENT AppStderrCreationDisposition 4
 & $NSSM set $SVC_AGENT AppRotateFiles 1
-& $NSSM set $SVC_AGENT AppRotateOnline 1
+# F4: online rotation DISABLED (same STOP_PENDING root cause as above).
+# Restart-time rotation retained.
+& $NSSM set $SVC_AGENT AppRotateOnline 0
 & $NSSM set $SVC_AGENT AppRotateBytes 10485760
 
-# Graceful shutdown (reduced to 15s to bypass Prefect Ctrl+C hang)
-& $NSSM set $SVC_AGENT AppStopMethodConsole 15000
-& $NSSM set $SVC_AGENT AppStopMethodWindow 15000
-& $NSSM set $SVC_AGENT AppStopMethodThreads 15000
+# Graceful shutdown (F4): up to 180s maximum grace via the Console (Ctrl+C)
+# stop method so Prefect serve() can cancel in-flight runs and the flow can
+# release backup.lock. Window/Threads are no-ops for headless Session 0
+# console daemons, so they are skipped (Skip=6: 2=Window + 4=Threads).
+# The final TerminateProcess fallback is deliberately retained (bit 8 NOT
+# skipped): clean exits stop immediately, stuck trees are still reaped.
+& $NSSM set $SVC_AGENT AppStopMethodConsole 180000
+& $NSSM set $SVC_AGENT AppStopMethodWindow 0
+& $NSSM set $SVC_AGENT AppStopMethodThreads 0
+& $NSSM set $SVC_AGENT AppStopMethodSkip 6
 
 & $NSSM set $SVC_AGENT AppRestartDelay 30000
 & $NSSM set $SVC_AGENT AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0"
@@ -252,7 +264,9 @@ Write-Host "[setup] Installing $SVC_WATCHDOG..."
 & $NSSM set $SVC_WATCHDOG AppStdoutCreationDisposition 4
 & $NSSM set $SVC_WATCHDOG AppStderrCreationDisposition 4
 & $NSSM set $SVC_WATCHDOG AppRotateFiles 1
-& $NSSM set $SVC_WATCHDOG AppRotateOnline 1
+# F4: online rotation DISABLED (same STOP_PENDING root cause as above).
+# Restart-time rotation retained.
+& $NSSM set $SVC_WATCHDOG AppRotateOnline 0
 & $NSSM set $SVC_WATCHDOG AppRotateBytes 10485760
 
 # Graceful shutdown

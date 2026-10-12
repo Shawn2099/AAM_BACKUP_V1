@@ -266,15 +266,15 @@ def classify_exit_code(code: int) -> str:
         Bit 4 (16): Serious error. Robocopy did not copy any files. Usage error
                     or insufficient access privileges on source/destination.
 
-    Classification mapping:
-        Codes 0–3   → LAN_COMPLETE  (bits 0–1 only: success, extras — no anomaly)
-        Codes 4–7   → LAN_PARTIAL   (bit 2 set: mismatches/extras — sync completed,
-                                     but anomalies present. Non-fatal. Investigate later.)
-        Codes 8–15  → LAN_PARTIAL   (bit 3 set: copy errors — sync incomplete. Fatal
-                                     for affected files. Needs immediate attention.)
+    Classification mapping (aligned with decide_lan_result, which is
+    authoritative wherever a job log exists — this helper is only a
+    no-log fallback, e.g. FY rollover when run_lan_sync yields no status):
+        Codes 0–7   → LAN_COMPLETE  (no copy errors; bit-2 mismatches/extras
+                                     with a finished pass are not failures)
+        Codes 8–15  → LAN_PARTIAL   (bit 3 set: copy errors — sync incomplete.
+                                     Fatal for affected files. Needs attention.)
         Code 16+    → LAN_FAILED    (bit 4 set: fatal process error — nothing copied.)
 
-    Note: Codes 4–7 and 8–15 both map to LAN_PARTIAL but have different severity.
     Callers MUST use `result.returncode & 8` (not `status`) to distinguish between
     anomalies and copy errors. See run_lan_sync() for the enforcement of this contract.
 
@@ -284,11 +284,8 @@ def classify_exit_code(code: int) -> str:
         return "LAN_FAILED"
     if code & 8:
         return "LAN_PARTIAL"
-    if code in (0, 1, 2, 3):
+    if 0 <= code <= 7:
         return "LAN_COMPLETE"
-    if 4 <= code <= 7:
-        # Bit 2 set: mismatches or extras flagged — sync completed with anomalies
-        return "LAN_PARTIAL"
     # Negative codes (-1 timeout sentinel) and any unexpected values → failed
     return "LAN_FAILED"
 
