@@ -324,11 +324,11 @@ class TestBackupMaintenance:
 
         backup.fn("config.yaml", "all")
 
-        mock_db_cls.assert_called_with(
-            "/tmp/test.db",
-            busy_timeout_ms=45000,
-            vacuum_freelist_threshold=12345,
-            synchronous="full",
+        # Maintenance opens the DB through the single config-driven factory
+        # (ManifestDB.from_config reads busy_timeout/vacuum/synchronous).
+        mock_db_cls.from_config.assert_called_with(config)
+        mock_db_cls.from_config.return_value.purge_old_runs.assert_called_once_with(
+            retention_days=30
         )
 
 
@@ -342,7 +342,7 @@ class TestWeeklyReportFlow:
     @patch("flow.ManifestDB")
     def test_calls_send_weekly_report(self, mock_db_cls, mock_log, mock_cfg):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
+        mock_db_cls.from_config.return_value = mock_db
         mock_config = MagicMock()
         mock_cfg.return_value = mock_config
         with patch("core.report.send_weekly_report") as mock_send:
@@ -357,7 +357,7 @@ class TestMonthlyReportFlow:
     @patch("flow.ManifestDB")
     def test_calls_send_monthly_report(self, mock_db_cls, mock_log, mock_cfg):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
+        mock_db_cls.from_config.return_value = mock_db
         mock_config = MagicMock()
         mock_cfg.return_value = mock_config
         with patch("core.report.send_monthly_report") as mock_send:

@@ -72,6 +72,7 @@ class TestBug01CloudRecordPostGate:
         mock_db_inst = MagicMock()
         mock_db_inst.get_cloud_synced_entries.return_value = {}
         mock_db.return_value = mock_db_inst
+        mock_db.from_config.return_value = mock_db_inst
 
         mock_sync.with_options.return_value.return_value = {"status": "CLOUD_COMPLETE", "exit_code": 0}
         # Verify reports 1 modified difference — evidence_ok fails!
@@ -103,6 +104,7 @@ class TestBug01CloudRecordPostGate:
         mock_db_inst = MagicMock()
         mock_db_inst.get_cloud_synced_entries.return_value = {}
         mock_db.return_value = mock_db_inst
+        mock_db.from_config.return_value = mock_db_inst
 
         mock_sync.with_options.return_value.return_value = {"status": "CLOUD_COMPLETE", "exit_code": 0}
         mock_verify.with_options.return_value.return_value = {
@@ -135,6 +137,7 @@ class TestBug02And03AuditOrchestration:
     ):
         mock_db_inst = MagicMock()
         mock_db.return_value = mock_db_inst
+        mock_db.from_config.return_value = mock_db_inst
         mock_audit_cloud.return_value = {
             "status": "VERIFIED", "scope": "cloud/full", "files_checked": 50,
             "bytes_checked": 1000, "mismatches": 0, "detail": "cloud verified",

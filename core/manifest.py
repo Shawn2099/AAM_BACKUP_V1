@@ -18,11 +18,18 @@ from core.time_utils import cutoff_iso, now_iso
 # to this value; pre-versioning databases run _migrate_legacy_schema once.
 SCHEMA_VERSION = 1
 
-DDL = """
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-PRAGMA foreign_keys=ON;
+# Per-connection pragmas. journal_mode=WAL is persistent (set once per file)
+# and is applied separately with a bounded retry: SQLite does not invoke the
+# busy handler for a journal-mode change, so concurrent first opens of a
+# fresh database could fail instantly with "database is locked".
+_CONNECTION_PRAGMAS = (
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA foreign_keys=ON",
+)
 
+# Schema DDL — executed inside BEGIN IMMEDIATE (which DOES honour the busy
+# timeout) so concurrent initialisations serialise instead of failing.
+DDL = """
 CREATE TABLE IF NOT EXISTS file_entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     relative_path   TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -135,32 +142,43 @@ class ManifestDB:
         self._lock = threading.Lock()
         self._conn = None
 
+    @classmethod
+    def from_config(cls, config) -> "ManifestDB":
+        """Open the manifest DB with every tunable taken from config.
+
+        Single construction path for production code (plan §5.4): no call
+        site may hand-copy busy_timeout / vacuum / synchronous settings.
+        """
+        m = config.maintenance
+        return cls(
+            config.paths.database_path,
+            busy_timeout_ms=m.sqlite_busy_timeout_ms,
+            vacuum_freelist_threshold=m.sqlite_vacuum_freelist_threshold,
+            synchronous=m.sqlite_synchronous,
+        )
+
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            # M-6: the busy handler must be active BEFORE the first statement.
+            # sqlite3.connect(timeout=) installs it at open time, and the
+            # PRAGMA below pins the same value; previously the DDL ran with
+            # SQLite's default 0 ms timeout and concurrent opens lost
+            # run_history rows ("database is locked" swallowed upstream).
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=self.busy_timeout_ms / 1000.0,
+                check_same_thread=False,
+            )
             conn.row_factory = sqlite3.Row
-            
-            # Clean up legacy duplicate run_id values before applying the UNIQUE index in DDL.
-            # Guarded by table existence check — avoids error on fresh databases.
+            conn.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
             try:
-                tables = {row[0] for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()}
-                if "run_history" in tables:
-                    conn.execute("""
-                        DELETE FROM run_history
-                        WHERE id NOT IN (
-                            SELECT MIN(id)
-                            FROM run_history
-                            GROUP BY run_id
-                        )
-                    """)
-                    conn.commit()
-            except Exception as e:
-                logger.warning(f"Pre-migration dedup skipped: {e}")
-
-            conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
-            conn.executescript(DDL)
+                self._retry_on_lock(lambda: conn.execute("PRAGMA journal_mode=WAL"))
+                for pragma in _CONNECTION_PRAGMAS:
+                    conn.execute(pragma)
+                self._retry_on_lock(lambda: self._apply_ddl(conn))
+            except BaseException:
+                conn.close()
+                raise
             # R4: DDL pins NORMAL as the safe default; an operator-chosen
             # "full" is applied on top so the toggle takes effect per open.
             if self.synchronous == "full":
@@ -201,6 +219,12 @@ class ManifestDB:
         last_exc: sqlite3.OperationalError | None = None
         for attempt in range(1, 4):
             try:
+                conn.execute("BEGIN IMMEDIATE")
+                # Re-check inside the write lock: another process may have
+                # migrated between our version read and BEGIN IMMEDIATE.
+                if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+                    conn.rollback()
+                    return
                 columns = {
                     row["name"]
                     for row in conn.execute(
@@ -208,16 +232,24 @@ class ManifestDB:
                     ).fetchall()
                 }
                 if "extended_metrics" not in columns:
-                    conn.execute("BEGIN IMMEDIATE")
                     conn.execute(
                         "ALTER TABLE run_history ADD COLUMN extended_metrics TEXT"
                     )
-                    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                    conn.commit()
-                else:
-                    # Column present but never stamped (legacy database).
-                    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                    conn.commit()
+                # Legacy tables may predate UNIQUE(run_id): drop duplicate
+                # run_ids (keep the first) and add the unique index that
+                # insert_run's ON CONFLICT(run_id) relies on. Runs once,
+                # under the version gate — never on every connection open.
+                if not self._run_id_is_unique(conn):
+                    conn.execute(
+                        "DELETE FROM run_history WHERE id NOT IN "
+                        "(SELECT MIN(id) FROM run_history GROUP BY run_id)"
+                    )
+                    conn.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS "
+                        "idx_run_history_run_id ON run_history(run_id)"
+                    )
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                conn.commit()
                 return
             except sqlite3.OperationalError as exc:
                 conn.rollback()
@@ -232,6 +264,53 @@ class ManifestDB:
         raise ManifestSchemaError(
             f"run_history schema migration failed: {last_exc}"
         ) from last_exc
+
+    def _retry_on_lock(self, operation):
+        """Run `operation`, retrying only on SQLITE_BUSY/locked errors.
+
+        Bounded by the configured busy timeout (tenacity, already a
+        dependency). Any other OperationalError propagates immediately.
+        """
+        from tenacity import (
+            retry,
+            retry_if_exception,
+            stop_after_delay,
+            wait_random_exponential,
+        )
+
+        def _is_lock_error(exc: BaseException) -> bool:
+            return isinstance(exc, sqlite3.OperationalError) and (
+                "locked" in str(exc).lower() or "busy" in str(exc).lower()
+            )
+
+        return retry(
+            retry=retry_if_exception(_is_lock_error),
+            stop=stop_after_delay(max(self.busy_timeout_ms / 1000.0, 1.0)),
+            wait=wait_random_exponential(multiplier=0.05, max=1.0),
+            reraise=True,
+        )(operation)()
+
+    @staticmethod
+    def _apply_ddl(conn: sqlite3.Connection) -> None:
+        """Create/verify the schema atomically under a RESERVED write lock."""
+        try:
+            conn.executescript(f"BEGIN IMMEDIATE;{DDL}COMMIT;")
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+    @staticmethod
+    def _run_id_is_unique(conn: sqlite3.Connection) -> bool:
+        """True if some UNIQUE index covers exactly run_history(run_id)."""
+        for idx in conn.execute("PRAGMA index_list(run_history)").fetchall():
+            if not idx["unique"]:
+                continue
+            cols = [r["name"] for r in conn.execute(
+                f"PRAGMA index_info('{idx['name']}')").fetchall()]
+            if cols == ["run_id"]:
+                return True
+        return False
 
     def close(self):
         with self._lock:

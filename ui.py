@@ -172,7 +172,7 @@ def get_db():
     with _CFG_LOCK:
         _cfg()  # ensure the config (and any DB eviction) is current first
         if _DB_INSTANCE is None:
-            _DB_INSTANCE = ManifestDB(_cfg().paths.database_path)
+            _DB_INSTANCE = ManifestDB.from_config(_cfg())
         return _DB_INSTANCE
 
 

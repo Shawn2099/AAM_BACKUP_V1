@@ -673,12 +673,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         )
 
         # Fetch database state before sync to calculate differential transfers
-        db = ManifestDB(
-            db_path,
-            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-            synchronous=config.maintenance.sqlite_synchronous,
-        )
+        db = ManifestDB.from_config(config)
         before_dict = {}
         try:
             before_dict = db.get_cloud_synced_entries()
@@ -1165,7 +1160,7 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     if not config.notifications.weekly_enabled:
         logger.info("Weekly backup report email is disabled in configuration - skipping")
         return
-    db = ManifestDB(config.paths.database_path)
+    db = ManifestDB.from_config(config)
     try:
         from core.report import send_weekly_report
         send_weekly_report(db, config.notifications, config.firm_name)
@@ -1185,7 +1180,7 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     if not config.notifications.monthly_enabled:
         logger.info("Monthly backup report email is disabled in configuration - skipping")
         return
-    db = ManifestDB(config.paths.database_path)
+    db = ManifestDB.from_config(config)
     try:
         from core.report import send_monthly_report
         send_monthly_report(db, config.notifications, config.firm_name)
@@ -1271,7 +1266,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         logger.debug(f"configure_prefect_bridge skipped: {e}")
 
     logger.info(f"AAM integrity audit starting - mode={mode}, firm={config.firm_name}")
-    db = ManifestDB(config.paths.database_path)
+    db = ManifestDB.from_config(config)
     excs = []
     try:
         with _backup_slot(config):
@@ -1448,12 +1443,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
 
         # ── Maintenance ──
         try:
-            db = ManifestDB(
-                config.paths.database_path,
-                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                synchronous=config.maintenance.sqlite_synchronous,
-            )
+            db = ManifestDB.from_config(config)
             db.purge_old_runs(retention_days=config.maintenance.db_retention_days)
             db.close()
         except Exception as e:
