@@ -285,10 +285,16 @@ class TestConditionalValidation:
 
 class TestScaleDefaults:
     def test_cloud_listing_timeouts(self):
+        """F7: listing timeouts sized for the target scale.
+
+        v1.1.3 raised manifest/diff from 900/1800 to the 5h policy (18000)
+        after the 15m/30m values proved too tight for the 1M-object bucket
+        (lsjson ~2-5 min, diff ~3-8 min at scale, growing to ~2.5M objects by
+        yr-5); cloud_size stays at 300 (rclone size returns in ~40-150s)."""
         c = CloudConfig(enabled=False)
         assert c.cloud_size_timeout_seconds == 300
-        assert c.manifest_timeout_seconds == 900
-        assert c.diff_timeout_seconds == 1800
+        assert c.manifest_timeout_seconds == 18000
+        assert c.diff_timeout_seconds == 18000
 
     def test_lan_dry_run_timeout(self):
         assert LanConfig().dry_run_timeout_seconds == 900

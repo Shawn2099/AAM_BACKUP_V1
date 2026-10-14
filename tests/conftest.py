@@ -1,14 +1,15 @@
 # tests/conftest.py
 import os
+from pathlib import Path
 
 import pytest
 
 os.environ["PREFECT_TEST_MODE"] = "1"
 
-    # BUG-10: Inject deploy\bin into PATH so bundled rclone.exe is discovered by tests
-    deploy_bin = Path(__file__).resolve().parent.parent / "deploy" / "bin"
-    if deploy_bin.exists() and str(deploy_bin) not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = f"{deploy_bin};{os.environ.get('PATH', '')}"
+# BUG-10: Inject deploy\bin into PATH so bundled rclone.exe is discovered by tests
+deploy_bin = Path(__file__).resolve().parent.parent / "deploy" / "bin"
+if deploy_bin.exists() and str(deploy_bin) not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = f"{deploy_bin};{os.environ.get('PATH', '')}"
 
 
 @pytest.fixture

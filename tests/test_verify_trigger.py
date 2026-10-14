@@ -86,15 +86,8 @@ def test_enabled_modes_proceed_with_mode_parameter(monkeypatch):
     monkeypatch.setattr(ui, "arun_deployment", fake_run)
     for mode in ("lan", "cloud", "all"):
         resp = asyncio.run(ui.trigger_verify(mode, _fake_request()))
-<<<<<<< HEAD
-        assert resp.status_code in (200, 202)
-        body = _body(resp)
-        assert body["status"] == "triggered"
-        assert "verify-run" in body["detail"]
-=======
         assert resp.status_code == 202
         assert _body(resp)["flow_run_id"] == "verify-run"
->>>>>>> origin/production
     assert all(name == "integrity-audit/integrity-audit" for name, _, _ in calls)
     assert [params["mode"] for _, params, _ in calls] == ["lan", "cloud", "all"]
 
@@ -136,7 +129,6 @@ def test_prefect_unreachable_fails_closed(monkeypatch):
         asyncio.run(ui.trigger_verify("lan", _fake_request()))
 
 
-<<<<<<< HEAD
 def test_trigger_creation_failure_is_500(monkeypatch):
     _patch_auth(monkeypatch)
     monkeypatch.setattr(ui, "_cfg", lambda: _fake_cfg(True, True))
@@ -149,7 +141,8 @@ def test_trigger_creation_failure_is_500(monkeypatch):
     resp = asyncio.run(ui.trigger_verify("cloud", _fake_request()))
     assert resp.status_code == 500
     assert _body(resp)["status"] == "trigger_failed"
-=======
+
+
 def test_wait_false_passes_zero_timeout(monkeypatch):
     _patch_auth(monkeypatch)
     monkeypatch.setattr(ui, "_cfg", lambda: _fake_cfg(True, True))
@@ -164,4 +157,3 @@ def test_wait_false_passes_zero_timeout(monkeypatch):
     resp = asyncio.run(ui.trigger_verify("cloud", _fake_request("wait=false")))
     assert resp.status_code == 202
     assert seen["timeout"] == 0
->>>>>>> origin/production

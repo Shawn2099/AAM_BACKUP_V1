@@ -3,9 +3,16 @@
 These tests run without any live hardware Robocopy or SMB network operations.
 """
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
+
+os.environ.setdefault("PREFECT_TEST_MODE", "1")
+os.environ.setdefault("PREFECT_API_URL", "")
+os.environ.setdefault("PREFECT_SERVER_ALLOW_EPHEMERAL_MODE", "1")
+
+from prefect.testing.utilities import prefect_test_harness
 
 from core.integrity import (
     _parse_combined_file,
@@ -138,8 +145,9 @@ class TestBug02And03AuditOrchestration:
         }
 
         cfg = _make_mock_config()
-        with patch("flow.load_config", return_value=cfg):
-            integrity_audit_flow(mode="all")
+        with prefect_test_harness():
+            with patch("flow.load_config", return_value=cfg):
+                integrity_audit_flow(mode="all")
 
         # 1. Enclosed in _backup_slot
         mock_slot.assert_called_once_with(cfg)

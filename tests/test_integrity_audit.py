@@ -8,6 +8,7 @@ and Backup-vs-Integrity reporting.
 
 import shutil
 
+import pendulum
 import pytest
 
 from core.integrity import (
@@ -163,19 +164,20 @@ class TestIntegrityReporting:
     def test_report_distinguishes_backup_from_integrity(self, tmp_path):
         db = ManifestDB(tmp_path / "m.db")
         try:
+            recent = pendulum.now("Asia/Kolkata").isoformat()
             db.insert_run({
                 "run_id": "r1", "mode": "cloud",
-                "started_at": "2026-09-06T18:00:00",
-                "ended_at": "2026-09-06T18:10:00",
+                "started_at": recent,
+                "ended_at": recent,
                 "status": "CLOUD_COMPLETE", "exit_code": 0,
             })
             db.record_audit({
                 "audit_id": "r1", "mode": "cloud", "scope": "full",
-                "started_at": "2026-09-06T03:00:00",
-                "ended_at": "2026-09-06T03:10:00",
+                "started_at": recent,
+                "ended_at": recent,
                 "status": "VERIFIED", "files_checked": 3,
                 "bytes_checked": 300, "mismatches": 0,
-                "detail": "clean", "created_at": "2026-09-06T03:10:00",
+                "detail": "clean", "created_at": recent,
             })
             html_body = report_mod.generate_report_html(db, "TestCA", 7, "Weekly", is_email=False)
             assert "Integrity Verification" in html_body
