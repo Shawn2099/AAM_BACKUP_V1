@@ -1,0 +1,296 @@
+"""One alert path for every notification (plan §5.5, WP8; owner DEC-3).
+
+`notify(config, event)` is the single way the system tells a human
+something. It:
+
+* sends the email through ONE SMTP transport (`send_email`), with retries
+  via tenacity and every SMTP parameter taken from config;
+* de-duplicates: the same `event.key` already SENT within
+  `alerts.repeat_cooldown_hours` is SUPPRESSED (recorded, not sent);
+* RECORDS every outcome (SENT / FAILED / SUPPRESSED / DISABLED) in the
+  manifest `notifications` table, so the dashboard can show that alert
+  delivery itself is failing — email is the only push channel;
+* points the reader to the dashboard (`dashboard.public_url`) for anything
+  that needs a decision — decisions are only taken on the dashboard.
+
+It never raises: a broken alert path must not break a backup.
+"""
+
+from __future__ import annotations
+
+import html
+import smtplib
+import ssl
+from dataclasses import dataclass, field
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+from loguru import logger
+
+from core.time_utils import now_iso
+
+SENT = "SENT"
+FAILED = "FAILED"
+SUPPRESSED = "SUPPRESSED"
+DISABLED = "DISABLED"
+
+def _is_permanent_smtp_error(exc: BaseException) -> bool:
+    """True when retrying cannot help (RFC 5321: 5xx = permanent).
+
+    Classified by reply CODE, not exception type: smtplib raises
+    SMTPSenderRefused / SMTPRecipientsRefused for transient 4xx replies
+    too (e.g. "451 try again later"), which must be retried.
+    """
+    if isinstance(exc, smtplib.SMTPNotSupportedError):
+        return True  # e.g. STARTTLS / AUTH not offered by the server
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        codes = [code for code, _msg in exc.recipients.values()]
+        return bool(codes) and all(500 <= c < 600 for c in codes)
+    code = getattr(exc, "smtp_code", None)
+    return isinstance(code, int) and 500 <= code < 600
+
+
+@dataclass
+class AlertEvent:
+    """One thing a human must be told about.
+
+    key:        de-duplication key, e.g. "backup:lan:LAN_FAILED"
+    kind:       FAILURE | ACTION_REQUIRED | RECOVERED | WARNING
+    mode:       cloud | lan | rollover | audit | watchdog | report | ...
+    """
+
+    key: str
+    kind: str
+    mode: str
+    title: str
+    message: str
+    status: str | None = None
+    exit_code: int | None = None
+    details: dict = field(default_factory=dict)
+    occurred_at: str = field(default_factory=now_iso)
+    attachment_text: str | None = None
+
+
+@dataclass
+class DeliveryResult:
+    status: str
+    error: str | None = None
+    attempts: int = 0
+
+
+# ── SMTP transport ────────────────────────────────────────────────────────
+
+def _smtp_security(notifications) -> str:
+    mode = getattr(notifications, "smtp_security", "auto")
+    if mode == "auto":
+        return "ssl" if notifications.smtp_port == 465 else "starttls"
+    return mode
+
+
+def _send_once(notifications, msg: MIMEMultipart) -> None:
+    security = _smtp_security(notifications)
+    timeout = notifications.smtp_timeout_seconds
+    if security == "ssl":
+        server = smtplib.SMTP_SSL(notifications.smtp_host, notifications.smtp_port,
+                                  timeout=timeout, context=ssl.create_default_context())
+    else:
+        server = smtplib.SMTP(notifications.smtp_host, notifications.smtp_port, timeout=timeout)
+    try:
+        if security == "starttls":
+            server.starttls(context=ssl.create_default_context())
+        if notifications.smtp_auth:
+            server.login(notifications.smtp_username, notifications.smtp_password)
+        server.sendmail(notifications.sender, list(notifications.recipients), msg.as_string())
+    finally:
+        try:
+            server.quit()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def email_config_problem(notifications) -> str | None:
+    """Return why email cannot be sent with this config, or None if usable."""
+    if not notifications.smtp_host:
+        return "notifications.smtp_host is empty"
+    if not notifications.sender:
+        return "notifications.sender is empty"
+    if not notifications.recipients:
+        return "notifications.recipients is empty"
+    if notifications.smtp_auth and not (notifications.smtp_username and notifications.smtp_password):
+        return "notifications.smtp_auth is true but smtp_username/smtp_password are empty"
+    return None
+
+
+def send_email(notifications, subject: str, body_html: str,
+               attachments: list[dict] | None = None) -> DeliveryResult:
+    """Send one email with retry (tenacity). Never raises.
+
+    attachments: [{"filename": str, "content": bytes}]
+    """
+    problem = email_config_problem(notifications)
+    if problem:
+        logger.error(f"Email not sent ({subject!r}): {problem}")
+        return DeliveryResult(FAILED, problem, 0)
+
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = subject
+    msg["From"] = notifications.sender
+    msg["To"] = ", ".join(notifications.recipients)
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(body_html, "html", "utf-8"))
+    msg.attach(alt)
+    for att in attachments or []:
+        part = MIMEApplication(att["content"], Name=att["filename"])
+        part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
+        msg.attach(part)
+
+    from tenacity import (
+        RetryError,
+        Retrying,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_random_exponential,
+    )
+
+    attempts = 0
+    try:
+        for attempt in Retrying(
+            stop=stop_after_attempt(notifications.retry_attempts),
+            wait=wait_random_exponential(multiplier=notifications.retry_base_seconds,
+                                         max=notifications.retry_base_seconds * 8),
+            retry=retry_if_exception(lambda e: not _is_permanent_smtp_error(e)),
+            reraise=True,
+        ):
+            with attempt:
+                attempts = attempt.retry_state.attempt_number
+                _send_once(notifications, msg)
+    except (RetryError, Exception) as e:  # noqa: BLE001
+        kind = "permanent SMTP error, not retried" if _is_permanent_smtp_error(e) \
+            else f"failed after {attempts} attempt(s)"
+        logger.error(f"Email {kind} {subject!r}: {e}")
+        return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts)
+    logger.info(f"Email sent: {subject!r} (attempt {attempts})")
+    return DeliveryResult(SENT, None, attempts)
+
+
+# ── Alert rendering ───────────────────────────────────────────────────────
+
+_KIND_LABEL = {
+    "FAILURE": "Backup Failure",
+    "ACTION_REQUIRED": "ACTION REQUIRED",
+    "RECOVERED": "Recovered",
+    "WARNING": "Warning",
+}
+
+
+def dashboard_url(config) -> str:
+    d = config.dashboard
+    if getattr(d, "public_url", ""):
+        return d.public_url
+    return f"http://{d.bind_address}:{d.port}"
+
+
+def render_alert(config, event: AlertEvent) -> tuple[str, str, list[dict]]:
+    """Return (subject, html_body, attachments) for an event."""
+    firm = config.firm_name
+    label = _KIND_LABEL.get(event.kind, event.kind)
+    subject = f"[{label}] {firm} - {event.mode.upper()}: {event.title}"
+    limit = config.alerts.body_max_chars
+    message = event.message or ""
+    attachments: list[dict] = []
+    full_text = event.attachment_text if event.attachment_text is not None else message
+    if len(message) > limit:
+        message = message[:limit] + "\n... [truncated - full text attached]"
+    if full_text and (len(full_text) > limit or event.attachment_text is not None):
+        cap = config.alerts.attachment_max_kb * 1024
+        data = full_text.encode("utf-8")
+        if len(data) > cap:
+            data = data[-cap:]
+        attachments.append({"filename": "details.txt", "content": data})
+
+    url = dashboard_url(config)
+    rows = [("Firm", firm), ("Pipeline", event.mode.upper()),
+            ("Status", event.status or "-"),
+            ("Exit code", "-" if event.exit_code is None else str(event.exit_code)),
+            ("Time", event.occurred_at[:19].replace("T", " "))]
+    rows += [(str(k), str(v)) for k, v in event.details.items()]
+    cells = "".join(
+        f"<tr><td style='padding:6px 10px;border:1px solid #e5e7eb;background:#f9fafb;"
+        f"font-weight:600'>{html.escape(k)}</td><td style='padding:6px 10px;border:1px solid "
+        f"#e5e7eb'>{html.escape(v)}</td></tr>" for k, v in rows)
+    action = (
+        "<p style='font-weight:600'>Please open the backup dashboard to review "
+        "and decide: <a href='{0}'>{0}</a></p>".format(html.escape(url))
+        if event.kind in ("ACTION_REQUIRED", "FAILURE", "WARNING")
+        else "<p>Dashboard: <a href='{0}'>{0}</a></p>".format(html.escape(url))
+    )
+    body = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
+        "<body style='font-family:system-ui,sans-serif;color:#1f2937'>"
+        f"<h2>{html.escape(label)} - {html.escape(event.title)}</h2>"
+        f"{action}<table style='border-collapse:collapse'>{cells}</table>"
+        "<pre style='white-space:pre-wrap;font-size:13px'>"
+        f"{html.escape(message)}</pre></body></html>"
+    )
+    return subject, body, attachments
+
+
+# ── Public entry point ────────────────────────────────────────────────────
+
+def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
+    """Send (or suppress) one alert and record the outcome. Never raises."""
+    own_db = db is None
+    try:
+        if db is None:
+            from core.manifest import ManifestDB
+            db = ManifestDB.from_config(config)
+        result = _notify(config, event, db)
+    except Exception as e:  # noqa: BLE001 - alerting must never break a backup
+        logger.error(f"Alert pipeline error for {event.key}: {e}")
+        result = DeliveryResult(FAILED, f"alert pipeline error: {e}")
+    finally:
+        if own_db and db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return result
+
+
+def _notify(config, event: AlertEvent, db) -> DeliveryResult:
+    subject, body, attachments = render_alert(config, event)
+
+    if not config.notifications.send_on_failure and event.kind != "RECOVERED":
+        result = DeliveryResult(DISABLED, "notifications.send_on_failure is false")
+    else:
+        cooldown_h = config.alerts.repeat_cooldown_hours
+        last = db.last_notification(event.key, status=SENT) if cooldown_h > 0 else None
+        if last and _within_hours(last["created_at"], cooldown_h):
+            result = DeliveryResult(
+                SUPPRESSED, f"same alert already sent at {last['created_at']} "
+                            f"(cooldown {cooldown_h}h)")
+        else:
+            result = send_email(config.notifications, subject, body, attachments)
+
+    try:
+        db.record_notification({
+            "event_key": event.key, "kind": event.kind, "mode": event.mode,
+            "subject": subject, "status": result.status, "error": result.error,
+            "attempts": result.attempts, "created_at": now_iso(),
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not record notification outcome for {event.key}: {e}")
+    log = logger.info if result.status in (SENT, SUPPRESSED) else logger.warning
+    log(f"Alert {event.key}: {result.status}" + (f" ({result.error})" if result.error else ""))
+    return result
+
+
+def _within_hours(iso_ts: str, hours: float) -> bool:
+    import pendulum
+
+    try:
+        then = pendulum.parse(iso_ts)
+    except Exception:  # noqa: BLE001
+        return False
+    return (pendulum.now("UTC") - then).total_seconds() < hours * 3600

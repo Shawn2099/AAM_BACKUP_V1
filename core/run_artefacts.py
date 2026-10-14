@@ -104,20 +104,35 @@ class RunArtefacts:
 
     # ── manifest ──────────────────────────────────────────────────────
     def record(self, entry: dict) -> None:
-        with self._lock:
-            self._manifest["artefacts"].append(entry)
-            self._write_manifest()
+        self._update(lambda m: m["artefacts"].append(entry))
 
     def note(self, text: str, *, degraded: bool = False) -> None:
-        with self._lock:
-            self._manifest["notes"].append({"at": now_iso(), "text": text})
+        def _apply(m: dict) -> None:
+            m["notes"].append({"at": now_iso(), "text": text})
             if degraded:
-                self._manifest["degraded"] = True
-            self._write_manifest()
+                m["degraded"] = True
+        self._update(_apply)
 
     @property
     def degraded(self) -> bool:
-        return bool(self._manifest["degraded"])
+        return bool(self._load_manifest().get("degraded"))
+
+    def _load_manifest(self) -> dict:
+        """The on-disk manifest is the source of truth: several objects (the
+        pipeline's and each task's re-opened one) write to the same folder."""
+        try:
+            return json.loads((self.dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return self._manifest
+
+    def _update(self, apply) -> None:
+        with self._lock:
+            manifest = self._load_manifest()
+            for key, default in (("artefacts", []), ("notes", []), ("degraded", False)):
+                manifest.setdefault(key, default)
+            apply(manifest)
+            self._manifest = manifest
+            self._write_manifest()
 
     def _write_manifest(self) -> None:
         target = self.dir / MANIFEST_NAME

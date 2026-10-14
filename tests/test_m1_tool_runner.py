@@ -115,6 +115,21 @@ def test_purge_removes_only_old_day_folders_and_files(tmp_path):
     assert not f_old.exists() and f_new.exists()
 
 
+def test_reopened_folder_entries_survive_pipeline_finalize(art):
+    """Self-review bug: the pipeline object and the task's re-opened object
+    each held their own in-memory manifest; finalize() by the pipeline
+    overwrote the tool entries recorded by the task."""
+    task_side = RunArtefacts.open(art.dir)
+    run_tool("probe", [PY, "-c", "print('x')"], timeout_s=60, artefacts=task_side)
+    art.finalize(compress_after_kb=1024)          # pipeline side, stale copy
+    manifest = _manifest(art)
+    assert [e["tool"] for e in manifest["artefacts"]] == ["probe"]
+    assert manifest["notes"][-1]["text"] == "finalized"
+    # numbering continues after the task's files when re-opened again
+    again = RunArtefacts.open(art.dir)
+    assert again.new_path("next").name.startswith("03_")
+
+
 def test_for_config_uses_configured_root(tmp_path):
     from models.config import load_config, CONFIG_PATH
 

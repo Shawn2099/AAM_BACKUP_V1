@@ -117,7 +117,8 @@ def _read_log_tail(log_path: Path, max_bytes: int, encoding: str = "utf-8") -> s
     try:
         size = log_path.stat().st_size
         if size <= max_bytes:
-            return log_path.read_bytes().decode(encoding, errors="replace").lstrip("﻿")
+            text = log_path.read_bytes().decode(encoding, errors="replace").lstrip("﻿")
+            return text.replace("\r\n", "\n")
         start = size - max_bytes
         if utf16 and start % 2:
             start += 1
@@ -126,7 +127,8 @@ def _read_log_tail(log_path: Path, max_bytes: int, encoding: str = "utf-8") -> s
             data = f.read()
         text = data.decode("utf-16-le" if utf16 else encoding, errors="replace")
         # The cut point can land mid-sequence; drop the replacement char(s).
-        return text.lstrip("�﻿")
+        # Newlines normalised to "\n" on both paths (robocopy writes CRLF).
+        return text.lstrip("�﻿").replace("\r\n", "\n")
     except OSError as exc:
         return f"robocopy log unreadable: {exc}"
 

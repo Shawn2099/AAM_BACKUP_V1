@@ -94,6 +94,23 @@ CREATE TABLE IF NOT EXISTS integrity_audits (
 
 CREATE INDEX IF NOT EXISTS idx_integrity_audits_mode ON integrity_audits(mode, started_at);
 
+-- Every alert outcome (plan §5.5): SENT / FAILED / SUPPRESSED / DISABLED.
+-- Lets the dashboard show that alert delivery itself is failing.
+CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_key   TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    mode        TEXT,
+    subject     TEXT,
+    status      TEXT NOT NULL,
+    error       TEXT,
+    attempts    INTEGER DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_key ON notifications(event_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, created_at);
+
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
 
@@ -750,6 +767,43 @@ class ManifestDB:
                     (mode,),
                 ).fetchone()
             return dict(row) if row else None
+
+    # ── Notifications ────────────────────────────────────────
+
+    def record_notification(self, data: dict) -> None:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO notifications
+                   (event_key, kind, mode, subject, status, error, attempts, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (data["event_key"], data["kind"], data.get("mode"), data.get("subject"),
+                 data["status"], data.get("error"), data.get("attempts", 0),
+                 data["created_at"]),
+            )
+            conn.commit()
+
+    def last_notification(self, event_key: str, status: str | None = None) -> dict | None:
+        with self._lock:
+            conn = self._get_conn()
+            if status:
+                row = conn.execute(
+                    "SELECT * FROM notifications WHERE event_key = ? AND status = ? "
+                    "ORDER BY id DESC LIMIT 1", (event_key, status)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM notifications WHERE event_key = ? "
+                    "ORDER BY id DESC LIMIT 1", (event_key,)).fetchone()
+            return dict(row) if row else None
+
+    def notification_failures_since(self, days: int) -> list[dict]:
+        cutoff = cutoff_iso(days)
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT * FROM notifications WHERE status = 'FAILED' AND created_at >= ? "
+                "ORDER BY id DESC", (cutoff,)).fetchall()
+            return [dict(r) for r in rows]
 
     # ── Maintenance ──────────────────────────────────────────
 

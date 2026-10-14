@@ -396,7 +396,7 @@ All new sections get pydantic bounds (`ge`/`le`) and descriptions; `config.examp
 ## 10. Handover checklist (environment — owner/client IT)
 
 1. **Sophos:** exclude `storage.googleapis.com`, `oauth2.googleapis.com`, `www.googleapis.com` from TLS inspection; allow outbound to the SMTP host/port; stable DNS.
-2. **Service account** (one dedicated account, not a personal one): NAS share + NTFS modify on the FY root; `SeBackupPrivilege` (if `use_backup_mode`); "Force shutdown from a remote system" on the NAS + remote shutdown allowed by its firewall.
+2. **Service account — ROOT CAUSE of the NAS "permission issue" (verified read-only on the production-trial box 2026-10-14):** the server is in a **WORKGROUP** (not domain-joined) and all three services run as **LocalSystem**. In a workgroup, LocalSystem reaches network shares without usable credentials, so the NAS denies it — matching the 21 nights of `[WinError 5] Access is denied` on the canary, while manual runs as Administrator worked. Fix: run `AamBackupAgent` (and `AamWatchdog`, which sends alerts) as a **dedicated local account** with the same username/password on the NAS (workgroup pass-through) or with NAS credentials stored for that account (`cmdkey`, run as that account). The WP4 destination write-probe will catch this before any copy. That account needs (one dedicated account, not a personal one): NAS share + NTFS modify on the FY root; `SeBackupPrivilege` (if `use_backup_mode`); "Force shutdown from a remote system" on the NAS + remote shutdown allowed by its firewall.
 3. **NAS:** Wake-on-LAN enabled in BIOS/UEFI and NIC power settings, wake from S5 verified; static IP / DHCP reservation; MAC recorded.
 4. **Production config:** real NAS path, real bucket, intended schedule; remove `CHAOS01`, demo bucket, test schedules.
 5. **Clean test data** from `E:` and the bucket (`E2E_TEST_FY`, `dummy_*`, canary-test folders) — with owner confirmation, never scripted blindly.
@@ -469,6 +469,14 @@ All new sections get pydantic bounds (`ge`/`le`) and descriptions; `config.examp
 | Committed suite red (24) | test run 2026-10-14 | WP0 |
 
 ---
+
+## 12a. Execution notes (recorded during M1)
+
+- **Tool-runner migration is sequenced by WP**, not done all at once: the two transfer modules (rclone sync, robocopy) moved in M1 1.5 (full logs). The checks (cloud verify/diff/size/manifest, integrity audit) move in WP6/WP7, preflights in WP4, shutdown in WP10, watchdog `sc` in WP13, rollover gcloud in WP11 — each together with the rewrite that WP does anyway, so ~190 test mocks are changed once, not twice.
+- **Config keys are added in the same commit as the code that reads them** (no dead config).
+- **WP8 must also fix (found in M1 1.6):** `core/report.py` treats `SMTPSenderRefused` / `SMTPRecipientsRefused` as permanent, but smtplib raises them for transient 4xx replies too (e.g. `451 try again later`), so retryable alerts are given up after one try. `core/notify.py` already classifies by reply code (5xx permanent, 4xx retried); WP8 moves every alert/report send onto `core.notify.send_email` (~29 tests coupled to report.py SMTP internals change then, once).
+- **Legacy statuses in the production DB:** 59 historical rows are `CLOUD_SKIPPED` / `LAN_SKIPPED` although they were preflight *failures* (pre-v1.1 behaviour). History is never rewritten (audit principle); WP5/WP9 will display legacy `*_SKIPPED` rows that carry an `error_message` as "Failed (legacy record)" and count them as failures in reports.
+- **Production-trial facts (read-only, 2026-10-14):** Windows Server 2016 Standard, workgroup, services as LocalSystem, rclone v1.74.3, robocopy 10.0.14393; SSH user holds SeBackup/SeRestore/SeRemoteShutdown; both configured LAN targets (10.10.186.231, 10.10.151.53) do not answer on 445; LAN preflight message still shows the hard-coded "within 2.0s".
 
 ## 13. Execution checklist (subtasks)
 

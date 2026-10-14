@@ -305,6 +305,22 @@ class NotificationConfig(StrictModel):
     send_on_failure: bool = True
     weekly_enabled: bool = True
     monthly_enabled: bool = True
+    smtp_security: str = Field(
+        default="auto", pattern="^(auto|starttls|ssl|none)$",
+        description="auto = SSL on port 465, STARTTLS otherwise; none = plaintext "
+                    "(internal relay only)",
+    )
+    smtp_auth: bool = Field(
+        default=True,
+        description="Log in with smtp_username/smtp_password. false = unauthenticated "
+                    "internal relay. When true, missing credentials are a recorded "
+                    "delivery FAILURE, never a silent skip.",
+    )
+    smtp_timeout_seconds: float = Field(default=30, ge=1, le=600)
+    retry_attempts: int = Field(default=3, ge=1, le=10,
+                                description="SMTP send attempts for transient errors")
+    retry_base_seconds: float = Field(default=10, ge=0, le=600,
+                                      description="Base of the exponential retry backoff")
 
     @field_validator("smtp_port")
     @classmethod
@@ -323,6 +339,21 @@ class NotificationConfig(StrictModel):
 
     def __str__(self) -> str:
         return self.__repr__()
+
+
+class AlertsConfig(StrictModel):
+    """Alert behaviour (plan §5.5)."""
+
+    repeat_cooldown_hours: float = Field(
+        default=12, ge=0, le=720,
+        description="The same alert (same key) is re-sent at most once per this many "
+                    "hours while unresolved; repeats inside the window are recorded "
+                    "as SUPPRESSED. 0 = never suppress.",
+    )
+    body_max_chars: int = Field(default=1000, ge=100, le=100_000,
+                                description="Inline message length in the email body")
+    attachment_max_kb: int = Field(default=2048, ge=1, le=20_480,
+                                   description="Max size of the full-detail attachment")
 
 
 class MaintenanceConfig(StrictModel):
@@ -440,6 +471,11 @@ class DashboardConfig(StrictModel):
     api_key: str = Field(default="", description="API key for dashboard authentication")
     bind_address: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1024, le=65535)
+    public_url: str = Field(
+        default="",
+        description="Dashboard address put into attention emails (e.g. "
+                    "http://backup-server:8080). Empty = http://<bind_address>:<port>.",
+    )
 
     @model_validator(mode="after")
     def api_key_required_when_auth_enabled(self) -> "DashboardConfig":
@@ -519,6 +555,7 @@ class AppConfig(StrictModel):
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
     run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
 
     @property
     def run_logs_dir(self) -> Path:

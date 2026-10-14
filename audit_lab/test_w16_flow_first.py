@@ -1155,7 +1155,6 @@ def test_w16_config_validation_guards():
             "lan_destination": r"\\127.0.0.1\C$\BackupAgent\mock_lan\FY26-27",
             "runtime_dir": r"C:\BackupAgent\runtime",
             "database_path": r"C:\BackupAgent\runtime\manifest.db",
-            "backup_lock_path": r"C:\BackupAgent\backup.lock",
             "log_directory": r"C:\BackupAgent\logs",
             "gcs_key_path": r"C:\BackupAgent\keys\svc.json",
         },
