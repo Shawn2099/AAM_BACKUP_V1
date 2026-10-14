@@ -6,20 +6,32 @@ human (approval workflow, plan §6). Rules shared by every guard:
 
 * Unknown is never safe: a metric that could not be measured BLOCKS.
 * The reason is written for the operator, with the actual numbers.
-* No I/O here except the two explicit measurement helpers at the bottom
-  (`first_regular_file`, `local_addresses`), so the decisions are
-  exhaustively unit/property testable.
+* No I/O here except the explicit measurement helpers at the bottom
+  (`first_regular_file`, `local_addresses`, `resolve_host`) and the
+  decision log lines in `enforce`, so the decisions are exhaustively
+  unit/property testable.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import socket
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from fractions import Fraction
+
+from loguru import logger
 
 PASS = "PASS"
 BLOCK = "BLOCK"
+
+# Names G1 never counts as backup content (any depth): OS-managed entries
+# that exist even on an empty NTFS volume, plus the destination mount marker.
+SOURCE_IGNORE_NAMES = frozenset({
+    "system volume information", "$recycle.bin", "recycler", "recycled",
+    "desktop.ini", "thumbs.db", ".aam_target_mounted",
+})
 
 
 @dataclass(frozen=True)
@@ -182,6 +194,52 @@ def g5_canary(canary_present: bool | None, destination_has_files: bool | None,
         f"{destination}. Approve to initialise this location as the backup target.",
         **metrics,
     )
+
+
+# ── Enforcement (shared by both legs) ─────────────────────────────────────
+
+class GuardBlocked(RuntimeError):
+    """One or more guards blocked the run before any transfer (plan §6.1).
+
+    `record` is the run's guard record (JSON-safe) stored in the run row's
+    extended_metrics["guards"]; the approval workflow reads it from there.
+    """
+
+    def __init__(self, leg: str, record: dict):
+        self.leg = leg
+        self.record = record
+        reasons = [r["reason"] for r in record.get("results", []) if r.get("verdict") == BLOCK]
+        super().__init__(f"{leg.upper()} backup BLOCKED - human approval needed: "
+                         + " | ".join(reasons))
+
+
+def enforce(leg: str, results: list[GuardResult], **record) -> dict:
+    """Log every guard decision (rule §2.6) and return the run's guard record.
+
+    Raises GuardBlocked when any guard blocked; all results are kept so the
+    operator sees every reason at once.
+    """
+    for r in results:
+        if r.passed:
+            logger.info(f"Guard {r.guard} PASS ({leg}): {r.reason} {r.metrics}")
+        else:
+            logger.error(f"Guard {r.guard} BLOCK ({leg}): {r.reason} {r.metrics}")
+    record = {**record, "results": [asdict(r) for r in results]}
+    if any(not r.passed for r in results):
+        raise GuardBlocked(leg, record)
+    return record
+
+
+def max_delete_allowance(destination_files: int, max_delete_files: int,
+                         max_delete_percent: float) -> int:
+    """Most deletions G3 still passes for this destination size.
+
+    Used as rclone's own `--max-delete` backstop on the real sync, so a
+    change between the dry-run and the sync cannot exceed the G3 limits.
+    Exact arithmetic on the configured percent (never above what G3 passes).
+    """
+    by_percent = math.floor(Fraction(destination_files) * Fraction(max_delete_percent) / 100)
+    return max(0, min(max_delete_files, by_percent))
 
 
 # ── Measurement helpers (the only I/O in this module) ─────────────────────

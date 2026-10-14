@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import statuses
+from core import guards, statuses
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
@@ -141,6 +141,22 @@ def _with_artefacts(extended_metrics: str | None, artefacts: RunArtefacts | None
         payload = {"unparsed_metrics": extended_metrics}
     payload["artefacts_dir"] = str(artefacts.dir)
     payload["artefacts_degraded"] = artefacts.degraded
+    return json.dumps(payload)
+
+
+def _with_guards(extended_metrics: str | None, guard_record: dict | None) -> str | None:
+    """Add the run's guard record to extended_metrics (JSON).
+
+    Kept on every row (pass or block): it is the G2/G4 baseline of the next
+    run (ManifestDB.guard_baseline) and the evidence a BLOCKED row shows.
+    """
+    if not isinstance(guard_record, dict):
+        return extended_metrics
+    try:
+        payload = json.loads(extended_metrics) if extended_metrics else {}
+    except ValueError:
+        payload = {"unparsed_metrics": extended_metrics}
+    payload["guards"] = guard_record
     return json.dumps(payload)
 
 
@@ -447,10 +463,9 @@ def lan_preflight_task(config):
 def lan_snapshot_before_task(config):
     """Snapshot LAN destination before sync for diff comparison.
 
-    Defensive pre-sync walk: if a transient SMB network blip occurs,
-    the sync proceeds with an empty before-dict rather than aborting
-    before Robocopy can run. Diff metrics will over-count additions
-    for this run only; the subsequent run re-derives accurate metrics.
+    Returns None when the walk fails: the destination file count is then
+    UNKNOWN, and the guards fail the run (M2 2.2, G3 needs it). An empty
+    dict would be indistinguishable from a genuinely empty destination.
     """
     logger.info("Taking LAN snapshot (before sync)")
     try:
@@ -458,11 +473,53 @@ def lan_snapshot_before_task(config):
         logger.info(f"LAN snapshot: {len(before)} files before sync")
         return before
     except Exception as e:
-        logger.warning(
-            f"Pre-sync destination walk failed: {e} — sync will proceed; "
-            "diff metrics will over-count additions for this run only"
-        )
-        return {}
+        logger.error(f"Pre-sync destination walk failed: {e} - destination file count unknown")
+        return None
+
+
+@task(name="lan-guards")
+def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: int | None) -> dict:
+    """Data-safety guards G1-G4 before robocopy /MIR (plan WP3, M2 2.2).
+
+    A measurement that could not be taken FAILS the run (retried next
+    night); a guard verdict BLOCKs it for a human (GuardBlocked). No Prefect
+    retries: re-measuring the same state gives the same verdict.
+    """
+    source = config.paths.source_drive
+    dest = config.paths.lan_destination
+    counts = (dry_run or {}).get("counts")
+    if not counts:
+        raise RuntimeError(
+            "LAN guard measurement failed: the robocopy /L job summary is missing or "
+            "unreadable, so planned deletions cannot be counted - refusing to mirror")
+    if destination_files is None:
+        raise RuntimeError(
+            f"LAN guard measurement failed: the destination could not be listed ({dest}), "
+            "so the share of files a mirror would delete is unknown - refusing to mirror")
+
+    db = ManifestDB.from_config(config)
+    try:
+        baseline = db.guard_baseline("lan", fy_prefix) or {}
+    finally:
+        db.close()
+
+    limits = config.guards
+    results = [
+        guards.g1_source_has_files(
+            guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES), source),
+        guards.g2_source_shrink(counts["total"], baseline.get("source_file_count"),
+                                limits.max_source_shrink_percent),
+        guards.g4_destination_identity(
+            dest, baseline.get("destination"),
+            guards.resolve_host(guards.unc_host(dest)), guards.local_addresses(),
+            limits.forbid_local_destination),
+        guards.g3_mass_delete(counts["extras"], destination_files,
+                              limits.max_delete_files, limits.max_delete_percent),
+    ]
+    return guards.enforce(
+        "lan", results, fy=fy_prefix, source_file_count=counts["total"],
+        destination=dest, destination_files=destination_files,
+    )
 
 
 @task(name="lan-snapshot-after")
@@ -977,12 +1034,17 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         # persist even when the run fails; unexecuted stages stay absent.
         stage_seconds: dict = {}
         phase = "pre"
+        guard_record = None
 
         try:
             health_check_task(config, "lan")
             wol_check_task(config)
-            preflight(config)
+            dry_run = preflight(config)
             before_dict = lan_snapshot_before_task(config)
+            guard_record = lan_guards_task(
+                config, _effective_fy_prefix(config), dry_run,
+                None if before_dict is None else len(before_dict),
+            )
             phase = "sync"
             _t_sync = time.monotonic()
             sync_result = sync(config, artefacts_dir)
@@ -1083,6 +1145,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     status = "LAN_FAILED"
                 else:
                     status = sync_result["status"]
+            elif isinstance(e, guards.GuardBlocked):
+                status = "LAN_BLOCKED"
+                guard_record = e.record
             elif phase == "pre":
                 status = "LAN_FAILED"
             shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
@@ -1117,6 +1182,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _with_guards(extended_metrics, guard_record)
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:
                 _record_run(

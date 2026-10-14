@@ -4,6 +4,7 @@ WAL mode on every connection. Thread-safe. Single writer (deployments run at
 different times, no contention).
 """
 
+import json
 import sqlite3
 import threading
 import time
@@ -693,6 +694,30 @@ class ManifestDB:
                 (mode, *success),
             ).fetchone()
             return dict(row) if row else None
+
+    def guard_baseline(self, mode: str, fy: str) -> dict | None:
+        """Guard record of the last successful run of this leg in this FY.
+
+        G2 (source shrink) and G4 (destination identity) compare against it.
+        Scoped to the FY so the April rollover (new, almost empty FY folder;
+        new destination path) starts a fresh baseline instead of blocking.
+        Rows written before guards existed carry no record and are skipped.
+        """
+        from core.statuses import SUCCESS_STATUSES
+
+        success = sorted(SUCCESS_STATUSES)
+        placeholders = ",".join("?" for _ in success)
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                f"SELECT extended_metrics FROM run_history "
+                f"WHERE mode = ? AND status IN ({placeholders}) "
+                "AND json_valid(extended_metrics) "
+                "AND json_extract(extended_metrics, '$.guards.fy') = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (mode, *success, fy),
+            ).fetchone()
+        return json.loads(row[0])["guards"] if row else None
 
     def get_recent_runs(self, limit: int = 10) -> list[dict]:
         with self._lock:

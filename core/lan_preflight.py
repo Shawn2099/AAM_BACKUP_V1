@@ -14,6 +14,7 @@ import time
 from core.smb_ready import wait_for_smb_ready
 
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
+from core.lan_sync import summarize_log_counts
 from core.process import resolve_binary
 
 
@@ -71,7 +72,10 @@ def run_lan_dry_run(
     /L = list-only — reports what WOULD happen, zero bytes moved.
     /MIR = mirror logic (same as real run).
     /XJ = exclude junction points.
-    /NJH /NJS /NP = minimal output (no headers, summaries, or progress).
+    /NJH /NP = no job header, no progress. The job SUMMARY is kept (M2 2.2):
+    its Files row gives the guard measurements — Total = source file count
+    (G2), Extras = files /MIR would delete, including files inside extra
+    folders (G3; verified on robocopy 10.0.14393 / Windows 11).
 
     Args:
         source: Source drive path (e.g. "D:\\").
@@ -79,7 +83,9 @@ def run_lan_dry_run(
         timeout: Max seconds for dry-run (default 300s).
 
     Returns:
-        {"ok": bool, "exit_code": int, "error": str | None}
+        {"ok": bool, "exit_code": int, "error": str | None,
+         "counts": summarize_log_counts() dict, or None when the summary
+                   is missing/unreadable (the guards then fail the run)}
     """
     # 1. Fast SMB Reachability Probe for UNC destinations (bypasses 45s OS hang)
     host = _extract_unc_host(dest)
@@ -128,7 +134,7 @@ def run_lan_dry_run(
         source,
         dest,
         "/L", "/MIR", "/XJ",
-        "/NJH", "/NJS", "/NP",
+        "/NJH", "/NP",
         "/XF", ".AAM_TARGET_MOUNTED",
         "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
@@ -157,8 +163,9 @@ def run_lan_dry_run(
             logger.error(f"LAN dry-run failed (exit {code}): {error_output}")
             return {"ok": False, "exit_code": code, "error": f"Robocopy /L failed with exit {code}\nOutput: {error_output}"}
 
-        logger.info(f"LAN dry-run passed (exit {code})")
-        return {"ok": True, "exit_code": code, "error": None}
+        counts = summarize_log_counts(result.stdout or "")
+        logger.info(f"LAN dry-run passed (exit {code}); summary Files row: {counts}")
+        return {"ok": True, "exit_code": code, "error": None, "counts": counts}
 
     except subprocess.TimeoutExpired:
         logger.error(f"LAN dry-run timed out after {timeout}s")

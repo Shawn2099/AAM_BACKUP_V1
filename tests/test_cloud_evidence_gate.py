@@ -212,10 +212,11 @@ class TestLanSuspectPipeline:
             patch("flow.wol_check_task"),
             patch("flow.health_check_task"),
             patch("flow._record_run"),
+            patch("flow.lan_guards_task"),
         )
         mocks = [p.start() for p in patches]
         (mock_alert, mock_artifact, mock_record_task, mock_after,
-         mock_sync, mock_before, _, _, _, mock_record) = mocks
+         mock_sync, mock_before, _, _, _, mock_record, _) = mocks
         mock_sync.with_options.return_value.return_value = sync_result
         # Snapshot tasks are called directly (no with_options) in the LAN
         # pipeline — return real dicts so diff_snapshots runs for real.

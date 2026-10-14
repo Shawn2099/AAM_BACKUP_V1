@@ -214,6 +214,9 @@ def build_config(base: Path, *, source: Path, lan_dest: str, runtime: Path,
         "health": {"max_clock_skew_seconds": 600, "clock_check_timeout_seconds": 5,
                    "min_free_source_gb": 1, "rollover_auth_timeout_seconds": 30,
                    "rollover_archive_timeout_seconds": 60},
+        # The lab mirrors to the loopback admin share by design, so G4's
+        # "destination is this machine" check is off; G1-G3 stay at defaults.
+        "guards": {"forbid_local_destination": False},
     }
     # nested override support: {"lan": {"mt_threads": 4}}
     for key, val in overrides.items():

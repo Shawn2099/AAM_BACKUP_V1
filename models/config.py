@@ -451,6 +451,36 @@ class RunLogsConfig(StrictModel):
     )
 
 
+class GuardsConfig(StrictModel):
+    """Data-safety guards (plan WP3, §6.3; defaults = owner DEC-2).
+
+    A guard that trips stops the run BEFORE any transfer as *_BLOCKED and
+    asks a human (dashboard approval). G2/G4 compare with the last
+    successful run of the same leg and the same FY.
+    """
+
+    max_delete_files: int = Field(
+        default=500, ge=0, le=100_000_000,
+        description="G3: block when a backup would delete more than this many "
+                    "destination files. Also the cloud --max-delete backstop.",
+    )
+    max_delete_percent: float = Field(
+        default=10, ge=0, le=100,
+        description="G3: block when a backup would delete more than this percent "
+                    "of the destination files.",
+    )
+    max_source_shrink_percent: float = Field(
+        default=20, ge=0, le=100,
+        description="G2: block when the source has this percent fewer files than "
+                    "at the last successful backup of the same FY.",
+    )
+    forbid_local_destination: bool = Field(
+        default=True,
+        description="G4: block a LAN destination that resolves to this machine "
+                    "(a backup on the same machine does not protect against its loss).",
+    )
+
+
 class HealthConfig(StrictModel):
     """Pre-backup health check tuning."""
     max_clock_skew_seconds: int = Field(
@@ -575,6 +605,7 @@ class AppConfig(StrictModel):
     health: HealthConfig = Field(default_factory=HealthConfig)
     run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    guards: GuardsConfig = Field(default_factory=GuardsConfig)
 
     @property
     def run_logs_dir(self) -> Path:
