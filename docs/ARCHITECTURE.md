@@ -192,8 +192,8 @@ The others are built but not wired yet.
 | G2 | source shrink | `g2_source_shrink` | LAN: `robocopy /L` Files **Total**; cloud: `rclone size <source>` | file count dropped > `guards.max_source_shrink_percent` vs same-FY baseline |
 | G3 | mass delete | `g3_mass_delete` | LAN: number of `*EXTRA File` lines of `robocopy /L` (not the Extras column, which also counts the kept mount marker; lines > column = measurement failure) vs pre-sync walk count; cloud: `"skipped":"delete"` lines of `rclone sync --dry-run` vs `rclone size` of the destination | planned deletes > `max_delete_files` or > `max_delete_percent`; cloud sync also gets `--max-delete` = `max_delete_allowance()` |
 | G4 | destination identity | `g4_destination_identity` | config destination vs baseline; LAN host resolved vs local IPs | destination changed since same-FY baseline / LAN target is this machine (`forbid_local_destination`) |
-| G5 | mount canary | `g5_canary` | — | marker missing **[not wired: 2.3, approval recreates it]** |
-| A | approval valid? | `core/approvals.evaluate_approval` | expired/used/other leg/numbers worse than approved |
+| G5 | mount canary | `g5_canary` | `lan_preflight` reports `canary_present` (root marker is a regular file); only the read-only `/L` listing runs without it (verified to write nothing) | marker missing on a populated share / empty share to initialise / unknown; an approved G5 creates the marker before the mirror |
+| A | approval valid? | `core/approvals.evaluate_request` (per guard: `evaluate_approval`) via `flow._apply_approval` | dashboard re-run passes `approval_id` | a blocked guard not covered, other leg, not approved, expired, used, dismissed, or numbers worse than approved (`approvals.tolerance_percent`); used up atomically (`mark_approval_used`) before any transfer |
 | R | NAS ready | `core/smb_ready.wait_for_smb_ready` | 445 + real SMB stat + stability within `wol.*` timings |
 | E | transport vs content | `core/rclone_errors.find_transport_failure` | TLS/DNS/AUTH/NETWORK/LISTING → "audit could not run" |
 
@@ -264,7 +264,7 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `launch.py` | agent service main | `main`, `_run_dashboard`, `_ensure_concurrency_limit`, `_cancel_orphaned_runs`, `_reconcile_disabled_legs` |
 | `serve.py` | builds Prefect deployments from config | `deployments()` |
 | `flow.py` | all Prefect flows + tasks + pipelines | see §3–§5 |
-| `ui.py` | dashboard API | `status`, `trigger_*`, `_status_fields`, `get_db` |
+| `ui.py` | dashboard API | `status`, `trigger_*`, `_status_fields`, `get_db`; approvals: `GET /approvals`, `POST /approvals/{id}/approve` (typed phrase, sign-in required), `/run`, `/dismiss` |
 | `watchdog.py` | Prefect health monitor | `main`, `_is_backup_running`, `_service_state`, `_start/_stop_service` |
 | `collect_config_data.py`, `deploy/*` | install / discovery / restore scripts | — |
 
@@ -296,7 +296,7 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `hashing.py` | md5 helpers | tests/legacy |
 | `notify.py` | **[built, not wired yet]** single alert path, delivery recorded, cooldown | (WP8) |
 | `guards.py` | G1–G4 wired via `flow.lan_guards_task` / `cloud_guards_task` (2.2); `enforce`, `GuardBlocked`, `max_delete_allowance`, `require_source_files`; G5 not wired yet | (M2 2.3 for G5) |
-| `approvals.py` | **[built, not wired yet]** approval decisions | (M2 2.3) |
+| `approvals.py` | approval decisions: statuses PENDING/APPROVED/DISMISSED/USED/SUPERSEDED, `request_phrase`, `evaluate_request`, `evaluate_approval`; storage in `ManifestDB` (`approvals` table) | `flow._apply_approval`, `flow._open_block_request`, `ui` |
 | `smb_ready.py` | **[built, not wired yet]** NAS readiness | (M2 2.5) |
 | `rclone_errors.py` | **[built, not wired yet]** transport-failure classifier | (WP7) |
 
@@ -389,7 +389,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | CL12 | Planned deletions (`rclone sync --dry-run`, within `cloud.dry_run_timeout_seconds`) <= `guards.max_delete_files` and <= `guards.max_delete_percent` of the destination (`rclone size`) | `cloud-guards` **G3** | yes (2.2); real sync gets `--max-delete` (rclone stops with exit 7 → FAILED) | — |
 | CL13 | Cloud write permission: create + delete a probe object outside the FY prefix | — | no | WP4 (DEC-5) |
 | CL12a | Bucket/prefix unchanged since last success of the same FY | `cloud-guards` **G4** | yes (2.2) | — |
-| — | Any G-check blocks: `CLOUD_BLOCKED` row with the guard record, nothing transferred; generic failure alert today | `flow` | yes (2.2) | attention email "open the dashboard" + approve/dismiss (2.3) |
+| — | Any G-check blocks: `CLOUD_BLOCKED` row with the guard record, nothing transferred, ONE approval request + ONE "ACTION REQUIRED - open the dashboard" email (`core.notify`, key `blocked:cloud`, cooldown); approve once on the dashboard re-runs with `approval_id` | `flow`, `ui` | yes (2.2, 2.3) | — |
 
 ### 10.3 Cloud leg — must hold for the run to count as SUCCESS
 
@@ -415,7 +415,7 @@ exception in the verify/post steps can still leave a success status in the row �
 | LA2 | robocopy binary found | `health` | yes | — |
 | LA3 | NAS awake (only if `wol.enabled`): TCP 445 answers within 5 s, otherwise magic packet x `wol.wake_retry_count`, then poll 445 every `wol.ping_interval_seconds` up to `wol.wake_timeout_seconds`, then `wol.stability_wait_seconds` | `wol.ensure_server_online` | yes (wake capped at 600 s) | `smb_ready`: 445 **and** a real SMB stat **and** a stability re-check; defaults 900 s wake / 90 s settle, cap 3600 s (M2 2.5) |
 | LA4 | NAS host answers TCP 445 | `lan_preflight._is_smb_reachable` | yes — **hard-coded 2 s x 4 tries (about 15 s)** | `smb_ready` with `wol.smb_connect_timeout_seconds` (15) x `lan.preflight_smb_attempts` (8), wait `lan.preflight_smb_wait_seconds` (15) |
-| LA5 | Mount canary `<dest>\.AAM_TARGET_MOUNTED` exists and is a regular file | `lan_preflight` | yes (fails with "create the canary" text) | **G5**: BLOCKED + an approval that recreates it (M2) |
+| LA5 | Mount canary `<dest>\.AAM_TARGET_MOUNTED` exists at the destination ROOT and is a regular file | `lan_preflight` → `lan-guards` **G5** | yes (2.3): missing → `LAN_BLOCKED` + approval that recreates it (was: hard failure with "create the canary" text) | — |
 | LA6 | `robocopy /L /MIR` dry-run exits < 8 within `lan.dry_run_timeout_seconds`; job summary kept (no `/NJS`) and parsed | `lan_preflight` | yes; preflight task retried once after 30 s | moves onto `run_tool` + `/UNILOG` in WP4 (2.4) |
 | LA7 | Destination writable (create / read / delete a probe file) | — | no (21 "Access is denied" nights) | WP4 |
 | LA8 | Service account holds `SeBackupPrivilege` when `/ZB` is used | — | no (robocopy exit 16 otherwise) | WP4 (`whoami /priv`), `lan.use_backup_mode` |

@@ -643,15 +643,11 @@ def test_w18_lan_dry_run_smb_unreachable(monkeypatch, sandbox):
 
 
 def test_w18_lan_dry_run_canary_missing(monkeypatch, sandbox):
-    from core.health import HealthError
-
+    """M2 2.3: a missing marker is reported (guard G5 blocks the run for a
+    human); an UNREADABLE destination still fails (next test)."""
     lp, src, dest = _lan_rig(monkeypatch, sandbox, with_canary=False)
-    with pytest.raises(HealthError, match="Canary file"):
-        lp.run_lan_dry_run(str(src), str(dest))
-    try:
-        lp.run_lan_dry_run(str(src), str(dest))
-    except HealthError as e:
-        assert "Recovery: verify the FY share is mounted" in str(e)
+    res = lp.run_lan_dry_run(str(src), str(dest))
+    assert res["canary_present"] is False
 
 
 def test_w18_lan_dry_run_canary_unreadable(monkeypatch, sandbox):

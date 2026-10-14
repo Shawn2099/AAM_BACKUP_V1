@@ -501,7 +501,7 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 ### M2 — Data safety
 - [x] 2.1 `core/guards.py` G1–G5 + property tests (e41db7f) — pure module, wiring is 2.2
 - [x] 2.2 LAN deletion count from `/L` summary; cloud `--dry-run` count + `--max-delete` backstop (7dcea6e LAN, efb2d98 cloud, 219f057 G1 replaces health emptiness). G1–G4 wired; G5 (canary → BLOCKED + approval that recreates it) moves to 2.3 with the approval action. Baselines are per leg **and FY** (rollover starts a fresh baseline, DEC-4). Measurement failure = `*_FAILED`; guard verdict = `*_BLOCKED`.
-- [~] 2.3 Approvals: decision logic done (`core/approvals.py`, 465c04d); TODO approvals table in ManifestDB, `*_BLOCKED` rows, dashboard approve/dismiss, `approval_id` flow parameter (§6)
+- [x] 2.3 Approvals (8afa499 request + attention email + approve-once rerun; 0c627c0 dashboard approve/dismiss/run; 975d499 G5 wired, approval recreates the marker). Approving needs `dashboard.auth_enabled: true`; a scheduled run never consumes an approval; the approval is used up before any transfer.
 - [ ] 2.4 Preflight: `whoami /priv`, destination write probe, source read probe, dest free space, cloud write probe (WP4)
 - [x] 2.5 Shared `wait_for_smb_ready` wired into WoL + LAN preflight with config timings (b59a6d6)
 - [ ] 2.6 FY rollover inside slot, forward-only, reuse pipelines, placeholder, config backup (WP11)

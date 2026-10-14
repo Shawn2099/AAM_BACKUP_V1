@@ -41,10 +41,17 @@ def _seed(src: Path, n: int = 300) -> None:
 
 
 # ── c1: canary deleted ─────────────────────────────────────────────────────────
-def test_w5c_missing_canary_fails_and_alerts(sandbox, monkeypatch):
-    """The full LAN pipeline with no canary: failed run + alert emitted?"""
+def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
+    """End-to-end approval cycle with the REAL robocopy and DB (M2 2.3, plan §6.2):
+    missing mount marker -> LAN_BLOCKED (G5), nothing written, ONE approval
+    request + ONE attention email; a scheduled rerun stays blocked; the
+    approved rerun creates the marker and mirrors; the approval is used up."""
     import core.lan_sync as ls
     import flow
+    from core import approvals as ap
+    from core import guards
+    from core.manifest import ManifestDB
+    from core.time_utils import now_iso
 
     monkeypatch.setenv("PREFECT_TEST_MODE", "1")
     src = sandbox / "source" / "FY26-26"
@@ -55,55 +62,76 @@ def test_w5c_missing_canary_fails_and_alerts(sandbox, monkeypatch):
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
     orig = ls.build_robocopy_command
     ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
-    alerts: list = []
-    monkeypatch.setattr(flow, "send_failure_alert", lambda *a, **k: alerts.append(a) or True)
-    exc = None
+    generic, emails = [], []
+    monkeypatch.setattr(flow, "send_failure_alert", lambda *a, **k: generic.append(a) or True)
+    monkeypatch.setattr(flow, "notify", lambda config, event, db=None: emails.append(event))
+
+    def run(run_id, approval_id=None):
+        try:
+            flow._run_lan_pipeline(cfg, run_id, now_iso(), time.monotonic(),
+                                   approval_id=approval_id)
+            return None
+        except Exception as e:  # noqa: BLE001 - asserted below
+            return e
+
+    def files():
+        return sorted(p.name for p in dest.rglob("*") if p.is_file())
+
     try:
-        flow._run_lan_pipeline(cfg, "w5c-canary", "2026-09-07T01:00:00+05:30", time.monotonic())
-    except Exception as e:
-        exc = e
+        # 1. blocked: nothing written, one request, one ACTION REQUIRED email
+        exc1 = run("w5c-1")
+        db = ManifestDB.from_config(cfg)
+        try:
+            row1 = db.last_run("lan")
+            [req] = db.open_approvals()
+        finally:
+            db.close()
+        assert isinstance(exc1, guards.GuardBlocked), exc1
+        assert row1["status"] == "LAN_BLOCKED"
+        assert [g["guard"] for g in req["guards"]] == ["G5_CANARY"]
+        assert req["phrase"] == "INITIALISE DESTINATION"
+        assert files() == [], "nothing may be written to an unconfirmed destination"
+        assert [e.kind for e in emails] == ["ACTION_REQUIRED"] and generic == []
+
+        # 2. a scheduled rerun (no approval_id) stays blocked
+        assert isinstance(run("w5c-2"), guards.GuardBlocked) and files() == []
+
+        # 3. approve once (as the dashboard does), rerun with the approval
+        db = ManifestDB.from_config(cfg)
+        try:
+            req = db.open_approvals()[-1]
+            approved_at = now_iso()
+            assert db.approve_request(req["approval_id"], approved_by="lab (api-key)",
+                                      approved_at=approved_at,
+                                      expires_at=ap.expires_at(approved_at, 12))
+        finally:
+            db.close()
+        exc3 = run("w5c-3", approval_id=req["approval_id"])
+        db = ManifestDB.from_config(cfg)
+        try:
+            row3 = db.last_run("lan")
+            used = db.get_approval(req["approval_id"])
+        finally:
+            db.close()
+        assert exc3 is None, exc3
+        assert row3["status"] == "LAN_COMPLETE"
+        assert used["status"] == ap.USED and used["used_by_run_id"] == "w5c-3"
+        assert (dest / ".AAM_TARGET_MOUNTED").is_file()
+        assert len(files()) == len([p for p in src.rglob("*") if p.is_file()]) + 1
+
+        # 4. the same approval can never cover another run
+        (dest / ".AAM_TARGET_MOUNTED").unlink()
+        exc4 = run("w5c-4", approval_id=req["approval_id"])
+        assert isinstance(exc4, guards.GuardBlocked) and "already used" in str(exc4)
     finally:
         ls.build_robocopy_command = orig
 
-    from core.manifest import ManifestDB
-
-    m = ManifestDB(cfg.paths.database_path)
-    rows = m.get_recent_runs(3)
-    m.close()
-    L.record("W5c.missing_canary",
-             "a missing canary makes the whole LAN pipeline fail AND sends an alert",
-             f"raised={type(exc).__name__}: {str(exc)[:120]} | run_history={[r['status'] for r in rows]} | "
-             f"alerts emitted={len(alerts)} | destination files={len([p for p in dest.rglob('*') if p.is_file()])}",
-             "OK — preflight is a real gate: run fails loudly and the alert fires (R1 confirmed for "
-             "destination-side faults)" if exc is not None and len(alerts) == 1 and rows and
-             rows[0]["status"] == "LAN_FAILED" else "see evidence")
-    print(f"[W5c] raised={type(exc).__name__} status={[r['status'] for r in rows]} alerts={len(alerts)}")
-    # A16: the canary IS a hard gate - the run fails loudly, is recorded as
-    # LAN_FAILED, and copies nothing into the unverified destination.
-    assert exc is not None, "a missing canary must fail the pipeline"
-    assert rows and rows[0]["status"] == "LAN_FAILED", rows
-    assert len([p for p in dest.rglob("*") if p.is_file()]) == 0, (
-        "destination files exist although the canary was missing - where did they "
-        "come from?")
-    # NOTE (verified against flow.py:947-957): the pipeline's own except handler
-    # covers phase "sync" and "pre" but only ALERTS for LAN_SUSPECT, so a
-    # pre-flight failure raises LAN_FAILED with no alert of its own. The generic
-    # alert comes from backup() (flow.py:1336), i.e. the alert only fires when the
-    # caller is the production flow - a direct/manual _run_lan_pipeline() call is
-    # silent. Asserted as-is so the delegation stays visible.
-    assert len(alerts) == 0, (
-        f"the pre-flight failure now sends {len(alerts)} alert(s) itself - the "
-        "pipeline's alert policy changed; update this and the evidence note")
-    L.record("W5c.canary_alert_delegation",
-              "a pre-flight (missing canary) failure inside _run_lan_pipeline() "
-              "raises LAN_FAILED but sends NO alert of its own - alerting is "
-              "delegated to backup()'s generic path, so only the production entry "
-              "point pages the operator",
-              f"raised={type(exc).__name__} | run_history={[r['status'] for r in rows]} | "
-              f"in-pipeline alerts={len(alerts)} | destination files=0",
-              "OBSERVATION - the destination-side fault fails closed, but the specific "
-              "reason reaches the operator only through backup()'s generic alert; a "
-              "direct pipeline call (manual run/script) is silent")
+    L.record("W5c.approval_cycle",
+             "missing marker -> BLOCKED; scheduled rerun stays blocked; ONE approved rerun "
+             "creates the marker and mirrors; the approval cannot be reused",
+             f"rows: {row1['status']} -> {row3['status']} | emails={len(emails)} "
+             f"generic alerts={len(generic)} | approval {used['status']}",
+             "OK - human-in-the-loop cycle proven end to end with the real robocopy")
 
 
 # ── c2: a listening port that is not SMB ───────────────────────────────────────
