@@ -580,14 +580,21 @@ class ManifestDB:
             return dict(row) if row else None
 
     def last_successful_run(self, mode: str) -> dict | None:
-        """Return the last successful run for this mode (status ends with _COMPLETE)."""
+        """Return the last successful run for this mode.
+
+        "Successful" is the exact set core.statuses.SUCCESS_STATUSES —
+        never a suffix match.
+        """
+        from core.statuses import SUCCESS_STATUSES
+
+        success = sorted(SUCCESS_STATUSES)
+        placeholders = ",".join("?" for _ in success)
         with self._lock:
             conn = self._get_conn()
-            # GLOB, not LIKE: `_` is a single-char wildcard in LIKE and
-            # would also match e.g. `INCOMPLETE`. `_` is literal in GLOB.
             row = conn.execute(
-                "SELECT * FROM run_history WHERE mode = ? AND status GLOB '*_COMPLETE' ORDER BY started_at DESC LIMIT 1",
-                (mode,),
+                f"SELECT * FROM run_history WHERE mode = ? AND status IN ({placeholders}) "
+                "ORDER BY started_at DESC LIMIT 1",
+                (mode, *success),
             ).fetchone()
             return dict(row) if row else None
 

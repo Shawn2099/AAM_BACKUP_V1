@@ -36,6 +36,18 @@ tr:hover { background: #1f2937; }
 .tag.no-changes { background: #374151; color: #9ca3af; }
 .tag.partial { background: #78350f; color: #fcd34d; }
 .tag.failed { background: #7f1d1d; color: #fca5a5; }
+/* core/statuses.py categories (blocked / running / skipped / unknown) */
+.tag.blocked { background: #7c2d12; color: #fdba74; }
+.tag.running { background: #78350f; color: #fde68a; }
+.tag.skipped, .tag.unknown { background: #374151; color: #d1d5db; }
+.card.partial { border-color: #f59e0b; }
+.card.no-changes { border-color: #10b981; }
+.card.blocked { border-color: #f97316; }
+.card.skipped { border-color: #6b7280; }
+.status-badge.partial { background: #f59e0b; color: #000; }
+.status-badge.no-changes { background: #10b981; color: #000; }
+.status-badge.blocked { background: #f97316; color: #000; }
+.status-badge.skipped { background: #6b7280; color: #fff; }
 .success-ago { color: #6ee7b7; }
 .warn-ago { color: #fcd34d; }
 .critical-ago { color: #fca5a5; }

@@ -22,6 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
+from core import statuses
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
@@ -59,8 +60,8 @@ class PartialRun(RuntimeError):
 # result. COMPLETE means "transfer evidence says the scheduled work
 # finished" — it does NOT mean independently/cryptographically verified
 # (see the weekly integrity audit).
-_CLOUD_OK_STATUSES = frozenset({"CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"})
-_LAN_OK_STATUSES = frozenset({"LAN_COMPLETE"})
+_CLOUD_OK_STATUSES = statuses.CLOUD_SUCCESS_STATUSES
+_LAN_OK_STATUSES = statuses.LAN_SUCCESS_STATUSES
 
 
 _FY_LEAF_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)

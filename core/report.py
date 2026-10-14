@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 import humanize
 from loguru import logger
 
+from core import statuses
 from core.manifest import ManifestDB
 from core.time_utils import now_formatted
 from models.config import NotificationConfig
@@ -239,29 +240,21 @@ def generate_report_html(
         return ""
 
     total = len(runs)
-    successes = sum(1 for r in runs if (str(r.get("status", "")).endswith("_COMPLETE") and "NO_CHANGES" not in str(r.get("status", ""))) or r.get("status") == "SUCCESS")
-    no_changes = sum(1 for r in runs if "NO_CHANGES" in str(r.get("status", "")))
-    partials = sum(1 for r in runs if str(r.get("status", "")).endswith("_PARTIAL"))
-    skipped = sum(1 for r in runs if str(r.get("status", "")).endswith("_SKIPPED"))
-    failures = total - successes - no_changes - partials - skipped
+    cats = [statuses.category(r.get("status")) for r in runs]
+    successes = cats.count(statuses.CATEGORY_SUCCESS)
+    no_changes = cats.count(statuses.CATEGORY_NO_CHANGES)
+    partials = cats.count(statuses.CATEGORY_PARTIAL)
+    skipped = cats.count(statuses.CATEGORY_SKIPPED)
+    blocked = cats.count(statuses.CATEGORY_BLOCKED)
+    running = cats.count(statuses.CATEGORY_RUNNING)
+    # Everything not positively classified counts as a failure (fail loud):
+    # failed + unknown statuses.
+    failures = total - successes - no_changes - partials - skipped - blocked - running
 
     total_files = sum(r.get("files_copied") or 0 for r in runs)
     total_bytes = sum(r.get("bytes_copied") or 0 for r in runs)
 
     success_rate = ((successes + no_changes) / total * 100) if total > 0 else 0
-
-    def _status_display(status: str) -> str:
-        if status in ("CLOUD_NO_CHANGES_COMPLETE", "LAN_NO_CHANGES_COMPLETE"):
-            return "No Changes"
-        if status.endswith("_COMPLETE") or status == "SUCCESS":
-            return "Completed"
-        if "_PARTIAL" in status:
-            return "Partial"
-        if "_FAILED" in status:
-            return "Failed"
-        if "_SKIPPED" in status:
-            return "Skipped"
-        return status
 
     # Limit to 10 rows in the email body to guarantee we stay under the 102KB limit
     rows = ""
@@ -269,7 +262,7 @@ def generate_report_html(
     for r in runs[:10]:
         start = (r.get("started_at") or "-")[:19].replace("T", " ")
         mode = (r.get("mode") or "unknown").upper()
-        status = _status_display(r.get("status") or "")
+        status = statuses.label(r.get("status"))
         files = r.get("files_copied") or 0
         dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
         
@@ -325,6 +318,8 @@ def generate_report_html(
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">No Changes (Up-to-date)</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{no_changes}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Partial Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{partials}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Skipped Runs</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{skipped}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Blocked (approval needed)</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{blocked}</td></tr>
+<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">In Progress</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{running}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Failed Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{failures}</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Success Rate</td><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600">{success_rate:.1f}%</td></tr>
 <tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Files Backed Up</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_files:,}</td></tr>

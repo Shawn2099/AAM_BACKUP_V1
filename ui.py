@@ -33,6 +33,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
+from core import statuses
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, get_fy_prefix
 
@@ -520,6 +521,7 @@ async def status(request: Request):
         recent_runs.append({
             "mode": r.get("mode", "?"),
             "status": r.get("status", "?"),
+            **_status_fields(r),
             "started_at": (r.get("started_at") or "-")[:19].replace("T", " "),
             "files": r.get("files_copied", 0),
             "files_failed": r.get("files_failed", 0),
@@ -871,6 +873,18 @@ def _integrity_summary(db: ManifestDB, mode: str) -> dict:
     }
 
 
+def _status_fields(run: dict) -> dict:
+    """Label/category/description from core.statuses (single source)."""
+    status = run.get("status")
+    return {
+        "status_label": statuses.label(status),
+        "status_category": statuses.category(status),
+        "status_description": statuses.describe(
+            status, run.get("files_copied", 0), run.get("files_failed", 0)
+        ),
+    }
+
+
 def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
     run = db.last_run(mode)
     if not run:
@@ -880,6 +894,7 @@ def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
         err_msg = err_msg[:2000] + "..."
     return {
         "status": run.get("status", "unknown"),
+        **_status_fields(run),
         "started_at": run.get("started_at", ""),
         "files": run.get("files_copied", 0),
         "files_failed": run.get("files_failed", 0),
