@@ -563,7 +563,8 @@ class TestLanPreflightCharacterization:
 
         dest = tmp_path / "dest"
         dest.mkdir()
-        with patch("core.lan_preflight.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+        from test_support.fake_tools import fake_run_tool
+        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0):
             assert run_lan_dry_run(source=str(tmp_path), dest=str(dest))["canary_present"] is False
 
     def test_dry_run_with_canary_and_ok_exit(self, tmp_path):
@@ -572,8 +573,8 @@ class TestLanPreflightCharacterization:
         dest = tmp_path / "dest"
         dest.mkdir()
         (dest / ".AAM_TARGET_MOUNTED").write_text("")
-        with patch("core.lan_preflight.subprocess.run") as m:
-            m.return_value = MagicMock(returncode=1, stdout="", stderr="")
+        from test_support.fake_tools import fake_run_tool
+        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=1):
             result = run_lan_dry_run(source=str(tmp_path), dest=str(dest))
         assert result["ok"] is True
         assert result["exit_code"] == 1
@@ -584,8 +585,8 @@ class TestLanPreflightCharacterization:
         dest = tmp_path / "dest"
         dest.mkdir()
         (dest / ".AAM_TARGET_MOUNTED").write_text("")
-        with patch("core.lan_preflight.subprocess.run") as m:
-            m.return_value = MagicMock(returncode=8, stdout="copy error", stderr="")
+        from test_support.fake_tools import fake_run_tool
+        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=8, log="copy error\n"):
             result = run_lan_dry_run(source=str(tmp_path), dest=str(dest))
         assert result["ok"] is False
         assert result["exit_code"] == 8

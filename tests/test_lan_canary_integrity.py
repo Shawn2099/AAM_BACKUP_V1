@@ -92,21 +92,16 @@ def _preflight(monkeypatch, dest: Path, source: Path | None = None) -> dict:
     gate directly. Returns the robocopy invocations that were attempted, so
     tests can assert the gate refused BEFORE any mirror was built.
     """
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        return _FakeCompleted(0, "", "")
-
-    monkeypatch.setattr("core.lan_preflight.subprocess.run", fake_run)
     from core.lan_preflight import run_lan_dry_run
+    from test_support.fake_tools import fake_run_tool
 
     src = source or dest
-    try:
-        result = run_lan_dry_run(str(src), str(dest))
-    except HealthError as exc:
-        return {"health_error": exc, "calls": calls}
-    return {"result": result, "calls": calls}
+    with fake_run_tool("core.lan_preflight", exit_code=0, log_encoding="utf-16") as tool_calls:
+        try:
+            result = run_lan_dry_run(str(src), str(dest))
+        except HealthError as exc:
+            return {"health_error": exc, "calls": [c["argv"] for c in tool_calls]}
+    return {"result": result, "calls": [c["argv"] for c in tool_calls]}
 
 
 def _assert_marker_missing_listing_only(out: dict) -> None:

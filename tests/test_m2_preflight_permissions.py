@@ -184,10 +184,10 @@ def test_dry_run_uses_exact_bytes_and_excludes_probe_files(tmp_path):
     dest = tmp_path / "d"
     dest.mkdir()
     (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    with patch.object(lan_preflight.subprocess, "run",
-                      return_value=MagicMock(returncode=1, stdout=out, stderr="")) as run:
+    from test_support.fake_tools import fake_run_tool
+    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=1, log="------\n" + out) as calls:
         res = lan_preflight.run_lan_dry_run(str(tmp_path), str(dest))
-    argv = run.call_args.args[0]
+    argv = calls[0]["argv"]
     assert "/BYTES" in argv and perm.PROBE_PATTERN in argv
     assert res["bytes"]["copied"] == 3501234
 

@@ -185,7 +185,8 @@ class TestCanaryMessage:
         from core import guards
         dest = tmp_path / "FY25-26"
         dest.mkdir()
-        with patch.object(lan_preflight.subprocess, "run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+        from test_support.fake_tools import fake_run_tool
+        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0):
             res = lan_preflight.run_lan_dry_run(str(dest.parent), str(dest))
         assert res["canary_present"] is False
         msg = guards.g5_canary(False, True, str(dest)).reason

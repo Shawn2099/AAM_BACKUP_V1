@@ -359,13 +359,13 @@ def test_missing_marker_no_longer_fails_preflight_it_is_measured(tmp_path):
 
     dest = tmp_path / "dest"
     dest.mkdir()
-    done = MagicMock(returncode=0, stdout="", stderr="")
-    with patch.object(lan_preflight.subprocess, "run", return_value=done) as run:
+    from test_support.fake_tools import fake_run_tool
+    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0) as calls:
         res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
     assert res["ok"] is True and res["canary_present"] is False
-    assert "/L" in run.call_args.args[0]                 # read-only listing still runs
+    assert "/L" in calls[0]["argv"]                      # read-only listing still runs
     (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    with patch.object(lan_preflight.subprocess, "run", return_value=done):
+    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0):
         assert lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))["canary_present"]
 
 

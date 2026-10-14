@@ -5,7 +5,6 @@ before committing to a multi-hour copy.
 """
 
 import socket
-import subprocess
 from pathlib import Path
 
 from loguru import logger
@@ -14,9 +13,16 @@ import time
 from core.smb_ready import wait_for_smb_ready
 
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
-from core.lan_sync import count_extra_file_lines, summarize_log_bytes, summarize_log_counts
+from core.lan_sync import (
+    _read_log_tail,
+    is_extra_file_line,
+    summarize_log_bytes,
+    summarize_log_counts,
+)
 from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
+from core.run_artefacts import RunArtefacts
+from core.tool_runner import run_tool
 
 
 def _extract_unc_host(path_str: str) -> str | None:
@@ -67,8 +73,15 @@ def run_lan_dry_run(
     smb_attempts: int = 8,
     smb_wait_seconds: float = 15.0,
     smb_connect_timeout_seconds: float = 15.0,
+    artefacts: RunArtefacts | None = None,
+    log_tail_kb: int = 100,
 ) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
+
+    The FULL listing is written with /UNILOG into the run's artefact folder
+    and kept (plan WP2/WP4): it is the evidence behind a guard decision
+    (every file a mirror would delete). run_tool kills the process tree on
+    timeout. log_tail_kb bounds the error text (lan.log_tail_kb).
 
     /L = list-only — reports what WOULD happen, zero bytes moved.
     /MIR = mirror logic (same as real run).
@@ -139,45 +152,63 @@ def run_lan_dry_run(
         "/XF", ".AAM_TARGET_MOUNTED", PROBE_PATTERN,
         "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
+    artefacts = artefacts or RunArtefacts.ephemeral("lan-dry-run")
+    log_path = artefacts.new_path("robocopy-dry-run", "log")
+    cmd.append(f"/UNILOG:{log_path}")
 
-    logger.info(f"LAN dry-run: validating {source} → {dest}")
+    logger.info(f"LAN dry-run: validating {source} → {dest} (full log: {log_path})")
+    result = run_tool("robocopy-dry-run", cmd, timeout_s=timeout,
+                      artefacts=artefacts, log_path=log_path)
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-
-        code = result.returncode
-        # Exit codes 0-7: success (various file-change combinations).
-        # Exit codes 8+: error (copy failures, fatal errors).
-        ok = code < 8
-
-        if not ok:
-            # Robocopy writes errors to stdout, not stderr.
-            out_err = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
-            error_output = out_err or "no output"
-            logger.error(f"LAN dry-run failed (exit {code}): {error_output}")
-            return {"ok": False, "exit_code": code, "error": f"Robocopy /L failed with exit {code}\nOutput: {error_output}"}
-
-        counts = summarize_log_counts(result.stdout or "")
-        planned_deletes = count_extra_file_lines(result.stdout or "")
-        logger.info(f"LAN dry-run passed (exit {code}); summary Files row: {counts}; "
-                    f"planned deletions (*EXTRA File lines): {planned_deletes}")
-        return {"ok": True, "exit_code": code, "error": None, "counts": counts,
-                "planned_deletes": planned_deletes, "canary_present": canary_valid,
-                "bytes": summarize_log_bytes(result.stdout or "")}
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"LAN dry-run timed out after {timeout}s")
+    if result.spawn_error:
+        missing = "FileNotFoundError" in result.spawn_error
+        logger.error(f"LAN dry-run could not start robocopy: {result.spawn_error}")
+        return {"ok": False, "exit_code": -1,
+                "error": "robocopy.exe not found" if missing else result.spawn_error}
+    if result.timed_out:
+        logger.error(f"LAN dry-run timed out after {timeout}s (full log: {log_path})")
         return {"ok": False, "exit_code": -1, "error": f"Timeout after {timeout}s"}
-    except FileNotFoundError:
-        logger.error("robocopy.exe not found")
-        return {"ok": False, "exit_code": -1, "error": "robocopy.exe not found"}
+
+    code = result.exit_code
+    # Exit codes 0-7: success (various file-change combinations).
+    # Exit codes 8+: error (copy failures, fatal errors).
+    if code >= 8:
+        tail = _read_log_tail(log_path, int(log_tail_kb) * 1024, encoding="utf-16").strip()
+        error_output = tail or result.stdout_text().strip() or "no output"
+        logger.error(f"LAN dry-run failed (exit {code}); full log: {log_path}\n{error_output}")
+        return {"ok": False, "exit_code": code,
+                "error": f"Robocopy /L failed with exit {code}\nOutput: {error_output}"}
+
+    planned_deletes, summary = _scan_dry_run_log(log_path)
+    counts = summarize_log_counts(summary)
+    logger.info(f"LAN dry-run passed (exit {code}); summary Files row: {counts}; "
+                f"planned deletions (*EXTRA File lines): {planned_deletes}; full log: {log_path}")
+    return {"ok": True, "exit_code": code, "error": None, "counts": counts,
+            "planned_deletes": planned_deletes, "canary_present": canary_valid,
+            "bytes": summarize_log_bytes(summary), "log_path": str(log_path)}
+
+
+def _scan_dry_run_log(log_path) -> tuple[int, str]:
+    """Stream the /UNILOG dry-run log: (*EXTRA File line count, summary block).
+
+    Streaming keeps memory flat even when a mass deletion lists every file;
+    only the block after the last "-----" separator (the job summary) is
+    kept. An unreadable log yields an empty summary -> counts None -> the
+    guards fail the run.
+    """
+    extra = 0
+    summary: list[str] = []
+    in_summary = False
+    try:
+        with open(log_path, encoding="utf-16", errors="replace") as f:
+            for line in f:
+                if line.lstrip().startswith("-----"):
+                    summary, in_summary = [], True
+                elif in_summary:
+                    summary.append(line)
+                elif is_extra_file_line(line):
+                    extra += 1
     except OSError as e:
-        logger.error(f"LAN dry-run OS error: {e}")
-        return {"ok": False, "exit_code": -1, "error": str(e)}
+        logger.error(f"LAN dry-run log unreadable ({log_path}): {e}")
+        return extra, ""
+    return extra, "".join(summary)

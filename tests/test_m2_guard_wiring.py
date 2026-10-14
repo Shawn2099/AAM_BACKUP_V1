@@ -130,10 +130,10 @@ def test_lan_dry_run_keeps_job_summary_and_returns_counts(tmp_path):
     dest = tmp_path / "dest"
     dest.mkdir()
     (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    done = MagicMock(returncode=1, stdout=_ROBOCOPY_L_STDOUT, stderr="")
-    with patch.object(lan_preflight.subprocess, "run", return_value=done) as run:
+    from test_support.fake_tools import fake_run_tool
+    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=1, log=_ROBOCOPY_L_STDOUT) as calls:
         res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
-    argv = run.call_args.args[0]
+    argv = calls[0]["argv"]
     assert "/L" in argv and "/NJS" not in argv
     assert res["ok"] is True
     assert res["counts"]["total"] == 1000 and res["counts"]["extras"] == 3
@@ -167,8 +167,8 @@ def test_lan_planned_deletes_exclude_kept_mount_markers(tmp_path):
     dest = tmp_path / "dest"
     dest.mkdir()
     (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    done = MagicMock(returncode=3, stdout=_ROBOCOPY_L_WITH_MARKERS, stderr="")
-    with patch.object(lan_preflight.subprocess, "run", return_value=done):
+    from test_support.fake_tools import fake_run_tool
+    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=3, log=_ROBOCOPY_L_WITH_MARKERS):
         res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
     assert res["planned_deletes"] == 3
     assert res["counts"]["extras"] == 5

@@ -560,8 +560,8 @@ def wol_check_task(config):
 
 
 @task(name="lan-preflight")
-def lan_preflight_task(config):
-    """Run robocopy /L dry-run before real sync."""
+def lan_preflight_task(config, artefacts_dir: str | None = None):
+    """Run robocopy /L dry-run before real sync (full listing kept in run_logs)."""
     logger.info(f"LAN preflight: validating {config.paths.source_drive} → {config.paths.lan_destination}")
     result = run_lan_dry_run(
         source=config.paths.source_drive,
@@ -573,6 +573,8 @@ def lan_preflight_task(config):
         smb_attempts=config.lan.preflight_smb_attempts,
         smb_wait_seconds=config.lan.preflight_smb_wait_seconds,
         smb_connect_timeout_seconds=config.wol.smb_connect_timeout_seconds,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
+        log_tail_kb=config.lan.log_tail_kb,
     )
     if not result["ok"]:
         raise RuntimeError(f"LAN preflight failed: {result['error']}")
@@ -1289,7 +1291,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         try:
             health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
-            dry_run = preflight(config)
+            dry_run = preflight(config, artefacts_dir)
             before_dict = lan_snapshot_before_task(config)
             guard_record = lan_guards_task(
                 config, _effective_fy_prefix(config), dry_run,

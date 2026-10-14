@@ -42,6 +42,11 @@ def count_extra_file_lines(listing: str) -> int:
     """Files a `robocopy /L /MIR` run would delete (guard G3 input)."""
     return len(_EXTRA_FILE_LINE.findall(listing or ""))
 
+
+def is_extra_file_line(line: str) -> bool:
+    """One destination file `robocopy /MIR` deletes (streaming form)."""
+    return bool(_EXTRA_FILE_LINE.match(line))
+
 # Integrity-verification contract: a robocopy run that terminated normally
 # ALWAYS ends its /LOG with the job-summary table ("Files :" row + "Ended :"
 # line). An externally killed run (taskkill, WMI Terminate, NtTerminateProcess,
