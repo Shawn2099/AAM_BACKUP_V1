@@ -28,6 +28,11 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 
+# Keep only the most recent attempts in the result (a zero/low poll interval
+# must not grow an unbounded list); the summary always states the totals.
+_TIMELINE_MAX = 50
+
+
 @dataclass
 class ReadinessResult:
     ready: bool
@@ -73,22 +78,26 @@ def wait_for_smb_ready(
     min_attempts: int = 1,
     clock=time.monotonic,
     sleep=time.sleep,
+    tcp_probe=None,
 ) -> ReadinessResult:
     """Poll until the SMB share is genuinely usable or `max_wait_s` passes.
 
     At least `min_attempts` probes are made even if `max_wait_s` is tiny,
     so a misconfiguration can never skip the check entirely.
     """
+    probe = tcp_probe or tcp_port_open
     start = clock()
     attempts = 0
     timeline: list[str] = []
     last_reason = "not probed"
     while True:
         attempts += 1
-        ok, why = tcp_port_open(host, port, connect_timeout_s)
+        ok, why = probe(host, port, connect_timeout_s)
         if ok:
             ok, why = smb_path_usable(probe_path)
         elapsed = clock() - start
+        if len(timeline) >= _TIMELINE_MAX:
+            del timeline[0]
         timeline.append(f"t+{elapsed:.0f}s attempt {attempts}: {'OK' if ok else 'no'} ({why})")
         last_reason = why
         if ok:
@@ -96,7 +105,7 @@ def wait_for_smb_ready(
                 logger.info(f"{host}: SMB answered after {elapsed:.0f}s; waiting "
                             f"{stability_wait_s:.0f}s for the NAS to settle")
                 sleep(stability_wait_s)
-                ok2, why2 = tcp_port_open(host, port, connect_timeout_s)
+                ok2, why2 = probe(host, port, connect_timeout_s)
                 if ok2:
                     ok2, why2 = smb_path_usable(probe_path)
                 elapsed = clock() - start
@@ -110,7 +119,7 @@ def wait_for_smb_ready(
                     continue
             logger.info(f"{host}: SMB ready after {elapsed:.0f}s ({attempts} attempt(s))")
             return ReadinessResult(True, host, round(elapsed, 1), attempts, "ready", timeline)
-        logger.info(f"{host}: not ready yet (attempt {attempts}, t+{elapsed:.0f}s): {why}")
+        logger.debug(f"{host}: not ready yet (attempt {attempts}, t+{elapsed:.0f}s): {why}")
         if elapsed >= max_wait_s and attempts >= min_attempts:
             break
         sleep(poll_interval_s)

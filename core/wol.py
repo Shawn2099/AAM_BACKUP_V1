@@ -9,14 +9,17 @@ import time
 from loguru import logger
 from wakeonlan import send_magic_packet as wol_send
 
+from core.smb_ready import wait_for_smb_ready
 from models.config import AppConfig
+
+CANARY_NAME = ".AAM_TARGET_MOUNTED"
 
 
 class WolTimeout(RuntimeError):
     """Server did not respond within wake timeout."""
 
 
-def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 5.0) -> bool:
+def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 15.0) -> bool:
     """TCP connect to SMB port. More reliable than ping.
 
     P1-WOL: ports outside the valid range are rejected by the clamp guard
@@ -86,30 +89,44 @@ def _send_magic_packet(
 
 
 
+def _tcp_probe(host: str, port: int, timeout_s: float) -> tuple[bool, str]:
+    ok = _smb_port_open(host, port, timeout_s)
+    return ok, "tcp open" if ok else f"tcp {port}: no answer within {timeout_s:.0f}s"
+
+
 def wait_for_server(
     server_ip: str,
     wake_timeout: int,
     ping_interval: int,
     stability_wait: int,
+    *,
+    probe_path: str | None = None,
+    connect_timeout: float = 15.0,
 ) -> None:
-    """Poll SMB port until server responds, then wait for stability.
+    """Wait until the NAS is genuinely usable over SMB (core.smb_ready).
+
+    Ready = TCP 445 open AND (when `probe_path` is given) a real SMB stat
+    succeeds AND the share is still usable after `stability_wait`.
 
     Raises:
-        WolTimeout: If server does not respond within wake_timeout seconds.
+        WolTimeout: if not usable within wake_timeout seconds (reason included).
     """
-    start_time = time.time()
-    while time.time() - start_time < wake_timeout:
-        if _smb_port_open(server_ip):
-            logger.info(f"Backup server {server_ip} SMB accessible after WoL")
-            if stability_wait > 0:
-                logger.debug(f"Waiting {stability_wait}s for server stability")
-                time.sleep(stability_wait)
-            return
-        time.sleep(ping_interval)
-
-    raise WolTimeout(
-        f"Backup server {server_ip} SMB not accessible within {wake_timeout}s after WoL"
+    result = wait_for_smb_ready(
+        server_ip, probe_path=probe_path, connect_timeout_s=connect_timeout,
+        max_wait_s=wake_timeout, poll_interval_s=ping_interval,
+        stability_wait_s=stability_wait, sleep=time.sleep, tcp_probe=_tcp_probe,
     )
+    if not result.ready:
+        raise WolTimeout(f"Backup server {result.reason} after WoL")
+    logger.info(f"Backup server {server_ip} usable over SMB after WoL "
+                f"({result.elapsed_s:.0f}s, {result.attempts} attempt(s))")
+
+
+def _canary_path(config: AppConfig) -> str | None:
+    dest = getattr(getattr(config, "paths", None), "lan_destination", None)
+    if not isinstance(dest, str) or not dest:
+        return None
+    return dest.rstrip("\\/") + "\\" + CANARY_NAME
 
 
 def ensure_server_online(config: AppConfig) -> bool:
@@ -123,9 +140,16 @@ def ensure_server_online(config: AppConfig) -> bool:
         return True
 
     server_ip = config.wol.server_ip
+    connect_timeout = float(getattr(config.wol, "smb_connect_timeout_seconds", 15.0))
+    probe_path = _canary_path(config)
 
-    if _smb_port_open(server_ip):
-        logger.info(f"Backup server {server_ip} already online")
+    already = wait_for_smb_ready(
+        server_ip, probe_path=probe_path, connect_timeout_s=connect_timeout,
+        max_wait_s=0, poll_interval_s=0, stability_wait_s=0, min_attempts=1,
+        sleep=time.sleep, tcp_probe=_tcp_probe,
+    )
+    if already.ready:
+        logger.info(f"Backup server {server_ip} already online (SMB usable)")
         return True
 
     logger.info(f"Backup server {server_ip} offline, sending WoL")
@@ -140,5 +164,7 @@ def ensure_server_online(config: AppConfig) -> bool:
         config.wol.wake_timeout_seconds,
         config.wol.ping_interval_seconds,
         config.wol.stability_wait_seconds,
+        probe_path=probe_path,
+        connect_timeout=connect_timeout,
     )
     return True

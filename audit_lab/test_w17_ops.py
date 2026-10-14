@@ -163,7 +163,7 @@ def test_w17_wait_for_server_immediate_with_stability(monkeypatch):
     import core.wol as wol
 
     slept = []
-    monkeypatch.setattr(wol, "_smb_port_open", lambda ip: True)
+    monkeypatch.setattr(wol, "_smb_port_open", lambda ip, *a, **k: True)
     monkeypatch.setattr(wol.time, "sleep", lambda s: slept.append(s))
     wol.wait_for_server("10.0.0.9", wake_timeout=60, ping_interval=2, stability_wait=10)
     assert slept == [10], "only the stability wait, no poll backoff"
@@ -175,7 +175,7 @@ def test_w17_wait_for_server_immediate_with_stability(monkeypatch):
 def test_w17_wait_for_server_timeout_raises(monkeypatch):
     import core.wol as wol
 
-    monkeypatch.setattr(wol, "_smb_port_open", lambda ip: False)
+    monkeypatch.setattr(wol, "_smb_port_open", lambda ip, *a, **k: False)
     monkeypatch.setattr(wol.time, "sleep", lambda s: None)
     with pytest.raises(wol.WolTimeout):
         wol.wait_for_server("10.0.0.9", wake_timeout=1, ping_interval=0, stability_wait=0)

@@ -434,6 +434,9 @@ def lan_preflight_task(config):
         # over SMB); the old hardcoded 300s failed at the scale this deployment
         # targets. Config-driven so the operator can tune per environment.
         timeout=config.lan.dry_run_timeout_seconds,
+        smb_attempts=config.lan.preflight_smb_attempts,
+        smb_wait_seconds=config.lan.preflight_smb_wait_seconds,
+        smb_connect_timeout_seconds=config.wol.smb_connect_timeout_seconds,
     )
     if not result["ok"]:
         raise RuntimeError(f"LAN preflight failed: {result['error']}")

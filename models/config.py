@@ -127,6 +127,12 @@ class LanConfig(StrictModel):
     # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the
     # scale this deployment targets, aborting a healthy backup before it started.
     dry_run_timeout_seconds: int = Field(default=900, ge=60, le=7200, description="Timeout for the robocopy /L preflight dry-run (seconds)")
+    preflight_smb_attempts: int = Field(
+        default=8, ge=1, le=60,
+        description="LAN preflight: SMB port-445 reachability attempts before failing "
+                    "(each up to wol.smb_connect_timeout_seconds)")
+    preflight_smb_wait_seconds: int = Field(
+        default=15, ge=1, le=300, description="LAN preflight: seconds between SMB attempts")
 
 
 class WolConfig(StrictModel):
@@ -146,15 +152,28 @@ class WolConfig(StrictModel):
             "different VLAN or managed switch that blocks 255.255.255.255."
         ),
     )
-    wake_timeout_seconds: int = Field(default=300, ge=60, le=600)
-    ping_interval_seconds: int = Field(default=15, ge=5, le=60)
-    stability_wait_seconds: int = Field(default=30, ge=0)
+    # WP10 (owner issue 2026-10-14): a NAS cold boot (POST + disk spin-up +
+    # OS + SMB service) routinely takes minutes. Generous defaults; set to
+    # 2x the cold-boot time measured on site (plan WP17).
+    wake_timeout_seconds: int = Field(
+        default=900, ge=60, le=3600,
+        description="Max seconds to wait for the NAS to become usable over SMB after WoL")
+    ping_interval_seconds: int = Field(
+        default=15, ge=5, le=120, description="Seconds between readiness polls")
+    stability_wait_seconds: int = Field(
+        default=90, ge=0, le=900,
+        description="After SMB first answers, wait this long and re-check before using the NAS")
+    smb_connect_timeout_seconds: float = Field(
+        default=15, ge=1, le=120,
+        description="TCP connect timeout for each SMB (port 445) readiness probe")
     # G3: a single unicast-ish broadcast packet is frequently dropped
     # (managed switches, NIC firmware, half-initiated NIC wake state).
     # Standard practice (cf. etherwake -s/-I): send several rounds.
     # 3 rounds × 5 s adds only ~10 s against a 300 s wake timeout.
-    wake_retry_count: int = Field(default=3, ge=1, le=10)
-    wake_retry_interval_seconds: int = Field(default=5, ge=1, le=30)
+    wake_retry_count: int = Field(
+        default=5, ge=1, le=20, description="Magic-packet rounds sent per wake attempt")
+    wake_retry_interval_seconds: int = Field(
+        default=10, ge=1, le=120, description="Seconds between magic-packet rounds")
 
     @field_validator("mac_address")
     @classmethod

@@ -630,7 +630,7 @@ def _lan_rig(monkeypatch, sandbox, *, with_canary, canary_raises=False):
     if canary_raises:
         monkeypatch.setattr(Path, "is_file",
                             lambda self: (_ for _ in ()).throw(OSError("access denied")))
-    monkeypatch.setattr(lp, "_is_smb_reachable", lambda host, port=445, timeout=2.0: False)
+    monkeypatch.setattr(lp, "_is_smb_reachable", lambda host, port=445, timeout=2.0, **kw: False)
     return lp, src, dest
 
 

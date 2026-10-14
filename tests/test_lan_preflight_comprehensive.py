@@ -45,6 +45,14 @@ class TestExtractUncHost:
         assert _extract_unc_host("\\\\") is None
 
 
+def unittest_mock_cm():
+    from unittest.mock import MagicMock
+    cm = MagicMock()
+    cm.__enter__ = lambda self: self
+    cm.__exit__ = lambda self, *a: False
+    return cm
+
+
 class TestIsSmbReachable:
     def test_reachable(self):
         with patch("core.lan_preflight.socket.create_connection") as mock_conn:
@@ -53,9 +61,19 @@ class TestIsSmbReachable:
             assert _is_smb_reachable("10.0.0.1") is True
 
     def test_unreachable(self):
-        import socket as _socket
-        with patch("core.lan_preflight.socket.create_connection", side_effect=OSError):
-            assert _is_smb_reachable("10.0.0.1", timeout=0.1) is False
+        # attempts / wait come from config (lan.preflight_smb_attempts,
+        # lan.preflight_smb_wait_seconds); no real sleeping in the test.
+        with patch("core.lan_preflight.socket.create_connection", side_effect=OSError) as conn, \
+             patch("core.lan_preflight.time.sleep") as slept:
+            assert _is_smb_reachable("10.0.0.1", timeout=0.1, attempts=5, wait_s=7) is False
+        assert conn.call_count == 5
+        assert [c.args[0] for c in slept.call_args_list] == [7, 7, 7, 7]
+
+    def test_reachable_after_slow_boot(self):
+        with patch("core.lan_preflight.socket.create_connection",
+                   side_effect=[OSError, OSError, OSError, unittest_mock_cm()]), \
+             patch("core.lan_preflight.time.sleep"):
+            assert _is_smb_reachable("10.0.0.1", timeout=1, attempts=8, wait_s=15) is True
 
 
 class TestRunLanDryRun:

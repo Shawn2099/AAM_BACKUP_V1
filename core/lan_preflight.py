@@ -9,7 +9,9 @@ import subprocess
 from pathlib import Path
 
 from loguru import logger
-from tenacity import retry, retry_if_result, stop_after_attempt, wait_fixed
+import time
+
+from core.smb_ready import wait_for_smb_ready
 
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
 from core.process import resolve_binary
@@ -27,25 +29,43 @@ def _extract_unc_host(path_str: str) -> str | None:
     return parts[0].strip() if parts else None
 
 
-@retry(
-    stop=stop_after_attempt(4),
-    wait=wait_fixed(3),
-    retry=retry_if_result(lambda ok: not ok),
-    retry_error_callback=lambda retry_state: False,
-)
-def _is_smb_reachable(host: str, port: int = 445, timeout: float = 2.0) -> bool:
-    """Probe SMB port 445 with up to 4 attempts (~15s budget) to survive slow NAS spin-ups.
-
-    Uses retry_error_callback to return False upon exhaustion instead of raising RetryError.
-    """
+def _tcp_probe(host: str, port: int, timeout_s: float) -> tuple[bool, str]:
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except (OSError, socket.timeout, TimeoutError):
-        return False
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True, "tcp open"
+    except (OSError, socket.timeout, TimeoutError) as e:
+        return False, f"tcp {port}: {type(e).__name__}: {e}"
 
 
-def run_lan_dry_run(source: str, dest: str, timeout: int = 900) -> dict:
+def _is_smb_reachable(
+    host: str,
+    port: int = 445,
+    timeout: float = 15.0,
+    attempts: int = 8,
+    wait_s: float = 15.0,
+) -> bool:
+    """SMB port reachability with `attempts` tries `wait_s` apart (WP10).
+
+    All values come from config (wol.smb_connect_timeout_seconds,
+    lan.preflight_smb_attempts, lan.preflight_smb_wait_seconds); the old
+    hard-coded 2 s x 4 (~15 s) budget failed slow-booting NAS units.
+    """
+    result = wait_for_smb_ready(
+        host, probe_path=None, port=port, connect_timeout_s=timeout,
+        max_wait_s=0, poll_interval_s=wait_s, stability_wait_s=0,
+        min_attempts=max(int(attempts), 1), sleep=time.sleep, tcp_probe=_tcp_probe,
+    )
+    return result.ready
+
+
+def run_lan_dry_run(
+    source: str,
+    dest: str,
+    timeout: int = 900,
+    smb_attempts: int = 8,
+    smb_wait_seconds: float = 15.0,
+    smb_connect_timeout_seconds: float = 15.0,
+) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
 
     /L = list-only — reports what WOULD happen, zero bytes moved.
@@ -63,9 +83,14 @@ def run_lan_dry_run(source: str, dest: str, timeout: int = 900) -> dict:
     """
     # 1. Fast SMB Reachability Probe for UNC destinations (bypasses 45s OS hang)
     host = _extract_unc_host(dest)
-    if host and not _is_smb_reachable(host, port=445, timeout=2.0):
+    if host and not _is_smb_reachable(
+        host, port=445, timeout=smb_connect_timeout_seconds,
+        attempts=smb_attempts, wait_s=smb_wait_seconds,
+    ):
         msg = (
-            f"Cannot reach LAN host '{host}' on SMB port 445 within 2.0s. "
+            f"Cannot reach LAN host '{host}' on SMB port 445 after {smb_attempts} "
+            f"attempt(s) ({smb_connect_timeout_seconds:.0f}s each, "
+            f"{smb_wait_seconds:.0f}s apart). "
             "Verify the backup server/NAS is powered on, Wake-on-LAN succeeded, "
             "and network connectivity is operational."
         )

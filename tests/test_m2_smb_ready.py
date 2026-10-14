@@ -89,3 +89,75 @@ def test_smb_path_usable_semantics(tmp_path):
     assert sr.smb_path_usable(str(f))[0] is True
     assert sr.smb_path_usable(str(tmp_path / "absent"))[0] is True   # share answered
     assert sr.smb_path_usable(None)[0] is True
+
+
+# ── wiring (M2 2.5 part 2) ────────────────────────────────────────────────
+
+def _wol_cfg(tmp_path, **wol):
+    from models.config import AppConfig
+
+    w = {"enabled": True, "mac_address": "AA:BB:CC:DD:EE:FF", "server_ip": "10.10.186.231"}
+    w.update(wol)
+    return AppConfig(
+        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\10.10.186.231\\share\\FY26-27"},
+        wol=w, cloud={"enabled": False}, dashboard={"auth_enabled": False})
+
+
+def test_config_defaults_match_plan(tmp_path):
+    cfg = _wol_cfg(tmp_path)
+    assert (cfg.wol.wake_timeout_seconds, cfg.wol.stability_wait_seconds,
+            cfg.wol.wake_retry_count, cfg.wol.wake_retry_interval_seconds,
+            cfg.wol.smb_connect_timeout_seconds) == (900, 90, 5, 10, 15)
+    assert (cfg.lan.preflight_smb_attempts, cfg.lan.preflight_smb_wait_seconds) == (8, 15)
+    _wol_cfg(tmp_path, wake_timeout_seconds=3600)          # cap raised from 600
+
+
+def test_already_online_requires_usable_share(tmp_path):
+    from core import wol
+
+    cfg = _wol_cfg(tmp_path)
+    with patch.object(wol, "_smb_port_open", return_value=True), \
+         patch("core.smb_ready.smb_path_usable", return_value=(True, "smb stat ok")) as stat, \
+         patch.object(wol, "_send_magic_packet") as send:
+        assert wol.ensure_server_online(cfg) is True
+    send.assert_not_called()
+    assert stat.call_args.args[0].endswith("\\FY26-27\\.AAM_TARGET_MOUNTED")
+
+
+def test_port_open_but_share_unusable_triggers_wake_with_config_timings(tmp_path):
+    from core import wol
+
+    cfg = _wol_cfg(tmp_path, wake_timeout_seconds=1200, ping_interval_seconds=20,
+                   stability_wait_seconds=60, wake_retry_count=4,
+                   wake_retry_interval_seconds=12, smb_connect_timeout_seconds=9)
+    with patch.object(wol, "_smb_port_open", return_value=True), \
+         patch("core.smb_ready.smb_path_usable", return_value=(False, "smb stat failed")), \
+         patch.object(wol, "_send_magic_packet") as send, \
+         patch.object(wol, "wait_for_server") as wait:
+        wol.ensure_server_online(cfg)
+    send.assert_called_once_with("AA:BB:CC:DD:EE:FF", "10.10.186.255", repeat=4, interval=12)
+    args, kwargs = wait.call_args
+    assert args == ("10.10.186.231", 1200, 20, 60)
+    assert kwargs["connect_timeout"] == 9 and kwargs["probe_path"].endswith(".AAM_TARGET_MOUNTED")
+
+
+def test_wake_timeout_message_carries_the_reason(tmp_path):
+    from core import wol
+
+    with patch.object(wol, "_smb_port_open", return_value=False), \
+         patch.object(wol.time, "sleep"):
+        with pytest.raises(wol.WolTimeout) as exc:
+            wol.wait_for_server("10.10.186.231", 0, 15, 90, probe_path=None, connect_timeout=15)
+    assert "did not become usable over SMB" in str(exc.value)
+
+
+def test_lan_preflight_message_names_attempts(tmp_path):
+    from core import lan_preflight as lp
+    from core.health import HealthError
+
+    with patch.object(lp, "_is_smb_reachable", return_value=False) as probe:
+        with pytest.raises(HealthError) as exc:
+            lp.run_lan_dry_run(str(tmp_path), "\\\\10.10.151.53\\share\\FY26-27",
+                               smb_attempts=8, smb_wait_seconds=15, smb_connect_timeout_seconds=15)
+    assert probe.call_args.kwargs == {"port": 445, "timeout": 15, "attempts": 8, "wait_s": 15}
+    assert "after 8 attempt(s) (15s each, 15s apart)" in str(exc.value)
