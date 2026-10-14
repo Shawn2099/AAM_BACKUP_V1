@@ -4,9 +4,10 @@
 Items marked **[built, not wired yet]** exist as tested modules but are not yet called by the
 flow — they are wired in during M2/M3 (see `MVP_HARDENING_PLAN.md` §13).
 
-Reading guide: §1 the big picture → §2 the nightly backup step by step → §3 every decision
-point (where you tune logic) → §4 the other flows → §5 file-by-file map → §6 data written →
-§7 tunables → §8 what changes next.
+Reading guide: §1 big picture → §2 schedules → §3 the nightly backup step by step →
+§4 every decision point (where you tune logic) → §5 the other flows → §6 file-by-file map →
+§7 data written → §8 tunables → §9 what changes next → **§10 gates: every check that must
+pass for a backup to run, to count as successful, and to be verified.**
 
 ---
 
@@ -345,3 +346,106 @@ every 60 s: GET http://127.0.0.1:4200/api/health
    dashboard staleness banner + truthful `/health`.
 3. **M4 operations** — shutdown verified, clock tri-state, watchdog restart order,
    schedule/time-budget validation, installer runs services as a dedicated account.
+
+---
+
+## 10. Gates — what must be true (today vs. after the plan)
+
+Legend: **Today** = what the code on `mvp-hardening` enforces now. **Plan** = added by the
+work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*.
+"Fails" means the run row gets a failure status, the Prefect run is FAILED and an alert is sent.
+
+### 10.1 Before anything runs (both legs)
+
+| # | Condition | Today | Plan |
+|---|---|---|---|
+| C1 | `config.yaml` loads and validates (types, ranges, cron, bucket name, UNC path, MAC when WoL on, at least one leg enabled, source/LAN FY folder names match, no 4-digit FY names) | yes, otherwise the agent/flow cannot start | + unknown keys rejected (done M1); schedule/time-budget check (WP14) |
+| C2 | Requested leg is enabled (`mode=cloud` with `cloud.enabled=false` is refused) | yes | — |
+| C3 | Backup slot free: Prefect limit `aam-backup` obtained within `maintenance.concurrency_wait_seconds` (default 3600 s) | yes | timeout recorded as `*_SLOT_TIMEOUT` row (WP5; today no row is written) |
+| C4 | `backup.lock` not held by another **live** process (a dead/reused PID is taken over) | yes | — |
+
+### 10.2 Cloud leg — must pass to START the sync
+
+| # | Condition | Code | Today | Plan |
+|---|---|---|---|---|
+| CL1 | Source path exists | `health.check_source_drive` | yes | — |
+| CL2 | Source has at least one top-level entry other than `System Volume Information`, `$RECYCLE.BIN`, `RECYCLER`, `RECYCLED`, `desktop.ini`, `Thumbs.db` | same | yes (an **empty sub-folder counts** — weak) | **G1**: at least one real *file* anywhere, junctions ignored (M2) |
+| CL3 | Source readable (no permission / OS error) | same | yes | + read the first bytes of a real file (WP4) |
+| CL4 | Free space on the **source** drive >= `health.min_free_source_gb` | same | yes *(skipped if unmeasurable)* | — |
+| CL5 | rclone binary found (`deploy\bin` first, then PATH) | `health.pre_backup_health` | yes | — |
+| CL6 | GCS key file exists and is not empty | same | yes | — |
+| CL7 | Clock within `health.max_clock_skew_seconds` of Google time | `health.check_clock_skew` | yes, **but passes if Google is unreachable or TLS-intercepted** | tri-state OK / SKEWED / UNVERIFIED + `w32tm` fallback; UNVERIFIED = warn + dashboard flag (WP12) |
+| CL8 | Preflight probe A: source exists and can be listed | `cloud_preflight` | yes *(empty = warn only)*; task retried once after 30 s | — |
+| CL9 | Preflight probe B: `rclone lsjson --max-depth 0 aam_gcs:<bucket>/<FY>` exits 0 within `cloud.preflight_timeout_seconds` (proves key valid, bucket exists, network + DNS + TLS OK) | `cloud_preflight` | yes | the network/TLS/DNS cause is named in the error (`rclone_errors`, WP7) |
+| CL10 | Builder re-checks "source appears empty" | `cloud_sync.build_rclone_sync_command` | yes | replaced by G1 |
+| CL11 | Source not shrunk more than `guards.max_source_shrink_percent` vs last success | — | no | **G2** (M2) |
+| CL12 | Planned deletions <= `guards.max_delete_files` and <= `guards.max_delete_percent` (from `rclone sync --dry-run`) | — | no | **G3** (M2), + `--max-delete` backstop in the real sync |
+| CL13 | Cloud write permission: create + delete a probe object outside the FY prefix | — | no | WP4 (DEC-5) |
+| — | Any G-check blocks: `CLOUD_BLOCKED`, email "open the dashboard", nothing transferred | — | — | approvals, plan §6 (M2) |
+
+### 10.3 Cloud leg — must hold for the run to count as SUCCESS
+
+| # | Condition | Code |
+|---|---|---|
+| CS1 | rclone exit 0 gives `CLOUD_COMPLETE`, exit 9 gives `CLOUD_NO_CHANGES_COMPLETE` | `classify_rclone_exit` |
+| CS2 | No ERROR/CRITICAL lines (or plaintext "Failed to ...") in the rclone log; otherwise exit 0 becomes `CLOUD_SUSPECT` and exit 9 becomes `CLOUD_FAILED` | `scan_rclone_log_for_errors` |
+| CS3 | Exit 4/5/10 gives `CLOUD_PARTIAL` (alert, run FAILED, resumes next night); 1/2/3/6/7/8/other, timeout or spawn error gives `CLOUD_FAILED` | same |
+| CS4 | Sync FAILED/SUSPECT is retried by Prefect `cloud.max_attempts - 1` times, `cloud.retry_delay_seconds` apart | `flow` |
+| CS5 | **Size check** passes (see 10.6 V1) | evidence gate D3 |
+| CS6 | Post-sync diff (`rclone check --combined --size-only`) completed (exit < 2) and shows **0 missing** and **0 size-changed** files | `cloud_reporter.get_cloud_diff` |
+| CS7 | Bucket listing (`rclone lsjson -R`) and size query (`rclone size`) both succeeded | `get_cloud_manifest`, `get_cloud_size` |
+| CS8 | Final status is `CLOUD_COMPLETE` or `CLOUD_NO_CHANGES_COMPLETE` | terminal policy D5 |
+
+If CS5 to CS7 fail, the status is `CLOUD_VERIFY_FAILED` + alert. *(Known gap, WP5: an
+exception in the verify/post steps can still leave a success status in the row — fixed in M3.)*
+
+### 10.4 LAN leg — must pass to START robocopy
+
+| # | Condition | Code | Today | Plan |
+|---|---|---|---|---|
+| LA1 | CL1 to CL4 for the source (same health checks) | `health` | yes | G1 as for cloud |
+| LA2 | robocopy binary found | `health` | yes | — |
+| LA3 | NAS awake (only if `wol.enabled`): TCP 445 answers within 5 s, otherwise magic packet x `wol.wake_retry_count`, then poll 445 every `wol.ping_interval_seconds` up to `wol.wake_timeout_seconds`, then `wol.stability_wait_seconds` | `wol.ensure_server_online` | yes (wake capped at 600 s) | `smb_ready`: 445 **and** a real SMB stat **and** a stability re-check; defaults 900 s wake / 90 s settle, cap 3600 s (M2 2.5) |
+| LA4 | NAS host answers TCP 445 | `lan_preflight._is_smb_reachable` | yes — **hard-coded 2 s x 4 tries (about 15 s)** | `smb_ready` with `wol.smb_connect_timeout_seconds` (15) x `lan.preflight_smb_attempts` (8), wait `lan.preflight_smb_wait_seconds` (15) |
+| LA5 | Mount canary `<dest>\.AAM_TARGET_MOUNTED` exists and is a regular file | `lan_preflight` | yes (fails with "create the canary" text) | **G5**: BLOCKED + an approval that recreates it (M2) |
+| LA6 | `robocopy /L /MIR` dry-run exits < 8 within `lan.dry_run_timeout_seconds` | `lan_preflight` | yes; preflight task retried once after 30 s | the dry-run summary also gives the planned deletions for G3 |
+| LA7 | Destination writable (create / read / delete a probe file) | — | no (21 "Access is denied" nights) | WP4 |
+| LA8 | Service account holds `SeBackupPrivilege` when `/ZB` is used | — | no (robocopy exit 16 otherwise) | WP4 (`whoami /priv`), `lan.use_backup_mode` |
+| LA9 | Free space on the NAS >= bytes to copy + `lan.min_free_dest_gb` | — | no | WP4 |
+| LA10 | Source not shrunk; planned deletions within limits; destination unchanged and not this machine | — | no | **G2, G3, G4** (M2) |
+| — | Pre-sync destination snapshot | `lan_snapshot_before_task` | failure tolerated (metrics only) | — |
+
+### 10.5 LAN leg — must hold for the run to count as SUCCESS
+
+| # | Condition | Code |
+|---|---|---|
+| LS1 | robocopy ran to completion: the log ends with the job summary (`Files :` row **and** `Ended :` line); otherwise `LAN_SUSPECT` even with exit 0-3 (killed process) | `decide_lan_result` |
+| LS2 | Exit code has no bit 16 (fatal, else `LAN_FAILED`) and no bit 8 (copy errors, else `LAN_PARTIAL`) | same |
+| LS3 | Exit 0-7 **and** summary FAILED column = 0 **and** no `** FAILED:` lines gives `LAN_COMPLETE` (4-7 = mismatches/extras: complete, logged as an anomaly) | same |
+| LS4 | Exit code is a real integer (bool / None / timeout gives `LAN_FAILED`) | same (M1 1.8) |
+| LS5 | FAILED/SUSPECT retried by Prefect `lan.max_attempts - 1` times, `lan.retry_delay_seconds` apart; hard timeout `lan.subprocess_timeout_seconds` | `flow`, `run_lan_sync` |
+| LS6 | Final status is `LAN_COMPLETE` | terminal policy D5 |
+| — | Post-sync snapshot / DB record failure does **not** fail the run (metrics skipped, logged CRITICAL) | `lan_snapshot_after_task` |
+| — | NAS shutdown only after `LAN_COMPLETE` **and** `lan.shutdown_after_backup` **and** `wol.enabled` (or after PARTIAL/FAILED if `lan.shutdown_on_all_retries_exhausted`) | D9 |
+
+There is **no separate daily LAN verification step** today: LAN success rests on robocopy's
+own completed summary; content verification is the weekly audit (V3).
+
+### 10.6 Verification
+
+| # | Check | When | How | Passes / VERIFIED only if | Limits today | Plan |
+|---|---|---|---|---|---|---|
+| V1 | **Cloud size check** (daily) | after every cloud sync | `rclone check --one-way --size-only --checkers 4` | exit 0 **and** rclone's own `0 differences found` line **and** no `Failed to check` **and** no ERROR lines | sizes only, so same-size corruption is invisible; labelled "Verification Passed" / "Cryptographic Checks" | renamed **"Size check"** everywhere (WP7) |
+| V2 | **Weekly integrity audit — cloud** | Sun 03:00 (`schedule.audit_cron`) or dashboard "Verify" | `rclone check` with **MD5 hashes** (source re-read vs GCS stored MD5), both directions, `--checkers 1`, timeout `cloud.verify_timeout_seconds` | exit 0/1, diff file written, completion summary present, no read-error lines, summary count consistent with the diff, and **0** missing + changed + extra files (the canary is ignored) | a network/TLS/DNS outage is recorded as "content mismatch, missing-from-dest=N" (false alarm) | network/listing errors become `AUDIT_INCOMPLETE` "audit could not run: <cause>" (WP7, `rclone_errors`) |
+| V3 | **Weekly integrity audit — LAN** | same run, after cloud | WoL, then `rclone check` source vs `\\nas\...` with MD5 hashes (both sides read), timeout `lan.subprocess_timeout_seconds`, then shutdown | same rules as V2 | same false-alarm issue | same fix; NAS readiness via `smb_ready` |
+| V4 | Result storage | — | one `integrity_audits` row per leg; dashboard shows the latest; no row = NOT_VERIFIED | — | — | `AUDIT_INCOMPLETE` added |
+
+### 10.7 FY rollover (daily 06:00 check)
+
+| # | Condition | Today | Plan |
+|---|---|---|---|
+| R1 | Source/NAS paths end in a 2-digit FY folder (`FY26-27`); otherwise rollover is permanently off | yes | — |
+| R2 | Rollover happens when that FY differs from the FY of today's date (IST, April 1 boundary) | yes — **also rolls backwards if the clock is behind** | only exactly the next FY; anything else BLOCKED + approval (WP11) |
+| R3 | Final backup of the closing FY must succeed on every enabled leg (cloud COMPLETE/NO_CHANGES, LAN COMPLETE), else `ROLLOVER_BLOCKED` alert, retried daily | yes — but **outside the backup slot** | runs through the normal pipelines inside the slot (WP11) |
+| R4 | Archive the old FY in GCS (`gcloud ... --storage-class=ARCHIVE`) | best effort, 600 s | timeout from config; failure = warning + dashboard flag |
+| R5 | Create the new FY folder on source + NAS (+ canary on NAS); rewrite `config.yaml` atomically | yes (NAS failure tolerated) | + placeholder file in the new source folder; config backup first |
