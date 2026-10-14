@@ -193,7 +193,7 @@ Format per WP: **Problem/evidence → Design → Config → Files → Tests → 
 - **Design:**
   - **G1** `source_has_files(root)` — `os.scandir` recursive walk that stops at the first regular non-system file (fast on healthy drives, exact on empty ones). Replaces `check_source_drive`'s top-level `iterdir`.
   - **G2** source count compared with `extended_metrics.source_file_count` of the last successful run (recorded from now on — first run after deploy has no baseline → PASS with INFO "no baseline").
-  - **G3 LAN:** preflight runs `robocopy /L /MIR` **without `/NJS`**; the existing `summarize_log_counts()` parser reads the Files-row `Extras` column (= files `/MIR` would delete). Destination total from the existing `walk_lan_destination()`. Evaluate limits.
+  - **G3 LAN:** preflight runs `robocopy /L /MIR` **without `/NJS`**; planned deletions = the `*EXTRA File` lines (as built in 2.2: the Files-row `Extras` column also counts `/XF`-excluded destination files such as the mount marker, which `/MIR` keeps — verified 2026-10-14); Files `Total` = source count for G2. Destination total from the existing `walk_lan_destination()`. Evaluate limits.
   - **G3 cloud:** pre-sync `rclone sync --dry-run --use-json-log --log-file …`; count planned deletes from the JSON log (`"Skipped delete as --dry-run is set"`). Then the real sync also passes `--max-delete <approved or configured limit>` as a **hard backstop** (rclone's own feature) so even a race between dry-run and sync cannot exceed the limit.
   - **G4** destination identity: store `destination` in each run row; compare; loopback/own-IP detection via `ipaddress` + `socket.gethostbyname` of the UNC host vs `psutil.net_if_addrs()`.
   - **G5** canary on populated destination: today it raises "create the canary"; becomes BLOCKED with an approval that **creates** the canary (so the human decision is recorded).
@@ -500,7 +500,7 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 
 ### M2 — Data safety
 - [x] 2.1 `core/guards.py` G1–G5 + property tests (e41db7f) — pure module, wiring is 2.2
-- [ ] 2.2 LAN deletion count from `/L` summary; cloud `--dry-run` count + `--max-delete` backstop
+- [x] 2.2 LAN deletion count from `/L` summary; cloud `--dry-run` count + `--max-delete` backstop (7dcea6e LAN, efb2d98 cloud, 219f057 G1 replaces health emptiness). G1–G4 wired; G5 (canary → BLOCKED + approval that recreates it) moves to 2.3 with the approval action. Baselines are per leg **and FY** (rollover starts a fresh baseline, DEC-4). Measurement failure = `*_FAILED`; guard verdict = `*_BLOCKED`.
 - [~] 2.3 Approvals: decision logic done (`core/approvals.py`, 465c04d); TODO approvals table in ManifestDB, `*_BLOCKED` rows, dashboard approve/dismiss, `approval_id` flow parameter (§6)
 - [ ] 2.4 Preflight: `whoami /priv`, destination write probe, source read probe, dest free space, cloud write probe (WP4)
 - [x] 2.5 Shared `wait_for_smb_ready` wired into WoL + LAN preflight with config timings (b59a6d6)

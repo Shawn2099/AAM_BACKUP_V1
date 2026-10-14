@@ -178,15 +178,21 @@ with _backup_slot(config):
 | D10 | Watchdog action | `watchdog.main` | API health, lock alive, rclone/robocopy running, SCM state | wait / defer / start / stop |
 | D11 | Alert sent? | `core/report.send_failure_alert` (today) → `core/notify.notify` **[built, not wired yet]** | `notifications.send_on_failure`, SMTP config, cooldown | SENT/FAILED/SUPPRESSED |
 
-**[built, not wired yet] — M2 decision points:**
+**M2 decision points.** G1–G4 are **wired** (2.2): tasks `lan-guards` / `cloud-guards` run
+after preflight, before any transfer, with no Prefect retries. A measurement that cannot be
+taken → `*_FAILED`; a guard verdict → `GuardBlocked` → `*_BLOCKED` row with
+`extended_metrics.guards = {fy, source_file_count, destination, destination_files,
+[max_delete], results}`. That record is also the next run's baseline:
+`ManifestDB.guard_baseline(leg, fy)` = last **successful** run of the same leg **and FY**.
+The others are built but not wired yet.
 
-| ID | Guard | Module | Blocks when |
-|---|---|---|---|
-| G1 | source has a real file | `core/guards.g1_source_has_files` + `first_regular_file` | empty or dirs-only source |
-| G2 | source shrink | `g2_source_shrink` | file count dropped > `guards.max_source_shrink_percent` vs last success |
-| G3 | mass delete | `g3_mass_delete` | planned deletes > `max_delete_files` or > `max_delete_percent` |
-| G4 | destination identity | `g4_destination_identity` | destination changed since last success / is this machine |
-| G5 | mount canary | `g5_canary` | marker missing |
+| ID | Guard | Module | Measured by | Blocks when |
+|---|---|---|---|---|
+| G1 | source has a real file | `core/guards.g1_source_has_files` + `first_regular_file` (+ `require_source_files` backstop in both command builders) | walk, junctions/system entries ignored | empty, folders-only or system-entries-only source |
+| G2 | source shrink | `g2_source_shrink` | LAN: `robocopy /L` Files **Total**; cloud: `rclone size <source>` | file count dropped > `guards.max_source_shrink_percent` vs same-FY baseline |
+| G3 | mass delete | `g3_mass_delete` | LAN: number of `*EXTRA File` lines of `robocopy /L` (not the Extras column, which also counts the kept mount marker; lines > column = measurement failure) vs pre-sync walk count; cloud: `"skipped":"delete"` lines of `rclone sync --dry-run` vs `rclone size` of the destination | planned deletes > `max_delete_files` or > `max_delete_percent`; cloud sync also gets `--max-delete` = `max_delete_allowance()` |
+| G4 | destination identity | `g4_destination_identity` | config destination vs baseline; LAN host resolved vs local IPs | destination changed since same-FY baseline / LAN target is this machine (`forbid_local_destination`) |
+| G5 | mount canary | `g5_canary` | — | marker missing **[not wired: 2.3, approval recreates it]** |
 | A | approval valid? | `core/approvals.evaluate_approval` | expired/used/other leg/numbers worse than approved |
 | R | NAS ready | `core/smb_ready.wait_for_smb_ready` | 445 + real SMB stat + stability within `wol.*` timings |
 | E | transport vs content | `core/rclone_errors.find_transport_failure` | TLS/DNS/AUTH/NETWORK/LISTING → "audit could not run" |
@@ -289,7 +295,7 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `time_utils.py` | IST time, FY prefix, cron text | many |
 | `hashing.py` | md5 helpers | tests/legacy |
 | `notify.py` | **[built, not wired yet]** single alert path, delivery recorded, cooldown | (WP8) |
-| `guards.py` | **[built, not wired yet]** G1–G5 | (M2 2.2) |
+| `guards.py` | G1–G4 wired via `flow.lan_guards_task` / `cloud_guards_task` (2.2); `enforce`, `GuardBlocked`, `max_delete_allowance`, `require_source_files`; G5 not wired yet | (M2 2.3 for G5) |
 | `approvals.py` | **[built, not wired yet]** approval decisions | (M2 2.3) |
 | `smb_ready.py` | **[built, not wired yet]** NAS readiness | (M2 2.5) |
 | `rclone_errors.py` | **[built, not wired yet]** transport-failure classifier | (WP7) |
@@ -330,7 +336,8 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `maintenance` | DB retention, log retention, SQLite busy/vacuum/sync, slot wait | manifest, flow |
 | `health` | clock skew limit/timeout, min free source GB, rollover gcloud timeouts | health, fy_rollover |
 | `run_logs` | full-log folder, retention 90 d, compression, min free GB, service-log retention | run_artefacts, flow |
-| *(M2)* `guards`, `approvals`, more `wol`/`lan` timing keys | added with their consumers | guards, approvals, smb_ready |
+| `guards` | `max_delete_files` 500, `max_delete_percent` 10, `max_source_shrink_percent` 20, `forbid_local_destination` true (+ `cloud.dry_run_timeout_seconds` 1800) | flow `lan-guards` / `cloud-guards` |
+| *(M2)* `approvals`, more `lan` keys (WP4) | added with their consumers | approvals, lan_preflight |
 
 ---
 
@@ -369,7 +376,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | # | Condition | Code | Today | Plan |
 |---|---|---|---|---|
 | CL1 | Source path exists | `health.check_source_drive` | yes | — |
-| CL2 | Source has at least one top-level entry other than `System Volume Information`, `$RECYCLE.BIN`, `RECYCLER`, `RECYCLED`, `desktop.ini`, `Thumbs.db` | same | yes (an **empty sub-folder counts** — weak) | **G1**: at least one real *file* anywhere, junctions ignored (M2) |
+| CL2 | Source has at least one real *file* at any depth (junctions, `System Volume Information`, `$RECYCLE.BIN`, `RECYCLER`, `RECYCLED`, `desktop.ini`, `Thumbs.db`, the canary ignored) | `cloud-guards` **G1** | yes (2.2) → `CLOUD_BLOCKED`; health no longer judges emptiness | — |
 | CL3 | Source readable (no permission / OS error) | same | yes | + read the first bytes of a real file (WP4) |
 | CL4 | Free space on the **source** drive >= `health.min_free_source_gb` | same | yes *(skipped if unmeasurable)* | — |
 | CL5 | rclone binary found (`deploy\bin` first, then PATH) | `health.pre_backup_health` | yes | — |
@@ -377,11 +384,12 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | CL7 | Clock within `health.max_clock_skew_seconds` of Google time | `health.check_clock_skew` | yes, **but passes if Google is unreachable or TLS-intercepted** | tri-state OK / SKEWED / UNVERIFIED + `w32tm` fallback; UNVERIFIED = warn + dashboard flag (WP12) |
 | CL8 | Preflight probe A: source exists and can be listed | `cloud_preflight` | yes *(empty = warn only)*; task retried once after 30 s | — |
 | CL9 | Preflight probe B: `rclone lsjson --max-depth 0 aam_gcs:<bucket>/<FY>` exits 0 within `cloud.preflight_timeout_seconds` (proves key valid, bucket exists, network + DNS + TLS OK) | `cloud_preflight` | yes | the network/TLS/DNS cause is named in the error (`rclone_errors`, WP7) |
-| CL10 | Builder re-checks "source appears empty" | `cloud_sync.build_rclone_sync_command` | yes | replaced by G1 |
-| CL11 | Source not shrunk more than `guards.max_source_shrink_percent` vs last success | — | no | **G2** (M2) |
-| CL12 | Planned deletions <= `guards.max_delete_files` and <= `guards.max_delete_percent` (from `rclone sync --dry-run`) | — | no | **G3** (M2), + `--max-delete` backstop in the real sync |
+| CL10 | Builder re-checks the source has a real file | `guards.require_source_files` in `build_rclone_sync_command` | yes (2.2, same G1 rule; an unlistable source is left to rclone, which then deletes nothing — exit 3) | — |
+| CL11 | Source (`rclone size`) not shrunk more than `guards.max_source_shrink_percent` vs last success of the same FY | `cloud-guards` **G2** | yes (2.2) | — |
+| CL12 | Planned deletions (`rclone sync --dry-run`, within `cloud.dry_run_timeout_seconds`) <= `guards.max_delete_files` and <= `guards.max_delete_percent` of the destination (`rclone size`) | `cloud-guards` **G3** | yes (2.2); real sync gets `--max-delete` (rclone stops with exit 7 → FAILED) | — |
 | CL13 | Cloud write permission: create + delete a probe object outside the FY prefix | — | no | WP4 (DEC-5) |
-| — | Any G-check blocks: `CLOUD_BLOCKED`, email "open the dashboard", nothing transferred | — | — | approvals, plan §6 (M2) |
+| CL12a | Bucket/prefix unchanged since last success of the same FY | `cloud-guards` **G4** | yes (2.2) | — |
+| — | Any G-check blocks: `CLOUD_BLOCKED` row with the guard record, nothing transferred; generic failure alert today | `flow` | yes (2.2) | attention email "open the dashboard" + approve/dismiss (2.3) |
 
 ### 10.3 Cloud leg — must hold for the run to count as SUCCESS
 
@@ -403,17 +411,17 @@ exception in the verify/post steps can still leave a success status in the row �
 
 | # | Condition | Code | Today | Plan |
 |---|---|---|---|---|
-| LA1 | CL1 to CL4 for the source (same health checks) | `health` | yes | G1 as for cloud |
+| LA1 | CL1, CL3, CL4 for the source (same health checks); CL2 as **G1** in `lan-guards` | `health`, `lan-guards` | yes (G1 since 2.2) | — |
 | LA2 | robocopy binary found | `health` | yes | — |
 | LA3 | NAS awake (only if `wol.enabled`): TCP 445 answers within 5 s, otherwise magic packet x `wol.wake_retry_count`, then poll 445 every `wol.ping_interval_seconds` up to `wol.wake_timeout_seconds`, then `wol.stability_wait_seconds` | `wol.ensure_server_online` | yes (wake capped at 600 s) | `smb_ready`: 445 **and** a real SMB stat **and** a stability re-check; defaults 900 s wake / 90 s settle, cap 3600 s (M2 2.5) |
 | LA4 | NAS host answers TCP 445 | `lan_preflight._is_smb_reachable` | yes — **hard-coded 2 s x 4 tries (about 15 s)** | `smb_ready` with `wol.smb_connect_timeout_seconds` (15) x `lan.preflight_smb_attempts` (8), wait `lan.preflight_smb_wait_seconds` (15) |
 | LA5 | Mount canary `<dest>\.AAM_TARGET_MOUNTED` exists and is a regular file | `lan_preflight` | yes (fails with "create the canary" text) | **G5**: BLOCKED + an approval that recreates it (M2) |
-| LA6 | `robocopy /L /MIR` dry-run exits < 8 within `lan.dry_run_timeout_seconds` | `lan_preflight` | yes; preflight task retried once after 30 s | the dry-run summary also gives the planned deletions for G3 |
+| LA6 | `robocopy /L /MIR` dry-run exits < 8 within `lan.dry_run_timeout_seconds`; job summary kept (no `/NJS`) and parsed | `lan_preflight` | yes; preflight task retried once after 30 s | moves onto `run_tool` + `/UNILOG` in WP4 (2.4) |
 | LA7 | Destination writable (create / read / delete a probe file) | — | no (21 "Access is denied" nights) | WP4 |
 | LA8 | Service account holds `SeBackupPrivilege` when `/ZB` is used | — | no (robocopy exit 16 otherwise) | WP4 (`whoami /priv`), `lan.use_backup_mode` |
 | LA9 | Free space on the NAS >= bytes to copy + `lan.min_free_dest_gb` | — | no | WP4 |
-| LA10 | Source not shrunk; planned deletions within limits; destination unchanged and not this machine | — | no | **G2, G3, G4** (M2) |
-| — | Pre-sync destination snapshot | `lan_snapshot_before_task` | failure tolerated (metrics only) | — |
+| LA10 | Source (`/L` Total) not shrunk; planned deletions (`/L` `*EXTRA File` lines) within limits of the walked destination count; destination unchanged and not this machine | `lan-guards` **G2, G3, G4** | yes (2.2) → `LAN_BLOCKED` | — |
+| — | Pre-sync destination snapshot | `lan_snapshot_before_task` | yes since 2.2: a failed walk = unknown destination count → `LAN_FAILED` (was: tolerated) | — |
 
 ### 10.5 LAN leg — must hold for the run to count as SUCCESS
 

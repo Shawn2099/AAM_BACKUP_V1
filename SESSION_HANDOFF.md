@@ -1,6 +1,6 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-14 (end of session 1) · **Branch:** `mvp-hardening` · **Owner decisions:** all made (plan §11)
+**Last updated:** 2026-10-14 (session 2, 2.2 done) · **Branch:** `mvp-hardening` · **Owner decisions:** all made (plan §11)
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -41,18 +41,18 @@ caused by our program, a human is asked whenever an action could be wrong.**
 |---|---|
 | M0 Baseline | **done** (a8f7f7f) — suite 0 failed |
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
-| M2 Data safety | **in progress** — 2.1 & 2.5 done; 2.3 logic done (wiring TODO); 2.2, 2.4, 2.6 TODO |
+| M2 Data safety | **in progress** — 2.1, 2.2, 2.5 done; 2.3 in progress (tests written: `tests/test_m2_approval_workflow.py`); 2.4, 2.6 TODO |
 | M3 Truth | not started (WP7 classifier module already done) |
 | M4 Operations | not started |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check:** `tests/` 1455 passed / 0 failed / 19 skipped (environment skips).
-Audit lab (`audit_lab/`, ~20 min) final M1 run 2026-10-14: **235 passed / 1 failed / 3 skipped** — the one red is intentional (`test_w16_schedule_collisions_across_year` → fixed in WP8 / 3.4). Both M-6 DB reds are now green.
+**Test status at last check:** `tests/` 1501 passed / 0 failed / 19 skipped (excluding the not-yet-implemented `test_m2_approval_workflow.py`).
+Audit lab after 2.2 (2026-10-14, ~30 min now): 227 passed / 10 failed → 9 triaged and fixed in b4667d0 (targeted re-runs green); the only remaining red is intentional (`test_w16_schedule_collisions_across_year` → WP8 / 3.4). A full lab re-run is due at the end of 2.3.
 
 ### Built but NOT wired yet (M2/M3 must call these)
 | Module | What | Wire in |
 |---|---|---|
-| `core/guards.py` | G1–G5 data-safety guards | 2.2 (preflight of both pipelines) |
+| `core/guards.py` | G1–G4 **wired** (2.2: `flow.lan_guards_task` / `cloud_guards_task`); **G5 not wired** | 2.3 (G5 + approval that recreates the marker) |
 | `core/approvals.py` | approval decision logic | 2.3 (DB table, dashboard, flow param) |
 | `core/smb_ready.py` | NAS readiness | **wired** in 2.5 (b59a6d6) |
 | `core/rclone_errors.py` | transport-failure classifier | WP7 (`core/integrity.py` → `AUDIT_INCOMPLETE`) |
@@ -60,18 +60,27 @@ Audit lab (`audit_lab/`, ~20 min) final M1 run 2026-10-14: **235 passed / 1 fail
 
 ## 4. Next steps (in order)
 
-1. **2.2**: guards config section (`guards.max_delete_files=500`, `max_delete_percent=10`, `max_source_shrink_percent=20`, `forbid_local_destination=true`); LAN planned deletions = `Extras` column of `robocopy /L` summary (drop `/NJS` in dry-run); cloud = `rclone sync --dry-run` delete count + `--max-delete` backstop; G1 replaces `check_source_drive` emptiness; record `source_file_count` + `destination` in extended_metrics for G2/G4 baselines.
-2. **2.3**: `approvals` table + `*_BLOCKED` run rows + dashboard approve/dismiss (typed phrase) + `approval_id` parameter on `backup()`; attention email via `core/notify`.
-3. **2.4** preflight permission checks (`whoami /priv`, write probe, free space, cloud write probe).
-4. **2.6** rollover inside slot, forward-only.
-5. Then M3 (plan §13).
+1. **2.3 approvals** — design agreed in session 2 (tests already in `tests/test_m2_approval_workflow.py`, red):
+   - a) `approvals` config (`expiry_hours` 12, `tolerance_percent` 0); `approvals` table (CREATE IF NOT EXISTS in `DDL`); a BLOCKED run opens ONE request covering all its blocked guards (supersedes older PENDING of the same leg), phrase = per-guard phrases joined by " / "; ONE `ACTION_REQUIRED` email via `core.notify` (key `blocked:<leg>`, cooldown de-dup); `backup()`'s generic alert skips `GuardBlocked`.
+   - b) `backup(..., approval_id=None)` → pipelines → guard tasks (`approval_id`, `run_id`); `approvals.evaluate_request` checks every blocked guard is covered and not worse; `guards.enforce(approved_guards=...)`; `mark_approval_used` atomically BEFORE any transfer. Scheduled runs never consume approvals.
+   - c) dashboard: approval card (reason, numbers, typed phrase), `POST /approvals/{id}/approve` (auth must be enabled; refuse otherwise), `/dismiss`, re-trigger deployment `backup-<leg>` with `parameters={"approval_id": id}`; cloud `--max-delete` = approved planned deletes.
+   - d) G5: missing mount marker → BLOCKED; approval creates the marker (`lan_preflight` stops raising on a missing marker).
+2. **2.4** preflight permission checks (`whoami /priv`, write probe, free space, cloud write probe); LAN dry-run moves to `run_tool` + `/UNILOG` here.
+3. **2.6** rollover inside slot, forward-only, through the normal pipelines (today the rollover final backup bypasses the guards; only the builder G1 backstop covers it).
+4. Then M3 (plan §13).
 
-### Verified tool facts for 2.2 (probed 2026-10-14, real binaries)
-- `robocopy /L /MIR /BYTES` (no `/NJS`): Files-row **Extras column counts every file that would be deleted, including files inside extra folders** (test: 1 extra file + extra dir with 2 files -> Files Extras = 3; Dirs Extras = 2). Files **Total** = source file count (for G2).
-- `rclone sync --dry-run --use-json-log --log-level INFO`: one NOTICE line per planned deletion: `"msg":"Skipped delete as --dry-run is set ..."`, `"skipped":"delete"` (count these for G3; files inside deleted folders included).
-- Destination file count for G3 %: LAN = `lan_snapshot_before` walk (if it fails -> unknown -> G3 blocks); cloud = `rclone size` of the destination.
+### Verified tool facts (real binaries, 2026-10-14)
+- **robocopy 10.0 `/L /MIR` (no `/NJS`)**: Files **Total** = source file count (G2). **Planned deletions = number of `*EXTRA File` lines** (one per file `/MIR` deletes, nested files in extra folders included). The Files **Extras column is NOT the delete count**: it also counts `/XF`-excluded destination files (the mount marker, any depth), which `/MIR` keeps; files under `/XD` folders are counted in neither.
+- **rclone v1.74.3 `sync --dry-run --use-json-log`**: one `"skipped":"delete"` line per planned file deletion (nested included; folder removals are separate `"remove directory"` lines). Dry-run exit 0 = copies planned, 9 = none (`--error-on-no-transfer`), deletes do not change it.
+- **rclone `--max-delete N`**: deletes up to N, then fatal error, **exit 7** (→ CLOUD_FAILED), log "failed to delete K files".
+- **Missing source**: robocopy `/MIR` exit 16 ("ERROR 2 Accessing Source Directory"), rclone sync exit 3 ("not deleting files as there were IO errors"); destination untouched in both.
+- `rclone size <local dir> --json` → `{"count":N,...}` = what `rclone sync` sees.
 
 ## 5. Gotchas learned (save time)
+
+- **Audit lab now takes ~30 min**; its LAN rigs mirror to `\127.0.0.1\<drive>$` so `labconf` sets `guards.forbid_local_destination: false`; mirror-mechanics rigs (tiny random trees) use `labconf.MIRROR_MECHANICS_GUARDS`. Prefect temp-server `409 Conflict` failures are flakes - re-run the single test.
+- New pipeline tasks must be stubbed in existing pipeline tests: decorator stacks use `@patch("flow.<task>", new=MagicMock())` (no extra arg).
+- Mount-marker name is duplicated in 5 modules (`wol.CANARY_NAME`, `integrity`, `lan_preflight`, `lan_sync`, `fy_rollover`); new code uses `guards.MOUNT_MARKER` - consolidate when those modules are touched.
 
 - **Git Bash heredocs mangle backslashes** (`\n`, `\t`, `\\`) even with `<<'EOF'` in this environment. For any code/text containing backslashes use the Write/Edit tools, or a Python script file written with Write. Always re-check diffs for stray `\n`.
 - Remote PowerShell over SSH: no `&&` (use `;`), set `[Console]::OutputEncoding=[Text.Encoding]::UTF8`, no scp/sftp — pipe Python via stdin: `cat script.py | ssh innoviztawinserver2016 'C:\AAMBackup\.venv\Scripts\python.exe -'`.
