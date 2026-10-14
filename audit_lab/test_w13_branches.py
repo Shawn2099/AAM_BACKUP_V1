@@ -149,26 +149,21 @@ def test_w13_bool_exit_code_is_rejected_by_both_deciders():
         f"/ {cloud['termination']} reason={cloud['reason'][:60]!r}",
     ]
     L.record("W13.exit_code_bool",
-              "a boolean exit code is rejected by the cloud decider but accepted "
-              "by the LAN decider (bool is an int subclass, so isinstance(code, "
-              "int) is not enough) - actual behaviour pinned below",
+              "a boolean exit code is rejected by BOTH deciders "
+              "(mvp-hardening M1 1.8: type(code) is int guard in lan_sync)",
               "\n".join(lines),
-              "DOCUMENTED (not fixed) - decide_lan_result(True) reads as "
-              "LAN_COMPLETE (treated as exit code 1) while "
-              "decide_cloud_verify_result(True) is rejected; the two deciders "
-              "disagree on the same input class. Latent robustness hole: no "
-              "shipped caller passes a bool exit code today.")
+              "FIXED - decide_lan_result(True) and "
+              "decide_cloud_verify_result(True) both reject a bool as an "
+              "unusable exit code.")
     print(f"[W13.1b]\n" + "\n".join(lines))
     # cloud decider: a bool is rejected outright (the guard that exists today)
     assert cloud["verified"] is False
     assert cloud["termination"] == "abnormal"
     assert "unusable exit code True" in cloud["reason"]
-    # LAN decider: no bool guard - True is classified as a clean exit-1 copy.
-    # Pinned as-is (current production behaviour); changing it means adding the
-    # cloud_verify-style bool guard to core/lan_sync.py (production decision).
-    assert lan["status"] == "LAN_COMPLETE"
-    assert lan["termination"] == "normal"
-    assert lan["reason"] is None
+    # LAN decider: same contract (fixed in mvp-hardening M1 1.8).
+    assert lan["status"] == "LAN_FAILED"
+    assert lan["termination"] == "abnormal"
+    assert "unusable exit code True" in lan["reason"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════

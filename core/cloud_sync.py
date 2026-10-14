@@ -78,6 +78,8 @@ def classify_rclone_exit(code: int) -> str:
         9: "CLOUD_NO_CHANGES_COMPLETE",
         10: "CLOUD_PARTIAL",
     }
+    if type(code) is not int:
+        return "CLOUD_FAILED"  # bool / None: never a usable exit code
     return mapping.get(code, "CLOUD_FAILED")
 
 

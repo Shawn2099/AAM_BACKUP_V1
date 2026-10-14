@@ -181,7 +181,10 @@ def decide_lan_result(exit_code: int, log_text: str) -> dict:
     counts = summarize_log_counts(text)
     failed_markers = count_failed_lines(text)
 
-    if exit_code is None or not isinstance(exit_code, int) or exit_code < 0:
+    # type() is not isinstance(): bool is an int subclass, and True must never
+    # be read as robocopy exit code 1 (W13.exit_code_bool). Same guard as
+    # core/cloud_verify.decide_cloud_verify_result.
+    if exit_code is None or type(exit_code) is not int or exit_code < 0:
         return {
             "status": "LAN_FAILED", "termination": "abnormal",
             "log_complete": log_complete, "counts": counts,
@@ -280,6 +283,8 @@ def classify_exit_code(code: int) -> str:
 
     Returns: LAN_COMPLETE | LAN_PARTIAL | LAN_FAILED
     """
+    if type(code) is not int or code < 0:
+        return "LAN_FAILED"  # bool / None / sentinel: never a usable exit code
     if code & 16:
         return "LAN_FAILED"
     if code & 8:
