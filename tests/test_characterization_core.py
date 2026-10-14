@@ -85,14 +85,13 @@ class TestHealthCharacterization:
         assert ok is False
         assert "not accessible" in reason
 
-    def test_source_drive_empty_refuses(self, tmp_path):
+    def test_source_drive_empty_is_left_to_guard_g1(self, tmp_path):
+        """M2 2.2: health checks the drive is usable; G1 judges emptiness."""
         from core.health import check_source_drive
 
         empty = tmp_path / "empty"
         empty.mkdir()
-        ok, reason = check_source_drive(str(empty))
-        assert ok is False
-        assert "appears empty" in reason
+        assert check_source_drive(str(empty)) == (True, "")
 
     def test_source_drive_with_files_ok(self, tmp_path):
         from core.health import check_source_drive
@@ -101,13 +100,12 @@ class TestHealthCharacterization:
         ok, reason = check_source_drive(str(tmp_path))
         assert ok is True and reason == ""
 
-    def test_source_drive_ignores_windows_system_entries(self, tmp_path):
-        from core.health import check_source_drive
+    def test_g1_ignores_windows_system_entries(self, tmp_path):
+        from core import guards
 
         (tmp_path / "System Volume Information").mkdir()
         (tmp_path / "desktop.ini").write_text("x")
-        ok, reason = check_source_drive(str(tmp_path))
-        assert ok is False and "appears empty" in reason
+        assert guards.first_regular_file(str(tmp_path), guards.SOURCE_IGNORE_NAMES) is None
 
     def test_check_gcs_key_missing_empty_and_present(self, tmp_path):
         from core.health import check_gcs_key
@@ -359,7 +357,7 @@ class TestCloudSyncCharacterization:
 
         empty = tmp_path / "empty"
         empty.mkdir()
-        with pytest.raises(ValueError, match="appears empty"):
+        with pytest.raises(ValueError, match="contains no files"):
             build_rclone_sync_command(
                 source=str(empty),
                 bucket="b",

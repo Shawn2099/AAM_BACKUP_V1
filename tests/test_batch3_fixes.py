@@ -45,7 +45,7 @@ class TestFilesFailed:
         art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
         with fake_run_tool("core.lan_sync", exit_code=9, log=log, log_encoding="utf-16"), \
              patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync._assert_source_not_empty"):
+             patch("core.lan_sync.require_source_files"):
             result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_PARTIAL"
         assert result["files_failed"] == 2
@@ -57,7 +57,7 @@ class TestFilesFailed:
         with fake_run_tool("core.lan_sync", exit_code=1, log=robocopy_log(total=2, copied=2),
                            log_encoding="utf-16"), \
              patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync._assert_source_not_empty"):
+             patch("core.lan_sync.require_source_files"):
             result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_COMPLETE"
         assert result["termination"] == "normal"
@@ -69,7 +69,7 @@ class TestFilesFailed:
         art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
         with fake_run_tool("core.lan_sync", timed_out=True), \
              patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync._assert_source_not_empty"):
+             patch("core.lan_sync.require_source_files"):
             result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_FAILED"
         assert result["files_failed"] == 0

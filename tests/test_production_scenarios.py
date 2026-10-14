@@ -46,7 +46,7 @@ class TestNetworkConditions:
         config = LanConfig(subprocess_timeout_seconds=3600)  # model minimum is 3600
         art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
         with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync._assert_source_not_empty"), \
+             patch("core.lan_sync.require_source_files"), \
              fake_run_tool("core.lan_sync", timed_out=True):
             result = run_lan_sync("E:\\", "\\\\nas\\share", config, artefacts=art)
         assert result["status"] == "LAN_FAILED"

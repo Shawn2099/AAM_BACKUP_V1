@@ -279,6 +279,26 @@ def first_regular_file(root: str, ignore_names: frozenset[str]) -> str | None:
     return None
 
 
+def require_source_files(source: str) -> None:
+    """Raise ValueError (G1 reason) if `source` lists fine but holds no real file.
+
+    Last line of defence used by the mirror-command builders (robocopy,
+    rclone): even a caller that bypasses the pipeline guards can never
+    mirror an empty or folders-only source. A source that cannot be listed
+    at all is left to the tool, which then deletes nothing: verified
+    2026-10-14 — robocopy /MIR exits 16 ("ERROR 2 Accessing Source
+    Directory"), rclone sync exits 3 ("not deleting files as there were IO
+    errors"); the pre-backup health check fails it earlier anyway.
+    """
+    try:
+        first = first_regular_file(source, SOURCE_IGNORE_NAMES)
+    except OSError:
+        return
+    result = g1_source_has_files(first, source)
+    if not result.passed:
+        raise ValueError(result.reason)
+
+
 def _is_junction(entry: os.DirEntry) -> bool:
     is_junction = getattr(entry, "is_junction", None)  # Python 3.12+
     return bool(is_junction()) if callable(is_junction) else False

@@ -300,6 +300,47 @@ def test_lan_pipeline_success_records_guard_baseline(
     assert json.loads(kwargs["extended_metrics"])["guards"]["source_file_count"] == 1
 
 
+# ── G1 replaces the top-level-only emptiness check (CL2, CL10, LA1) ───────
+
+def test_health_no_longer_fails_an_empty_source_g1_blocks_it_instead(tmp_path):
+    """Emptiness is a guard verdict (BLOCKED + approval), not a health
+    failure; health still fails a missing source."""
+    from core.health import check_source_drive
+    assert check_source_drive(str(tmp_path)) == (True, "")
+    assert check_source_drive(str(tmp_path / "missing"))[0] is False
+
+
+@pytest.mark.parametrize("layout", ["empty", "dirs_only", "system_only"])
+def test_sync_builders_refuse_a_source_without_real_files(tmp_path, layout):
+    """Last line of defence at the moment the mirror command is built
+    (also covers callers outside the pipelines, e.g. the rollover final
+    backup until 2.6). Dirs-only passed the old top-level check (probe P6)."""
+    from core.cloud_sync import build_rclone_sync_command
+    from core.lan_sync import build_robocopy_command
+    from models.config import LanConfig
+
+    if layout == "dirs_only":
+        (tmp_path / "Clients" / "2026").mkdir(parents=True)
+    if layout == "system_only":
+        (tmp_path / "System Volume Information").mkdir()
+        (tmp_path / "desktop.ini").write_text("x")
+    with pytest.raises(ValueError, match="contains no files"):
+        build_robocopy_command(str(tmp_path), "\\\\nas\\s", LanConfig())
+    with pytest.raises(ValueError, match="contains no files"):
+        build_rclone_sync_command(str(tmp_path), "b", "FY26-27", "/c", "STANDARD")
+
+
+def test_sync_builders_accept_a_deep_file(tmp_path):
+    from core.cloud_sync import build_rclone_sync_command
+    from core.lan_sync import build_robocopy_command
+    from models.config import LanConfig
+
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    (tmp_path / "a" / "b" / "ledger.xlsx").write_text("x")
+    assert build_robocopy_command(str(tmp_path), "\\\\nas\\s", LanConfig())
+    assert build_rclone_sync_command(str(tmp_path), "b", "FY26-27", "/c", "STANDARD")
+
+
 # ── Cloud: planned deletions from the rclone --dry-run log ────────────────
 
 # Real lines from rclone v1.74.3 `sync --dry-run --use-json-log` (probe

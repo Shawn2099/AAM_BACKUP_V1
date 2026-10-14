@@ -72,14 +72,13 @@ def run_cloud_dry_run(
         next(source_path.iterdir())
     except StopIteration:
         # M8: this preflight probe is diagnostic-only. It does NOT mean the
-        # pipeline will run: flow.health_check_task (check_source_drive)
-        # fail-closes on an empty source because robocopy /MIR and rclone
-        # sync would mirror the emptiness onto the destination. An empty
-        # source reaching here almost always means the drive is unmounted.
+        # pipeline will run: guard G1 (flow.cloud_guards_task) blocks a
+        # source without real files because rclone sync would mirror the
+        # emptiness onto the destination. An empty source reaching here
+        # almost always means the drive is unmounted.
         logger.warning(
             f"Cloud preflight [A]: source drive is EMPTY ({source}) - "
-            "the backup pipeline health gate will refuse to sync it. "
-            "If this is a genuinely new FY folder, add a canary file first."
+            "guard G1 will block the sync and ask for a human decision."
         )
     except OSError as exc:
         msg = f"Source drive read error ({source}): {exc}"

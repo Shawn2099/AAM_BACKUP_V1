@@ -7,6 +7,7 @@ import json
 
 from loguru import logger
 
+from core.guards import require_source_files
 from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
@@ -137,10 +138,7 @@ def build_rclone_sync_command(
     max_delete: rclone's own `--max-delete` backstop (M2 2.2): the sync stops
     with a fatal error (exit 7) instead of deleting more files than G3 allows.
     """
-    from core.health import check_source_drive as _check_src
-    ok, reason = _check_src(source)
-    if not ok and "appears empty" in reason:
-        raise ValueError(reason)
+    require_source_files(source)  # G1 backstop (M2 2.2)
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
     # M7: resolve the binary like every other rclone-calling module

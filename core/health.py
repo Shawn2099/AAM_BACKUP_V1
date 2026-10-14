@@ -1,6 +1,7 @@
 """Pre-backup health checks — source drive, binaries, disk space, clock, GCS key."""
 
 import http.client
+import os
 import shutil
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -15,22 +16,13 @@ class HealthError(RuntimeError):
     """Raised when a pre-backup health check fails."""
 
 
-# Windows NTFS volumes and folders always contain these OS-managed entries
-# even when having zero user files. Robocopy and rclone exclude them via /XD,
-# so the source gate must also exclude them to avoid falsely treating an empty
-# drive as populated.
-_WINDOWS_SYSTEM_ENTRIES = {
-    "system volume information",
-    "$recycle.bin",
-    "recycler",
-    "recycled",
-    "desktop.ini",
-    "thumbs.db",
-}
-
-
 def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, str]:
-    """Verify source drive exists, has files, and has free space.
+    """Verify source drive exists, can be listed, and has free space.
+
+    Whether the source holds any files is NOT judged here: that is guard G1
+    (core.guards, M2 2.2) — an empty or folders-only source is BLOCKED for
+    a human decision, and the mirror-command builders refuse it as a last
+    line of defence.
 
     Args:
         min_free_gb: Minimum free space required (GB). Override via config.health.min_free_source_gb.
@@ -44,26 +36,12 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
         return False, f"Source drive not accessible: {source}"
 
     try:
-        has_files = any(
-            p for p in source.iterdir()
-            if p.name.lower() not in _WINDOWS_SYSTEM_ENTRIES
-        )
+        with os.scandir(source) as entries:
+            next(entries, None)
     except PermissionError:
         return False, f"Source drive permission denied: {source}"
     except OSError as e:
         return False, f"Source drive error: {e}"
-
-    if not has_files:
-        # M8: fail-closed is DELIBERATE. robocopy /MIR and rclone sync both
-        # propagate an empty source to the destination (deleting everything
-        # there), and an empty source usually means the drive is unmounted or
-        # the wrong path — not "genuinely nothing yet".
-        return False, (
-            f"Source drive appears empty: {source}. Refusing to sync - if the "
-            "drive is unmounted or the path changed, mirroring would delete "
-            "the destination copies. If this is a genuinely new, empty FY "
-            "folder, place at least one file in it (canary) before running."
-        )
 
     try:
         usage = shutil.disk_usage(str(source))
@@ -73,9 +51,7 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
                 f"Source drive critically low on space: {free_gb:.1f} GB free "
                 f"(minimum: {min_free_gb} GB)"
             )
-        logger.debug(
-            f"Source drive OK: {source} (contains files, {free_gb:.1f} GB free)"
-        )
+        logger.debug(f"Source drive OK: {source} ({free_gb:.1f} GB free)")
     except OSError:
         logger.warning(f"Could not check disk space on {source} - skipping")
 

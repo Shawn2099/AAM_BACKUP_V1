@@ -193,7 +193,7 @@ class TestRunLanSync:
 
         self.art = RunArtefacts(tmp_path / "run_logs", "run-x-lan", day="2026-10-14")
         with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync._assert_source_not_empty"):
+             patch("core.lan_sync.require_source_files"):
             yield
 
     @staticmethod

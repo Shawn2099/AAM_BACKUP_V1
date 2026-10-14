@@ -39,16 +39,22 @@ class TestCheckSourceDrive:
         ok, reason = health.check_source_drive(str(tmp_path / "nope"))
         assert ok is False and "not accessible" in reason
 
-    def test_empty_dir_is_refused(self, tmp_path):
-        ok, reason = health.check_source_drive(str(tmp_path))
-        assert ok is False and "appears empty" in reason
+    # M2 2.2: emptiness is guard G1's verdict (BLOCKED for a human), not a
+    # health failure; the builders refuse it as the last line of defence.
+    def test_empty_dir_is_refused_by_g1(self, tmp_path):
+        from core import guards
+        assert health.check_source_drive(str(tmp_path)) == (True, "")
+        with pytest.raises(ValueError, match="contains no files"):
+            guards.require_source_files(str(tmp_path))
 
-    def test_system_entries_only_is_refused(self, tmp_path):
+    def test_system_entries_only_is_refused_by_g1(self, tmp_path):
+        from core import guards
         (tmp_path / "System Volume Information").mkdir()
         (tmp_path / "$RECYCLE.BIN").mkdir()
         (tmp_path / "desktop.ini").write_text("x")
-        ok, reason = health.check_source_drive(str(tmp_path))
-        assert ok is False and "appears empty" in reason
+        assert health.check_source_drive(str(tmp_path)) == (True, "")
+        with pytest.raises(ValueError, match="contains no files"):
+            guards.require_source_files(str(tmp_path))
 
     def test_one_real_file_passes(self, tmp_path):
         (tmp_path / "real.txt").write_text("x")
