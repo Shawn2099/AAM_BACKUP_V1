@@ -742,19 +742,19 @@ def test_w13_health_check_branches(sandbox, monkeypatch):
     files = sandbox / "files"
     L.write_file(files / "a.txt", b"a")
 
-    ok, reason = check_source_drive(str(empty))
-    rows.append(f"empty source                -> ok={ok} reason={reason[:60]!r}")
-    if ok is not False or "appears empty" not in reason:
-        problems.append(f"an empty source was accepted: ok={ok} reason={reason!r}")
-
-    # C-1: a dirs-only source PASSES - the guard only needs >=1 entry, so an
-    # empty subdirectory is enough. Asserted (not sanitised) so the hole stays
-    # visible: this is the guard that lets an empty source wipe the destination.
-    ok, reason = check_source_drive(str(dirs_only))
-    rows.append(f"dirs-only source (C-1)      -> ok={ok} reason={reason[:40]!r}")
-    if ok is not True:
-        problems.append("check_source_drive() now requires a FILE - C-1 may be fixed; "
-                        "update this assertion")
+    # M2 2.2: health only checks the drive is usable; "does it hold any
+    # file?" is guard G1 (BLOCKED for a human) + the builders' backstop.
+    # C-1 closed: empty AND dirs-only sources are refused by G1.
+    from core import guards as _guards
+    for label, path in (("empty source", empty), ("dirs-only source (C-1)", dirs_only)):
+        ok, reason = check_source_drive(str(path))
+        first = _guards.first_regular_file(str(path), _guards.SOURCE_IGNORE_NAMES)
+        g1 = _guards.g1_source_has_files(first, str(path))
+        rows.append(f"{label:<27} -> health ok={ok}, G1 {g1.verdict}")
+        if ok is not True:
+            problems.append(f"health refused a usable {label}: {reason!r}")
+        if g1.passed:
+            problems.append(f"G1 accepted an {label} - C-1 regression")
 
     ok, reason = check_source_drive(str(sandbox / "nope"))
     rows.append(f"missing path                -> ok={ok} reason={reason[:60]!r}")

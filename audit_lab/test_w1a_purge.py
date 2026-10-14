@@ -2,6 +2,8 @@
 
 D1: does a source containing only EMPTY SUBDIRECTORIES pass the empty-source
     guard, and does the mirror then PURGE the whole destination?
+    (Confirmed pre-M2 as finding C-1; closed in M2 2.2 by guard G1 - these
+    tests now assert the destination stays byte-identical.)
 D2: does an UNREADABLE source subtree cause the mirror to purge that subtree
     at the destination (both robocopy /MIR and rclone sync)?
 """
@@ -19,69 +21,67 @@ pytestmark = pytest.mark.timeout(300)
 
 
 # ── D1 ─────────────────────────────────────────────────────────────────────────
-def test_w1a_d1_empty_subdirs_source_passes_guard_and_purges_lan(sandbox):
-    """Source = only empty subdirectories (zero files at any depth).
+# C-1 was CONFIRMED here before M2 (12 -> 0 files, reported LAN_COMPLETE, with
+# /ZB removed). Closed in M2 2.2: guard G1 + the command-builder backstop.
+# These are now regression tests: the destination must stay byte-identical.
 
-    Hypothesis: check_source_drive() returns OK (it only tests the top level),
-    and robocopy /MIR then deletes every file at the destination.
-    """
-    from core.health import check_source_drive
-    from core.lan_sync import build_robocopy_command, run_lan_sync
+def _tree_bytes(root):
+    return sorted((str(p.relative_to(root)), p.read_bytes())
+                  for p in root.rglob("*") if p.is_file())
 
+
+def test_w1a_d1_empty_subdirs_source_is_blocked_lan(sandbox, monkeypatch):
+    """Source = only empty subdirectories. The REAL LAN pipeline (real robocopy
+    /L, real destination walk, real DB) must stop as LAN_BLOCKED by G1 before
+    any transfer, with the destination byte-identical."""
+    import time
+
+    import flow
+    from core import guards
+    from core.lan_sync import build_robocopy_command
+    from core.manifest import ManifestDB
+    from core.time_utils import now_iso
+
+    monkeypatch.setenv("PREFECT_TEST_MODE", "1")
     src = sandbox / "source" / "FY26-26"
     for d in ("Clients", "Clients/2026", "Registers", "Reports"):
         (src / d).mkdir(parents=True, exist_ok=True)
     assert not any(p.is_file() for p in src.rglob("*")), "source must contain zero files"
 
-    # 1. destination holds a healthy backup
-    dest = sandbox / "nas" / "FY26-26"
+    dest = L.make_canary(sandbox / "nas" / "FY26-26")
     for i in range(12):
         write_file(dest / "Clients" / f"ledger_{i}.txt", f"LEDGER {i}\n".encode() * 40)
-    dest_files_before = [p for p in dest.rglob("*") if p.is_file()]
-    assert len(dest_files_before) == 12
+    before = _tree_bytes(dest)
 
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
+                       lan_enabled=True, cloud_enabled=False)
 
-    # 2. THE GUARD
-    ok, reason = check_source_drive(cfg.paths.source_drive)
-    L.record("D1.guard", "empty-subdir source passes the fail-closed guard",
-             f"check_source_drive({cfg.paths.source_drive!r}) -> ok={ok}, reason={reason!r}",
-             "GUARD PASSED (fail-open)" if ok else "GUARD BLOCKED (fail-closed)")
-    assert ok is True, f"guard unexpectedly blocked: {reason}"
+    with pytest.raises(guards.GuardBlocked) as ei:
+        flow._run_lan_pipeline(cfg, "w1a-d1-lan", now_iso(), time.monotonic())
+    blocked = [r["guard"] for r in ei.value.record["results"] if r["verdict"] == guards.BLOCK]
 
-    # 3. command builds and the real sync runs
-    cmd = build_robocopy_command(str(src), str(dest), cfg.lan)
-    assert "robocopy" in cmd[0].lower()
+    # backstop: even a direct caller cannot build the mirror command
+    with pytest.raises(ValueError, match="contains no files"):
+        build_robocopy_command(str(src), str(dest), cfg.lan)
 
-    res = run_lan_sync(str(src), str(dest), cfg.lan)
-    dest_files_after = [p for p in dest.rglob("*") if p.is_file()]
-    # D1 is proven in the no-/ZB control (test_w1c_controls.py::..._c2_...).
-    # With the production command (/ZB), robocopy dies with exit 16 first, so
-    # here we RECORD what happened instead of asserting the wipe.
-    if res["exit_code"] == 16:
-        L.record("D1.lan_purge",
-                 "robocopy /MIR against a dirs-only source wipes the LAN destination",
-                 f"robocopy exit={res['exit_code']} (SeBackupPrivilege absent -> /ZB aborts the run "
-                 f"before any copy/delete, see experiment C1) | dest files before=12 after="
-                 f"{len(dest_files_after)}",
-                 "MASKED BY /ZB — the purge never happens because robocopy exits 16 first; "
-                 "see C2 for the same scenario without /ZB (12 -> 0 files, LAN_COMPLETE)")
-        pytest.skip("robocopy /ZB privilege failure masks the purge (proved separately in C2)")
-    L.record(
-        "D1.lan_purge",
-        "mirror run against an empty (dirs-only) source wipes the destination",
-        f"robocopy exit={res['exit_code']} status={res['status']} | "
-        f"dest files before={len(dest_files_before)} after={len(dest_files_after)} | "
-        f"counts={res.get('counts')}",
-        "DATA LOSS CONFIRMED — destination purged" if not dest_files_after
-        else "no loss (files survived)",
-    )
-    assert len(dest_files_after) == 0, "expected the destination to be purged"
-    assert res["status"] == "LAN_COMPLETE"      # <- and it reports success
+    db = ManifestDB.from_config(cfg)
+    try:
+        row = db.last_run("lan")
+    finally:
+        db.close()
+    after = _tree_bytes(dest)
+    L.record("D1.lan_purge",
+             "dirs-only source: LAN pipeline blocks before any transfer (C-1 closed)",
+             f"blocked guards={blocked} | row={row['status'] if row else None} | "
+             f"dest files before={len(before)} after={len(after)}",
+             "LAN leg protected (byte-identical)" if after == before else "DATA CHANGED")
+    assert "G1_SOURCE_HAS_FILES" in blocked
+    assert row and row["status"] == "LAN_BLOCKED"
+    assert after == before, "destination must be byte-identical"
 
 
-def test_w1a_d1_empty_subdirs_source_purges_fake_bucket(sandbox):
-    """Same shape against the cloud leg: does rclone sync delete the objects?"""
+def test_w1a_d1_empty_subdirs_source_is_refused_cloud(sandbox):
+    """Same shape against the cloud leg: rclone sync must never start."""
     import os
 
     from core.cloud_sync import build_rclone_sync_command, run_cloud_sync
@@ -94,40 +94,34 @@ def test_w1a_d1_empty_subdirs_source_purges_fake_bucket(sandbox):
     bucket_root = sandbox / "buckets"
     bucket_root.mkdir(parents=True, exist_ok=True)
     fy = bucket_root / "lab-bucket" / "FY26-26"
-    before = []
     for i in range(12):
-        p = write_file(fy / "Clients" / f"ledger_{i}.txt", f"LEDGER {i}\n".encode() * 40)
-        before.append(p.name)
-    assert len(list(fy.rglob("*.txt"))) == 12
+        write_file(fy / "Clients" / f"ledger_{i}.txt", f"LEDGER {i}\n".encode() * 40)
+    before = _tree_bytes(fy)
 
     rc_path = write_local_rclone_config(sandbox / "runtime" / "rclone_local.conf")
     saved = L.patch_cloud_modules_to_local(rc_path)
     cwd = os.getcwd()
     os.chdir(bucket_root)
     try:
-        cmd = build_rclone_sync_command(str(src), "lab-bucket", "FY26-26", rc_path,
-                                        "STANDARD", bwlimit="1000M", retries=1,
-                                        transfers=2, checkers=2, buffer_size="16M",
-                                        max_duration_seconds=0)
-        assert cmd[:3][2].endswith("FY26-26")
-
-        res = run_cloud_sync(
-            source=str(src), bucket="lab-bucket", fy_prefix="FY26-26",
-            gcs_key_path=str(sandbox / "lab-key.json"), project_number="000000000000",
-            storage_class="STANDARD", location="us-central1", bwlimit="1000M",
-            retries=1, transfers=2, checkers=2, buffer_size="16M",
-            timeout=120, max_duration_seconds=0,
-        )
-        after = [p.name for p in fy.rglob("*.txt")]
-        L.record(
-            "D1.cloud_purge",
-            "cloud mirror against an empty (dirs-only) source deletes the bucket objects",
-            f"rclone exit={res['exit_code']} status={res['status']} | "
-            f"objects before={len(before)} after={len(after)}",
-            "DATA LOSS CONFIRMED — objects deleted, reported " + res["status"]
-            if not after else "no loss (objects survived)",
-        )
-        assert after == [], "expected rclone sync to delete the objects (mirror semantics)"
+        with pytest.raises(ValueError, match="contains no files"):
+            build_rclone_sync_command(str(src), "lab-bucket", "FY26-26", rc_path,
+                                      "STANDARD", bwlimit="1000M", retries=1,
+                                      transfers=2, checkers=2, buffer_size="16M",
+                                      max_duration_seconds=0)
+        with pytest.raises(ValueError, match="contains no files"):
+            run_cloud_sync(
+                source=str(src), bucket="lab-bucket", fy_prefix="FY26-26",
+                gcs_key_path=str(sandbox / "lab-key.json"), project_number="000000000000",
+                storage_class="STANDARD", location="us-central1", bwlimit="1000M",
+                retries=1, transfers=2, checkers=2, buffer_size="16M",
+                timeout=120, max_duration_seconds=0,
+            )
+        after = _tree_bytes(fy)
+        L.record("D1.cloud_purge",
+                 "dirs-only source: rclone sync is never started (C-1 closed)",
+                 f"objects before={len(before)} after={len(after)}",
+                 "cloud leg protected (byte-identical)" if after == before else "DATA CHANGED")
+        assert after == before, "bucket objects must be byte-identical"
     finally:
         os.chdir(cwd)
         for (mod, attr), orig in saved.items():

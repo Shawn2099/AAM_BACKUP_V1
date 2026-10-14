@@ -331,6 +331,27 @@ def test_lan_pipeline_guard_block_records_lan_blocked(
 
 
 @patch("flow._open_run_artefacts", return_value=None)
+@patch("flow.lan_sync_task")
+@patch("flow.lan_guards_task")
+@patch("flow.lan_snapshot_before_task", return_value={
+    ".AAM_TARGET_MOUNTED": (0, 1.0), "Clients/.aam_target_mounted": (0, 1.0),
+    "Clients/a.txt": (1, 1.0), "b.txt": (1, 1.0)})
+@patch("flow.lan_preflight_task")
+@patch("flow.wol_check_task")
+@patch("flow.health_check_task")
+@patch("flow._record_run")
+def test_lan_destination_count_excludes_mount_markers(
+    _rec, _h, _w, _pre, _snap, guards_task, sync, _art,
+):
+    """Lab finding: 'would delete 12 of 13' counted the marker, which robocopy
+    skips (/XF at any depth) - the G3 denominator is backup files only."""
+    guards_task.side_effect = _blocked("lan")
+    with pytest.raises(g.GuardBlocked):
+        flow._run_lan_pipeline(_pipeline_cfg(), "run-m", "2026-10-14T21:00:00")
+    assert guards_task.call_args.args[3] == 2
+
+
+@patch("flow._open_run_artefacts", return_value=None)
 @patch("flow.lan_publish_artifact_task")
 @patch("flow.lan_record_task")
 @patch("flow.lan_snapshot_after_task", return_value={"a": (1, 1.0)})

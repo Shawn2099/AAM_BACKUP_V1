@@ -1,7 +1,6 @@
 """Pre-backup health checks — source drive, binaries, disk space, clock, GCS key."""
 
 import http.client
-import os
 import shutil
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -36,8 +35,7 @@ def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, st
         return False, f"Source drive not accessible: {source}"
 
     try:
-        with os.scandir(source) as entries:
-            next(entries, None)
+        next(iter(source.iterdir()), None)  # lists the root; reads one entry only
     except PermissionError:
         return False, f"Source drive permission denied: {source}"
     except OSError as e:

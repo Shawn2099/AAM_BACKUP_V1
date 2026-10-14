@@ -194,8 +194,10 @@ def _lan_rig(ex: Path, files: dict[str, bytes], mtimes=None):
 
     src, _created = build_tree(ex / "source" / "FY26-26", files, mtimes)
     dest = L.make_canary(ex / "nas" / "FY26-26")
+    # mirror-mechanics rig: tiny random trees would trip G3 on one stray file
     cfg = L.build_config(ex, source=src, lan_dest=str(dest), runtime=ex / "runtime",
-                         lan_enabled=True, cloud_enabled=False)
+                         lan_enabled=True, cloud_enabled=False,
+                         guards=dict(L.MIRROR_MECHANICS_GUARDS))
     cfg_path = _write_lab_config(ex, cfg)
     return cfg, cfg_path, src, dest, ls
 

@@ -1140,7 +1140,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             before_dict = lan_snapshot_before_task(config)
             guard_record = lan_guards_task(
                 config, _effective_fy_prefix(config), dry_run,
-                None if before_dict is None else len(before_dict),
+                None if before_dict is None else guards.count_backup_files(before_dict),
             )
             phase = "sync"
             _t_sync = time.monotonic()

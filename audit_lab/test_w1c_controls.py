@@ -50,8 +50,10 @@ def test_w1c_c1_zb_privilege_is_a_hard_failure(sandbox):
     assert r_no.returncode in (0, 1), r_no.stdout
 
 
-def test_w1c_c2_dirs_only_source_without_zb_purges(sandbox):
-    """With /ZB removed, does an all-empty-dirs source wipe the LAN destination?"""
+def test_w1c_c2_dirs_only_source_without_zb_is_refused(sandbox):
+    """C-1 regression (closed in M2 2.2): with /ZB removed, an all-empty-dirs
+    source used to wipe the LAN destination (12 -> 0 files). The robocopy
+    command builder now refuses it (G1 backstop) before robocopy can run."""
     from core.lan_sync import build_robocopy_command
 
     src = sandbox / "source" / "FY26-26"
@@ -60,21 +62,18 @@ def test_w1c_c2_dirs_only_source_without_zb_purges(sandbox):
     dest = sandbox / "nas" / "FY26-26"
     for i in range(12):
         write_file(dest / "Clients" / f"ledger_{i}.txt", f"L{i}\n".encode() * 40)
-    before = 12
+    before = sorted((p.name, p.read_bytes()) for p in dest.rglob("*") if p.is_file())
 
     cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    cmd = flags_without_zb(build_robocopy_command(str(src), str(dest), cfg.lan))
-    cmd.append(f"/LOG:{sandbox / 'runtime' / 'c2.log'}")
-    r = _run(cmd, timeout=120)
+    with pytest.raises(ValueError, match="contains no files") as ei:
+        flags_without_zb(build_robocopy_command(str(src), str(dest), cfg.lan))
 
-    after = len([p for p in dest.rglob("*") if p.is_file()])
+    after = sorted((p.name, p.read_bytes()) for p in dest.rglob("*") if p.is_file())
     L.record("C2.dirs_only_no_zb",
-             "all-empty-dirs source with /ZB removed still wipes the LAN destination",
-             f"robocopy exit={r.returncode} | dest files before={before} after={after}",
-             "LAN DATA LOSS CONFIRMED (purge with no files in source)" if after == 0
-             else "LAN leg protected (files survived)")
-    print(f"[C2] exit={r.returncode} before={before} after={after}")
-    assert after < before, "expected at least some deletion to observe the behaviour"
+             "all-empty-dirs source is refused before robocopy runs (C-1 closed)",
+             f"builder: {ei.value} | dest files before={len(before)} after={len(after)}",
+             "LAN leg protected (byte-identical)" if after == before else "DATA CHANGED")
+    assert after == before, "destination must be byte-identical"
 
 
 def test_w1c_c3_partial_source_without_zb_purges(sandbox):

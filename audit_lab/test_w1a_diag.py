@@ -34,12 +34,16 @@ def _can_read(path: Path) -> bool:
 
 
 def test_w1a_diag_robocopy_exit16_reason(sandbox):
-    """Capture the actual robocopy output for the dirs-only source case."""
+    """Capture the actual robocopy output for the /ZB privilege abort (C-2).
+
+    The source holds one real file: a dirs-only source no longer reaches
+    robocopy at all (G1 backstop, M2 2.2 - see test_w1a_purge D1)."""
     from core.lan_sync import run_lan_sync
 
     src = sandbox / "source" / "FY26-26"
     for d in ("Clients", "Registers"):
         (src / d).mkdir(parents=True, exist_ok=True)
+    write_file(src / "Clients" / "new_ledger.txt", b"y" * 50)
     dest = sandbox / "nas" / "FY26-26"
     write_file(dest / "Clients" / "ledger.txt", b"x" * 100)
 

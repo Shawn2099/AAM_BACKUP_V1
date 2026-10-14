@@ -141,6 +141,15 @@ def _to_unc(p: str | Path) -> str:
     return s
 
 
+# For lab tests of MIRROR MECHANICS (convergence, metamorphic mutations) on
+# tiny random trees, where one stray file is already > the 10 % delete
+# limit. The guards themselves are proven in tests/test_m2_guard_wiring.py
+# and the W1A/W1C data-loss regressions, which keep the default limits.
+MIRROR_MECHANICS_GUARDS = {"max_delete_files": 100_000_000, "max_delete_percent": 100,
+                           "max_source_shrink_percent": 100,
+                           "forbid_local_destination": False}
+
+
 def build_config(base: Path, *, source: Path, lan_dest: str, runtime: Path,
                  lan_enabled: bool = True, cloud_enabled: bool = True,
                  bucket: str = "lab-bucket", **overrides) -> "AppConfig":

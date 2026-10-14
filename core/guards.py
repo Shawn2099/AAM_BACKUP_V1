@@ -26,12 +26,25 @@ from loguru import logger
 PASS = "PASS"
 BLOCK = "BLOCK"
 
+MOUNT_MARKER = ".AAM_TARGET_MOUNTED"
+
 # Names G1 never counts as backup content (any depth): OS-managed entries
 # that exist even on an empty NTFS volume, plus the destination mount marker.
 SOURCE_IGNORE_NAMES = frozenset({
     "system volume information", "$recycle.bin", "recycler", "recycled",
-    "desktop.ini", "thumbs.db", ".aam_target_mounted",
+    "desktop.ini", "thumbs.db", MOUNT_MARKER.lower(),
 })
+
+
+def count_backup_files(relative_paths) -> int:
+    """Destination files that are backup content (G3 denominator).
+
+    The mount marker is excluded at any depth, exactly like robocopy's
+    `/XF .AAM_TARGET_MOUNTED`, which never copies or deletes it.
+    """
+    marker = MOUNT_MARKER.lower()
+    return sum(1 for p in relative_paths
+               if p.replace("\\", "/").rsplit("/", 1)[-1].lower() != marker)
 
 
 @dataclass(frozen=True)

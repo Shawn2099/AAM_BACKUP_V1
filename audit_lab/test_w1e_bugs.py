@@ -170,6 +170,7 @@ def test_w1e_bug2_lan_post_phase_exception_records_complete(sandbox, monkeypatch
           patch("flow.lan_sync_task") as sync,
           patch("flow.lan_preflight_task"),
           patch("flow.lan_snapshot_before_task", return_value={"a.txt": (1, 1.0)}),
+          patch("flow.lan_guards_task"),
           patch("flow.lan_snapshot_after_task", return_value={"a.txt": (1, 1.0)}),
           patch("flow.lan_record_task", side_effect=sqlite3.OperationalError("database is locked")),
           patch("flow.health_check_task"),
