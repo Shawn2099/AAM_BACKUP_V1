@@ -489,14 +489,14 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 - [x] 0.4 Baseline recorded (markers deferred: `tests/` and `audit_lab/` are already separate roots; on-box tests live only in `audit_lab/test_w7_deployed.py`); record baseline in `docs/audit/BASELINE_mvp-hardening.md`
 
 ### M1 — Foundations
-- [ ] 1.1 Config hygiene: `extra="forbid"`, absolute `CONFIG_PATH` (`AAM_CONFIG`), all new config sections with defaults/bounds (§8) — **incl. WoL timings (WP10)**
-- [ ] 1.2 `core/statuses.py`
-- [ ] 1.3 `ManifestDB.from_config()` + busy_timeout-first + dedup into migration (WP15)
-- [ ] 1.4 `core/tool_runner.py` + migrate call sites one module per commit
-- [ ] 1.5 `core/run_artefacts.py` + retention purge task (WP2)
-- [ ] 1.6 `core/notify.py` (tenacity, delivery table, cooldown, dashboard link)
-- [ ] 1.7 Test-isolation guard (WP16)
-- [ ] 1.8 Bool exit-code rejection (WP15)
+- [x] 1.1 Config hygiene: `extra="forbid"`, absolute `CONFIG_PATH` (`AAM_CONFIG`), deprecated-key handling. New config keys are added with their consumer (run_logs/alerts/notifications in 1.4-1.6; **WoL timings move to 2.5**)
+- [x] 1.2 `core/statuses.py`
+- [x] 1.3 `ManifestDB.from_config()` + busy_timeout-first + dedup into migration (WP15)
+- [x] 1.4 `core/tool_runner.py` + migrate call sites one module per commit
+- [x] 1.5 `core/run_artefacts.py` + retention purge task (WP2)
+- [x] 1.6 `core/notify.py` (tenacity, delivery table, cooldown, dashboard link)
+- [x] 1.7 Test-isolation guard (WP16)
+- [x] 1.8 Bool exit-code rejection (WP15)
 
 ### M2 — Data safety
 - [ ] 2.1 `core/guards.py` G1–G5 + property tests
