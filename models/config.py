@@ -122,6 +122,7 @@ class LanConfig(StrictModel):
     max_attempts: int = Field(default=2, ge=1, le=10, description="Flow-level retry attempts for LAN backup orchestration")
     retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
     mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
+    log_tail_kb: int = Field(default=100, ge=4, le=10240, description="Size of the robocopy log tail (KB) used for the result decision and carried into alerts/DB; the full log is always kept in run_logs")
     # F8: the preflight /L walk scales with dataset size (1M files ~= 5-10 min
     # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the
     # scale this deployment targets, aborting a healthy backup before it started.
@@ -248,6 +249,7 @@ class CloudConfig(StrictModel):
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
     buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
+    error_tail_lines: int = Field(default=100, ge=1, le=10000, description="Max rclone error lines carried into alerts/DB/dashboard; the full log is always kept in run_logs")
 
     @field_validator("bucket")
     @classmethod

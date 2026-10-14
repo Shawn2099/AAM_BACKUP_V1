@@ -23,33 +23,33 @@ from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_si
 class TestNetworkConditions:
     """Simulate various network conditions."""
 
-    def test_cloud_sync_slow_network(self):
+    def test_cloud_sync_slow_network(self, tmp_path):
         """Cloud sync with slow network (timeout)."""
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool
+
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
         with patch("core.cloud_sync.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_sync.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=100)
+             fake_run_tool("core.cloud_sync", timed_out=True):
             result = run_cloud_sync(
-                source="E:\\",
-                bucket="bucket",
-                fy_prefix="FY26-27",
-                gcs_key_path="key.json",
-                project_number="123",
-                storage_class="STANDARD",
-                timeout=100,
+                source="E:\\", bucket="bucket", fy_prefix="FY26-27",
+                gcs_key_path="key.json", project_number="123",
+                storage_class="STANDARD", timeout=100, artefacts=art,
             )
-            assert result["status"] == "CLOUD_FAILED"
-
-    def test_lan_sync_slow_smb(self):
+        assert result["status"] == "CLOUD_FAILED"
+    def test_lan_sync_slow_smb(self, tmp_path):
         """LAN sync with slow SMB (timeout)."""
+        from core.run_artefacts import RunArtefacts
         from models.config import LanConfig
+        from test_support.fake_tools import fake_run_tool
+
         config = LanConfig(subprocess_timeout_seconds=3600)  # model minimum is 3600
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
         with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="robocopy", timeout=100)
-            result = run_lan_sync("E:\\", "\\\\nas\\share", config)
-            assert result["status"] == "LAN_FAILED"
-
-
+             patch("core.lan_sync._assert_source_not_empty"), \
+             fake_run_tool("core.lan_sync", timed_out=True):
+            result = run_lan_sync("E:\\", "\\\\nas\\share", config, artefacts=art)
+        assert result["status"] == "LAN_FAILED"
 class TestDiskConditions:
     """Simulate various disk conditions."""
 
@@ -187,33 +187,29 @@ class TestDataIntegrityConditions:
 class TestRecoveryScenarios:
     """Simulate recovery from failures."""
 
-    def test_cloud_retry_after_transient_error(self):
+    def test_cloud_retry_after_transient_error(self, tmp_path):
         """Cloud sync delegates retry to rclone (--retries), then classifies honestly.
 
-        Contract: run_cloud_sync passes `retries` into the rclone command
-        (rclone's own --retries mechanism) and does NOT invent an internal
-        process-level retry loop; a persistent failure classifies as
-        CLOUD_PARTIAL (exit 5).
+        run_cloud_sync passes `retries` into the rclone command (rclone's own
+        --retries mechanism) and does NOT invent a process-level retry loop;
+        a persistent failure classifies as CLOUD_PARTIAL (exit 5).
         """
-        with patch("core.cloud_sync.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_sync.subprocess.run") as mock_run, \
-             patch("core.cloud_sync.tempfile.mkstemp", side_effect=tempfile.mkstemp):
-            mock_run.return_value = MagicMock(returncode=5, stdout="", stderr="transient")
-            result = run_cloud_sync(
-                source="E:\\",
-                bucket="bucket",
-                fy_prefix="FY26-27",
-                gcs_key_path="key.json",
-                project_number="123",
-                storage_class="STANDARD",
-                retries=2,
-            )
-            assert result["status"] == "CLOUD_PARTIAL"
-            assert result["exit_code"] == 5
-            # The retry budget is carried into the rclone command itself.
-            cmd = mock_run.call_args[0][0]
-            assert "--retries" in cmd and cmd[cmd.index("--retries") + 1] == "2"
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool
 
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with patch("core.cloud_sync.resolve_binary", return_value="rclone"), \
+             fake_run_tool("core.cloud_sync", exit_code=5, stderr="transient") as calls:
+            result = run_cloud_sync(
+                source="E:\\", bucket="bucket", fy_prefix="FY26-27",
+                gcs_key_path="key.json", project_number="123",
+                storage_class="STANDARD", retries=2, artefacts=art,
+            )
+        assert result["status"] == "CLOUD_PARTIAL"
+        assert result["exit_code"] == 5
+        assert len(calls) == 1  # no hidden process-level retry
+        cmd = calls[0]["argv"]
+        assert "--retries" in cmd and cmd[cmd.index("--retries") + 1] == "2"
     def test_orphaned_log_cleanup_after_crash(self):
         """Orphaned logs are cleaned up after crash."""
         from core.lan_sync import cleanup_orphaned_robocopy_logs

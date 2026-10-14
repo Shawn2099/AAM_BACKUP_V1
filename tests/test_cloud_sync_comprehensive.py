@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pathlib import Path
 
 from core.cloud_sync import (
     build_rclone_sync_command,
@@ -343,343 +344,147 @@ class TestScanRcloneLogForErrors:
 
 # ── run_cloud_sync — subprocess orchestration ────────────────────────────
 
-class TestRunCloudSyncSuccess:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_0_cloud_complete(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_COMPLETE"
-        assert result["exit_code"] == 0
-        assert result["error"] is None
-        assert result["suspect_reason"] is None
+class _SyncHarness:
+    """run_cloud_sync through the shared fake tool runner (M1 1.5).
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_9_no_changes(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(9)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_NO_CHANGES_COMPLETE"
-        assert result["exit_code"] == 9
-        assert result["error"] is None
+    The real classification / log-scanning code runs; only the process is
+    faked. Artefacts go to a per-test folder so the full-log contract can
+    be asserted.
+    """
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_4_partial(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(4)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_PARTIAL"
-        assert result["exit_code"] == 4
+    @pytest.fixture(autouse=True)
+    def _artefacts(self, tmp_path):
+        from core.run_artefacts import RunArtefacts
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_5_partial(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(5)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_PARTIAL"
-        assert result["exit_code"] == 5
+        self.art = RunArtefacts(tmp_path / "run_logs", "run-x-cloud", day="2026-10-14")
+        with patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config):
+            yield
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_10_partial(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(10)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_PARTIAL"
-        assert result["exit_code"] == 10
+    def sync(self, *, exit_code=0, log="", stderr="", timed_out=False,
+             spawn_error=None, **kwargs):
+        from test_support.fake_tools import fake_run_tool
+
+        params = dict(source="/src", bucket="bucket", fy_prefix="FY",
+                      gcs_key_path="/key", project_number="123",
+                      storage_class="COLDLINE", artefacts=self.art)
+        params.update(kwargs)
+        with fake_run_tool("core.cloud_sync", exit_code=exit_code, log=log,
+                           stderr=stderr, timed_out=timed_out,
+                           spawn_error=spawn_error) as calls:
+            result = run_cloud_sync(**params)
+        self.calls = calls
+        return result
 
 
-class TestRunCloudSyncStderr:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_nonzero_reads_stderr(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(7)
-        mock_path.return_value.read_text.return_value = "auth failed: bad credentials"
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
+_ERR = '{"level":"error","msg":"Failed to copy: googleapi: Error 403: forbidden","source":"x"}'
+_INFO = '{"level":"info","msg":"Copied (new)","object":"a.txt"}'
+
+
+class TestRunCloudSyncExitCodes(_SyncHarness):
+    @pytest.mark.parametrize("code, status", [
+        (0, "CLOUD_COMPLETE"), (9, "CLOUD_NO_CHANGES_COMPLETE"),
+        (4, "CLOUD_PARTIAL"), (5, "CLOUD_PARTIAL"), (10, "CLOUD_PARTIAL"),
+        (1, "CLOUD_FAILED"), (7, "CLOUD_FAILED"),
+    ])
+    def test_exit_code_mapping(self, code, status):
+        result = self.sync(exit_code=code, log=_INFO)
+        assert result["status"] == status
+        assert result["exit_code"] == code
+
+    def test_clean_success_has_no_error(self):
+        result = self.sync(exit_code=0, log=_INFO)
+        assert result["error"] is None and result["suspect_reason"] is None
+
+
+class TestRunCloudSyncLogEvidence(_SyncHarness):
+    def test_nonzero_exit_reports_error_lines_from_full_log(self):
+        result = self.sync(exit_code=7, log=_INFO + "\n" + _ERR)
         assert result["status"] == "CLOUD_FAILED"
-        assert result["exit_code"] == 7
-        assert "auth failed" in result["error"]
+        assert "Error 403" in result["error"]
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_full_stderr_returned_no_truncation(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(1)
-        large_stderr = "x" * 150000
-        mock_path.return_value.read_text.return_value = large_stderr
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["error"] == large_stderr
+    def test_error_text_is_bounded_by_error_tail_lines(self):
+        many = "\n".join(_ERR.replace("403", f"4{i:04d}") for i in range(500))
+        result = self.sync(exit_code=7, log=many, error_tail_lines=5)
+        assert result["error"].count("googleapi") == 5
+        assert "40499" in result["error"]          # most recent lines kept
+        assert "40000" not in result["error"]
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_unreadable_uses_fallback(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(1)
-        mock_path.return_value.read_text.side_effect = OSError("permission denied")
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert "stderr unreadable" in result["error"]
+    def test_nonzero_exit_without_any_output_says_so(self):
+        result = self.sync(exit_code=2, log="")
+        assert result["error"] == "rclone exit 2 (no log output)"
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_9_clean_log_stays_no_changes(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """P1-EXIT9: exit 9 + clean log stream = genuine no-changes success."""
-        mock_run.return_value = _mock_result(9)
-        mock_path.return_value.read_text.return_value = (
-            '{"level":"INFO","msg":"There was nothing to transfer"}\n'
-        )
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
+    def test_exit_9_clean_log_stays_no_changes(self):
+        result = self.sync(exit_code=9, log=_INFO)
         assert result["status"] == "CLOUD_NO_CHANGES_COMPLETE"
         assert result["error"] is None
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_9_with_fatal_log_reclassified_failed(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """P1-EXIT9: exit 9 + fatal signals = CLOUD_FAILED, never NO_CHANGES."""
-        mock_run.return_value = _mock_result(9)
-        mock_path.return_value.read_text.return_value = (
-            '{"level":"ERROR","msg":"Failed to create file system for \\"aam_gcs:bucket\\": '
-            'bucket doesn\'t exist"}\n'
-        )
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
+    def test_exit_9_with_fatal_log_reclassified_failed(self):
+        result = self.sync(exit_code=9, log=_ERR)
         assert result["status"] == "CLOUD_FAILED"
-        assert result["exit_code"] == 9
         assert "reclassified" in result["error"]
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_exit_0_with_error_log_reclassified_suspect(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """C-DK-001: exit 0 contradicted by ERROR/CRITICAL signals → CLOUD_SUSPECT."""
-        mock_run.return_value = _mock_result(0)
-        mock_path.return_value.read_text.return_value = (
-            '{"level":"ERROR","msg":"Failed to update checksum"}\n'
-        )
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
+    def test_exit_9_with_fatal_on_stderr_only_is_detected(self):
+        # Fatal errors before rclone opens --log-file land on stderr.
+        result = self.sync(exit_code=9, log="",
+                           stderr="Failed to create file system: bucket not found")
+        assert result["status"] == "CLOUD_FAILED"
+
+    def test_exit_0_with_error_log_reclassified_suspect(self):
+        result = self.sync(exit_code=0, log=_ERR)
         assert result["status"] == "CLOUD_SUSPECT"
-        assert result["exit_code"] == 0
-        assert result["suspect_reason"] is not None
-        assert "CLOUD_SUSPECT" in result["suspect_reason"]
+        assert "Error 403" in result["suspect_reason"]
 
 
-class TestRunCloudSyncExceptions:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_timeout_expired(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=300)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE", timeout=300)
+class TestRunCloudSyncAbnormal(_SyncHarness):
+    def test_timeout_is_failed_and_resumable(self):
+        result = self.sync(timed_out=True, timeout=1234)
         assert result["status"] == "CLOUD_FAILED"
         assert result["exit_code"] == -1
-        assert "Timeout after 300s" in result["error"]
-        assert "resumable" in result["error"]
+        assert "Timeout after 1234s" in result["error"] and "resumable" in result["error"]
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_file_not_found_rclone(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.side_effect = FileNotFoundError("rclone not on PATH")
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_FAILED"
-        assert result["exit_code"] == -1
-        assert "rclone not found" in result["error"]
+    def test_missing_rclone(self):
+        result = self.sync(spawn_error="FileNotFoundError: [WinError 2] not found")
+        assert result["status"] == "CLOUD_FAILED" and result["error"] == "rclone not found"
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_os_error(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.side_effect = OSError("disk full")
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_FAILED"
-        assert result["exit_code"] == -1
-        assert result["error"] == "disk full"
+    def test_other_spawn_error_is_reported_verbatim(self):
+        result = self.sync(spawn_error="PermissionError: access denied")
+        assert result["status"] == "CLOUD_FAILED" and "access denied" in result["error"]
 
 
-class TestRunCloudSyncStderrCleanup:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_cleaned_up_on_success(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        mock_path.return_value.unlink.assert_called_once()
+class TestRunCloudSyncFullLog(_SyncHarness):
+    def test_full_log_is_kept_in_run_artefacts(self):
+        result = self.sync(exit_code=0, log=_INFO)
+        log_path = Path(result["log_path"])
+        assert log_path.parent == self.art.dir and log_path.exists()
+        assert _INFO in log_path.read_text(encoding="utf-8")
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_cleaned_up_on_timeout(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=300)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        mock_path.return_value.unlink.assert_called_once()
+    def test_log_file_flag_points_at_the_artefact(self):
+        result = self.sync(exit_code=0, log=_INFO)
+        argv = self.calls[0]["argv"]
+        assert argv[argv.index("--log-file") + 1] == result["log_path"]
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_cleaned_up_on_file_not_found(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.side_effect = FileNotFoundError("rclone missing")
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        mock_path.return_value.unlink.assert_called_once()
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_cleaned_up_on_os_error(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        mock_run.side_effect = OSError("io error")
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        mock_path.return_value.unlink.assert_called_once()
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.Path")
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_unlink_failure_swallowed(self, mock_cfg, mock_run, mock_path, mock_mkstemp, mock_close):
-        """If unlink fails in finally, it must not raise."""
-        mock_run.return_value = _mock_result(0)
-        mock_path.return_value.unlink.side_effect = OSError("still in use")
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        assert result["status"] == "CLOUD_COMPLETE"
+    def test_return_structure(self):
+        result = self.sync(exit_code=0, log=_INFO)
+        assert set(result) == {"status", "exit_code", "error", "suspect_reason", "log_path"}
 
 
-class TestRunCloudSyncReturnStructure:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_return_has_status_exit_code_error(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        # suspect_reason is the C-DK-001 hardening field (None on clean runs).
-        assert set(result.keys()) == {"status", "exit_code", "error", "suspect_reason"}
-        assert result["suspect_reason"] is None
+class TestRunCloudSyncPassthrough(_SyncHarness):
+    def test_default_timeout_matches_config_default(self):
+        from models.config import CloudConfig
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_return_has_status_exit_code_error_on_failure(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(7)
-        mock_path_patcher = patch("core.cloud_sync.Path")
-        mock_path = mock_path_patcher.start()
-        mock_path.return_value.read_text.return_value = "fatal error"
-        try:
-            result = run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-            assert set(result.keys()) == {"status", "exit_code", "error", "suspect_reason"}
-        finally:
-            mock_path_patcher.stop()
+        self.sync(exit_code=0)
+        assert self.calls[0]["timeout_s"] == CloudConfig.model_fields[
+            "subprocess_timeout_seconds"].default
 
+    def test_custom_timeout_passed(self):
+        self.sync(exit_code=0, timeout=3600)
+        assert self.calls[0]["timeout_s"] == 3600
 
-class TestRunCloudSyncTimeoutPassthrough:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_default_timeout_18000(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["timeout"] == 18000
+    def test_buffer_size_flows_to_command(self):
+        self.sync(exit_code=0, buffer_size="128M")
+        argv = self.calls[0]["argv"]
+        assert argv[argv.index("--buffer-size") + 1] == "128M"
 
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_custom_timeout_passed(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE", timeout=7200)
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["timeout"] == 7200
-
-
-class TestRunCloudSyncEnvAndSubprocess:
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_subprocess_run_called_with_cmd(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "rclone"
-        assert cmd[1] == "sync"
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stdout_devnull(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["stdout"] == subprocess.DEVNULL
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_stderr_to_file(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["stderr"] is not None
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_text_mode(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE")
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["text"] is True
-
-    @patch("core.cloud_sync.os.close")
-    @patch("core.cloud_sync.tempfile.mkstemp", return_value=(0, _DUMMY_STDERR_PATH))
-    @patch("core.cloud_sync.subprocess.run")
-    @patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config)
-    def test_buffer_size_flows_to_command(self, mock_cfg, mock_run, mock_mkstemp, mock_close):
-        mock_run.return_value = _mock_result(0)
-        run_cloud_sync("/src", "bucket", "FY", "/key", "123", "COLDLINE", buffer_size="256M")
-        cmd = mock_run.call_args[0][0]
-        idx = cmd.index("--buffer-size")
-        assert cmd[idx + 1] == "256M"
-
-
-# -- M7: binary resolution -----------------------------------------------------
 
 class TestBinaryResolution:
     """M7 regression: the sync command must honor resolve_binary() like every
@@ -698,25 +503,19 @@ class TestBinaryResolution:
             cmd = _build()
         assert cmd[0] == "rclone"
 
-    def test_resolution_applies_inside_run_cloud_sync(self):
+    def test_resolution_applies_inside_run_cloud_sync(self, tmp_path):
         """End-to-end: run_cloud_sync must execute the RESOLVED binary."""
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool
+
         exe = os.path.join("custom", "rclone")
-
-        def _fake_cm(*args, **kwargs):
-            cm = MagicMock()
-            cm.__enter__.return_value = os.path.join(
-                tempfile.gettempdir(), "rclone_test.conf"
-            )
-            cm.__exit__.return_value = False
-            return cm
-
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
         with patch("core.cloud_sync.resolve_binary", create=True, return_value=exe), \
-             patch("core.cloud_sync.temp_rclone_config", _fake_cm), \
-             patch("core.cloud_sync.subprocess.run",
-                   return_value=_mock_result(0)) as mock_run:
+             patch("core.cloud_sync.temp_rclone_config", side_effect=_mock_temp_config), \
+             fake_run_tool("core.cloud_sync", exit_code=0) as calls:
             run_cloud_sync(
                 source="D:\\data", bucket="b", fy_prefix="FY26-27",
                 gcs_key_path="k.json", project_number="1",
-                storage_class="COLDLINE",
+                storage_class="COLDLINE", artefacts=art,
             )
-        assert mock_run.call_args[0][0][0] == exe
+        assert calls[0]["argv"][0] == exe

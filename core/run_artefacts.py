@@ -63,6 +63,27 @@ class RunArtefacts:
         self._write_manifest()
 
     @classmethod
+    def open(cls, directory: str | os.PathLike) -> RunArtefacts:
+        """Re-open an existing run folder (e.g. inside a Prefect task that
+        received only the folder path). Sequence numbering continues after
+        the highest existing artefact."""
+        d = Path(directory)
+        obj = cls.__new__(cls)
+        obj.root = d.parent.parent
+        obj.dir = d
+        obj.run_id = d.name
+        obj._lock = threading.Lock()
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            obj._manifest = json.loads((d / MANIFEST_NAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            obj._manifest = {"run_id": d.name, "created_at": now_iso(),
+                             "degraded": False, "notes": [], "artefacts": []}
+        seqs = [int(p.name[:2]) for p in d.iterdir() if p.name[:2].isdigit()]
+        obj._seq = max(seqs, default=0)
+        return obj
+
+    @classmethod
     def for_config(cls, config, run_id: str) -> RunArtefacts:
         artefacts = cls(config.run_logs_dir, run_id)
         artefacts.check_free_space(config.run_logs.min_free_gb)

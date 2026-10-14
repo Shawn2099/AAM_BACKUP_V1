@@ -293,31 +293,29 @@ class TestLanPartialShutdown:
 # ═══════════════════════════════════════════════════════════════
 
 class TestCloudTimeoutMessage:
-    @patch("core.cloud_sync.temp_rclone_config")
-    def test_timeout_error_is_resumable(self, mock_temp_cfg):
+    def test_timeout_error_is_resumable(self, tmp_path):
         from contextlib import contextmanager
+
+        from core.cloud_sync import run_cloud_sync
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool
 
         @contextmanager
         def fake_cfg(*a, **k):
             yield "/tmp/rclone-test.conf"
 
-        mock_temp_cfg.side_effect = fake_cfg
-
-        with patch("core.cloud_sync.subprocess.run",
-                   side_effect=subprocess.TimeoutExpired(cmd="rclone", timeout=300)):
-            from core.cloud_sync import run_cloud_sync
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with patch("core.cloud_sync.temp_rclone_config", side_effect=fake_cfg), \
+             fake_run_tool("core.cloud_sync", timed_out=True):
             result = run_cloud_sync(
                 source="E:\\DATA", bucket="b", fy_prefix="FY26-27",
                 gcs_key_path="/tmp/k.json", project_number="1", storage_class="STANDARD",
-                timeout=300,
+                timeout=300, artefacts=art,
             )
-
         assert result["status"] == "CLOUD_FAILED"
         assert result["exit_code"] == -1
         assert "resumable" in result["error"]
         assert "next run continues" in result["error"]
-
-
 # ═══════════════════════════════════════════════════════════════
 # G10 — scheduled rollover-check flow
 # ═══════════════════════════════════════════════════════════════

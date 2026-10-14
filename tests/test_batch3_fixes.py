@@ -33,66 +33,46 @@ class TestFilesFailed:
     def lan_cfg(self):
         return LanConfig()
 
-    @patch("core.lan_sync.subprocess.run")
-    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
-    def test_partial_with_copy_errors_counts_failed_lines(self, mock_resolve, mock_run, tmp_path, lan_cfg):
-        """Exit 9 (bit 3 = copy errors) with summary FAILED=2 -> files_failed=2.
+    def test_partial_with_copy_errors_counts_failed_lines(self, tmp_path, lan_cfg):
+        """Exit 9 (bit 3) with summary FAILED=2 -> files_failed=2 (P1-COUNT)."""
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool, robocopy_log
 
-        P1-COUNT: the count now comes from the positional Files-summary row;
-        the log must carry one for an exact count (bit-3 floor applies when
-        the summary is absent)."""
-        log_file = tmp_path / "robocopy_sync_test.log"
-        # Completed job summary (Files row + Ended line): proves normal
-        # termination, so the bit-3 exit is PARTIAL rather than SUSPECT.
-        log_file.write_text(
+        log = robocopy_log(total=3, copied=1, failed=2, body=(
             "      New File:            1 C:\\a\\ok.txt\n"
             "          ** FAILED: \\\\nas\\FY25-26\\big.iso\n"
-            "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"
-            "\n"
-            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-            "    Dirs :         1         1         0         0         0         0\n"
-            "    Files :         3         1         0         0         2         0\n"
-            "    Bytes :       100        50        50         0         0         0\n"
-            "    Times :   0:00:01   0:00:00                       0:00:00   0:00:00\n"
-            "    Ended : Tuesday, September 01, 2026 1:00:01 AM\n"
-        )
-        mock_run.return_value = MagicMock(returncode=9)
-        # point the (mocked) run at our prepared log
-        with patch.object(lan_sync, "tempfile") as mock_tf:
-            fd = os.open(str(log_file), os.O_RDWR)
-            mock_tf.mkstemp.return_value = (fd, str(log_file))
-            with patch("core.lan_sync._assert_source_not_empty"):
-                result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
-
+            "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"))
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with fake_run_tool("core.lan_sync", exit_code=9, log=log, log_encoding="utf-16"), \
+             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync._assert_source_not_empty"):
+            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_PARTIAL"
         assert result["files_failed"] == 2
+    def test_clean_run_files_failed_zero(self, tmp_path, lan_cfg):
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool, robocopy_log
 
-    @patch("core.lan_sync.subprocess.run")
-    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
-    def test_clean_run_files_failed_zero(self, mock_resolve, mock_run, lan_cfg):
-        # A mocked process writes no /LOG; feed the completed summary the
-        # real process would have written — COMPLETE requires log evidence.
-        completed_log = (
-            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-            "    Files :         2         2         0         0         0         0\n"
-            "    Ended : Tuesday, September 01, 2026 1:00:01 AM\n"
-        )
-        mock_run.return_value = MagicMock(returncode=1)
-        with patch("core.lan_sync._read_log_tail", return_value=completed_log):
-            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with fake_run_tool("core.lan_sync", exit_code=1, log=robocopy_log(total=2, copied=2),
+                           log_encoding="utf-16"), \
+             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync._assert_source_not_empty"):
+            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_COMPLETE"
         assert result["termination"] == "normal"
         assert result["files_failed"] == 0
+    def test_timeout_files_failed_zero(self, tmp_path, lan_cfg):
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool
 
-    @patch("core.lan_sync.subprocess.run")
-    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
-    def test_timeout_files_failed_zero(self, mock_resolve, mock_run, lan_cfg):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="robocopy", timeout=5)
-        result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with fake_run_tool("core.lan_sync", timed_out=True), \
+             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync._assert_source_not_empty"):
+            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_FAILED"
         assert result["files_failed"] == 0
-
-
 class TestCountFailedLines:
     def test_counts_only_robocopy_failure_lines(self):
         log = """x

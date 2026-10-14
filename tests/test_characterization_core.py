@@ -389,6 +389,7 @@ class TestCloudSyncCharacterization:
 
     def test_run_cloud_sync_no_changes(self, tmp_path):
         from core.cloud_sync import run_cloud_sync
+        from test_support.fake_tools import fake_run_tool
 
         @contextlib.contextmanager
         def fake_cfg(*a, **k):
@@ -396,8 +397,7 @@ class TestCloudSyncCharacterization:
 
         with patch("core.cloud_sync.temp_rclone_config", fake_cfg), \
              patch("core.cloud_sync.build_rclone_sync_command", return_value=["rclone"]), \
-             patch("core.cloud_sync.subprocess.run") as m:
-            m.return_value = MagicMock(returncode=9, stdout="", stderr="")
+             fake_run_tool("core.cloud_sync", exit_code=9):
             result = run_cloud_sync(
                 source=str(tmp_path), bucket="b", fy_prefix="FY26-27",
                 gcs_key_path="/k", project_number="1", storage_class="STANDARD",
@@ -407,6 +407,7 @@ class TestCloudSyncCharacterization:
 
     def test_run_cloud_sync_timeout(self, tmp_path):
         from core.cloud_sync import run_cloud_sync
+        from test_support.fake_tools import fake_run_tool
 
         @contextlib.contextmanager
         def fake_cfg(*a, **k):
@@ -414,8 +415,7 @@ class TestCloudSyncCharacterization:
 
         with patch("core.cloud_sync.temp_rclone_config", fake_cfg), \
              patch("core.cloud_sync.build_rclone_sync_command", return_value=["rclone"]), \
-             patch("core.cloud_sync.subprocess.run") as m:
-            m.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=1)
+             fake_run_tool("core.cloud_sync", timed_out=True):
             result = run_cloud_sync(
                 source=str(tmp_path), bucket="b", fy_prefix="FY26-27",
                 gcs_key_path="/k", project_number="1", storage_class="STANDARD",

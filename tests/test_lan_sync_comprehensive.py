@@ -177,143 +177,111 @@ class TestCleanupOrphanedLogs:
 
 
 class TestRunLanSync:
-    """run_lan_sync contract tests (mocked subprocess + log reader).
+    """run_lan_sync contract tests (M1 1.5: shared tool runner + full logs).
 
-    The real tempfile.mkstemp runs (the finally block unlinks the temp log);
-    mocking it to return fd 0 would close stdin and cascade EBADF failures
-    through the rest of the suite.
+    The fake runner writes a real-format robocopy /UNILOG (UTF-16) into the
+    path the module reserved, so the real UTF-16 tail reader, summary parser
+    and decide_lan_result all run unchanged.
     """
+
+    KEYS = {"status", "exit_code", "error", "anomaly_details", "files_failed",
+            "termination", "log_complete", "counts", "log_retained"}
+
+    @pytest.fixture(autouse=True)
+    def _art(self, tmp_path):
+        from core.run_artefacts import RunArtefacts
+
+        self.art = RunArtefacts(tmp_path / "run_logs", "run-x-lan", day="2026-10-14")
+        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync._assert_source_not_empty"):
+            yield
 
     @staticmethod
     def _config():
-        """LanConfig with a short timeout set on the INSTANCE.
-
-        The model enforces subprocess_timeout_seconds >= 3600 at validation
-        time; production treats the value as an operator-editable runtime
-        field (same pattern as the real-timeout test in test_lan_sync.py).
-        """
         from models.config import LanConfig
         config = LanConfig()
         config.subprocess_timeout_seconds = 60
         return config
 
+    def _run(self, **fake):
+        from test_support.fake_tools import fake_run_tool
+
+        fake.setdefault("log_encoding", "utf-16")
+        with fake_run_tool("core.lan_sync", **fake) as calls:
+            result = run_lan_sync("E:\\", "\\\\nas\\share", self._config(), artefacts=self.art)
+        self.calls = calls
+        return result
+
     def test_successful_sync(self):
-        """Successful robocopy run → LAN_COMPLETE, full result-dict contract."""
-        config = self._config()
+        from test_support.fake_tools import robocopy_log
 
-        log_content = (
-            "Files : 10 10 0 0 0 0\n"
-            "Ended : Mon Jan 01 00:00:00 2026\n"
-        )
+        result = self._run(exit_code=1, log=robocopy_log(total=10, copied=10))
+        assert result["status"] == "LAN_COMPLETE"
+        assert result["exit_code"] == 1
+        assert result["termination"] == "normal" and result["log_complete"] is True
+        assert result["counts"] == {"total": 10, "copied": 10, "skipped": 0,
+                                    "mismatch": 0, "failed": 0, "extras": 0}
+        assert result["error"] is None and result["anomaly_details"] is None
+        assert result["files_failed"] == 0
+        assert set(result) == self.KEYS
 
-        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.subprocess.run") as mock_run, \
-             patch("core.lan_sync._read_log_tail", return_value=log_content):
-            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+    def test_full_log_is_kept_and_unilog_flag_used(self):
+        from test_support.fake_tools import robocopy_log
 
-            result = run_lan_sync("E:\\", "\\\\nas\\share", config)
-            assert result["status"] == "LAN_COMPLETE"
-            assert result["exit_code"] == 1
-            assert result["termination"] == "normal"
-            assert result["log_complete"] is True
-            assert result["counts"] == {
-                "total": 10, "copied": 10, "skipped": 0,
-                "mismatch": 0, "failed": 0, "extras": 0,
-            }
-            assert result["error"] is None
-            assert result["anomaly_details"] is None
-            assert result["files_failed"] == 0
-            assert result["log_retained"] is None
-            assert set(result.keys()) == {
-                "status", "exit_code", "error", "anomaly_details", "files_failed",
-                "termination", "log_complete", "counts", "log_retained",
-            }
+        result = self._run(exit_code=1, log=robocopy_log(body="New File  C:\\Données\\été.txt\n"))
+        log_path = Path(result["log_retained"])
+        assert log_path.parent == self.art.dir and log_path.exists()
+        assert "été.txt" in log_path.read_text(encoding="utf-16")
+        assert f"/UNILOG:{log_path}" in self.calls[0]["argv"]
+        assert not any(a.upper().startswith("/LOG:") for a in self.calls[0]["argv"])
 
     def test_sync_with_copy_errors(self):
-        """Robocopy with copy errors → LAN_PARTIAL, files_failed from the
-        positional summary FAILED column (floored by bit 3)."""
-        config = self._config()
+        from test_support.fake_tools import robocopy_log
 
-        log_content = (
-            "Files : 10 8 0 0 2 0\n"
-            "Ended : Mon Jan 01 00:00:00 2026\n"
-        )
-
-        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.subprocess.run") as mock_run, \
-             patch("core.lan_sync._read_log_tail", return_value=log_content):
-            mock_run.return_value = MagicMock(returncode=8, stdout="", stderr="")
-
-            result = run_lan_sync("E:\\", "\\\\nas\\share", config)
-            assert result["status"] == "LAN_PARTIAL"
-            assert result["exit_code"] == 8
-            assert result["termination"] == "normal"
-            assert result["log_complete"] is True
-            # Summary FAILED column (2) floored by the bit-3 mask (1) → 2.
-            assert result["files_failed"] == 2
-            assert result["error"] is not None
-            assert result["anomaly_details"] is None
-            assert result["log_retained"] is None
+        result = self._run(exit_code=8, log=robocopy_log(total=10, copied=8, failed=2))
+        assert result["status"] == "LAN_PARTIAL"
+        assert result["exit_code"] == 8
+        assert result["termination"] == "normal" and result["log_complete"] is True
+        assert result["files_failed"] == 2
+        assert result["error"] and result["anomaly_details"] is None
 
     def test_sync_timeout(self):
-        """Timeout → LAN_FAILED with abnormal termination (exit -1 sentinel)."""
-        config = self._config()
+        result = self._run(timed_out=True)
+        assert result["status"] == "LAN_FAILED"
+        assert result["exit_code"] == -1
+        assert result["termination"] == "abnormal" and result["log_complete"] is False
+        assert result["counts"] is None and result["files_failed"] == 0
+        assert "Timeout after 60s" in result["error"]
+        assert result["log_retained"]
 
-        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="robocopy", timeout=60)
-
-            result = run_lan_sync("E:\\", "\\\\nas\\share", config)
-            assert result["status"] == "LAN_FAILED"
-            assert result["exit_code"] == -1
-            assert result["termination"] == "abnormal"
-            assert result["log_complete"] is False
-            assert result["counts"] is None
-            assert result["files_failed"] == 0
-            assert result["log_retained"] is None
-            assert "Timeout after 60s" in result["error"]
+    def test_missing_robocopy(self):
+        result = self._run(spawn_error="FileNotFoundError: [WinError 2]")
+        assert result["status"] == "LAN_FAILED"
+        assert "robocopy.exe not found" in result["error"]
 
     def test_sync_fatal_error(self):
-        """Fatal robocopy error (exit 16, bit 4) → LAN_FAILED."""
-        config = self._config()
-
-        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.subprocess.run") as mock_run, \
-             patch("core.lan_sync._read_log_tail", return_value=""):
-            mock_run.return_value = MagicMock(returncode=16, stdout="", stderr="fatal")
-
-            result = run_lan_sync("E:\\", "\\\\nas\\share", config)
-            assert result["status"] == "LAN_FAILED"
-            assert result["exit_code"] == 16
-            assert result["termination"] == "abnormal"
-            assert result["log_complete"] is False
-            assert result["counts"] is None
-            # Bit 4 set but bit 3 clear → the bit-3 floor contributes 0.
-            assert result["files_failed"] == 0
-            assert result["error"] is not None
-            assert result["log_retained"] is None
+        result = self._run(exit_code=16, log="ERROR : Invalid Parameter #3")
+        assert result["status"] == "LAN_FAILED"
+        assert result["exit_code"] == 16
+        assert result["termination"] == "abnormal" and result["log_complete"] is False
+        assert result["files_failed"] == 0
+        assert "Invalid Parameter" in result["error"]
 
     def test_sync_killed_truncated_log(self):
-        """Killed process with exit 1 but truncated log → LAN_SUSPECT.
+        result = self._run(exit_code=1, log="truncated log without summary")
+        assert result["status"] == "LAN_SUSPECT"
+        assert result["termination"] == "abnormal" and result["log_complete"] is False
+        assert "WITHOUT a completed job summary" in result["error"]
+        assert result["files_failed"] == 0
+        assert Path(result["log_retained"]).exists()
 
-        The exit code is not evidence of success (T04/A1): the missing job
-        summary forces SUSPECT and the log is retained for forensics.
-        """
-        config = self._config()
+    def test_tail_size_comes_from_config(self):
+        from test_support.fake_tools import robocopy_log
 
-        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.subprocess.run") as mock_run, \
-             patch("core.lan_sync._read_log_tail", return_value="truncated log without summary"):
-            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+        big = robocopy_log(total=1, copied=0, failed=1, body="x" * 400_000)
+        result = self._run(exit_code=8, log=big)
+        # log_tail_kb default 100 KB of UTF-16 bytes -> ~51,200 chars
+        assert len(result["error"]) <= 100 * 1024 // 2 + 1
+        assert "Ended :" in result["error"]
 
-            result = run_lan_sync("E:\\", "\\\\nas\\share", config)
-            assert result["status"] == "LAN_SUSPECT"
-            assert result["exit_code"] == 1
-            assert result["termination"] == "abnormal"
-            assert result["log_complete"] is False
-            assert result["counts"] is None
-            assert "WITHOUT a completed job summary" in result["error"]
-            # No bit 3 and no parseable summary → floor of 0, never a false 1.
-            assert result["files_failed"] == 0
-            assert result["log_retained"] is not None
-            assert result["log_retained"].endswith(".log")
+

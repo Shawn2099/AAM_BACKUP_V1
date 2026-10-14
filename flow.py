@@ -38,6 +38,7 @@ from core.manifest import ManifestDB
 from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
+from core.run_artefacts import RunArtefacts
 from core.shutdown import shutdown_server
 from core.time_utils import get_fy_prefix, now_iso
 from core.wol import ensure_server_online
@@ -108,6 +109,39 @@ def _stable_run_id(mode: str) -> str:
     except Exception:
         pass
     return f"{uuid.uuid4()}-{mode}"
+
+
+def _open_run_artefacts(config, run_id: str) -> RunArtefacts | None:
+    """Create the run's full-log folder (plan WP2). Never blocks a backup:
+    on failure the tools fall back to a temp folder and the reason is logged."""
+    try:
+        return RunArtefacts.for_config(config, run_id)
+    except Exception as e:  # noqa: BLE001 - evidence storage must never block a backup
+        logger.error(f"Run log folder could not be created ({e}) - full logs for "
+                     "this run go to a temporary folder")
+        return None
+
+
+def _finalize_run_artefacts(config, artefacts: RunArtefacts | None) -> None:
+    if artefacts is None:
+        return
+    try:
+        artefacts.finalize(config.run_logs.compress_after_kb)
+    except Exception as e:  # noqa: BLE001 - evidence handling must not fail a run
+        logger.warning(f"Run log finalisation failed ({artefacts.dir}): {e}")
+
+
+def _with_artefacts(extended_metrics: str | None, artefacts: RunArtefacts | None) -> str | None:
+    """Add the run's log folder to extended_metrics (JSON) for the dashboard."""
+    if artefacts is None:
+        return extended_metrics
+    try:
+        payload = json.loads(extended_metrics) if extended_metrics else {}
+    except ValueError:
+        payload = {"unparsed_metrics": extended_metrics}
+    payload["artefacts_dir"] = str(artefacts.dir)
+    payload["artefacts_degraded"] = artefacts.degraded
+    return json.dumps(payload)
 
 
 @contextmanager
@@ -236,7 +270,7 @@ def cloud_preflight_task(config, fy_prefix: str):
 
 
 @task(name="cloud-sync")
-def cloud_sync_task(config, fy_prefix: str):
+def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None):
     """Run rclone sync to mirror source → GCS."""
     logger.info(f"Cloud sync: {config.paths.source_drive} → {config.cloud.bucket}/{fy_prefix}")
     result = run_cloud_sync(
@@ -254,6 +288,8 @@ def cloud_sync_task(config, fy_prefix: str):
         buffer_size=config.cloud.buffer_size,
         timeout=config.cloud.subprocess_timeout_seconds,
         max_duration_seconds=config.cloud.max_duration_seconds,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
+        error_tail_lines=config.cloud.error_tail_lines,
     )
     if result["status"] in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
         raise RuntimeError(result.get("error", "Cloud sync failed"))
@@ -451,13 +487,14 @@ def lan_snapshot_after_task(config):
 
 
 @task(name="lan-sync")
-def lan_sync_task(config):
+def lan_sync_task(config, artefacts_dir: str | None = None):
     """Run robocopy /MIR mirror sync."""
     logger.info(f"LAN sync: {config.paths.source_drive} → {config.paths.lan_destination}")
     result = run_lan_sync(
         source=config.paths.source_drive,
         dest=config.paths.lan_destination,
         lan_config=config.lan,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
     )
     if result["status"] in ("LAN_FAILED", "LAN_SUSPECT"):
         raise RuntimeError(result.get("error", "LAN sync failed"))
@@ -688,6 +725,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         files_copied = 0
         bytes_copied = 0
         extended_metrics = None
+        artefacts = _open_run_artefacts(config, run_id)
+        artefacts_dir = str(artefacts.dir) if artefacts else None
         # Failure-path telemetry: accumulate per-stage durations as stages
         # complete so a failed run still records what was measured. Stages
         # that never execute stay absent (never fabricated).
@@ -701,7 +740,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             preflight(config, fy_prefix)
             phase = "sync"
             _t_sync = time.monotonic()
-            sync_result = sync(config, fy_prefix)
+            sync_result = sync(config, fy_prefix, artefacts_dir)
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
@@ -885,6 +924,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 extended_metrics = _failure_telemetry(stage_seconds, phase)
             raise
         finally:
+            _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:
                 _record_run(
                     db_path, run_id, "cloud", started_at, status,
@@ -927,6 +968,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         bytes_copied = 0
         files_failed = 0
         extended_metrics = None
+        artefacts = _open_run_artefacts(config, run_id)
+        artefacts_dir = str(artefacts.dir) if artefacts else None
         # Failure-path telemetry (same contract as cloud): measured stages
         # persist even when the run fails; unexecuted stages stay absent.
         stage_seconds: dict = {}
@@ -939,7 +982,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             before_dict = lan_snapshot_before_task(config)
             phase = "sync"
             _t_sync = time.monotonic()
-            sync_result = sync(config)
+            sync_result = sync(config, artefacts_dir)
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
@@ -1070,6 +1113,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 extended_metrics = _failure_telemetry(stage_seconds, phase)
             raise
         finally:
+            _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:
                 _record_run(
                     db_path, run_id, "lan", started_at, status,
@@ -1192,6 +1237,35 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
 # FY rollover check — scheduled (G10 fix)
 # ═══════════════════════════════════════════════════════════════
 
+# NSSM-rotated service logs live in the log directory next to the app logs.
+_SERVICE_LOG_GLOBS = ("agent_svc-*.log", "prefect_svc-*.log", "watchdog_svc-*.log")
+
+
+@task(name="log-retention")
+def log_retention_task(config) -> dict:
+    """Delete retained logs past their configured retention (plan WP2).
+
+    * run artefacts (full rclone/robocopy logs): run_logs.retention_days
+    * NSSM-rotated service logs: run_logs.service_log_retention_days
+    App logs (backup_*.log) are rotated/retained by loguru
+    (maintenance.log_retention_days). Never raises.
+    """
+    from core.run_artefacts import purge_older_than
+
+    removed = {"run_logs": 0, "service_logs": 0}
+    try:
+        removed["run_logs"] = purge_older_than(
+            config.run_logs_dir, config.run_logs.retention_days)
+        for pattern in _SERVICE_LOG_GLOBS:
+            removed["service_logs"] += purge_older_than(
+                config.paths.log_directory,
+                config.run_logs.service_log_retention_days, glob=pattern)
+    except Exception as e:  # noqa: BLE001 - housekeeping must never fail the flow
+        logger.warning(f"Log retention task failed (non-fatal): {e}")
+    logger.info(f"Log retention: removed {removed}")
+    return removed
+
+
 @flow(name="rollover-check", log_prints=False)
 def rollover_check_flow(config_path: str = CONFIG_PATH):
     """Daily FY-rollover check (G10 fix).
@@ -1210,6 +1284,13 @@ def rollover_check_flow(config_path: str = CONFIG_PATH):
         a blocked rollover is visible daily until resolved.
     """
     from core.fy_rollover import RolloverError, rollover
+
+    # Daily housekeeping rides on this daily deployment (no extra schedule).
+    # Runs first so a blocked rollover can never stop log retention.
+    try:
+        log_retention_task(load_config(config_path))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Log retention skipped (config load failed): {e}")
 
     try:
         if rollover(config_path=config_path):

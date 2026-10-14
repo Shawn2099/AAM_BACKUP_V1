@@ -439,17 +439,26 @@ class TestReadLogTail:
         result = _read_log_tail(tmp_path / "does_not_exist.log", 1000)
         assert "log unreadable" in result
 
-    def test_anomaly_tail_limited_to_100kb(self, tmp_path):
-        from core.lan_sync import _ANOMALY_LOG_TAIL
+    def test_tail_limited_to_configured_kb(self, tmp_path):
+        from models.config import LanConfig
+        limit = LanConfig().log_tail_kb * 1024
         log = tmp_path / "robocopy.log"
         log.write_text("a" * 200_000, encoding="utf-8")
-        assert len(_read_log_tail(log, _ANOMALY_LOG_TAIL)) == _ANOMALY_LOG_TAIL
+        assert len(_read_log_tail(log, limit)) == limit
 
-    def test_error_tail_limited_to_100kb(self, tmp_path):
-        from core.lan_sync import _ERROR_LOG_TAIL
+    def test_utf16_unilog_tail_is_decoded_and_aligned(self, tmp_path):
         log = tmp_path / "robocopy.log"
-        log.write_text("e" * 200_000, encoding="utf-8")
-        assert len(_read_log_tail(log, _ERROR_LOG_TAIL)) == _ERROR_LOG_TAIL
+        # odd byte budget forces the 2-byte alignment path
+        log.write_text("été " * 50_000 + "END", encoding="utf-16")
+        tail = _read_log_tail(log, 1001, encoding="utf-16")
+        assert tail.endswith("END")
+        assert "\ufffd" not in tail and "\ufeff" not in tail
+        assert "été" in tail
+
+    def test_utf16_small_file_strips_bom(self, tmp_path):
+        log = tmp_path / "robocopy.log"
+        log.write_text("Files : 1", encoding="utf-16")
+        assert _read_log_tail(log, 10_000, encoding="utf-16") == "Files : 1"
 
 
 # ═══════════════════════════════════════════════════════════════

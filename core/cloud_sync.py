@@ -4,15 +4,13 @@ Reference: AAM_BACKUP_V2/core/rclone.py — proven classification and temp confi
 """
 
 import json
-import os
-import subprocess
-import tempfile
-from pathlib import Path
 
 from loguru import logger
 
 from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
+from core.run_artefacts import RunArtefacts
+from core.tool_runner import run_tool, tail_lines
 
 
 # P1-EXIT9: severity floor that disqualifies an exit-9 from "no changes".
@@ -22,7 +20,7 @@ _LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 
 _FATAL_PLAINTEXT_MARKERS = ("failed to", "notices: failed", "notice: failed")
 
 
-def scan_rclone_log_for_errors(log_text: str) -> tuple[bool, str]:
+def scan_rclone_log_for_errors(log_text: str, max_lines: int = 10) -> tuple[bool, str]:
     """Scan rclone's --use-json-log stream for ERROR/CRITICAL signals.
 
     Returns (has_error_signal, error_tail). A line counts as an error signal if:
@@ -47,7 +45,7 @@ def scan_rclone_log_for_errors(log_text: str) -> tuple[bool, str]:
             lowered = line.lower()
             if any(marker in lowered for marker in _FATAL_PLAINTEXT_MARKERS):
                 bad_lines.append(line)
-    return bool(bad_lines), "\n".join(bad_lines[-10:])
+    return bool(bad_lines), "\n".join(bad_lines[-max_lines:] if max_lines > 0 else [])
 
 
 def classify_rclone_exit(code: int) -> str:
@@ -183,24 +181,26 @@ def run_cloud_sync(
     buffer_size: str = "64M",
     timeout: int = 18000,
     max_duration_seconds: int | None = None,
+    artefacts: RunArtefacts | None = None,
+    error_tail_lines: int = 100,
 ) -> dict:
-    """Execute rclone sync to mirror source → GCS.
+    """Execute rclone sync to mirror source -> GCS.
 
-    Creates temp config, executes sync, cleans up in finally.
+    The FULL rclone log is written to the run's artefact folder
+    (`--log-file`, JSON lines) and kept (plan WP2). Operator-facing error
+    text is bounded to the last `error_tail_lines` error lines.
     max_duration_seconds: C-A override; when None the cap is auto-derived
-    from the subprocess timeout minus a 300s margin (see
-    resolve_max_duration_seconds).
+    from the subprocess timeout minus a 300s margin.
 
     Returns:
         {"status": str, "exit_code": int, "error": str | None,
-         "suspect_reason": str | None}
+         "suspect_reason": str | None, "log_path": str | None}
 
     status may be CLOUD_SUSPECT when exit 0 is contradicted by ERROR/CRITICAL
     log signals (C-DK-001 hardening). A clean kill with no log signals still
-    exits 0 here — incompleteness is then caught by the flow's evidence gate
-    (diff/size), which is the authoritative completeness check.
+    exits 0 here — incompleteness is then caught by the flow's evidence gate.
     """
-    stderr_path = None
+    artefacts = artefacts or RunArtefacts.ephemeral("cloud-sync")
     effective_max_duration = resolve_max_duration_seconds(
         timeout=timeout, configured=max_duration_seconds,
     )
@@ -214,96 +214,67 @@ def run_cloud_sync(
             buffer_size=buffer_size,
             max_duration_seconds=effective_max_duration,
         )
+        log_path = artefacts.new_path("rclone-sync", "log")
+        cmd.extend(["--log-file", str(log_path)])
 
-        logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix}")
+        logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix} (full log: {log_path})")
+        result = run_tool("rclone-sync", cmd, timeout_s=timeout,
+                          artefacts=artefacts, log_path=log_path)
 
-        stderr_fd, stderr_path = tempfile.mkstemp(suffix=".log", prefix="cloud_sync_stderr_")
-        os.close(stderr_fd)
-        try:
-            with open(stderr_path, "w", encoding="utf-8") as stderr_file:
-                result = subprocess.run(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=stderr_file,
-                    text=True,
-                    timeout=timeout,
-                )
+    base = {"suspect_reason": None, "log_path": str(log_path)}
+    if result.spawn_error:
+        missing = "FileNotFoundError" in result.spawn_error
+        return {**base, "status": "CLOUD_FAILED", "exit_code": -1,
+                "error": "rclone not found" if missing else result.spawn_error}
+    if result.timed_out:
+        # G7: a timeout is an interruption, not a data event — rclone sync
+        # is resumable.
+        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "error": (
+            f"Timeout after {timeout}s — rclone sync is resumable; progress is "
+            "preserved and the next run continues from where this one left off"
+        )}
 
-            status = classify_rclone_exit(result.returncode)
+    code = result.exit_code
+    status = classify_rclone_exit(code)
+    # rclone writes its log to --log-file; anything printed before the log
+    # file opened (fatal config/flag errors) lands on stderr. Scan both.
+    log_text = "\n".join(t for t in (result.log_text(), result.stderr_text()) if t)
+    has_error, error_tail = scan_rclone_log_for_errors(log_text, max_lines=error_tail_lines)
 
-            error_msg = None
-            suspect_reason = None
-            try:
-                stderr_text = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                stderr_text = ""
-            if result.returncode == 0:
-                # C-DK-001 hardening: a killed rclone can inherit exit 0.
-                # The kill itself leaves no log lines, so the evidence gate
-                # (diff/size, flow F1) remains the authoritative completeness
-                # check — but error signals in the log on a "clean" exit are
-                # contradictory evidence and must not pass silently.
-                has_error, error_tail = scan_rclone_log_for_errors(stderr_text)
-                if has_error:
-                    status = "CLOUD_SUSPECT"
-                    suspect_reason = (
-                        "rclone exited 0 but logged ERROR/CRITICAL signals - "
-                        "reclassified CLOUD_COMPLETE -> CLOUD_SUSPECT:\n"
-                        f"{error_tail}"
-                    )
-                    error_msg = suspect_reason
-                    logger.error(suspect_reason)
-            if result.returncode == 9:
-                # P1-EXIT9: exit 9 only means "no files transferred" when the
-                # log stream is clean. A fatal error (missing bucket, auth,
-                # bad remote) ALSO produces exit 9 under --error-on-no-transfer;
-                # trusting it blindly recorded CLOUD_NO_CHANGES_COMPLETE for
-                # broken runs (CLOUD-06/07). Reclassify when signals exist.
-                has_error, error_tail = scan_rclone_log_for_errors(stderr_text)
-                if has_error:
-                    status = "CLOUD_FAILED"
-                    error_msg = (
-                        f"rclone exited 9 but logged fatal errors - reclassified "
-                        f"CLOUD_NO_CHANGES_COMPLETE -> CLOUD_FAILED:\n{error_tail}"
-                    )
-                    logger.error(error_msg)
-                else:
-                    logger.info("Cloud sync: no changes to transfer")
-            elif result.returncode != 0:
-                if stderr_text:
-                    error_msg = stderr_text
-                    logger.error(f"rclone error: {error_msg}")
-                else:
-                    error_msg = f"rclone exit {result.returncode} (stderr unreadable)"
+    error_msg = None
+    suspect_reason = None
+    if code == 0 and has_error:
+        # C-DK-001: error signals on a "clean" exit are contradictory
+        # evidence and must not pass silently.
+        status = "CLOUD_SUSPECT"
+        suspect_reason = (
+            "rclone exited 0 but logged ERROR/CRITICAL signals - "
+            "reclassified CLOUD_COMPLETE -> CLOUD_SUSPECT:\n"
+            f"{error_tail}"
+        )
+        error_msg = suspect_reason
+        logger.error(suspect_reason)
+    elif code == 9:
+        # P1-EXIT9: exit 9 only means "no files transferred" when the log
+        # stream is clean; fatal errors also produce exit 9 under
+        # --error-on-no-transfer.
+        if has_error:
+            status = "CLOUD_FAILED"
+            error_msg = (
+                f"rclone exited 9 but logged fatal errors - reclassified "
+                f"CLOUD_NO_CHANGES_COMPLETE -> CLOUD_FAILED:\n{error_tail}"
+            )
+            logger.error(error_msg)
+        else:
+            logger.info("Cloud sync: no changes to transfer")
+    elif code != 0:
+        detail = error_tail or tail_lines(log_text, error_tail_lines)
+        error_msg = (
+            f"rclone exit {code}: {detail}" if detail
+            else f"rclone exit {code} (no log output)"
+        )
+        logger.error(f"rclone error (exit {code}); full log: {log_path}\n{detail}")
 
-            logger.info(f"Cloud sync exit {result.returncode} -> {status}")
-
-            return {
-                "status": status,
-                "exit_code": result.returncode,
-                "error": error_msg,
-                "suspect_reason": suspect_reason,
-            }
-
-        except subprocess.TimeoutExpired:
-            logger.error(f"Cloud sync timed out after {timeout}s")
-            # G7: make the operator-facing message accurate — rclone sync is
-            # resumable, so a timeout is an interruption, not a data event.
-            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": (
-                f"Timeout after {timeout}s — rclone sync is resumable; progress is "
-                "preserved and the next run continues from where this one left off"
-            ), "suspect_reason": None}
-        except FileNotFoundError:
-            logger.error("rclone not found")
-            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": "rclone not found",
-                    "suspect_reason": None}
-        except OSError as e:
-            logger.error(f"Cloud sync OS error: {e}")
-            return {"status": "CLOUD_FAILED", "exit_code": -1, "error": str(e),
-                    "suspect_reason": None}
-        finally:
-            if stderr_path:
-                try:
-                    Path(stderr_path).unlink()
-                except OSError:
-                    pass
+    logger.info(f"Cloud sync exit {code} -> {status}")
+    return {**base, "status": status, "exit_code": code, "error": error_msg,
+            "suspect_reason": suspect_reason}
