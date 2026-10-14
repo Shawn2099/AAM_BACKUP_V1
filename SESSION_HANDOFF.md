@@ -1,6 +1,6 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-15 (session 2: M2 complete - 2.2, 2.3, 2.4, 2.6 done; M3 not started) · **Branch:** `mvp-hardening` · **Owner decisions:** all made (plan §11)
+**Last updated:** 2026-10-15 (session 2: M2 and M3 done; next M4)
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -41,15 +41,14 @@ caused by our program, a human is asked whenever an action could be wrong.**
 |---|---|
 | M0 Baseline | **done** (a8f7f7f) — suite 0 failed |
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
-| M2 Data safety | **done** (2.1–2.6); full-lab milestone run was started at the end of session 2 - re-run it first |
-| M3 Truth | **in progress** — 3.1, 3.2 done; 3.3–3.5 TODO |
+| M2 Data safety | **done** (2.1–2.6) |
+| M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
 | M4 Operations | not started |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check (2026-10-15, after 2.4):** `tests/` **1563 passed / 0 failed / 19 skipped**.
-Audit lab (~21 min): 238 passed / 2 failed → `w1a_d2[maxpath]` fixed (production-command
-experiment now opts into `/ZB`; targeted re-run green); the only remaining red is intentional
-(`test_w16_schedule_collisions_across_year` → WP8 / 3.4).
+**Test status at last check (2026-10-15, end of M3):** `tests/` **1698 passed / 0 failed / 19 skipped**.
+Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
+config.yaml `monthly_cron` changed - DEC-7).
 
 ### Built but NOT wired yet (M2/M3 must call these)
 | Module | What | Wire in |
@@ -57,8 +56,9 @@ experiment now opts into `/ZB`; targeted re-run green); the only remaining red i
 | `core/guards.py` | G1–G5 **wired** (2.2, 2.3) | — |
 | `core/approvals.py` | **wired** (2.3): `approvals` table, attention email, `approval_id` flow param, dashboard approve/dismiss/run | — |
 | `core/smb_ready.py` | NAS readiness | **wired** in 2.5 (b59a6d6) |
-| `core/rclone_errors.py` | transport-failure classifier | WP7 (`core/integrity.py` → `AUDIT_INCOMPLETE`) |
-| `core/notify.py` | single alert path, delivery recorded, cooldown, dashboard link | WP8 (replace `report.send_failure_alert` call sites; also fixes 4xx-retry bug in report.py) |
+| `core/rclone_errors.py` | **wired** (3.3): integrity audit → `AUDIT_INCOMPLETE`; cloud write probe cause | — |
+| `core/notify.py` | **wired** (3.4): every alert + report email; `report.send_failure_alert` remains only as a legacy helper (unused by flow/watchdog) | — |
+| `core/attention.py` | **new** (3.5): dashboard banner + `/health` | — |
 
 ## 4. Next steps (in order)
 
@@ -82,13 +82,18 @@ experiment now opts into `/ZB`; targeted re-run green); the only remaining red i
    M2 full lab: 234 passed / 6 failed -> the 5 W18 launch tests patched the removed
    `core.fy_rollover.rollover`; fixed (W18 29/29 green). Remaining red: W16 schedule collision
    (intentional, WP8 / 3.4). **M2 milestone: green except the intentional red.**
-4. **M3 3.1 DONE** (22706fc) and **3.2 DONE** (fd1abce) - see plan §13. Unit suite 1655 / 0 failed.
-   Full audit lab after 3.2: **238 passed / 1 failed** (only the intentional W16 red).
-5. **NEXT: 3.3 (WP7)** - "Size check" relabel everywhere (dashboard badge, Prefect artifact,
-   report, extended_metrics key `size_check_passed`, old key kept for reads); integrity audit
-   classification order: transport/listing error (`core.rclone_errors.find_transport_failure`,
-   patterns overridable via config `audit.network_error_patterns`) -> `AUDIT_INCOMPLETE` with the
-   cause; completed with differences -> VERIFICATION_FAILED; clean -> VERIFIED. Then 3.4, 3.5.
+4. **M3 DONE** — 3.1 22706fc, 3.2 fd1abce, 3.3 992cd8d, 3.4 c2ed9f2 + 9665489, 3.5 f8783dd.
+   **M3 milestone lab: 236 passed / 3 failed** -> W8 report-flow test moved to the new truthful
+   contract (fixed, re-run green). The other two (W16 schedule collision, W8 deployment
+   schedule == config) both read the owner's local config.yaml and turn green with:
+   Owner action: change `schedule.monthly_cron` to `"30 8 1 * *"` in the local and the
+   production config.yaml (code default + example already changed) - lab W16 then turns green.
+5. **NEXT: M4 (plan §13)** - 4.1 shutdown result verification (WP10), 4.2 clock tri-state +
+   w32tm fallback (WP12), 4.3 watchdog restart order / STOP_PENDING / config / own log (WP13),
+   4.4 schedule/time-budget validator with cronsim (WP14), 4.5 installer `uv run --frozen
+   --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
+   Deferred from M3 (plan §13 note): tool_runner migration of cloud_verify / cloud_reporter /
+   integrity `subprocess.run` calls.
 
 ### Verified tool facts (real binaries, 2026-10-14/15)
 - **rclone final stats**: the LAST JSON log line with a "stats" key holds the totals

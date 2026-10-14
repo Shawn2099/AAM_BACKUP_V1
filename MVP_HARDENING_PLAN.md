@@ -507,14 +507,20 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 - [x] 2.6 FY rollover (f778164): forward-only (`classify_rollover`; clock behind = refused, not approvable), final backups through the normal pipelines, G6 approval for JUMP / failed final backup, switch inside the slot (folders + `README_FY.txt` placeholder, config backup, atomic update, archive last via run_tool), boot-time rollover removed from launch.py.
 
 ### M3 prep already done
-- [~] WP7 prep: `core/rclone_errors.py` transport-failure classifier from real prod signatures (f4cc48b); TODO use it in `core/integrity.py` (AUDIT_INCOMPLETE) and preflight error text
+- [x] WP7 prep: `core/rclone_errors.py` transport-failure classifier (f4cc48b); used by the integrity audit (`AUDIT_INCOMPLETE`, 3.3) and the cloud write probe (2.4)
 
 ### M3 — Truth
 - [x] 3.1 Terminal-status function (22706fc): `statuses.decide_terminal_status` (P1, P2/M-2 fixed; sync verdict kept in `extended_metrics.sync_status`); `*_RUNNING` row before the slot; `*_SLOT_TIMEOUT` when the slot/lock is not obtained; `*_ABANDONED` at agent start (`maintenance.abandon_running_after_hours`).
 - [x] 3.2 Metrics from tool accounting (fd1abce): rclone final stats / robocopy Files+Bytes Copied (`/BYTES`) + `*EXTRA File` deletions; diffs are a cross-check (`metrics_consistent`); unknown = NULL; schema v2 per-leg size/mtime, old rows NULL.
-- [ ] 3.3 "Size check" relabel; audit `AUDIT_INCOMPLETE` classification (WP7)
-- [ ] 3.4 One alert per failure; report flows fail on send failure; stale alert; monthly cron offset (WP8)
-- [ ] 3.5 Dashboard banner, truthful `/health`, status labels from server (WP9)
+- [x] 3.3 "Size check" relabel + audit `AUDIT_INCOMPLETE` (992cd8d): could-not-run (transport signature via `rclone_errors` + `audit.network_error_patterns`, process error, no summary, timeout) is never divergence; capability label decided before logging; `audit` config section.
+- [x] 3.4 One alert per failure via `core.notify` (c2ed9f2: at the terminal decision, before any NAS shutdown; RECOVERED email); report flows on the single SMTP transport, fail on undelivered email, STALE warning when a period has no runs; monthly cron `30 8 1 * *` (9665489). Lab W16 stays red until the owner changes `monthly_cron` in their own config.yaml (DEC-7).
+- [x] 3.5 Dashboard attention banner + truthful `/health` (503 with reasons) + FY shown = backups' FY (f8783dd; `core/attention.py`, `dashboard.stale_after_hours`, `dashboard.alert_failure_window_days`).
+
+### M3 execution notes (session 2)
+- Deferred, NOT done: the tool_runner migration of the remaining check tools (cloud_verify,
+  cloud_reporter size/manifest/diff, integrity `rclone check`) that §12a sequenced into WP6/WP7.
+  Behaviour (truthful classification, tool counts) is done; those modules still call
+  `subprocess.run` with bounded output. Do it together with M4 or as a separate cleanup.
 
 ### M4 — Operations
 - [ ] 4.1 Shutdown result verification (WP10)

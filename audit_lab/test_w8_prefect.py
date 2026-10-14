@@ -533,9 +533,14 @@ def test_w8_concurrent_triggers_serialise(pf_rig, monkeypatch):
 
 # ── W8.6 — the report deployments run as real flow runs (SMTP outage safe) ────
 def test_w8_report_flows_contain_smtp_outage(pf_rig):
-    """weekly-report / monthly-report are real deployments: they must read the
-    manifest DB and CONTAIN an unreachable SMTP server without failing the run."""
+    """weekly-report / monthly-report are real deployments. M3 3.4 (plan WP8):
+    an undelivered report must FAIL the flow run (it used to COMPLETE while
+    the email silently failed - Aug 3, Sep 1) and the attempt is recorded."""
     import flow
+    import pendulum
+
+    from core.manifest import ManifestDB
+    from core.time_utils import IST
 
     # notifications ON with an SMTP server that refuses connections immediately
     pf_rig["cfg"].notifications.weekly_enabled = True
@@ -546,7 +551,14 @@ def test_w8_report_flows_contain_smtp_outage(pf_rig):
     pf_rig["cfg"].notifications.smtp_password = "p"
     pf_rig["cfg"].notifications.sender = "lab@example.invalid"
     pf_rig["cfg"].notifications.recipients = ["ops@example.invalid"]
+    pf_rig["cfg"].notifications.retry_base_seconds = 0     # no real back-off in the lab
     write_lab_config(pf_rig["sandbox"], pf_rig["cfg"])
+    # one recent run, so the report has content (not the STALE case)
+    db = ManifestDB(str(pf_rig["cfg"].paths.database_path))
+    now = pendulum.now(IST).isoformat()
+    db.insert_run({"run_id": "w8-seed", "mode": "lan", "started_at": now, "ended_at": now,
+                   "status": "LAN_COMPLETE"})
+    db.close()
 
     results = {}
     for name in ("weekly", "monthly"):
@@ -560,23 +572,23 @@ def test_w8_report_flows_contain_smtp_outage(pf_rig):
             exc = f"{type(e).__name__}: {e}"
         results[name] = exc
 
-    rows, _lan, _cloud = _db_rows(pf_rig["cfg_path"])
+    db = ManifestDB(str(pf_rig["cfg"].paths.database_path))
+    try:
+        recorded = [db.last_notification(f"report:{n}") for n in ("weekly", "monthly")]
+    finally:
+        db.close()
     L.record("W8.report_flows",
-             "the weekly/monthly report flows run as real flow runs and contain an "
-             "SMTP outage (the flow still COMPLETES; the report is simply not sent)",
+             "an undelivered report FAILS its real flow run and the attempt is recorded",
              f"smtp=127.0.0.1:{pf_rig['cfg'].notifications.smtp_port} (refusing) | "
-             f"weekly_report_flow raised={results['weekly']} | "
-             f"monthly_report_flow raised={results['monthly']} | "
-             f"run_history rows (reports never write backup rows)={[r['status'] for r in rows]}",
-             "OK — SMTP retry storm contained inside core.report; both report flows "
-             "COMPLETED against the real Prefect API"
-             if results["weekly"] is None and results["monthly"] is None
+             f"weekly={results['weekly']} | monthly={results['monthly']} | "
+             f"recorded={[r and r['status'] for r in recorded]}",
+             "OK — both report flows FAILED truthfully and the delivery failure is on record"
+             if all(r and "not delivered" in r for r in results.values())
              else f"ISSUE — {results}")
     print(f"[W8.6] {results}")
-    assert results["weekly"] is None and results["monthly"] is None
+    assert all(r and "not delivered" in r for r in results.values()), results
+    assert [r and r["status"] for r in recorded] == ["FAILED", "FAILED"]
 
-
-# ── W8.7 — one run per leg: the deployment parameters' real effect ────────────
 def test_w8_backup_flow_leg_scoped_modes(pf_rig):
     """backup(mode='cloud') and backup(mode='lan') — what the two daily
     deployments actually pass — record only their own leg."""
