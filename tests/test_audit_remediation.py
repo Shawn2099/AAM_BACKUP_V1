@@ -161,10 +161,10 @@ class TestBug02And03AuditOrchestration:
         # 2. WoL check task called before audit_lan
         mock_wol.assert_called_once_with(cfg)
         # 3. Timeout passed to audit_lan
-        mock_audit_lan.assert_called_once_with(
-            cfg.paths.source_drive, cfg.paths.lan_destination,
-            timeout=cfg.lan.subprocess_timeout_seconds,
-        )
+        mock_audit_lan.assert_called_once()
+        call = mock_audit_lan.call_args
+        assert call.args == (cfg.paths.source_drive, cfg.paths.lan_destination)
+        assert call.kwargs["timeout"] == cfg.lan.subprocess_timeout_seconds
         # 4. LAN shutdown task called in finally
         mock_shutdown.assert_called_once_with(cfg)
         # 5. BUG-08/F-T4-3: unknown counts persist as NULL (never a

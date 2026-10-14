@@ -114,13 +114,13 @@ class TestMismatchVsReadError:
     def test_missing_summary_fails_closed(self):
         result = _run_with_combined(
             "* a.bin\n", _mock_proc(1, stderr="2026/09/07 19:40:00 NOTICE: checking\n"))
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
         assert result["termination"] == "abnormal"
         assert "completion summary" in result["detail"]
 
     def test_abnormal_termination_fails_closed(self):
         result = _run_with_combined("", _mock_proc(2, stderr="fatal error, no summary"))
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
         assert result["termination"] == "abnormal"
         assert "process error" in result["detail"]
 

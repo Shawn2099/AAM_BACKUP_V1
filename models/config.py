@@ -525,6 +525,35 @@ class ApprovalsConfig(StrictModel):
     )
 
 
+class AuditConfig(StrictModel):
+    """Weekly read-only integrity audit (plan WP7)."""
+
+    checkers: int = Field(default=1, ge=1, le=16,
+                          description="rclone check --checkers (1 = gentle on the HDD)")
+    retries: int = Field(default=3, ge=0, le=10, description="rclone check --retries")
+    retries_sleep_seconds: int = Field(default=10, ge=0, le=600,
+                                       description="rclone check --retries-sleep (seconds)")
+    detail_max_paths: int = Field(default=100, ge=1, le=10_000,
+                                  description="Max divergent paths listed in the audit detail "
+                                              "(counts are always complete)")
+    network_error_patterns: list[str] = Field(
+        default_factory=list,
+        description="Extra regular expressions (case-insensitive) that mark an audit as "
+                    "'could not run' (AUDIT_INCOMPLETE) instead of a content difference - "
+                    "added to the built-in TLS/DNS/auth/network/listing signatures.",
+    )
+
+    @field_validator("network_error_patterns")
+    @classmethod
+    def valid_regexes(cls, v: list[str]) -> list[str]:
+        for pattern in v:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"audit.network_error_patterns: invalid regex {pattern!r}: {e}")
+        return v
+
+
 class RolloverConfig(StrictModel):
     """FY rollover (plan WP11, owner DEC-4)."""
 
@@ -670,6 +699,7 @@ class AppConfig(StrictModel):
     guards: GuardsConfig = Field(default_factory=GuardsConfig)
     approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
     rollover: RolloverConfig = Field(default_factory=RolloverConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
 
     @property
     def run_logs_dir(self) -> Path:

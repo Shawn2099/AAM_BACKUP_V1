@@ -72,6 +72,8 @@ function integrityText(integrity) {
     var when = integrity.checked_at ? ' (checked ' + integrity.checked_at + ')' : '';
     if (s === 'VERIFIED') return 'Integrity: VERIFIED' + when;
     if (s === 'VERIFICATION_FAILED') return 'Integrity: VERIFICATION FAILED' + when + ' — see audit detail';
+    // WP7: the audit could not reach a verdict (network/TLS/DNS/process) - not divergence
+    if (s === 'AUDIT_INCOMPLETE') return 'Integrity: AUDIT COULD NOT RUN' + when + (integrity.detail ? ' — ' + integrity.detail : '');
     return 'Integrity: NOT VERIFIED — no audit recorded';
 }
 async function updateStatus() {
@@ -206,7 +208,9 @@ async function updateStatus() {
                             badges += '<span class="metrics-badge removed">Pruned: ' + (metrics.removed || 0) + '</span>';
                             badges += '<span class="metrics-badge">Active Destination Files: ' + (metrics.total_files || 0) + '</span>';
                         } else if (r.mode === 'cloud') {
-                            badges += '<span class="metrics-badge verified">' + (!('verified' in metrics) ? 'Verification Unknown' : (metrics.verified ? 'Verification Passed' : 'Verification Failed')) + '</span>';
+                            // WP7: the daily check compares SIZES only - it is a size check, not content verification
+                            var sizeOk = ('size_check_passed' in metrics) ? metrics.size_check_passed : metrics.verified;
+                            badges += '<span class="metrics-badge verified">' + (sizeOk === undefined ? 'Size check unknown' : (sizeOk ? 'Size check passed' : 'Size check failed')) + '</span>';
                             badges += '<span class="metrics-badge">Total Tracked Files: ' + (metrics.total_files || 0) + '</span>';
                             badges += '<span class="metrics-badge size">Space Consumed: ' + (metrics.total_size_gb || 0).toFixed(3) + ' GB</span>';
                         }

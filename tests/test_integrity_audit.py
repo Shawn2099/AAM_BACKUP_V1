@@ -114,7 +114,7 @@ class TestLanAuditRclone:
     def test_unavailable_source_fails_closed(self, tmp_path):
         result = audit_lan(
             str(tmp_path / "no-such-src"), str(tmp_path / "no-such-dst"), timeout=60)
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
 
 
 class TestAuditManifest:

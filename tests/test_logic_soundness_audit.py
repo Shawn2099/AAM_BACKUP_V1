@@ -830,11 +830,11 @@ class TestRunRcloneCheck:
 
     def test_no_summary_fails_closed(self):
         r = self._call(([], [], [], [], [], True), self._result(0, ""))
-        assert r["status"] == "VERIFICATION_FAILED" and r["mismatches"] == -1
+        assert r["status"] == "AUDIT_INCOMPLETE" and r["mismatches"] == -1
 
     def test_process_error_fails_closed(self):
         r = self._call(([], [], [], [], [], True), self._result(2, "boom"))
-        assert r["status"] == "VERIFICATION_FAILED"
+        assert r["status"] == "AUDIT_INCOMPLETE"
 
     def test_contradictory_evidence_fails_closed(self):
         r = self._call(([], [], ["m.txt"], [], [], True),
@@ -863,30 +863,17 @@ class TestRunRcloneCheck:
         for key in ("raw_missing", "raw_extra", "raw_changed",
                     "raw_mismatches", "canary_excluded", "canary_excluded_paths"):
             assert key in r
-        assert r["status"] == "VERIFICATION_FAILED"
+        assert r["status"] == "AUDIT_INCOMPLETE"
 
 
 class TestAuditCloudCapability:
-    """Finding I-2: on a failure path (no label in detail) the capability
-    is still relabelled to the GCS label — the label overstates the check
-    that actually ran."""
+    """Finding I-2 / WP7: the cloud capability label is decided BEFORE the
+    check runs and logs (it used to be rewritten afterwards)."""
 
-    def test_relabel_on_success_path(self):
-        fake = {"capability": integrity.CAPABILITY_HASH_LOCAL,
-                "detail": "capability=HASH_MD5_RCLONE_LOCAL audited"}
-        with patch("core.integrity._run_rclone_check", return_value=fake):
-            out = integrity.audit_cloud("s", "b", "FY26-27", "cfg")
-        assert out["capability"] == integrity.CAPABILITY_HASH_GCS
-        assert "HASH_GCS_ADVERTISED" in out["detail"]
-
-    def test_relabel_even_when_detail_has_no_label(self):
-        fake = {"capability": integrity.CAPABILITY_HASH_LOCAL,
-                "detail": "audit execution failed: boom"}
-        with patch("core.integrity._run_rclone_check", return_value=fake):
-            out = integrity.audit_cloud("s", "b", "FY26-27", "cfg")
-        # capability claims GCS even though the run never touched GCS capability
-        assert out["capability"] == integrity.CAPABILITY_HASH_GCS
-        assert "audit execution failed" in out["detail"]
+    def test_cloud_audit_passes_the_gcs_capability_up_front(self):
+        with patch("core.integrity._run_rclone_check", return_value={"status": "VERIFIED"}) as run:
+            integrity.audit_cloud("s", "b", "FY26-27", "cfg")
+        assert run.call_args.kwargs["capability"] == integrity.CAPABILITY_HASH_GCS
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -894,7 +881,6 @@ class TestAuditCloudCapability:
 # ═══════════════════════════════════════════════════════════════════════════
 
 from core import backup_repository as br
-
 
 class TestCleanPath:
     @pytest.mark.parametrize("raw,expected", [

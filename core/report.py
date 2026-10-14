@@ -288,6 +288,9 @@ def generate_report_html(
             status_text, checked, detail = "NOT VERIFIED", "-", "No independent audit has run yet."
         else:
             status_text = audit.get("status", "UNKNOWN")
+            if status_text == "AUDIT_INCOMPLETE":
+                # WP7: "could not run" (network/TLS/DNS/process) is never divergence
+                status_text = "AUDIT COULD NOT RUN"
             checked = (audit.get("ended_at") or audit.get("started_at") or "-")[:19].replace("T", " ")
             detail = html.escape(str(audit.get("detail") or "-"))
         integrity_rows += (

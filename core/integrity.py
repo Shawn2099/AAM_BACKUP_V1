@@ -43,6 +43,7 @@ from pathlib import Path, PureWindowsPath
 from loguru import logger
 
 from core.process import resolve_binary
+from core.rclone_errors import DEFAULT_PATTERNS, find_transport_failure
 
 # Completion evidence (F-08 class): rclone check's own final verdict line
 # ("N differences found"). The --combined diff file is pre-created by
@@ -97,9 +98,8 @@ def _is_canary(rel: str) -> bool:
     return PureWindowsPath(rel).name == _CANARY_BASENAME
 
 # Alert/detail payload bound: full mismatch COUNTS are always recorded;
-# the path list is truncated so a large divergence cannot blow up the
-# manifest row or the alert email.
-_MAX_DETAIL_PATHS = 100
+# the path list is truncated (audit.detail_max_paths) so a large divergence
+# cannot blow up the manifest row or the alert email.
 
 # Verification capability labels. VERIFIED is recorded ONLY for
 # hash-capable comparisons; anything else fails closed.
@@ -147,6 +147,18 @@ def _parse_combined_file(diff_file: str | None) -> tuple[list, list, list, list,
     return added, removed, modified, unchanged, errors, True
 
 
+def _incomplete(scope: str, capability: str, detail: str, elapsed: float) -> dict:
+    """The audit could not reach a verdict - NEVER reported as divergence."""
+    return {
+        "status": "AUDIT_INCOMPLETE", "scope": scope, "capability": capability,
+        "termination": "abnormal", "files_checked": None, "bytes_checked": None,
+        "mismatches": -1, "missing": [], "extra": [], "modified": [], "errors": [],
+        "raw_missing": 0, "raw_extra": 0, "raw_changed": 0, "raw_mismatches": 0,
+        "canary_excluded": 0, "canary_excluded_paths": [],
+        "detail": detail, "elapsed_s": round(elapsed, 1),
+    }
+
+
 def _run_rclone_check(
     source: str,
     dest: str,
@@ -154,6 +166,12 @@ def _run_rclone_check(
     timeout: int,
     extra_args: list[str] | None = None,
     size_only: bool = False,
+    capability: str | None = None,
+    checkers: int = 1,
+    retries: int = 3,
+    retries_sleep_seconds: int = 10,
+    detail_max_paths: int = 100,
+    network_error_patterns: tuple[str, ...] | list[str] = (),
 ) -> dict:
     """Run one read-only `rclone check --combined` and classify the result.
 
@@ -167,6 +185,12 @@ def _run_rclone_check(
     started = time.monotonic()
     rclone_exe = resolve_binary("rclone") or "rclone"
     diff_file = None
+    # Decided BEFORE anything is logged (plan WP7: the cloud label used to be
+    # rewritten after the verdict line had already been written).
+    capability = CAPABILITY_SIZE_ONLY if size_only else (capability or CAPABILITY_HASH_LOCAL)
+    patterns = DEFAULT_PATTERNS + tuple(
+        ("CONFIGURED", p, "Matched audit.network_error_patterns in config.")
+        for p in network_error_patterns)
     try:
         fd, diff_file = tempfile.mkstemp(suffix=".txt", prefix="integrity_audit_")
         os.close(fd)
@@ -180,9 +204,9 @@ def _run_rclone_check(
             "--combined", diff_file,
             "--fast-list",
             "--modify-window", "2s",
-            "--checkers", "1",
-            "--retries", "3",
-            "--retries-sleep", "10s",
+            "--checkers", str(int(checkers)),
+            "--retries", str(int(retries)),
+            "--retries-sleep", f"{int(retries_sleep_seconds)}s",
         ]
         if size_only:
             cmd.append("--size-only")
@@ -195,7 +219,6 @@ def _run_rclone_check(
         )
         added, removed, modified, unchanged, errors, present = _parse_combined_file(diff_file)
         elapsed = time.monotonic() - started
-        capability = CAPABILITY_SIZE_ONLY if size_only else CAPABILITY_HASH_LOCAL
         log_text = f"{result.stderr or ''}\n{result.stdout or ''}"
         summaries = _SUMMARY_RE.findall(log_text)
         error_log_lines = [ln for ln in log_text.splitlines() if _ERROR_LINE_RE.match(ln)]
@@ -251,27 +274,34 @@ def _run_rclone_check(
             if summaries and result.returncode in (0, 1) and present
             else "abnormal"
         )
+        # WP7 classification order: (1) the audit could not run - transport
+        # failure (TLS interception, DNS, auth, network, listing) or a
+        # process that never produced a verdict -> AUDIT_INCOMPLETE with the
+        # cause, never "content mismatch" (production Sep 27 / Oct 4 / Oct 11
+        # showed "missing-from-dest=20, elapsed_s=0" for an unreachable
+        # destination); (2) completed with differences -> VERIFICATION_FAILED;
+        # (3) completed clean -> VERIFIED.
+        transport = find_transport_failure(log_text, patterns)
+        if transport is not None:
+            detail = (f"capability={capability} audit could not run - {transport.category}: "
+                      f"{transport.hint} Evidence: {transport.evidence}")
+            logger.warning(f"Integrity audit ({scope}) AUDIT_INCOMPLETE: {detail}")
+            return _incomplete(scope, capability, detail, elapsed)
         if result.returncode >= 2 or not present:
-            status = "VERIFICATION_FAILED"
-            detail = (
-                f"capability={capability} audit process error "
-                f"(exit {result.returncode}): {(result.stderr or '').strip()[:2000]}"
-            )
-            mismatches = -1
-            files_checked = None
-        elif not summaries:
+            detail = (f"capability={capability} audit could not run - process error "
+                      f"(exit {result.returncode}): {(result.stderr or '').strip()[:2000]}")
+            logger.warning(f"Integrity audit ({scope}) AUDIT_INCOMPLETE: {detail}")
+            return _incomplete(scope, capability, detail, elapsed)
+        if not summaries:
             # F-08 class: the check did not emit its completion verdict
-            # (killed/crashed/truncated — the pre-created diff file may
+            # (killed/crashed/truncated - the pre-created diff file may
             # still exist but proves nothing on its own).
-            status = "VERIFICATION_FAILED"
-            detail = (
-                f"capability={capability} audit process has no completion "
-                f"summary (exit {result.returncode}, termination={termination}): "
-                "interrupted before rclone reported a verdict"
-            )
-            mismatches = -1
-            files_checked = None
-        elif read_error:
+            detail = (f"capability={capability} audit could not run - no completion summary "
+                      f"(exit {result.returncode}, termination={termination}): interrupted "
+                      "before rclone reported a verdict")
+            logger.warning(f"Integrity audit ({scope}) AUDIT_INCOMPLETE: {detail}")
+            return _incomplete(scope, capability, detail, elapsed)
+        if read_error:
             # BUG-04: read/permission errors must NEVER be recorded as
             # VERIFIED. Fail closed. (F-T4-2: normal mismatch wording —
             # "Failed to check", "N errors while checking", per-file
@@ -280,7 +310,7 @@ def _run_rclone_check(
             mismatches = len(added) + len(modified) + len(removed) + len(errors)
             detail = (
                 f"capability={capability} file read or check errors occurred during audit "
-                f"(error_files={len(errors)}: {errors[:_MAX_DETAIL_PATHS]}, exit {result.returncode})"
+                f"(error_files={len(errors)}: {errors[:detail_max_paths]}, exit {result.returncode})"
             )
         elif size_only:
             # §11/acceptance-15: a size-only comparison is NOT deep
@@ -309,7 +339,7 @@ def _run_rclone_check(
                 # verdict stays fail-closed; only the explanation is now
                 # truthful and the divergent paths are preserved.
                 status = "VERIFIED" if mismatches == 0 else "VERIFICATION_FAILED"
-                detail_paths = (added + modified + removed)[:_MAX_DETAIL_PATHS]
+                detail_paths = (added + modified + removed)[:detail_max_paths]
                 if mismatches == 0:
                     detail = (
                         f"capability={capability} verified clean "
@@ -355,25 +385,14 @@ def _run_rclone_check(
             "raw_changed": len(raw_modified),
             "raw_mismatches": raw_mismatches,
             "canary_excluded": len(canary_excluded),
-            "canary_excluded_paths": canary_excluded[:_MAX_DETAIL_PATHS],
+            "canary_excluded_paths": canary_excluded[:detail_max_paths],
             "detail": detail, "elapsed_s": round(elapsed, 1),
         }
     except (subprocess.TimeoutExpired, OSError) as e:
-        logger.error(f"Integrity audit ({scope}) error: {e}")
-        return {
-            "status": "VERIFICATION_FAILED", "scope": scope,
-            "capability": CAPABILITY_HASH_LOCAL,
-            "termination": "abnormal",
-            "files_checked": None, "bytes_checked": None, "mismatches": -1,
-            "missing": [], "extra": [], "modified": [],
-            # Phase-3 schema uniformity: the raw/canary evidence keys exist
-            # on EVERY return path (empty here — the check never produced a
-            # parse), so consumers never need to guard for a missing key.
-            "raw_missing": 0, "raw_extra": 0, "raw_changed": 0,
-            "raw_mismatches": 0, "canary_excluded": 0,
-            "canary_excluded_paths": [],
-            "detail": f"audit execution failed: {e}", "elapsed_s": 0.0,
-        }
+        logger.error(f"Integrity audit ({scope}) could not run: {e}")
+        return _incomplete(scope, capability,
+                           f"capability={capability} audit could not run - execution failed: {e}",
+                           time.monotonic() - started)
     finally:
         if diff_file:
             try:
@@ -387,6 +406,7 @@ def audit_lan(
     dest: str,
     scope_prefixes: list[str] | None = None,
     timeout: int = 14400,
+    **settings,
 ) -> dict:
     """Read-only LAN audit via `rclone check` (local backend, hash-aware).
 
@@ -410,7 +430,7 @@ def audit_lan(
             extra.extend(["--include", f"{p.strip('/')}/**"])
     # NOTE: include-filter form is validated by test_scope_sharding; if a
     # future rclone changes filter semantics the test fails closed first.
-    return _run_rclone_check(source, dest, f"lan/{scope}", timeout, extra_args=extra)
+    return _run_rclone_check(source, dest, f"lan/{scope}", timeout, extra_args=extra, **settings)
 
 
 def audit_cloud(
@@ -419,6 +439,7 @@ def audit_cloud(
     fy_prefix: str,
     config_path: str,
     timeout: int = 18000,
+    **settings,
 ) -> dict:
     """Read-only cloud audit: hash-aware `rclone check` (NOT --size-only).
 
@@ -427,14 +448,11 @@ def audit_cloud(
     rclone performs and no --download flag. Single checker.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
-    result = _run_rclone_check(
+    return _run_rclone_check(
         source, dest, "cloud/full", timeout,
         extra_args=["--config", config_path, "--gcs-no-check-bucket"],
+        capability=CAPABILITY_HASH_GCS, **settings,
     )
-    if result["capability"] == CAPABILITY_HASH_LOCAL:
-        result["capability"] = CAPABILITY_HASH_GCS
-        result["detail"] = result["detail"].replace(CAPABILITY_HASH_LOCAL, CAPABILITY_HASH_GCS)
-    return result
 
 
 def new_audit_id(mode: str, scope: str) -> str:

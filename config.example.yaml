@@ -250,3 +250,21 @@ rollover:
   # Small note written into the NEW source FY folder (never overwritten), so the
   # new, still-empty year is not mistaken for a missing drive by the backup.
   source_placeholder_name: README_FY.txt
+
+# ═══════════════════════════════════════════════════
+# WEEKLY INTEGRITY AUDIT (read-only content comparison)
+# ═══════════════════════════════════════════════════
+# If the audit cannot run (no internet, firewall/TLS interception, DNS, NAS
+# unreachable) it is recorded as "AUDIT COULD NOT RUN" - never as missing data.
+audit:
+  # rclone check --checkers (1 = gentle on the source disk; 1–16)
+  checkers: 1
+  # rclone check --retries / --retries-sleep (seconds)
+  retries: 3
+  retries_sleep_seconds: 10
+  # Most file paths listed in an audit result (the counts are always complete)
+  detail_max_paths: 100
+  # Extra error texts (regular expressions) that mean "the audit could not run",
+  # added to the built-in network/TLS/DNS/auth/listing signatures. Example:
+  #   - "SOPHOS BLOCKPAGE"
+  network_error_patterns: []

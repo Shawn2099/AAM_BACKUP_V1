@@ -263,7 +263,7 @@ class TestWeeklyAuditCompletionContract:
             return_value=_mock_run(0, stdout="", stderr=""),
         ):
             result = integ_mod._run_rclone_check("/src", "/dst", "test", timeout=60)
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
         assert result["termination"] == "abnormal"
         assert "completion summary" in result["detail"]
 
@@ -289,5 +289,5 @@ class TestWeeklyAuditCompletionContract:
             side_effect=subprocess.TimeoutExpired(cmd="rclone", timeout=60),
         ):
             result = integ_mod._run_rclone_check("/src", "/dst", "test", timeout=60)
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
         assert result["termination"] == "abnormal"

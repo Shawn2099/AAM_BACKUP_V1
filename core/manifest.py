@@ -784,7 +784,7 @@ class ManifestDB:
         missing = [k for k in required if k not in data]
         if missing:
             raise KeyError(f"record_audit missing required keys: {missing}")
-        if data["status"] not in ("VERIFIED", "VERIFICATION_FAILED"):
+        if data["status"] not in ("VERIFIED", "VERIFICATION_FAILED", "AUDIT_INCOMPLETE"):
             raise ValueError(f"invalid audit status: {data['status']!r}")
         with self._lock:
             conn = self._get_conn()

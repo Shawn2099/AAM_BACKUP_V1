@@ -951,7 +951,7 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copi
         size_mb = bytes_copied / (1024 * 1024)
         total_files = verify_data.get('size', {}).get('count', 0)
         total_space_gb = verify_data.get('size', {}).get('bytes', 0) / (1024 * 1024 * 1024)
-        verified_str = "✅ Passed" if verify_data.get("verified") else "❌ Failed/Skipped"
+        size_check_str = "✅ Passed" if verify_data.get("verified") else "❌ Failed/Skipped"
         
         markdown_content = (
             f"# ☁️ AAM Cloud Backup Run Summary\n\n"
@@ -962,8 +962,9 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copi
             f"## 📁 Storage Metrics (GCS Bucket)\n"
             f"* **Total Tracked Files:** `{total_files}` files\n"
             f"* **Total Space Consumed:** `{total_space_gb:.3f} GB`\n\n"
-            f"## 🔒 Integrity Verification\n"
-            f"* **Cryptographic Checks:** {verified_str}\n"
+            f"## 📏 Size check\n"
+            f"* **Size check (file sizes only, not content):** {size_check_str}\n"
+            f"* Content is compared by the weekly integrity audit.\n"
         )
         create_markdown_artifact(
             markdown=markdown_content,
@@ -1012,6 +1013,23 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 # ═══════════════════════════════════════════════════════════════
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
+
+def _audit_settings(config) -> dict:
+    """rclone check tuning for the integrity audit (config.audit, WP7)."""
+    a = config.audit
+    return {"checkers": a.checkers, "retries": a.retries,
+            "retries_sleep_seconds": a.retries_sleep_seconds,
+            "detail_max_paths": a.detail_max_paths,
+            "network_error_patterns": tuple(a.network_error_patterns)}
+
+
+def _audit_outcome_text(leg: str, result: dict) -> str:
+    """Truthful audit outcome: 'could not run' is never called divergence."""
+    if result.get("status") == "AUDIT_INCOMPLETE":
+        return (f"{leg} integrity audit COULD NOT RUN (no verdict - this is not a data "
+                f"difference): {result.get('detail')}")
+    return f"{leg} integrity audit FOUND DIFFERENCES: {result.get('detail')}"
+
 
 def _nullable_audit_count(value):
     """Pass through a populated audit counter; preserve unknown as NULL.
@@ -1221,7 +1239,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
             extended_metrics = json.dumps({
                 "stage_seconds": dict(stage_seconds),
-                "verified": verify_data.get("verified", False),
+                "verified": verify_data.get("verified", False),     # old key, kept for readers
+                # WP7: the daily check compares sizes only - named for what it is
+                "size_check_passed": verify_data.get("verified", False),
                 # F-08: liveness is the check process's own completion
                 # evidence, never the killable exit code. A killed check
                 # (TerminateProcess with exit 0) reports abnormal
@@ -1857,6 +1877,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                         config.paths.source_drive, config.cloud.bucket,
                         _effective_fy_prefix(config), rclone_cfg,
                         timeout=config.cloud.verify_timeout_seconds,
+                        **_audit_settings(config),
                     )
                 # A VERIFIED verdict is durable only once persisted: a failed
                 # DB write must fail the audit loudly (alert + FAILED flow),
@@ -1875,7 +1896,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 except Exception as e:
                     excs.append(RuntimeError(f"Cloud audit persistence failed: {e}"))
                 if result["status"] != "VERIFIED":
-                    excs.append(RuntimeError(f"Cloud integrity audit FAILED: {result['detail']}"))
+                    excs.append(RuntimeError(_audit_outcome_text("Cloud", result)))
 
             if mode in ("lan", "all") and config.lan.enabled:
                 audit_id = new_audit_id("lan", "full")
@@ -1885,7 +1906,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 try:
                     result = audit_lan(
                         config.paths.source_drive, config.paths.lan_destination,
-                        timeout=lan_timeout,
+                        timeout=lan_timeout, **_audit_settings(config),
                     )
                 finally:
                     if config.lan.shutdown_after_backup and config.wol.enabled:
@@ -1903,7 +1924,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 except Exception as e:
                     excs.append(RuntimeError(f"LAN audit persistence failed: {e}"))
                 if result["status"] != "VERIFIED":
-                    excs.append(RuntimeError(f"LAN integrity audit FAILED: {result['detail']}"))
+                    excs.append(RuntimeError(_audit_outcome_text("LAN", result)))
 
             if excs:
                 error_summary = '; '.join(str(e) for e in excs)
@@ -1911,12 +1932,12 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 try:
                     send_failure_alert(
                         config.notifications, config.firm_name, error_summary,
-                        {"mode": mode, "status": "VERIFICATION_FAILED"},
+                        {"mode": mode, "status": "INTEGRITY_AUDIT_NOT_VERIFIED"},
                         timestamp=now_iso(),
                     )
                 except Exception:
                     pass
-                raise ExceptionGroup("Integrity audit found divergence", excs)
+                raise ExceptionGroup("Integrity audit did not verify", excs)
             logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
     finally:
         db.close()

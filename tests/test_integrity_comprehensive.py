@@ -160,7 +160,7 @@ class TestAuditEntryPoints:
             dest="/nonexistent/dest",
         )
         assert result is not None
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
 
     def test_cloud_audit_fails_closed(self):
         """Cloud audit with an unreachable backend → VERIFICATION_FAILED."""
@@ -171,4 +171,4 @@ class TestAuditEntryPoints:
             config_path="no-such-rclone.conf",
         )
         assert result is not None
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
