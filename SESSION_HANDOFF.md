@@ -79,12 +79,9 @@ experiment now opts into `/ZB`; targeted re-run green); the only remaining red i
    rights + bucket objectAdmin - the preflight now names each missing one.
 3. **2.6 rollover — DONE** (f778164): see plan §13. Unit suite 1580 passed / 0 failed; lab W6 proves
    the real rollover end to end; W12/W13 green. The full-lab M2 milestone run had not finished when
-   session 2 ended - **re-run the full audit lab first** (only expected red: W16 schedule collision).
-   M2 full-lab result (arrived after the session closed): 234 passed / 6 failed = W16 (intentional) +
-   5 x `audit_lab/test_w18_ops.py` launch/dashboard tests with AttributeError - almost certainly they
-   patch `core.fy_rollover.rollover`, removed in 2.6 (same fix as tests/test_launch_comprehensive.py:
-   drop the dead patch; the rollover_blocked / rollover_error tests become "main never rolls over").
-   **Fix these first.**
+   M2 full lab: 234 passed / 6 failed -> the 5 W18 launch tests patched the removed
+   `core.fy_rollover.rollover`; fixed (W18 29/29 green). Remaining red: W16 schedule collision
+   (intentional, WP8 / 3.4). **M2 milestone: green except the intentional red.**
 4. **NEXT: M3 3.1 (WP5) - design agreed, no code yet:**
    - `statuses.decide_terminal_status(leg, phase, sync_status, exc)`: exc None -> sync status;
      GuardBlocked -> *_BLOCKED; PartialRun -> keep the (non-success) status already set; phase pre ->

@@ -83,7 +83,6 @@ def _launch_rig(monkeypatch, sandbox, patch_dashboard=True):
     monkeypatch.setattr(launch, "_cancel_orphaned_runs", lambda: None)
     monkeypatch.setattr(launch, "_reconcile_disabled_legs", lambda c: {"backup-lan": "active"})
     monkeypatch.setattr(launch.time, "sleep", lambda s: None)
-    monkeypatch.setattr("core.fy_rollover.rollover", lambda: False)
     serve_stub = types.ModuleType("serve")
     serve_stub.deployments = lambda: ("dep-aam-backup",)
     monkeypatch.setitem(sys.modules, "serve", serve_stub)
@@ -117,32 +116,24 @@ def test_w18_launch_main_happy_path(monkeypatch, sandbox, capsys):
     assert "Deployment backup-lan: active" in out
     assert "(clean)" in out                                     # clean Ctrl+C shutdown
     L.record("W18.launch_main_happy",
-             "launch.main() boots in order: API wait -> dashboard -> rollover -> "
+             "launch.main() boots in order: API wait -> dashboard -> "
              "limits -> orphan cleanup -> reconcile -> serve, and shuts down clean",
              f"serve_deps={calls[0][0]} serve_kw={calls[0][1]}",
              "OK - the production startup sequence is exercised end to end")
 
 
-def test_w18_launch_main_rollover_blocked(monkeypatch, sandbox, capsys):
+def test_w18_launch_main_never_rolls_the_fy_over(monkeypatch, sandbox):
+    """M2 2.6 (plan WP11): the boot-time rollover is gone - it ran before the
+    scheduler, outside the backup slot. rollover-check is the only entry."""
     launch, _ = _launch_rig(monkeypatch, sandbox)
     from core import fy_rollover as fr
 
-    monkeypatch.setattr(fr, "rollover", lambda: (_ for _ in ()).throw(fr.RolloverError("locked")))
+    touched = []
+    for name in ("create_new_fy_folders", "update_config_yaml", "backup_config_file"):
+        monkeypatch.setattr(fr, name, lambda *a, _n=name, **k: touched.append(_n))
     monkeypatch.setattr("prefect.serve", lambda *d, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
     launch.main()
-    out = capsys.readouterr().out
-    assert "FY rollover blocked: locked" in out
-    assert "Will retry on next scheduled run" in out
-
-
-def test_w18_launch_main_rollover_error_non_fatal(monkeypatch, sandbox, capsys):
-    launch, _ = _launch_rig(monkeypatch, sandbox)
-    from core import fy_rollover as fr
-
-    monkeypatch.setattr(fr, "rollover", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-    monkeypatch.setattr("prefect.serve", lambda *d, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
-    launch.main()      # must not raise
-    assert "FY rollover check failed (non-fatal)" in capsys.readouterr().out
+    assert touched == []
 
 
 def test_w18_run_dashboard_wiring(monkeypatch, sandbox):
