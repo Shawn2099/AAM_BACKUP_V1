@@ -6,6 +6,13 @@ import pytest
 
 os.environ["PREFECT_TEST_MODE"] = "1"
 
+# WP16 test isolation: every CONFIG_PATH default must resolve to a throwaway
+# sandbox config, never the real config.yaml. Must run before any project
+# module (models.config computes CONFIG_PATH at import) is imported.
+from test_support import sandbox_config  # noqa: E402
+
+sandbox_config.install()
+
 # BUG-10: Inject deploy\bin into PATH so bundled rclone.exe is discovered by tests
 deploy_bin = Path(__file__).resolve().parent.parent / "deploy" / "bin"
 if deploy_bin.exists() and str(deploy_bin) not in os.environ.get("PATH", ""):

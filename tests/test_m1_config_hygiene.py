@@ -91,6 +91,7 @@ def test_config_path_is_absolute_project_file(monkeypatch):
         assert Path(mod.CONFIG_PATH).is_absolute()
         assert Path(mod.CONFIG_PATH) == project / "config.yaml"
     finally:
+        monkeypatch.undo()  # restore AAM_CONFIG (test sandbox) BEFORE reload
         importlib.reload(config_mod)
 
 
@@ -101,7 +102,7 @@ def test_config_path_env_override(monkeypatch, tmp_path):
     try:
         assert Path(mod.CONFIG_PATH) == target.resolve()
     finally:
-        monkeypatch.delenv("AAM_CONFIG", raising=False)
+        monkeypatch.undo()  # restore AAM_CONFIG (test sandbox) BEFORE reload
         importlib.reload(config_mod)
 
 
