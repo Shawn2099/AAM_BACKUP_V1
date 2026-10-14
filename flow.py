@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import approvals, fy_rollover, guards, permissions, statuses
+from core import approvals, fy_rollover, guards, permissions, report, statuses
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import (
@@ -41,7 +41,7 @@ from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
-from core.notify import AlertEvent, notify
+from core.notify import SENT, AlertEvent, notify, send_email
 from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
@@ -1637,6 +1637,38 @@ def _record_run(
 # Report flows
 # ═══════════════════════════════════════════════════════════════
 
+def _send_summary_report(config, days: int, period: str) -> None:
+    """Send a summary report truthfully (plan WP8): delivery is recorded in
+    the notifications table and a failed delivery FAILS the flow; a period
+    with no runs at all sends a STALE warning instead of skipping silently."""
+    db = ManifestDB.from_config(config)
+    try:
+        email = report.build_summary_email(db, config.firm_name, days, period)
+        if email is None:
+            msg = (f"No backup runs were recorded in the last {days} days - the {period} report "
+                   "has nothing to report. Check that the backup service and its schedules are "
+                   "running.")
+            notify(config, AlertEvent(
+                key=f"stale:{period.lower()}", kind="WARNING", mode="report",
+                title=f"No backups in the last {days} days", message=msg, status="STALE"), db=db)
+            raise RuntimeError(msg)
+        subject, body, attachments = email
+        result = send_email(config.notifications, subject, body, attachments)
+        try:
+            db.record_notification({
+                "event_key": f"report:{period.lower()}", "kind": "REPORT", "mode": "report",
+                "subject": subject, "status": result.status, "error": result.error,
+                "attempts": result.attempts, "created_at": now_iso()})
+        except Exception as e:  # noqa: BLE001 - the delivery verdict below still stands
+            logger.error(f"Could not record {period} report delivery: {e}")
+        if result.status != SENT:
+            raise RuntimeError(f"{period} report email not delivered ({result.status}): "
+                               f"{result.error}")
+        logger.info(f"{period} report delivered")
+    finally:
+        db.close()
+
+
 @flow(name="weekly-report", log_prints=True)
 def weekly_report_flow(config_path: str = CONFIG_PATH):
     """Send weekly backup summary report."""
@@ -1649,12 +1681,7 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     if not config.notifications.weekly_enabled:
         logger.info("Weekly backup report email is disabled in configuration - skipping")
         return
-    db = ManifestDB.from_config(config)
-    try:
-        from core.report import send_weekly_report
-        send_weekly_report(db, config.notifications, config.firm_name)
-    finally:
-        db.close()
+    _send_summary_report(config, days=7, period="Weekly")
 
 
 @flow(name="monthly-report", log_prints=True)
@@ -1669,12 +1696,7 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     if not config.notifications.monthly_enabled:
         logger.info("Monthly backup report email is disabled in configuration - skipping")
         return
-    db = ManifestDB.from_config(config)
-    try:
-        from core.report import send_monthly_report
-        send_monthly_report(db, config.notifications, config.firm_name)
-    finally:
-        db.close()
+    _send_summary_report(config, days=30, period="Monthly")
 
 
 # ═══════════════════════════════════════════════════════════════

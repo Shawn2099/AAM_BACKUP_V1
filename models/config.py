@@ -635,7 +635,10 @@ class ScheduleConfig(StrictModel):
     cloud_cron: str = Field(default="0 18 * * *", description="Cloud backup cron expression")
     lan_cron: str = Field(default="0 1 * * *", description="LAN backup cron expression")
     weekly_cron: str = Field(default="0 8 * * MON", description="Weekly report cron expression")
-    monthly_cron: str = Field(default="0 8 1 * *", description="Monthly report cron expression")
+    monthly_cron: str = Field(
+        default="30 8 1 * *",
+        description="Monthly report cron expression. Default 08:30 so it never starts in the "
+                    "same minute as the Monday 08:00 weekly report when the 1st is a Monday.")
     rollover_cron: str = Field(
         default="0 6 * * *",
         description="Daily FY rollover check cron (no-op except on the fiscal-year boundary)",

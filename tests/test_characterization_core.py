@@ -950,9 +950,10 @@ class TestReportCharacterization:
             smtp_host="smtp.x", smtp_port=587, smtp_username="u",
             smtp_password="p", sender="s@x.com", recipients=["r@x.com"],
         )
-        with patch("core.report.smtplib.SMTP") as m:
-            m.return_value = MagicMock()
+        from core.notify import SENT, DeliveryResult
+        with patch("core.report.send_email", return_value=DeliveryResult(SENT)) as m:
             assert _send_email_with_attachments(cfg, "subj", "<html>") is True
+        assert m.call_args.args[0] is cfg      # the single transport (WP8)
 
     def test_send_failure_alert_disabled(self, tmp_db):
         from core.report import send_failure_alert

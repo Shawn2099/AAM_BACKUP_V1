@@ -339,31 +339,21 @@ class TestBackupMaintenance:
 class TestWeeklyReportFlow:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
-    @patch("flow.ManifestDB")
-    def test_calls_send_weekly_report(self, mock_db_cls, mock_log, mock_cfg):
-        mock_db = MagicMock()
-        mock_db_cls.from_config.return_value = mock_db
-        mock_config = MagicMock()
-        mock_cfg.return_value = mock_config
-        with patch("core.report.send_weekly_report") as mock_send:
-            weekly_report_flow.fn("config.yaml")
-            mock_send.assert_called_once()
-            mock_db.close.assert_called_once()
+    @patch("flow._send_summary_report")
+    def test_sends_the_weekly_summary(self, mock_send, mock_log, mock_cfg):
+        mock_cfg.return_value = MagicMock()
+        weekly_report_flow.fn("config.yaml")
+        assert mock_send.call_args.kwargs == {"days": 7, "period": "Weekly"}
 
 
 class TestMonthlyReportFlow:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
-    @patch("flow.ManifestDB")
-    def test_calls_send_monthly_report(self, mock_db_cls, mock_log, mock_cfg):
-        mock_db = MagicMock()
-        mock_db_cls.from_config.return_value = mock_db
-        mock_config = MagicMock()
-        mock_cfg.return_value = mock_config
-        with patch("core.report.send_monthly_report") as mock_send:
-            monthly_report_flow.fn("config.yaml")
-            mock_send.assert_called_once()
-            mock_db.close.assert_called_once()
+    @patch("flow._send_summary_report")
+    def test_sends_the_monthly_summary(self, mock_send, mock_log, mock_cfg):
+        mock_cfg.return_value = MagicMock()
+        monthly_report_flow.fn("config.yaml")
+        assert mock_send.call_args.kwargs == {"days": 30, "period": "Monthly"}
 
 
 # ═══════════════════════════════════════════════════════════════

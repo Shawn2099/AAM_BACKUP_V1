@@ -7,26 +7,18 @@ generate_report_html() is shared between email delivery and UI download.
 import csv
 import html
 import io
-import random
 import re
-import smtplib
-import time
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import humanize
 from loguru import logger
 
 from core import statuses
 from core.manifest import ManifestDB
+from core.notify import SENT, send_email
 from core.time_utils import now_formatted
 from models.config import NotificationConfig
 
 
-_SMTP_MAX_ATTEMPTS = 3
-_SMTP_BASE_DELAY_SECONDS = 10
-_SMTP_JITTER_FACTOR = 0.2
 
 
 def _send_email_with_attachments(
@@ -35,76 +27,12 @@ def _send_email_with_attachments(
     body_html: str,
     attachments: list[dict] = None,
 ) -> bool:
-    """Send email via SMTP with optional attachments. Returns True on success."""
-    if not all([config.smtp_host, config.sender, config.recipients]):
-        logger.warning("Email not configured - skipping")
-        return False
-
-    if not config.smtp_username or not config.smtp_password:
-        logger.warning("SMTP credentials not set - skipping")
-        return False
-
-    msg = MIMEMultipart("mixed")
-    msg["Subject"] = subject
-    msg["From"] = config.sender
-    msg["To"] = ", ".join(config.recipients)
-
-    # Attach the HTML body
-    msg_alt = MIMEMultipart("alternative")
-    msg_alt.attach(MIMEText(body_html, "html"))
-    msg.attach(msg_alt)
-
-    # Attach the files
-    if attachments:
-        for att in attachments:
-            part = MIMEApplication(att["content"], Name=att["filename"])
-            part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
-            msg.attach(part)
-
-    for attempt in range(1, _SMTP_MAX_ATTEMPTS + 1):
-        server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
-        try:
-            if config.smtp_port == 465:
-                server = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=30)
-            else:
-                server = smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=30)
-                server.starttls()
-
-            server.login(config.smtp_username, config.smtp_password)
-            server.sendmail(config.sender, config.recipients, msg.as_string())
-
-            logger.info(f"Email sent: {subject} (attempt {attempt}/{_SMTP_MAX_ATTEMPTS})")
-            return True
-
-        except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as e:
-            # Auth failures or rejected senders/recipients are permanent — never retry
-            logger.error(f"Email failed (permanent SMTP error): {e}")
-            return False
-
-        except Exception as e:
-            if attempt < _SMTP_MAX_ATTEMPTS:
-                delay = _SMTP_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-                jitter = delay * _SMTP_JITTER_FACTOR * (2 * random.random() - 1)
-                wait = max(0.0, delay + jitter)
-                logger.warning(
-                    f"Email attempt {attempt}/{_SMTP_MAX_ATTEMPTS} failed: {e} "
-                    f"- retrying in {wait:.1f}s"
-                )
-                time.sleep(wait)
-            else:
-                logger.error(
-                    f"Email failed after {_SMTP_MAX_ATTEMPTS} attempts "
-                    f"('{subject}'): {e}"
-                )
-
-        finally:
-            if server is not None:
-                try:
-                    server.quit()
-                except Exception:
-                    pass
-
-    return False
+    """Send one email through the SINGLE SMTP transport (core.notify.send_email,
+    plan WP8): retries via tenacity, 5xx permanent / 4xx retried (the SMTP
+    library raises SenderRefused for transient 4xx replies too), optional auth,
+    configurable security and timeout. True only when delivered."""
+    result = send_email(config, subject, body_html, attachments or [])
+    return result.status == SENT
 
 
 def send_failure_alert(
@@ -358,27 +286,28 @@ def send_summary_report(
 
     Returns True if email sent, False if skipped or failed.
     """
-    runs = db.get_runs_since(days)
-    if not runs:
+    email = build_summary_email(db, firm_name, days, period, body_html=body_html)
+    if email is None:
         logger.info(f"No runs found in last {days} days - skipping {period} report")
         return False
-        
+    subject, body, attachments = email
+    return _send_email_with_attachments(config, subject, body, attachments)
+
+
+def build_summary_email(db: ManifestDB, firm_name: str, days: int, period: str,
+                        body_html: str = None) -> tuple[str, str, list[dict]] | None:
+    """(subject, html body, [CSV attachment]) for a summary report, or None
+    when the period has no runs."""
+    runs = db.get_runs_since(days)
+    if not runs:
+        return None
     body = body_html or generate_report_html(db, firm_name, days, period, is_email=True)
     if not body:
-        return False
-
-    # Generate CSV with all runs for attachment
-    csv_bytes = _generate_csv_data(runs)
+        return None
     safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', firm_name)
-    csv_filename = f"{safe_firm}_{period}_Report.csv"
-
-    attachments = [{
-        "filename": csv_filename,
-        "content": csv_bytes
-    }]
-
-    subject = f"Backup {period} Report - {firm_name}"
-    return _send_email_with_attachments(config, subject, body, attachments)
+    attachments = [{"filename": f"{safe_firm}_{period}_Report.csv",
+                    "content": _generate_csv_data(runs)}]
+    return f"Backup {period} Report - {firm_name}", body, attachments
 
 
 def send_weekly_report(

@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, patch
 import pendulum
 import pytest
 
+from core.notify import FAILED, SENT, DeliveryResult
 from core.report import (
     generate_report_html,
     send_monthly_report,
     send_weekly_report,
-    _SMTP_MAX_ATTEMPTS,
 )
 
 IST = "Asia/Kolkata"
@@ -89,9 +89,7 @@ class TestSendReports:
         mock_db = self._make_mock_db()
         mock_config = self._make_mock_config()
 
-        with patch("core.report.smtplib.SMTP") as mock_smtp:
-            mock_server = MagicMock()
-            mock_smtp.return_value = mock_server
+        with patch("core.report.send_email", return_value=DeliveryResult(SENT)):
             result = send_weekly_report(mock_db, mock_config, "Test Firm")
             assert result is True
 
@@ -100,8 +98,8 @@ class TestSendReports:
         mock_db = self._make_mock_db()
         mock_config = self._make_mock_config()
 
-        with patch("core.report.smtplib.SMTP") as mock_smtp:
-            mock_smtp.side_effect = Exception("Connection refused")
+        with patch("core.report.send_email",
+                   return_value=DeliveryResult(FAILED, "Connection refused", 3)):
             result = send_weekly_report(mock_db, mock_config, "Test Firm")
             assert result is False
 
@@ -110,12 +108,11 @@ class TestSendReports:
         mock_db = self._make_mock_db(run_mode="lan")
         mock_config = self._make_mock_config()
 
-        with patch("core.report.smtplib.SMTP") as mock_smtp:
-            mock_server = MagicMock()
-            mock_smtp.return_value = mock_server
+        with patch("core.report.send_email", return_value=DeliveryResult(SENT)):
             result = send_monthly_report(mock_db, mock_config, "Test Firm")
             assert result is True
 
-    def test_smtp_max_attempts(self):
-        """SMTP retry count is 3."""
-        assert _SMTP_MAX_ATTEMPTS == 3
+    def test_smtp_retries_come_from_config(self):
+        """WP8: the single transport (core.notify) retries per config."""
+        from models.config import NotificationConfig
+        assert NotificationConfig().retry_attempts == 3

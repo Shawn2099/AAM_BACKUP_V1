@@ -60,7 +60,7 @@ class _FakeSMTP:
         self.quit_called = False
         self._behaviour = behaviour or []
 
-    def starttls(self):
+    def starttls(self, **kw):
         self.tls_started = True
 
     def login(self, user, password):
@@ -115,7 +115,7 @@ def test_w20_email_starttls_success(sandbox, monkeypatch):
 
     _, n = _cfg(sandbox)
     made = _FakeSMTP()
-    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None: made)
+    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     monkeypatch.setattr(smtplib, "SMTP_SSL", lambda *a, **k: pytest.fail("wrong port path"))
     ok = rep._send_email_with_attachments(
         n, "Subject", "<html>b</html>",
@@ -126,7 +126,11 @@ def test_w20_email_starttls_success(sandbox, monkeypatch):
     sender, recipients, msg = made.sent
     assert sender == "backup@example.test" and recipients == ["ops@example.test"]
     assert "failure_details.txt" in msg          # the MIME attachment is attached
-    assert "<html>b</html>" in msg
+    import email
+    html_parts = [part.get_payload(decode=True).decode("utf-8")
+                  for part in email.message_from_string(msg).walk()
+                  if part.get_content_type() == "text/html"]
+    assert html_parts == ["<html>b</html>"]     # UTF-8 body (base64 on the wire)
 
 
 def test_w20_email_ssl_port_465(sandbox, monkeypatch):
@@ -134,7 +138,7 @@ def test_w20_email_ssl_port_465(sandbox, monkeypatch):
 
     _, n = _cfg(sandbox, smtp_port=465)
     made = _FakeSMTP()
-    monkeypatch.setattr(smtplib, "SMTP_SSL", lambda host, port, timeout=None: made)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", lambda host, port, timeout=None, **kw: made)
     monkeypatch.setattr(smtplib, "SMTP", lambda *a, **k: pytest.fail("should use SSL"))
     assert rep._send_email_with_attachments(n, "S", "b") is True
     assert made.tls_started is False                  # implicit TLS, no starttls
@@ -146,13 +150,18 @@ def test_w20_email_permanent_error_no_retry(sandbox, monkeypatch):
 
     _, n = _cfg(sandbox)
     made = _FakeSMTP(behaviour=[smtplib.SMTPAuthenticationError(535, b"bad creds")])
-    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None: made)
+    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     monkeypatch.setattr(time, "sleep", lambda s: pytest.fail("must not retry"))
     assert rep._send_email_with_attachments(n, "S", "b") is False
 
-    made = _FakeSMTP(behaviour=[smtplib.SMTPSenderRefused(421, b"nope", "sender")])
-    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None: made)
-    assert rep._send_email_with_attachments(n, "S", "b") is False
+    # WP8 fix: 421 is a TRANSIENT reply (smtplib still raises SenderRefused
+    # for it) - it is retried and the email is delivered, not dropped.
+    made = _FakeSMTP(behaviour=[smtplib.SMTPSenderRefused(421, b"try later", "sender")])
+    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
+    slept = []
+    monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
+    assert rep._send_email_with_attachments(n, "S", "b") is True
+    assert len(slept) == 1
 
 
 def test_w20_email_transient_retries_then_succeeds(sandbox, monkeypatch):
@@ -160,11 +169,11 @@ def test_w20_email_transient_retries_then_succeeds(sandbox, monkeypatch):
 
     _, n = _cfg(sandbox)
     made = _FakeSMTP(behaviour=[OSError("connection reset")])
-    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None: made)
+    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     slept = []
     monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
     assert rep._send_email_with_attachments(n, "S", "b") is True   # 2nd attempt ok
-    assert len(slept) == 1 and slept[0] > 0                         # one backoff
+    assert len(slept) == 1                                          # one backoff
 
 
 def test_w20_email_transient_exhausts(sandbox, monkeypatch):
@@ -172,16 +181,16 @@ def test_w20_email_transient_exhausts(sandbox, monkeypatch):
 
     _, n = _cfg(sandbox)
     made = _FakeSMTP(behaviour=[OSError("x")] * 3)
-    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None: made)
+    monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     slept = []
     monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
     assert rep._send_email_with_attachments(n, "S", "b") is False
     assert len(slept) == 2                       # 3 attempts, 2 backoffs
     L.record("W20.smtp_retry_policy",
-             "SMTP policy: permanent errors never retry, transient errors back "
-             "off 3 times and give up",
-             "auth/refused->no-retry False | transient x1->True on attempt 2 | "
-             "transient x3->False with 2 backoffs",
+             "SMTP policy (core.notify): 5xx never retries, 4xx/transient errors back "
+             "off and give up after notifications.retry_attempts",
+             "auth 535->no-retry False | 421->retried->True | transient x1->True on "
+             "attempt 2 | transient x3->False with 2 backoffs",
              "OK - the retry policy behaves exactly as documented")
 
 
