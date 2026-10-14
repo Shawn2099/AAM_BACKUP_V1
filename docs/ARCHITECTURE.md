@@ -271,13 +271,14 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 ### `core/` — business logic
 | Module | Responsibility | Called by |
 |---|---|---|
-| `health.py` | pre-backup checks (source, binaries, key, clock) | `flow.health_check_task` |
+| `health.py` | pre-backup checks (source exists/listable/free space, binaries, key, clock) | `flow.health_check_task` (+ SeBackupPrivilege via `permissions` for LAN) |
 | `cloud_preflight.py` | source probe + GCS probe | `cloud_preflight_task` |
 | `cloud_sync.py` | rclone sync build/run/classify | `cloud_sync_task`, `fy_rollover` |
 | `cloud_verify.py` | rclone check --size-only + verdict | `cloud_verify_and_report_task` |
 | `cloud_reporter.py` | rclone size / lsjson / check --combined | `cloud_verify_and_report_task` |
 | `rclone_config.py` | temp rclone config (service-account key) | cloud modules |
-| `lan_preflight.py` | SMB probe, canary, robocopy /L | `lan_preflight_task` |
+| `lan_preflight.py` | SMB probe, mount-marker state, robocopy `/L /BYTES` via `run_tool` + `/UNILOG` (full listing kept, streamed: `*EXTRA File` count, summary) | `lan_preflight_task` |
+| `permissions.py` | preflight rights (WP4): `check_backup_privilege`, `probe_destination_write`, `check_destination_free_space`, `probe_source_read`, `probe_cloud_write` | `health_check_task`, `lan_access_task`, `cloud_access_task` |
 | `lan_sync.py` | robocopy build/run/parse/decide | `lan_sync_task`, `fy_rollover` |
 | `lan_manifest.py` | walk destination, snapshot diff | LAN snapshot tasks |
 | `wol.py` | magic packet + wait for 445 | `wol_check_task`, rollover, audit |
@@ -326,9 +327,9 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | Section | Controls | Main consumers |
 |---|---|---|
 | `paths` | source, NAS destination, runtime dir, GCS key | everything |
-| `lan` | robocopy retries/wait/threads/timeout, flow retries, shutdown policy, `log_tail_kb`, dry-run timeout | lan_sync, lan_preflight, flow |
+| `lan` | robocopy retries/wait/threads/timeout, flow retries, shutdown policy, `log_tail_kb`, dry-run timeout, `use_backup_mode` (/ZB), `min_free_dest_gb`, `privilege_check_timeout_seconds` | lan_sync, lan_preflight, permissions, flow |
 | `wol` | enable, MAC, NAS IP, broadcast, wake timing | wol (→ smb_ready in M2) |
-| `cloud` | bucket/project/class, bandwidth, transfers/checkers, all rclone timeouts, flow retries, `error_tail_lines` | cloud_* |
+| `cloud` | bucket/project/class, bandwidth, transfers/checkers, all rclone timeouts, flow retries, `error_tail_lines`, `dry_run_timeout_seconds`, `write_probe_enabled` | cloud_*, permissions |
 | `schedule` | 6 cron expressions + timezone | serve.py |
 | `notifications` | SMTP host/port/security/auth/timeout/retries, recipients, enable flags | report, notify |
 | `alerts` | cooldown, body/attachment size | notify |
@@ -377,7 +378,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 |---|---|---|---|---|
 | CL1 | Source path exists | `health.check_source_drive` | yes | — |
 | CL2 | Source has at least one real *file* at any depth (junctions, `System Volume Information`, `$RECYCLE.BIN`, `RECYCLER`, `RECYCLED`, `desktop.ini`, `Thumbs.db`, the canary ignored) | `cloud-guards` **G1** | yes (2.2) → `CLOUD_BLOCKED`; health no longer judges emptiness | — |
-| CL3 | Source readable (no permission / OS error) | same | yes | + read the first bytes of a real file (WP4) |
+| CL3 | Source readable: root listable (health) and the first byte of the first real file reads (`permissions.probe_source_read`, `cloud-access`) | `health`, `cloud-access` | yes (2.4) | — |
 | CL4 | Free space on the **source** drive >= `health.min_free_source_gb` | same | yes *(skipped if unmeasurable)* | — |
 | CL5 | rclone binary found (`deploy\bin` first, then PATH) | `health.pre_backup_health` | yes | — |
 | CL6 | GCS key file exists and is not empty | same | yes | — |
@@ -387,7 +388,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | CL10 | Builder re-checks the source has a real file | `guards.require_source_files` in `build_rclone_sync_command` | yes (2.2, same G1 rule; an unlistable source is left to rclone, which then deletes nothing — exit 3) | — |
 | CL11 | Source (`rclone size`) not shrunk more than `guards.max_source_shrink_percent` vs last success of the same FY | `cloud-guards` **G2** | yes (2.2) | — |
 | CL12 | Planned deletions (`rclone sync --dry-run`, within `cloud.dry_run_timeout_seconds`) <= `guards.max_delete_files` and <= `guards.max_delete_percent` of the destination (`rclone size`) | `cloud-guards` **G3** | yes (2.2); real sync gets `--max-delete` (rclone stops with exit 7 → FAILED) | — |
-| CL13 | Cloud write permission: create + delete a probe object outside the FY prefix | — | no | WP4 (DEC-5) |
+| CL13 | Cloud write permission: `rclone touch` + `rclone deletefile` of `<bucket>/_aam_preflight/probe_<run_id>` (outside every FY prefix; cause named via `rclone_errors`) if `cloud.write_probe_enabled` | `cloud-access` | yes (2.4) → `CLOUD_FAILED` | — |
 | CL12a | Bucket/prefix unchanged since last success of the same FY | `cloud-guards` **G4** | yes (2.2) | — |
 | — | Any G-check blocks: `CLOUD_BLOCKED` row with the guard record, nothing transferred, ONE approval request + ONE "ACTION REQUIRED - open the dashboard" email (`core.notify`, key `blocked:cloud`, cooldown); approve once on the dashboard re-runs with `approval_id` | `flow`, `ui` | yes (2.2, 2.3) | — |
 
@@ -416,10 +417,10 @@ exception in the verify/post steps can still leave a success status in the row �
 | LA3 | NAS awake (only if `wol.enabled`): TCP 445 answers within 5 s, otherwise magic packet x `wol.wake_retry_count`, then poll 445 every `wol.ping_interval_seconds` up to `wol.wake_timeout_seconds`, then `wol.stability_wait_seconds` | `wol.ensure_server_online` | yes (wake capped at 600 s) | `smb_ready`: 445 **and** a real SMB stat **and** a stability re-check; defaults 900 s wake / 90 s settle, cap 3600 s (M2 2.5) |
 | LA4 | NAS host answers TCP 445 | `lan_preflight._is_smb_reachable` | yes — **hard-coded 2 s x 4 tries (about 15 s)** | `smb_ready` with `wol.smb_connect_timeout_seconds` (15) x `lan.preflight_smb_attempts` (8), wait `lan.preflight_smb_wait_seconds` (15) |
 | LA5 | Mount canary `<dest>\.AAM_TARGET_MOUNTED` exists at the destination ROOT and is a regular file | `lan_preflight` → `lan-guards` **G5** | yes (2.3): missing → `LAN_BLOCKED` + approval that recreates it (was: hard failure with "create the canary" text) | — |
-| LA6 | `robocopy /L /MIR` dry-run exits < 8 within `lan.dry_run_timeout_seconds`; job summary kept (no `/NJS`) and parsed | `lan_preflight` | yes; preflight task retried once after 30 s | moves onto `run_tool` + `/UNILOG` in WP4 (2.4) |
-| LA7 | Destination writable (create / read / delete a probe file) | — | no (21 "Access is denied" nights) | WP4 |
-| LA8 | Service account holds `SeBackupPrivilege` when `/ZB` is used | — | no (robocopy exit 16 otherwise) | WP4 (`whoami /priv`), `lan.use_backup_mode` |
-| LA9 | Free space on the NAS >= bytes to copy + `lan.min_free_dest_gb` | — | no | WP4 |
+| LA6 | `robocopy /L /MIR /BYTES` dry-run exits < 8 within `lan.dry_run_timeout_seconds`; full listing kept (`/UNILOG`, run_logs) and streamed for the summary and `*EXTRA File` count | `lan_preflight` | yes; preflight task retried once after 30 s | — |
+| LA7 | Destination writable: create / write / read back / delete `.aam_write_probe_<run_id>` at the NAS root (pattern `/XF`-excluded), AFTER the guards so an unconfirmed destination is never written to | `lan-access` | yes (2.4) → `LAN_FAILED` naming the fix (service account) | — |
+| LA8 | Service account holds `SeBackupPrivilege` when `lan.use_backup_mode` (`/ZB`) | `health_check_task` → `permissions.check_backup_privilege` (System32 `whoami /priv /fo csv /nh`, by name) | yes (2.4), before the dry-run → `LAN_FAILED` with the secpol fix | — |
+| LA9 | Free space on the NAS >= `/L` Bytes Copied + `lan.min_free_dest_gb` (`shutil.disk_usage` on the UNC path) | `lan-access` | yes (2.4) → `LAN_FAILED` with the numbers | — |
 | LA10 | Source (`/L` Total) not shrunk; planned deletions (`/L` `*EXTRA File` lines) within limits of the walked destination count; destination unchanged and not this machine | `lan-guards` **G2, G3, G4** | yes (2.2) → `LAN_BLOCKED` | — |
 | — | Pre-sync destination snapshot | `lan_snapshot_before_task` | yes since 2.2: a failed walk = unknown destination count → `LAN_FAILED` (was: tolerated) | — |
 

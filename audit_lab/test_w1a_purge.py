@@ -176,7 +176,11 @@ def test_w1a_d2_unreadable_subtree_purges(mode, sandbox, tmp_path):
 
     before = len([p for p in dest.rglob("*") if p.is_file()])
 
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    # Production command (/ZB). Observed 2026-10-15: WITHOUT /ZB robocopy reads
+    # the >MAX_PATH subtree fine and mirrors it (LAN_COMPLETE is then the true
+    # result) - "maxpath" is only unreadable for tools without long-path support.
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
+                       lan=dict(L.PRODUCTION_LAN))
     res = run_lan_sync(str(src), str(dest), cfg.lan)
 
     blocked_dest = dest / ("B" if mode == "acl_deny" else "LONG")
