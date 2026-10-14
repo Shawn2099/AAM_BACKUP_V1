@@ -371,6 +371,34 @@ class MaintenanceConfig(StrictModel):
     )
 
 
+class RunLogsConfig(StrictModel):
+    """Full per-run tool logs (plan WP2): kept complete, compressed, purged."""
+
+    dir: str = Field(
+        default="",
+        description="Root for per-run artefacts (full rclone/robocopy logs, check "
+                    "outputs). Empty = <runtime_dir>/run_logs.",
+    )
+    retention_days: int = Field(
+        default=90, ge=7, le=3650,
+        description="Delete run artefact folders older than this many days.",
+    )
+    compress_after_kb: int = Field(
+        default=1024, ge=0, le=10_485_760,
+        description="gzip artefact files larger than this after the run (0 = compress all).",
+    )
+    min_free_gb: float = Field(
+        default=5.0, ge=0, le=10_000,
+        description="Warn (and mark the run artefacts degraded) when the artefact "
+                    "volume has less free space than this.",
+    )
+    service_log_retention_days: int = Field(
+        default=90, ge=7, le=3650,
+        description="Delete NSSM-rotated service logs (agent_svc-*, prefect_svc-*, "
+                    "watchdog_svc-*) older than this many days.",
+    )
+
+
 class HealthConfig(StrictModel):
     """Pre-backup health check tuning."""
     max_clock_skew_seconds: int = Field(
@@ -488,6 +516,14 @@ class AppConfig(StrictModel):
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
+    run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
+
+    @property
+    def run_logs_dir(self) -> Path:
+        """Effective artefact root (configured dir or <runtime_dir>/run_logs)."""
+        if self.run_logs.dir:
+            return Path(self.run_logs.dir)
+        return Path(self.paths.runtime_dir) / "run_logs"
 
     @model_validator(mode="after")
     def cross_field_validation(self) -> "AppConfig":
