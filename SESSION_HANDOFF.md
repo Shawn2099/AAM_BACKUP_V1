@@ -1,6 +1,6 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-15 (session 2: 2.2, 2.3, 2.4 done) · **Branch:** `mvp-hardening` · **Owner decisions:** all made (plan §11)
+**Last updated:** 2026-10-15 (session 2: M2 complete - 2.2, 2.3, 2.4, 2.6 done; M3 not started) · **Branch:** `mvp-hardening` · **Owner decisions:** all made (plan §11)
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -41,7 +41,7 @@ caused by our program, a human is asked whenever an action could be wrong.**
 |---|---|
 | M0 Baseline | **done** (a8f7f7f) — suite 0 failed |
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
-| M2 Data safety | **in progress** — 2.1–2.5 done; 2.6 TODO |
+| M2 Data safety | **done** (2.1–2.6); full-lab milestone run was started at the end of session 2 - re-run it first |
 | M3 Truth | not started (WP7 classifier module already done) |
 | M4 Operations | not started |
 | M5 Acceptance (on-box) | not started |
@@ -77,8 +77,24 @@ experiment now opts into `/ZB`; targeted re-run green); the only remaining red i
    (lab account has no SeBackupPrivilege); production-command experiments use
    `labconf.PRODUCTION_LAN`. **Go-live:** service account needs SeBackupPrivilege + NAS modify
    rights + bucket objectAdmin - the preflight now names each missing one.
-3. **NEXT: 2.6** rollover inside slot, forward-only, through the normal pipelines (today the rollover final backup bypasses the guards; only the builder G1 backstop covers it).
-4. Then M3 (plan §13).
+3. **2.6 rollover — DONE** (f778164): see plan §13. Unit suite 1580 passed / 0 failed; lab W6 proves
+   the real rollover end to end; W12/W13 green. The full-lab M2 milestone run had not finished when
+   session 2 ended - **re-run the full audit lab first** (only expected red: W16 schedule collision).
+4. **NEXT: M3 3.1 (WP5) - design agreed, no code yet:**
+   - `statuses.decide_terminal_status(leg, phase, sync_status, exc)`: exc None -> sync status;
+     GuardBlocked -> *_BLOCKED; PartialRun -> keep the (non-success) status already set; phase pre ->
+     *_FAILED; sync -> sync verdict if FAILED/SUSPECT else *_FAILED; verify -> CLOUD_VERIFY_FAILED
+     (fixes P1: NO_CHANGES_COMPLETE kept on a verify exception); post -> *_FAILED with
+     `extended_metrics.sync_status` preserved (fixes P2). Replace both pipelines' except branches;
+     table-driven test over phase x exception x sync status; P1/P2 probes as regressions.
+   - `_pipeline_slot(config, leg, run_id, ...)` context manager replacing `with _backup_slot(config):`
+     in both pipelines: writes a `*_RUNNING` row first (insert_run upserts by run_id), then enters
+     the slot; any exception while ENTERING (Prefect concurrency TimeoutError, live lock) -> row
+     `*_SLOT_TIMEOUT` and re-raise. Pipeline tests assert `_record_run.call_args` (last call) - check
+     any that assert call_count.
+   - launch.py at agent start: mark `*_RUNNING` rows older than new key
+     `maintenance.abandon_running_after_hours` (proposed default 24) as `*_ABANDONED`.
+5. Then M3 3.2-3.5 (plan §13).
 
 ### Verified tool facts (real binaries, 2026-10-14/15)
 - **whoami**: Git Bash's `whoami` shadows Windows' - call `%SystemRoot%\System32\whoami.exe`.

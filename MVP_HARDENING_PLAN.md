@@ -504,7 +504,7 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 - [x] 2.3 Approvals (8afa499 request + attention email + approve-once rerun; 0c627c0 dashboard approve/dismiss/run; 975d499 G5 wired, approval recreates the marker). Approving needs `dashboard.auth_enabled: true`; a scheduled run never consumes an approval; the approval is used up before any transfer.
 - [x] 2.4 Preflight permission checks (99ad2c1): `whoami /priv` (SeBackupPrivilege, only with `lan.use_backup_mode`), destination write probe, source read probe, NAS free space (`/BYTES`), cloud write probe; failures are `*_FAILED` with the fix. LAN dry-run on `run_tool` + `/UNILOG`, full listing kept and streamed (efc222b).
 - [x] 2.5 Shared `wait_for_smb_ready` wired into WoL + LAN preflight with config timings (b59a6d6)
-- [ ] 2.6 FY rollover inside slot, forward-only, reuse pipelines, placeholder, config backup (WP11)
+- [x] 2.6 FY rollover (f778164): forward-only (`classify_rollover`; clock behind = refused, not approvable), final backups through the normal pipelines, G6 approval for JUMP / failed final backup, switch inside the slot (folders + `README_FY.txt` placeholder, config backup, atomic update, archive last via run_tool), boot-time rollover removed from launch.py.
 
 ### M3 prep already done
 - [~] WP7 prep: `core/rclone_errors.py` transport-failure classifier from real prod signatures (f4cc48b); TODO use it in `core/integrity.py` (AUDIT_INCOMPLETE) and preflight error text
