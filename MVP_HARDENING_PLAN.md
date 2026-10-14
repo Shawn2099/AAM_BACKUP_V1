@@ -503,7 +503,7 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 - [ ] 2.2 LAN deletion count from `/L` summary; cloud `--dry-run` count + `--max-delete` backstop
 - [~] 2.3 Approvals: decision logic done (`core/approvals.py`, 465c04d); TODO approvals table in ManifestDB, `*_BLOCKED` rows, dashboard approve/dismiss, `approval_id` flow parameter (§6)
 - [ ] 2.4 Preflight: `whoami /priv`, destination write probe, source read probe, dest free space, cloud write probe (WP4)
-- [~] 2.5 **Shared `wait_for_smb_ready`**: module done (`core/smb_ready.py`, 5eb450d); TODO config keys (wol.wake_timeout 900 cap 3600, stability 90, retry 5/10, smb_connect_timeout 15, lan.preflight_smb_attempts 8 / wait 15) + replace lan_preflight 2 s probe and wol.wait_for_server
+- [x] 2.5 Shared `wait_for_smb_ready` wired into WoL + LAN preflight with config timings (b59a6d6)
 - [ ] 2.6 FY rollover inside slot, forward-only, reuse pipelines, placeholder, config backup (WP11)
 
 ### M3 prep already done

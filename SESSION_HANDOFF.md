@@ -1,6 +1,6 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-14 · **Branch:** `mvp-hardening` · **Owner decisions:** all made (plan §11)
+**Last updated:** 2026-10-14 (end of session 1) · **Branch:** `mvp-hardening` · **Owner decisions:** all made (plan §11)
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -41,12 +41,12 @@ caused by our program, a human is asked whenever an action could be wrong.**
 |---|---|
 | M0 Baseline | **done** (a8f7f7f) — suite 0 failed |
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
-| M2 Data safety | **in progress** — 2.1 done; 2.3 & 2.5 modules done, wiring TODO; 2.2, 2.4, 2.6 TODO |
+| M2 Data safety | **in progress** — 2.1 & 2.5 done; 2.3 logic done (wiring TODO); 2.2, 2.4, 2.6 TODO |
 | M3 Truth | not started (WP7 classifier module already done) |
 | M4 Operations | not started |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check:** `tests/` 1413 passed / 0 failed / 19 skipped (environment skips).
+**Test status at last check:** `tests/` 1455 passed / 0 failed / 19 skipped (environment skips).
 Audit lab (`audit_lab/`, ~20 min) final M1 run 2026-10-14: **235 passed / 1 failed / 3 skipped** — the one red is intentional (`test_w16_schedule_collisions_across_year` → fixed in WP8 / 3.4). Both M-6 DB reds are now green.
 
 ### Built but NOT wired yet (M2/M3 must call these)
@@ -54,18 +54,22 @@ Audit lab (`audit_lab/`, ~20 min) final M1 run 2026-10-14: **235 passed / 1 fail
 |---|---|---|
 | `core/guards.py` | G1–G5 data-safety guards | 2.2 (preflight of both pipelines) |
 | `core/approvals.py` | approval decision logic | 2.3 (DB table, dashboard, flow param) |
-| `core/smb_ready.py` | NAS readiness (445 + SMB stat + stability) | 2.5 (replace `lan_preflight._is_smb_reachable`, `wol.wait_for_server`) |
+| `core/smb_ready.py` | NAS readiness | **wired** in 2.5 (b59a6d6) |
 | `core/rclone_errors.py` | transport-failure classifier | WP7 (`core/integrity.py` → `AUDIT_INCOMPLETE`) |
 | `core/notify.py` | single alert path, delivery recorded, cooldown, dashboard link | WP8 (replace `report.send_failure_alert` call sites; also fixes 4xx-retry bug in report.py) |
 
 ## 4. Next steps (in order)
 
-1. **2.5 wiring**: add WoL/SMB timing config keys (plan WP10 table) → use `wait_for_smb_ready` in `core/wol.py` and `core/lan_preflight.py` → update their tests.
-2. **2.2**: guards config section (`guards.max_delete_files=500`, `max_delete_percent=10`, `max_source_shrink_percent=20`, `forbid_local_destination=true`); LAN planned deletions = `Extras` column of `robocopy /L` summary (drop `/NJS` in dry-run); cloud = `rclone sync --dry-run` delete count + `--max-delete` backstop; G1 replaces `check_source_drive` emptiness; record `source_file_count` + `destination` in extended_metrics for G2/G4 baselines.
-3. **2.3**: `approvals` table + `*_BLOCKED` run rows + dashboard approve/dismiss (typed phrase) + `approval_id` parameter on `backup()`; attention email via `core/notify`.
-4. **2.4** preflight permission checks (`whoami /priv`, write probe, free space, cloud write probe).
-5. **2.6** rollover inside slot, forward-only.
-6. Then M3 (plan §13).
+1. **2.2**: guards config section (`guards.max_delete_files=500`, `max_delete_percent=10`, `max_source_shrink_percent=20`, `forbid_local_destination=true`); LAN planned deletions = `Extras` column of `robocopy /L` summary (drop `/NJS` in dry-run); cloud = `rclone sync --dry-run` delete count + `--max-delete` backstop; G1 replaces `check_source_drive` emptiness; record `source_file_count` + `destination` in extended_metrics for G2/G4 baselines.
+2. **2.3**: `approvals` table + `*_BLOCKED` run rows + dashboard approve/dismiss (typed phrase) + `approval_id` parameter on `backup()`; attention email via `core/notify`.
+3. **2.4** preflight permission checks (`whoami /priv`, write probe, free space, cloud write probe).
+4. **2.6** rollover inside slot, forward-only.
+5. Then M3 (plan §13).
+
+### Verified tool facts for 2.2 (probed 2026-10-14, real binaries)
+- `robocopy /L /MIR /BYTES` (no `/NJS`): Files-row **Extras column counts every file that would be deleted, including files inside extra folders** (test: 1 extra file + extra dir with 2 files -> Files Extras = 3; Dirs Extras = 2). Files **Total** = source file count (for G2).
+- `rclone sync --dry-run --use-json-log --log-level INFO`: one NOTICE line per planned deletion: `"msg":"Skipped delete as --dry-run is set ..."`, `"skipped":"delete"` (count these for G3; files inside deleted folders included).
+- Destination file count for G3 %: LAN = `lan_snapshot_before` walk (if it fails -> unknown -> G3 blocks); cloud = `rclone size` of the destination.
 
 ## 5. Gotchas learned (save time)
 
