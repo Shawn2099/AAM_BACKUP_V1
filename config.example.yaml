@@ -189,3 +189,21 @@ health:
   # HDD NOTE: metadata-only op — no data transfer, 600s is normally sufficient
   rollover_archive_timeout_seconds: 600
 
+
+# ═══════════════════════════════════════════════════
+# DATA-SAFETY GUARDS
+# ═══════════════════════════════════════════════════
+# Checked before every backup, before anything is copied or deleted. If one
+# trips, the run stops as CLOUD_BLOCKED / LAN_BLOCKED and waits for a person
+# to approve it on the dashboard. Source-shrink and destination checks compare
+# with the last successful backup of the same leg in the same FY.
+guards:
+  # Block if a backup would delete more than this many backup files (0–100000000).
+  # Also passed to rclone as --max-delete, so the cloud sync itself stops there.
+  max_delete_files: 500
+  # Block if a backup would delete more than this % of the backup files (0–100)
+  max_delete_percent: 10
+  # Block if the source has this % fewer files than at the last successful backup (0–100)
+  max_source_shrink_percent: 20
+  # Block a LAN destination that points back at this server (true/false)
+  forbid_local_destination: true

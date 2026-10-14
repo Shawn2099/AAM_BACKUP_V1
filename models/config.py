@@ -257,6 +257,12 @@ class CloudConfig(StrictModel):
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
     verify_timeout_seconds: int = Field(default=18000, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
+    dry_run_timeout_seconds: int = Field(
+        default=1800, ge=60, le=86400,
+        description="Timeout (seconds) for each guard measurement before the cloud sync: "
+                    "`rclone sync --dry-run` (planned deletions) and `rclone size` of the "
+                    "source. Default ~4x the measured 3-8 min diff time at 1M files; "
+                    "tune from run_logs telemetry.")
     # F7: listing timeouts sized for the target scale (200GB / ~1M files, growing
     # to ~2.5M by yr-5). Measured order-of-magnitude: rclone size over GCS takes
     # ~40-150s at 1M objects, the lsjson manifest ~2-5 min, the diff ~3-8 min —

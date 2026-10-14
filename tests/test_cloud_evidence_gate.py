@@ -40,13 +40,14 @@ def _patch_pipeline():
         patch("flow.get_fy_prefix", return_value="FY26-27"),
         patch("flow.ManifestDB"),
         patch("flow._record_run"),
+        patch("flow.cloud_guards_task"),
     )
 
 
 def _run_with(sync_result, verify_data):
     patches = _patch_pipeline()
     mocks = [p.start() for p in patches]
-    mock_alert, mock_artifact, mock_record_task, mock_verify, mock_sync, _, _, _, mock_db, mock_record = mocks
+    mock_alert, mock_artifact, mock_record_task, mock_verify, mock_sync, _, _, _, mock_db, mock_record, _ = mocks
     mock_sync.with_options.return_value.return_value = sync_result
     mock_verify.with_options.return_value.return_value = verify_data
     mock_db.return_value.get_cloud_synced_entries.return_value = {}

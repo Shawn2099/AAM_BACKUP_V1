@@ -101,6 +101,7 @@ def _patch_pipeline():
         patch("flow.cloud_preflight_task"),
         patch("flow.health_check_task"),
         patch("flow.get_fy_prefix", return_value="FY26-27"),
+        patch("flow.cloud_guards_task"),
     )
 
 
@@ -113,7 +114,7 @@ def test_w1e_bug2_cloud_no_changes_gate_failure_records_success(sandbox, monkeyp
     cfg = _mock_cfg(None, str(db))
 
     patches = _patch_pipeline()
-    (alert, _art, _rec, verify, sync, _pf, _hc, _fy) = [p.start() for p in patches]
+    (alert, _art, _rec, verify, sync, _pf, _hc, _fy, _guards) = [p.start() for p in patches]
     try:
         sync.with_options.return_value.return_value = {
             "status": "CLOUD_NO_CHANGES_COMPLETE", "exit_code": 9, "error": None}

@@ -25,7 +25,13 @@ from prefect.concurrency.sync import concurrency
 from core import guards, statuses
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
-from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
+from core.cloud_reporter import (
+    CloudReporterError,
+    count_objects,
+    get_cloud_diff,
+    get_cloud_manifest,
+    get_cloud_size,
+)
 from core.cloud_sync import run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.health import pre_backup_health
@@ -285,9 +291,84 @@ def cloud_preflight_task(config, fy_prefix: str):
     return result
 
 
+@task(name="cloud-guards")
+def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None) -> dict:
+    """Data-safety guards G1-G4 before rclone sync (plan WP3, M2 2.2).
+
+    Measures with rclone itself: `rclone size` of source and destination,
+    `rclone sync --dry-run` for planned deletions (same command as the
+    real sync). A measurement that could not be taken FAILS the run
+    (retried next night); a guard verdict BLOCKs it for a human. The
+    record's "max_delete" is the --max-delete backstop for the real sync.
+    """
+    source = config.paths.source_drive
+    bucket = config.cloud.bucket
+    remote = f"aam_gcs:{bucket}/{fy_prefix}"
+    destination = f"gs://{bucket}/{fy_prefix}"
+    limits = config.guards
+    artefacts = RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-guards")
+
+    first_file = guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES)
+    try:
+        with temp_rclone_config(
+            config.paths.gcs_key_path, config.cloud.location,
+            config.cloud.project_number, config.cloud.storage_class,
+        ) as rclone_conf:
+            source_files = count_objects(source, rclone_conf,
+                                         config.cloud.dry_run_timeout_seconds, artefacts)
+            destination_files = count_objects(remote, rclone_conf,
+                                              config.cloud.cloud_size_timeout_seconds, artefacts)
+    except CloudReporterError as e:
+        raise RuntimeError(f"Cloud guard measurement failed: {e}") from e
+
+    db = ManifestDB.from_config(config)
+    try:
+        baseline = db.guard_baseline("cloud", fy_prefix) or {}
+    finally:
+        db.close()
+
+    results = [
+        guards.g1_source_has_files(first_file, source),
+        guards.g2_source_shrink(source_files, baseline.get("source_file_count"),
+                                limits.max_source_shrink_percent),
+        # Not a host path: the "is this machine" check does not apply.
+        guards.g4_destination_identity(destination, baseline.get("destination"),
+                                       None, set(), forbid_local=False),
+    ]
+    if first_file:
+        # A source without files is already blocked by G1; its dry-run would
+        # only plan the deletion of everything.
+        dry = run_cloud_sync(
+            source=source, bucket=bucket, fy_prefix=fy_prefix,
+            gcs_key_path=config.paths.gcs_key_path, location=config.cloud.location,
+            project_number=config.cloud.project_number,
+            bwlimit=config.cloud.bandwidth_limit, retries=config.cloud.retry_count,
+            storage_class=config.cloud.storage_class, transfers=config.cloud.transfers,
+            checkers=config.cloud.checkers, buffer_size=config.cloud.buffer_size,
+            timeout=config.cloud.dry_run_timeout_seconds, max_duration_seconds=0,
+            artefacts=artefacts, error_tail_lines=config.cloud.error_tail_lines,
+            dry_run=True,
+        )
+        if dry.get("planned_deletes") is None:
+            raise RuntimeError(
+                f"Cloud guard measurement failed: rclone sync --dry-run did not complete "
+                f"cleanly ({dry.get('status')}): {dry.get('error')}")
+        results.append(guards.g3_mass_delete(
+            dry["planned_deletes"], destination_files,
+            limits.max_delete_files, limits.max_delete_percent))
+
+    return guards.enforce(
+        "cloud", results, fy=fy_prefix, source_file_count=source_files,
+        destination=destination, destination_files=destination_files,
+        max_delete=guards.max_delete_allowance(
+            destination_files, limits.max_delete_files, limits.max_delete_percent),
+    )
+
+
 @task(name="cloud-sync")
-def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None):
-    """Run rclone sync to mirror source → GCS."""
+def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
+                    max_delete: int | None = None):
+    """Run rclone sync to mirror source → GCS (max_delete: G3 backstop)."""
     logger.info(f"Cloud sync: {config.paths.source_drive} → {config.cloud.bucket}/{fy_prefix}")
     result = run_cloud_sync(
         source=config.paths.source_drive,
@@ -306,6 +387,7 @@ def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None):
         max_duration_seconds=config.cloud.max_duration_seconds,
         artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
         error_tail_lines=config.cloud.error_tail_lines,
+        max_delete=max_delete,
     )
     if result["status"] in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
         raise RuntimeError(result.get("error", "Cloud sync failed"))
@@ -794,13 +876,16 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         sync_seconds: float | None = None
         verify_report_seconds: float | None = None
         phase = "pre"
+        guard_record = None
 
         try:
             health_check_task(config, "cloud")
             preflight(config, fy_prefix)
+            guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir)
             phase = "sync"
             _t_sync = time.monotonic()
-            sync_result = sync(config, fy_prefix, artefacts_dir)
+            sync_result = sync(config, fy_prefix, artefacts_dir,
+                               max_delete=guard_record["max_delete"])
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
@@ -958,6 +1043,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     status = sync_result["status"]
             elif phase == "verify" and status == "CLOUD_COMPLETE":
                 status = "CLOUD_VERIFY_FAILED"
+            elif isinstance(e, guards.GuardBlocked):
+                status = "CLOUD_BLOCKED"
+                guard_record = e.record
             elif phase == "pre":
                 status = "CLOUD_FAILED"
             if status == "CLOUD_SUSPECT":
@@ -985,6 +1073,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _with_guards(extended_metrics, guard_record)
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:
                 _record_run(

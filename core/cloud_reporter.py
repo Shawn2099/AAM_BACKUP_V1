@@ -13,6 +13,8 @@ from pathlib import Path, PureWindowsPath
 from loguru import logger
 
 from core.process import resolve_binary
+from core.run_artefacts import RunArtefacts
+from core.tool_runner import run_tool, tail_lines
 
 
 class CloudReporterError(RuntimeError):
@@ -29,6 +31,33 @@ def _base_args(config_path: str) -> list[str]:
     --fast-list: Use recursive listing — fewer GCS API calls, faster for large buckets.
     """
     return ["--config", config_path, "--gcs-no-check-bucket", "--fast-list"]
+
+
+def count_objects(target: str, config_path: str, timeout: int, artefacts: RunArtefacts) -> int:
+    """File count of an rclone path (local folder or `aam_gcs:bucket/prefix`).
+
+    `rclone size --json` sees exactly what `rclone sync` sees (same
+    backend, no filters), so the count matches the sync's view — guard
+    input G2/G3 (M2 2.2). Raises CloudReporterError on ANY failure: a
+    guard must never mistake "could not count" for zero.
+    """
+    rclone_exe = resolve_binary("rclone") or "rclone"
+    cmd = [rclone_exe, "size", target, "--json", *_base_args(config_path)]
+    result = run_tool("rclone-size", cmd, timeout_s=timeout, artefacts=artefacts)
+    if not result.completed:
+        raise CloudReporterError(f"rclone size {target}: {result.describe_failure()}")
+    if result.exit_code != 0:
+        raise CloudReporterError(
+            f"rclone size {target} exited {result.exit_code}: "
+            f"{tail_lines(result.stderr_text(), 20) or 'no stderr'}")
+    try:
+        count = json.loads(result.stdout_text())["count"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise CloudReporterError(f"rclone size {target}: unreadable output ({e})") from e
+    if type(count) is not int or count < 0:
+        raise CloudReporterError(f"rclone size {target}: invalid count {count!r}")
+    logger.info(f"rclone size {target}: {count} file(s)")
+    return count
 
 
 def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int = 300) -> dict:

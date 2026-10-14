@@ -48,6 +48,25 @@ def scan_rclone_log_for_errors(log_text: str, max_lines: int = 10) -> tuple[bool
     return bool(bad_lines), "\n".join(bad_lines[-max_lines:] if max_lines > 0 else [])
 
 
+def count_planned_deletes(log_text: str) -> int:
+    """Files a real sync would delete, from an `rclone sync --dry-run` JSON log.
+
+    rclone logs one NOTICE per planned file deletion with
+    `"skipped":"delete"` — files inside folders that would be removed
+    included; folder removals are separate `"remove directory"` lines and
+    not counted (verified on rclone v1.74.3, 2026-10-14).
+    """
+    planned = 0
+    for line in (log_text or "").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and entry.get("skipped") == "delete":
+            planned += 1
+    return planned
+
+
 def classify_rclone_exit(code: int) -> str:
     """Classify rclone exit code per official documentation.
 
@@ -110,10 +129,13 @@ def build_rclone_sync_command(
     checkers: int = 4,
     buffer_size: str = "64M",
     max_duration_seconds: int | None = None,
+    max_delete: int | None = None,
 ) -> list[str]:
     """Build rclone sync command with GCS-optimized flags.
 
     All tunable values are passed as parameters — caller draws them from config.
+    max_delete: rclone's own `--max-delete` backstop (M2 2.2): the sync stops
+    with a fatal error (exit 7) instead of deleting more files than G3 allows.
     """
     from core.health import check_source_drive as _check_src
     ok, reason = _check_src(source)
@@ -162,6 +184,8 @@ def build_rclone_sync_command(
             "--max-duration", f"{int(max_duration_seconds)}s",
             "--cutoff-mode", "SOFT",
         ])
+    if max_delete is not None:
+        cmd.extend(["--max-delete", str(int(max_delete))])
 
     return cmd
 
@@ -183,8 +207,15 @@ def run_cloud_sync(
     max_duration_seconds: int | None = None,
     artefacts: RunArtefacts | None = None,
     error_tail_lines: int = 100,
+    dry_run: bool = False,
+    max_delete: int | None = None,
 ) -> dict:
     """Execute rclone sync to mirror source -> GCS.
+
+    dry_run=True runs the SAME command with `--dry-run` (nothing changes)
+    and adds "planned_deletes" to the result: the number of files the real
+    sync would delete, or None when the dry-run did not complete cleanly
+    (guard G3 input). max_delete: `--max-delete` backstop for the real sync.
 
     The FULL rclone log is written to the run's artefact folder
     (`--log-file`, JSON lines) and kept (plan WP2). Operator-facing error
@@ -213,15 +244,22 @@ def run_cloud_sync(
             bwlimit, retries, transfers, checkers,
             buffer_size=buffer_size,
             max_duration_seconds=effective_max_duration,
+            max_delete=None if dry_run else max_delete,
         )
-        log_path = artefacts.new_path("rclone-sync", "log")
+        step = "rclone-dry-run" if dry_run else "rclone-sync"
+        if dry_run:
+            cmd.append("--dry-run")
+        log_path = artefacts.new_path(step, "log")
         cmd.extend(["--log-file", str(log_path)])
 
-        logger.info(f"Cloud sync: {source} → {bucket}/{fy_prefix} (full log: {log_path})")
-        result = run_tool("rclone-sync", cmd, timeout_s=timeout,
+        logger.info(f"Cloud {'dry-run' if dry_run else 'sync'}: {source} → "
+                    f"{bucket}/{fy_prefix} (full log: {log_path})")
+        result = run_tool(step, cmd, timeout_s=timeout,
                           artefacts=artefacts, log_path=log_path)
 
     base = {"suspect_reason": None, "log_path": str(log_path)}
+    if dry_run:
+        base["planned_deletes"] = None  # set below only for a clean, completed dry-run
     if result.spawn_error:
         missing = "FileNotFoundError" in result.spawn_error
         return {**base, "status": "CLOUD_FAILED", "exit_code": -1,
@@ -275,6 +313,10 @@ def run_cloud_sync(
         )
         logger.error(f"rclone error (exit {code}); full log: {log_path}\n{detail}")
 
-    logger.info(f"Cloud sync exit {code} -> {status}")
+    logger.info(f"Cloud {'dry-run' if dry_run else 'sync'} exit {code} -> {status}")
+    if dry_run and status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"):
+        # exit 0 = copies planned, 9 = none planned (--error-on-no-transfer);
+        # planned deletions do not change the exit code (verified v1.74.3).
+        base["planned_deletes"] = count_planned_deletes(result.log_text())
     return {**base, "status": status, "exit_code": code, "error": error_msg,
             "suspect_reason": suspect_reason}

@@ -298,3 +298,231 @@ def test_lan_pipeline_success_records_guard_baseline(
     args, kwargs = rec.call_args
     assert args[4] == "LAN_COMPLETE"
     assert json.loads(kwargs["extended_metrics"])["guards"]["source_file_count"] == 1
+
+
+# ── Cloud: planned deletions from the rclone --dry-run log ────────────────
+
+# Real lines from rclone v1.74.3 `sync --dry-run --use-json-log` (probe
+# 2026-10-14): 3 files would be deleted (2 inside a folder that goes too).
+_RCLONE_DRY_RUN_LOG = "\n".join([
+    '{"level":"notice","msg":"Skipped copy as --dry-run is set (size 2)","skipped":"copy","size":2,"object":"c.txt","objectType":"*local.Object"}',
+    '{"level":"notice","msg":"Skipped update modification time as --dry-run is set (size 2)","skipped":"update modification time","size":2,"object":"a.txt","objectType":"*local.Object"}',
+    '{"level":"notice","msg":"Skipped delete as --dry-run is set (size 2)","skipped":"delete","size":2,"object":"x.txt","objectType":"*local.Object"}',
+    '{"level":"notice","msg":"Skipped delete as --dry-run is set (size 2)","skipped":"delete","size":2,"object":"extra_dir/deep/z.txt","objectType":"*local.Object"}',
+    '{"level":"notice","msg":"Skipped delete as --dry-run is set (size 2)","skipped":"delete","size":2,"object":"extra_dir/y.txt","objectType":"*local.Object"}',
+    '{"level":"notice","msg":"Skipped remove directory as --dry-run is set","skipped":"remove directory","object":"extra_dir","objectType":"string"}',
+    "not json at all",
+])
+
+
+def test_count_planned_deletes_counts_file_deletes_only():
+    from core.cloud_sync import count_planned_deletes
+    assert count_planned_deletes(_RCLONE_DRY_RUN_LOG) == 3
+    assert count_planned_deletes("") == 0
+
+
+def test_sync_command_carries_max_delete_backstop(tmp_path):
+    from core.cloud_sync import build_rclone_sync_command
+    (tmp_path / "f.txt").write_text("x")
+    argv = build_rclone_sync_command(str(tmp_path), "b", "FY26-27", "/c", "STANDARD", max_delete=7)
+    assert argv[argv.index("--max-delete") + 1] == "7"
+    assert "--max-delete" not in build_rclone_sync_command(
+        str(tmp_path), "b", "FY26-27", "/c", "STANDARD")
+
+
+def _fake_cfg_cm():
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_cfg(*a, **k):
+        yield "/tmp/fake.conf"
+    return fake_cfg
+
+
+@pytest.mark.parametrize("exit_code,log,expected", [
+    (0, _RCLONE_DRY_RUN_LOG, 3),
+    (9, _RCLONE_DRY_RUN_LOG, 3),          # nothing to copy, deletes still planned
+    (7, _RCLONE_DRY_RUN_LOG, None),       # did not complete -> unknown
+    (0, _RCLONE_DRY_RUN_LOG + '\n{"level":"error","msg":"listing failed"}', None),
+])
+def test_run_cloud_sync_dry_run_reports_planned_deletes(tmp_path, exit_code, log, expected):
+    from core.cloud_sync import run_cloud_sync
+    from test_support.fake_tools import fake_run_tool
+
+    (tmp_path / "f.txt").write_text("x")
+    with patch("core.cloud_sync.temp_rclone_config", _fake_cfg_cm()), \
+         fake_run_tool("core.cloud_sync", exit_code=exit_code, log=log) as calls:
+        res = run_cloud_sync(source=str(tmp_path), bucket="b", fy_prefix="FY26-27",
+                             gcs_key_path="/k", project_number="1",
+                             storage_class="STANDARD", dry_run=True)
+    assert "--dry-run" in calls[0]["argv"] and "--max-delete" not in calls[0]["argv"]
+    assert res["planned_deletes"] == expected
+
+
+def test_real_sync_passes_max_delete(tmp_path):
+    from core.cloud_sync import run_cloud_sync
+    from test_support.fake_tools import fake_run_tool
+
+    (tmp_path / "f.txt").write_text("x")
+    with patch("core.cloud_sync.temp_rclone_config", _fake_cfg_cm()), \
+         fake_run_tool("core.cloud_sync", exit_code=0) as calls:
+        res = run_cloud_sync(source=str(tmp_path), bucket="b", fy_prefix="FY26-27",
+                             gcs_key_path="/k", project_number="1",
+                             storage_class="STANDARD", max_delete=12)
+    argv = calls[0]["argv"]
+    assert "--dry-run" not in argv and argv[argv.index("--max-delete") + 1] == "12"
+    assert "planned_deletes" not in res
+
+
+def test_count_objects_parses_rclone_size_and_fails_loudly(tmp_path):
+    from core.cloud_reporter import CloudReporterError, count_objects
+    from core.run_artefacts import RunArtefacts
+    from test_support.fake_tools import fake_run_tool
+
+    art = RunArtefacts(tmp_path, "r1")
+    with fake_run_tool("core.cloud_reporter", stdout='{"count":3,"bytes":6,"sizeless":0}') as calls:
+        assert count_objects("aam_gcs:b/FY26-27", "/c", 30, art) == 3
+    assert calls[0]["argv"][1:3] == ["size", "aam_gcs:b/FY26-27"]
+    for kwargs in ({"exit_code": 3, "stderr": "directory not found"},
+                   {"timed_out": True}, {"stdout": "garbage"}, {"stdout": "{}"}):
+        with fake_run_tool("core.cloud_reporter", **kwargs), pytest.raises(CloudReporterError):
+            count_objects("aam_gcs:b/FY26-27", "/c", 30, art)
+
+
+def test_cloud_dry_run_timeout_is_config():
+    from models.config import CloudConfig
+    assert CloudConfig.model_fields["dry_run_timeout_seconds"].default == 1800
+
+
+# ── Cloud guards task ─────────────────────────────────────────────────────
+
+def _cloud_cfg(tmp_path, with_file=True):
+    src = tmp_path / "csrc"
+    src.mkdir(exist_ok=True)
+    if with_file:
+        (src / "ledger.xlsx").write_text("x")
+    cfg = MagicMock()
+    cfg.paths.source_drive = str(src)
+    cfg.cloud.bucket = "bkt"
+    cfg.guards = GuardsConfig()
+    return cfg
+
+
+def _run_cloud_guards(cfg, source_files, dest_files, planned, baseline=None):
+    """Run the real cloud-guards task with faked measurements.
+
+    Returns (record or raised exception, run_cloud_sync mock)."""
+    db = MagicMock()
+    db.guard_baseline.return_value = baseline
+    counts = {cfg.paths.source_drive: source_files, "aam_gcs:bkt/FY26-27": dest_files}
+
+    def fake_count(target, *a, **k):
+        v = counts[target]
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    dry = {"status": "CLOUD_COMPLETE", "error": None, "planned_deletes": planned}
+    with patch("flow.ManifestDB") as mdb, \
+         patch("flow.temp_rclone_config", _fake_cfg_cm()), \
+         patch("flow.count_objects", side_effect=fake_count), \
+         patch("flow.run_cloud_sync", return_value=dry) as run_sync:
+        mdb.from_config.return_value = db
+        try:
+            return flow.cloud_guards_task.fn(cfg, "FY26-27", None), run_sync
+        except Exception as e:  # noqa: BLE001 - returned for the assertions
+            return e, run_sync
+
+
+def test_cloud_guards_pass_and_return_backstop(tmp_path):
+    rec, run_sync = _run_cloud_guards(_cloud_cfg(tmp_path), 1000, 1000, 3,
+                                      baseline={"fy": "FY26-27", "source_file_count": 990,
+                                                "destination": "gs://bkt/FY26-27"})
+    assert run_sync.call_args.kwargs["dry_run"] is True
+    assert rec["destination"] == "gs://bkt/FY26-27"
+    assert rec["source_file_count"] == 1000 and rec["destination_files"] == 1000
+    assert rec["max_delete"] == 100           # min(500 files, 10 % of 1000)
+
+
+def test_cloud_guards_block_mass_delete(tmp_path):
+    exc, _ = _run_cloud_guards(_cloud_cfg(tmp_path), 400, 1000, 600)
+    assert isinstance(exc, g.GuardBlocked) and "would delete 600 of 1,000" in str(exc)
+
+
+def test_cloud_guards_block_changed_bucket(tmp_path):
+    exc, _ = _run_cloud_guards(_cloud_cfg(tmp_path), 10, 10, 0,
+                               baseline={"fy": "FY26-27", "source_file_count": 10,
+                                         "destination": "gs://other/FY26-27"})
+    assert isinstance(exc, g.GuardBlocked) and "Destination changed" in str(exc)
+
+
+def test_cloud_guards_dirs_only_source_blocks_without_dry_run(tmp_path):
+    cfg = _cloud_cfg(tmp_path, with_file=False)
+    (tmp_path / "csrc" / "Clients").mkdir()
+    exc, run_sync = _run_cloud_guards(cfg, 0, 1000, None)
+    assert isinstance(exc, g.GuardBlocked) and "contains no files" in str(exc)
+    run_sync.assert_not_called()
+
+
+def test_cloud_guard_measurement_failures_fail_the_run(tmp_path):
+    from core.cloud_reporter import CloudReporterError
+
+    for src, dst, planned, match in (
+        (CloudReporterError("size exited 7"), 10, 0, "size exited 7"),
+        (10, CloudReporterError("dial tcp: no such host"), 0, "no such host"),
+        (10, 10, None, "dry-run"),
+    ):
+        exc, _ = _run_cloud_guards(_cloud_cfg(tmp_path), src, dst, planned)
+        assert isinstance(exc, RuntimeError) and not isinstance(exc, g.GuardBlocked)
+        assert match in str(exc)
+
+
+# ── Cloud pipeline: BLOCKED row; backstop handed to the sync ──────────────
+
+@patch("flow._open_run_artefacts", return_value=None)
+@patch("flow.cloud_sync_task")
+@patch("flow.cloud_guards_task")
+@patch("flow.cloud_preflight_task")
+@patch("flow.health_check_task")
+@patch("flow.ManifestDB")
+@patch("flow._record_run")
+def test_cloud_pipeline_guard_block_records_cloud_blocked(
+    rec, _db, _h, _pre, guards_task, sync, _art,
+):
+    guards_task.side_effect = _blocked("cloud")
+    with pytest.raises(g.GuardBlocked):
+        flow._run_cloud_pipeline(_pipeline_cfg(), "run-cb", "2026-10-14T22:00:00")
+    sync.with_options.return_value.assert_not_called()
+    args, kwargs = rec.call_args
+    assert args[4] == "CLOUD_BLOCKED"
+    em = json.loads(kwargs["extended_metrics"])
+    assert em["guards"]["results"][0]["verdict"] == g.BLOCK
+
+
+@patch("flow._open_run_artefacts", return_value=None)
+@patch("flow.cloud_publish_artifact_task")
+@patch("flow.cloud_record_task")
+@patch("flow.cloud_verify_and_report_task")
+@patch("flow.cloud_sync_task")
+@patch("flow.cloud_guards_task")
+@patch("flow.cloud_preflight_task")
+@patch("flow.health_check_task")
+@patch("flow.ManifestDB")
+@patch("flow._record_run")
+def test_cloud_pipeline_hands_backstop_to_sync_and_records_baseline(
+    rec, _db, _h, _pre, guards_task, sync, verify, _rt, _pub, _art,
+):
+    guards_task.return_value = {"fy": "FY26-27", "source_file_count": 5,
+                                "destination": "gs://bkt/FY26-27", "max_delete": 42,
+                                "results": []}
+    sync.with_options.return_value.return_value = {"status": "CLOUD_COMPLETE", "exit_code": 0}
+    verify.with_options.return_value.return_value = {
+        "verified": True, "verify_termination": "normal",
+        "size": {"count": 1, "bytes": 1}, "manifest": [],
+        "diff": {"added": [], "removed": [], "modified": []},
+    }
+    flow._run_cloud_pipeline(_pipeline_cfg(), "run-cok", "2026-10-14T22:00:00")
+    assert sync.with_options.return_value.call_args.kwargs["max_delete"] == 42
+    args, kwargs = rec.call_args
+    assert args[4] == "CLOUD_COMPLETE"
+    assert json.loads(kwargs["extended_metrics"])["guards"]["max_delete"] == 42
