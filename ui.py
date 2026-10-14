@@ -33,9 +33,9 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import statuses
+from core import approvals, statuses
 from core.manifest import ManifestDB
-from core.time_utils import IST, cron_to_human, get_fy_prefix
+from core.time_utils import IST, cron_to_human, get_fy_prefix, now_iso
 
 # In-memory rate limiter for trigger and auth endpoints.
 # Tracks attempts per IP per window. Cleans up expired entries on access.
@@ -657,6 +657,147 @@ async def trigger_lan(request: Request):
             status_code=500,
         )
     return _trigger_result("LAN", flow_run)
+
+
+# ── Approvals for BLOCKED runs (plan §6.2, owner DEC-3) ──────
+# A guard blocked a backup before anything was copied or deleted. A signed-in
+# person reviews the reason and numbers here, types the confirmation phrase,
+# and approves the backup ONCE: the leg's deployment is re-run with
+# approval_id, re-measures, and proceeds only if nothing got worse. Approving
+# needs dashboard sign-in (it is the accountable record of who decided).
+
+_APPROVAL_LABEL = {"cloud": "Cloud", "lan": "LAN"}
+
+
+def _approval_actor(request: Request) -> str:
+    ip = request.client.host if request.client else "unknown"
+    how = "session" if _validate_session(request.cookies.get("session")) else "api-key"
+    return f"{ip} ({how})"
+
+
+def _require_approval_rights(request: Request) -> None:
+    _require_auth(request)
+    if not _auth_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Approving or dismissing a blocked backup needs dashboard sign-in: "
+                   "set dashboard.auth_enabled: true (with an api_key) in config.yaml.")
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+
+def _approval_view(req: dict) -> dict:
+    expired = False
+    if req.get("expires_at"):
+        try:
+            expired = pendulum.now("UTC") >= pendulum.parse(req["expires_at"])
+        except Exception:  # noqa: BLE001 - unparsable expiry is never valid
+            expired = True
+    keys = ("approval_id", "leg", "status", "created_at", "blocked_run_id", "fy",
+            "guards", "phrase", "approved_at", "approved_by", "expires_at")
+    return {**{k: req.get(k) for k in keys}, "expired": expired}
+
+
+def _load_open_approval(approval_id: str) -> dict:
+    req = get_db().get_approval(approval_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail=f"No approval request {approval_id}")
+    return req
+
+
+async def _ensure_leg_idle(leg: str) -> None:
+    if not getattr(_cfg(), leg).enabled:
+        raise HTTPException(status_code=409,
+                            detail=f"The {leg} backup leg is disabled in configuration.")
+    running = await _is_running(leg)
+    if running is None:
+        raise HTTPException(status_code=503, detail="Prefect API unavailable - cannot verify "
+                                                    "active runs; nothing was changed.")
+    if running:
+        raise HTTPException(status_code=409, detail=f"A {leg} backup is already in progress; "
+                                                    "nothing was changed. Try again after it ends.")
+
+
+async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
+    leg = req["leg"]
+    label = _APPROVAL_LABEL.get(leg, leg)
+    try:
+        flow_run = await arun_deployment(
+            name=f"aam-backup/backup-{leg}",
+            parameters={"approval_id": req["approval_id"]},
+            timeout=_trigger_timeout(request),
+        )
+    except Exception as e:
+        logger.error(f"Approved {leg} re-run could not be started: {e}")
+        return JSONResponse({
+            "status": "trigger_failed",
+            "detail": f"Approved, but the {label} backup could not be started: {e}. "
+                      "Use 'Run approved backup' to retry before the approval expires.",
+        }, status_code=500)
+    return _trigger_result(label, flow_run, noun="backup (approved re-run)")
+
+
+@app.get("/approvals")
+def list_approvals(request: Request):
+    _require_auth(request)
+    rows = get_db().open_approvals()
+    return {"auth_enabled": _auth_enabled(), "approvals": [_approval_view(r) for r in rows]}
+
+
+@app.post("/approvals/{approval_id}/approve")
+async def approve_blocked_run(approval_id: str, request: Request):
+    _require_approval_rights(request)
+    try:
+        typed = (await request.json()).get("phrase", "")
+    except Exception:  # noqa: BLE001 - malformed body = no phrase
+        typed = ""
+    req = _load_open_approval(approval_id)
+    if req["status"] != approvals.PENDING:
+        raise HTTPException(status_code=409, detail=f"This request is {req['status']}; "
+                                                    "only a pending request can be approved.")
+    if not approvals.phrase_matches(req["phrase"], typed):
+        raise HTTPException(status_code=400,
+                            detail=f"To approve, type exactly: {req['phrase']}")
+    await _ensure_leg_idle(req["leg"])
+    approved_at = now_iso()
+    actor = _approval_actor(request)
+    if not get_db().approve_request(
+            approval_id, approved_by=actor, approved_at=approved_at,
+            expires_at=approvals.expires_at(approved_at, _cfg().approvals.expiry_hours)):
+        raise HTTPException(status_code=409, detail="This request changed meanwhile; refresh.")
+    logger.warning(f"Approval {approval_id} ({req['leg']}: "
+                   f"{', '.join(g['guard'] for g in req['guards'])}) given by {actor}")
+    return await _start_approved_run(get_db().get_approval(approval_id), request)
+
+
+@app.post("/approvals/{approval_id}/run")
+async def run_approved_backup(approval_id: str, request: Request):
+    _require_approval_rights(request)
+    req = _load_open_approval(approval_id)
+    view = _approval_view(req)
+    if req["status"] != approvals.APPROVED:
+        raise HTTPException(status_code=409, detail=f"This request is {req['status']}; "
+                                                    "only an approved, unused one can be run.")
+    if view["expired"]:
+        raise HTTPException(status_code=409, detail=f"The approval expired at "
+                                                    f"{req['expires_at']}; wait for the next "
+                                                    "block and approve again.")
+    await _ensure_leg_idle(req["leg"])
+    return await _start_approved_run(req, request)
+
+
+@app.post("/approvals/{approval_id}/dismiss")
+def dismiss_blocked_run(approval_id: str, request: Request):
+    _require_approval_rights(request)
+    _load_open_approval(approval_id)
+    actor = _approval_actor(request)
+    if not get_db().dismiss_request(approval_id, dismissed_by=actor, dismissed_at=now_iso()):
+        raise HTTPException(status_code=409, detail="Only a pending or approved, unused "
+                                                    "request can be dismissed.")
+    logger.warning(f"Approval request {approval_id} dismissed by {actor}")
+    return {"status": "dismissed", "detail": "Dismissed. Nothing will run on this request; "
+                                             "the next scheduled run re-checks the guards."}
 
 
 # ── Verification trigger (read-only integrity audit) ─────────

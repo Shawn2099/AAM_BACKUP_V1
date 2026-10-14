@@ -226,3 +226,64 @@ async function updateStatus() {
 }
 setInterval(updateStatus, 2000);
 window.addEventListener('DOMContentLoaded', updateStatus);
+
+// ── Blocked backups waiting for a human decision (plan §6.2) ──────────────
+// A guard stopped a backup before anything was copied or deleted. The server
+// owns every decision; this only shows the reason/numbers and posts the
+// typed confirmation phrase.
+function escHtml(text) { return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+var _approvalsSig = '';
+function approvalCard(a, authEnabled) {
+    var leg = a.leg === 'cloud' ? 'Cloud' : 'LAN';
+    var reasons = (a.guards || []).map(function(g) { return '<li>' + escHtml(g.reason) + '</li>'; }).join('');
+    var id = escHtml(a.approval_id);
+    var html = '<div class="approval-card ' + (a.status === 'APPROVED' ? 'approved' : 'pending') + '" style="border:2px solid ' + (a.status === 'APPROVED' ? '#d97706' : '#dc2626') + ';border-radius:0.75rem;padding:1rem 1.25rem;margin-bottom:1rem;background:rgba(220,38,38,0.06)">';
+    html += '<h2 style="margin:0 0 0.5rem 0">' + leg + ' backup blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
+    html += '<ul style="margin:0 0 0.5rem 1.25rem">' + reasons + '</ul>';
+    html += '<p style="font-size:0.8rem;color:#6b7280">Nothing was copied or deleted. Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';
+    if (!authEnabled) {
+        html += '<p style="font-weight:600">Approving needs dashboard sign-in: set <code>dashboard.auth_enabled: true</code> in config.yaml.</p>';
+    } else if (a.status === 'PENDING') {
+        html += '<p>To run this backup <b>once</b> anyway, type <code>' + escHtml(a.phrase) + '</code> and approve. The backup re-checks first and stops again if anything got worse.</p>';
+        html += '<input id="phrase-' + id + '" type="text" autocomplete="off" placeholder="' + escHtml(a.phrase) + '" style="padding:0.4rem;margin-right:0.5rem;min-width:16rem">';
+        html += '<button class="btn-trigger" style="background:#dc2626" onclick="approvalAction(\'' + id + '\', \'approve\')">Approve this backup once</button> ';
+        html += '<button class="btn-trigger" style="background:#4b5563" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';
+    } else {
+        html += '<p>Approved by ' + escHtml(a.approved_by) + ' on ' + escHtml(formatFullDate(a.approved_at)) + (a.expired ? ' — <b>expired</b>.' : '; valid until ' + escHtml(formatFullDate(a.expires_at)) + '.') + '</p>';
+        if (!a.expired) html += '<button class="btn-trigger" style="background:#d97706" onclick="approvalAction(\'' + id + '\', \'run\')">Run approved backup</button> ';
+        html += '<button class="btn-trigger" style="background:#4b5563" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';
+    }
+    return html + '</div>';
+}
+async function updateApprovals() {
+    try {
+        const response = await fetch('/approvals');
+        if (!response.ok) return;
+        const data = await response.json();
+        const sig = JSON.stringify(data);
+        if (sig === _approvalsSig) return;          // keep a half-typed phrase
+        _approvalsSig = sig;
+        var box = document.getElementById('approvals-container');
+        if (box) box.innerHTML = (data.approvals || []).map(function(a) { return approvalCard(a, data.auth_enabled); }).join('');
+    } catch (err) { console.error('Failed to load approvals:', err); }
+}
+async function approvalAction(id, action) {
+    var opts = { method: 'POST' };
+    if (action === 'approve') {
+        var input = document.getElementById('phrase-' + id);
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify({ phrase: input ? input.value : '' });
+    } else if (action === 'dismiss' && !confirm('Dismiss this request? Nothing will run on it; the next scheduled backup checks again.')) {
+        return;
+    }
+    try {
+        const response = await fetch('/approvals/' + encodeURIComponent(id) + '/' + action + '?wait=false', opts);
+        const data = await response.json();
+        showToast(data.detail || (response.ok ? 'Done.' : 'Request failed.'), response.ok ? 'success' : 'error');
+    } catch (err) { showToast('Network connection error: ' + err.message, 'error'); }
+    _approvalsSig = '';
+    await updateApprovals();
+    await updateStatus();
+}
+setInterval(updateApprovals, 10000);
+window.addEventListener('DOMContentLoaded', updateApprovals);
