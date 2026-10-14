@@ -648,7 +648,8 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
     """Data-safety guards G1-G4 before robocopy /MIR (plan WP3, M2 2.2).
 
     approval_id: dashboard re-run of a blocked run (plan §6.2); used up here
-    if it validly covers every guard that blocks again.
+    if it validly covers every guard that blocks again. An approved G5
+    (missing mount marker) creates the marker before the mirror runs.
 
     A measurement that could not be taken FAILS the run (retried next
     night); a guard verdict BLOCKs it for a human (GuardBlocked). No Prefect
@@ -692,13 +693,26 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
             limits.forbid_local_destination),
         guards.g3_mass_delete(planned_deletes, destination_files,
                               limits.max_delete_files, limits.max_delete_percent),
+        guards.g5_canary(dry_run.get("canary_present"), destination_files > 0, dest),
     ]
     approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)
-    return guards.enforce(
+    record = guards.enforce(
         "lan", results, approved_guards=approved, fy=fy_prefix,
         source_file_count=counts["total"], destination=dest,
         destination_files=destination_files, **approval_record,
     )
+    if "G5_CANARY" in approved:
+        marker = os.path.join(dest, guards.MOUNT_MARKER)
+        try:
+            with open(marker, "a", encoding="utf-8"):
+                pass
+        except OSError as e:
+            raise RuntimeError(
+                f"Approved, but the mount marker {marker} could not be created: {e} - "
+                "nothing was copied or deleted") from e
+        logger.warning(f"Mount marker {marker} created on human approval {approval_id}")
+        record["marker_created"] = True
+    return record
 
 
 @task(name="lan-snapshot-after")

@@ -109,6 +109,15 @@ def _preflight(monkeypatch, dest: Path, source: Path | None = None) -> dict:
     return {"result": result, "calls": calls}
 
 
+def _assert_marker_missing_listing_only(out: dict) -> None:
+    """M2 2.3 contract: a missing ROOT marker is reported (guard G5 then
+    BLOCKS the run for a human); only the read-only /L listing may run -
+    verified on robocopy 10.0 to write nothing, not even a missing dest."""
+    assert "health_error" not in out, out
+    assert out["result"]["canary_present"] is False
+    assert all("/L" in cmd for cmd in out["calls"]), "only list-only robocopy allowed"
+
+
 # ─────────────────────────────────────────────────────────────────
 # TEST 1 — Valid destination-root marker
 # ─────────────────────────────────────────────────────────────────
@@ -159,9 +168,7 @@ def test_2_missing_root_marker_fails_preflight(tmp_path, monkeypatch):
     (dest / "Accounting" / "Q1.xlsx").write_text("data")
 
     out = _preflight(monkeypatch, dest)
-    assert "health_error" in out, "pre-flight MUST fail without the root marker"
-    assert isinstance(out["health_error"], HealthError)
-    assert out["calls"] == [], "no mirror may be attempted without the canary"
+    _assert_marker_missing_listing_only(out)
 
 
 def test_2b_integrity_fix_does_not_weaken_preflight(tmp_path, monkeypatch):
@@ -170,8 +177,7 @@ def test_2b_integrity_fix_does_not_weaken_preflight(tmp_path, monkeypatch):
     dest = tmp_path / "dest"
     dest.mkdir()
     out = _preflight(monkeypatch, dest)
-    assert "health_error" in out
-    assert out["calls"] == []
+    _assert_marker_missing_listing_only(out)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -277,8 +283,7 @@ def test_9b_nested_canary_does_NOT_satisfy_preflight(tmp_path, monkeypatch):
     assert not (dest / MARKER).exists()
 
     out = _preflight(monkeypatch, dest)
-    assert "health_error" in out, "nested marker must NOT satisfy pre-flight"
-    assert out["calls"] == []
+    _assert_marker_missing_listing_only(out)   # a nested marker does NOT count
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -318,8 +323,7 @@ def test_10c_source_side_canary_does_not_provision_the_destination(tmp_path, mon
     (source / MARKER).touch()
 
     out = _preflight(monkeypatch, dest, source=source)
-    assert "health_error" in out
-    assert out["calls"] == []
+    _assert_marker_missing_listing_only(out)
 
 
 # ─────────────────────────────────────────────────────────────────

@@ -100,20 +100,20 @@ class TestRunLanDryRun:
             with pytest.raises(HealthError, match="Cannot reach LAN host"):
                 run_lan_dry_run(source=str(tmp_path), dest=r"\\10.10.151.53\share\FY26-27")
 
-    def test_missing_canary_raises(self, tmp_path):
-        """Missing canary on dest → HealthError refusing to mirror."""
+    def test_missing_canary_is_reported(self, tmp_path):
+        """Missing canary on dest → reported; guard G5 blocks the run (M2 2.3)."""
         dest = tmp_path / "dest"
         dest.mkdir()
-        with pytest.raises(HealthError, match="Canary file"):
-            run_lan_dry_run(source=str(tmp_path), dest=str(dest))
+        with patch("core.lan_preflight.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+            assert run_lan_dry_run(source=str(tmp_path), dest=str(dest))["canary_present"] is False
 
     def test_canary_directory_is_not_a_file(self, tmp_path):
         """A directory named like the canary is not a regular file → refused."""
         dest = tmp_path / "dest"
         dest.mkdir()
         (dest / ".AAM_TARGET_MOUNTED").mkdir()
-        with pytest.raises(HealthError, match="Canary file"):
-            run_lan_dry_run(source=str(tmp_path), dest=str(dest))
+        with patch("core.lan_preflight.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+            assert run_lan_dry_run(source=str(tmp_path), dest=str(dest))["canary_present"] is False
 
     def test_timeout(self, tmp_path):
         """Timeout → ok=False, exit_code=-1, error mentions timeout."""
@@ -197,18 +197,20 @@ class TestCanaryGate:
             assert result["ok"] is True
             assert mock_run.called
 
-    def test_canary_missing_refuses(self, tmp_path):
-        """Canary file missing → refusal before robocopy is ever invoked."""
+    def test_canary_missing_only_lists(self, tmp_path):
+        """Canary missing → only the read-only /L listing runs (verified to
+        write nothing, 2026-10-15) and the marker is reported for G5."""
         dest = tmp_path / "dest"
         dest.mkdir()
-        with patch("core.lan_preflight.subprocess.run") as mock_run:
-            with pytest.raises(HealthError):
-                run_lan_dry_run(source=str(tmp_path), dest=str(dest))
-            assert not mock_run.called
+        with patch("core.lan_preflight.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as mock_run:
+            res = run_lan_dry_run(source=str(tmp_path), dest=str(dest))
+        assert res["canary_present"] is False
+        assert all("/L" in c.args[0] for c in mock_run.call_args_list)
 
-    def test_nonexistent_dest_refuses(self, tmp_path):
-        """Nonexistent dest path → refusal (robocopy never invoked)."""
-        with patch("core.lan_preflight.subprocess.run") as mock_run:
-            with pytest.raises(HealthError):
-                run_lan_dry_run(source=str(tmp_path), dest=str(tmp_path / "nonexistent"))
-            assert not mock_run.called
+    def test_nonexistent_dest_is_reported(self, tmp_path):
+        """Nonexistent dest → no marker (G5 blocks); /L does not create it
+        (verified on robocopy 10.0, 2026-10-15)."""
+        with patch("core.lan_preflight.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as mock_run:
+            res = run_lan_dry_run(source=str(tmp_path), dest=str(tmp_path / "nonexistent"))
+        assert res["canary_present"] is False
+        assert all("/L" in c.args[0] for c in mock_run.call_args_list)

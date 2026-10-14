@@ -558,14 +558,13 @@ class TestLanPreflightCharacterization:
         assert _extract_unc_host(r"D:\data") is None
         assert _extract_unc_host("relative/path") is None
 
-    def test_dry_run_missing_canary_raises(self, tmp_path):
-        from core.health import HealthError
+    def test_dry_run_missing_canary_is_reported_for_g5(self, tmp_path):
         from core.lan_preflight import run_lan_dry_run
 
         dest = tmp_path / "dest"
         dest.mkdir()
-        with pytest.raises(HealthError, match="Canary"):
-            run_lan_dry_run(source=str(tmp_path), dest=str(dest))
+        with patch("core.lan_preflight.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+            assert run_lan_dry_run(source=str(tmp_path), dest=str(dest))["canary_present"] is False
 
     def test_dry_run_with_canary_and_ok_exit(self, tmp_path):
         from core.lan_preflight import run_lan_dry_run

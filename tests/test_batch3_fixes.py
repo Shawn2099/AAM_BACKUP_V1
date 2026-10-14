@@ -179,15 +179,17 @@ class TestOrphanLogCleanup:
 # ═══════════════════════════════════════════════════════════════
 
 class TestCanaryMessage:
-    def test_message_contains_recovery_command(self, tmp_path):
+    def test_missing_marker_is_reported_and_g5_message_guides_the_operator(self, tmp_path):
+        # M2 2.3: recovery is a recorded decision on the dashboard (the G5
+        # approval recreates the marker), not a hand-typed command.
+        from core import guards
         dest = tmp_path / "FY25-26"
         dest.mkdir()
-        with pytest.raises(lan_preflight.HealthError) as ei:
-            lan_preflight.run_lan_dry_run(str(dest.parent), str(dest))
-        msg = str(ei.value)
-        assert ".AAM_TARGET_MOUNTED" in msg
-        assert "type nul >" in msg
-        assert "10_recreate_canary.bat" in msg
+        with patch.object(lan_preflight.subprocess, "run", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+            res = lan_preflight.run_lan_dry_run(str(dest.parent), str(dest))
+        assert res["canary_present"] is False
+        msg = guards.g5_canary(False, True, str(dest)).reason
+        assert ".AAM_TARGET_MOUNTED" in msg and "Approve only if" in msg
 
     def test_canary_script_exists(self):
         assert (Path(__file__).resolve().parent.parent / "deploy" / "10_recreate_canary.bat").exists()

@@ -214,7 +214,8 @@ def _run_lan_guards(cfg, counts, dest_files, baseline=None, dest_ips=frozenset({
     db.guard_baseline.return_value = baseline
     if planned_deletes == "extras":  # default: every Extras entry really gets deleted
         planned_deletes = counts["extras"] if counts else None
-    dry_run = {"ok": True, "counts": counts, "planned_deletes": planned_deletes}
+    dry_run = {"ok": True, "counts": counts, "planned_deletes": planned_deletes,
+               "canary_present": True}
     with patch("flow.ManifestDB") as mdb, \
          patch("flow.guards.resolve_host", return_value=set(dest_ips)), \
          patch("flow.guards.local_addresses", return_value={"127.0.0.1", "10.0.0.5"}):
@@ -236,7 +237,8 @@ def test_lan_guards_pass_and_return_baseline_record(tmp_path):
     assert rec["destination"] == "\\\\10.0.0.9\\backup\\FY26-27"
     assert rec["destination_files"] == 1000
     assert {r["guard"] for r in rec["results"]} == {
-        "G1_SOURCE_HAS_FILES", "G2_SOURCE_SHRINK", "G3_MASS_DELETE", "G4_DESTINATION_IDENTITY"}
+        "G1_SOURCE_HAS_FILES", "G2_SOURCE_SHRINK", "G3_MASS_DELETE",
+        "G4_DESTINATION_IDENTITY", "G5_CANARY"}
 
 
 def test_lan_guards_block_mass_delete_from_extras(tmp_path):

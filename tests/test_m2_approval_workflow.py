@@ -227,7 +227,8 @@ def _run_guards_with(tmp_path, approval, planned=600, approval_id="a1", mark_ok=
     db.guard_baseline.return_value = None
     db.get_approval.return_value = approval
     db.mark_approval_used.return_value = mark_ok
-    dry = {"ok": True, "counts": _counts(1000, planned), "planned_deletes": planned}
+    dry = {"ok": True, "counts": _counts(1000, planned), "planned_deletes": planned,
+           "canary_present": True}
     with patch("flow.ManifestDB") as mdb, \
          patch("flow.now_iso", return_value=LATER), \
          patch("flow.guards.resolve_host", return_value={"10.0.0.9"}), \
@@ -348,3 +349,68 @@ def test_approved_cloud_mass_delete_backstop_is_the_remeasured_count(tmp_path):
         rec = flow.cloud_guards_task.fn(cfg, "FY26-27", None, approval_id="a1", run_id="r2")
     assert rec["approved_guards"] == ["G3_MASS_DELETE"]
     assert rec["max_delete"] == 600
+
+
+# ── 2.3d: G5 mount marker -> BLOCKED; approval creates the marker ─────────
+
+def test_missing_marker_no_longer_fails_preflight_it_is_measured(tmp_path):
+    from core import lan_preflight
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    done = MagicMock(returncode=0, stdout="", stderr="")
+    with patch.object(lan_preflight.subprocess, "run", return_value=done) as run:
+        res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
+    assert res["ok"] is True and res["canary_present"] is False
+    assert "/L" in run.call_args.args[0]                 # read-only listing still runs
+    (dest / ".AAM_TARGET_MOUNTED").write_text("")
+    with patch.object(lan_preflight.subprocess, "run", return_value=done):
+        assert lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))["canary_present"]
+
+
+def _g5_rig(tmp_path, canary, dest_files, approval=None):
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    (src / "ledger.xlsx").write_text("x")
+    dest = tmp_path / "nas"
+    dest.mkdir(exist_ok=True)
+    cfg = MagicMock()
+    cfg.paths.source_drive = str(src)
+    cfg.paths.lan_destination = str(dest)
+    cfg.guards = GuardsConfig(forbid_local_destination=False)
+    cfg.approvals = ApprovalsConfig()
+    db = MagicMock()
+    db.guard_baseline.return_value = None
+    db.get_approval.return_value = approval
+    db.mark_approval_used.return_value = True
+    dry = {"ok": True, "counts": _counts(10, 0), "planned_deletes": 0}
+    if canary != "absent-key":
+        dry["canary_present"] = canary
+    with patch("flow.ManifestDB") as mdb, patch("flow.now_iso", return_value=LATER):
+        mdb.from_config.return_value = db
+        try:
+            out = flow.lan_guards_task.fn(cfg, "FY26-27", dry, dest_files,
+                                          approval_id="a1" if approval else None, run_id="r2")
+        except Exception as e:  # noqa: BLE001
+            out = e
+    return out, dest
+
+
+@pytest.mark.parametrize("canary,dest_files,match", [
+    (False, 10, "already holds files"),
+    (False, 0, "initialise"),
+    ("absent-key", 10, "Could not check"),
+])
+def test_g5_blocks_missing_or_unknown_marker(tmp_path, canary, dest_files, match):
+    out, dest = _g5_rig(tmp_path, canary, dest_files)
+    assert isinstance(out, g.GuardBlocked) and match in str(out)
+    assert not (dest / ".AAM_TARGET_MOUNTED").exists()
+
+
+def test_g5_approval_creates_the_marker_and_proceeds(tmp_path):
+    dest = tmp_path / "nas"
+    g5 = g.g5_canary(False, True, str(dest))
+    out, dest = _g5_rig(tmp_path, False, 10, approval=_request(g5))
+    assert isinstance(out, dict), out
+    assert out["approved_guards"] == ["G5_CANARY"] and out["marker_created"] is True
+    assert (dest / ".AAM_TARGET_MOUNTED").is_file()

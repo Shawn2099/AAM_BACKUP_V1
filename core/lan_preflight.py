@@ -87,7 +87,8 @@ def run_lan_dry_run(
         {"ok": bool, "exit_code": int, "error": str | None,
          "counts": summarize_log_counts() dict, or None when the summary
                    is missing/unreadable (the guards then fail the run),
-         "planned_deletes": number of "*EXTRA File" lines}
+         "planned_deletes": number of "*EXTRA File" lines,
+         "canary_present": mount marker is a regular file (guard G5)}
     """
     # 1. Fast SMB Reachability Probe for UNC destinations (bypasses 45s OS hang)
     host = _extract_unc_host(dest)
@@ -116,19 +117,14 @@ def run_lan_dry_run(
         raise HealthError(msg) from e
 
     if not canary_valid:
-        # G11: make the failure self-recovering.
-        msg = (
-            f"Canary file {canary_file} missing or is not a regular file — refusing to mirror into an "
-            "unverified destination. Recovery: verify the FY share is mounted, "
-            f"then create the canary:  cmd /c type nul > \"{canary_file}\"  "
-            "(or run deploy\\10_recreate_canary.bat from the project's deploy "
-            "folder). NOTE: if this file is missing on a destination that "
-            "already holds backup data, check why before re-creating it — a "
-            "deleted canary on a populated share usually means the share or "
-            "mount was touched manually."
-        )
-        logger.error(msg)
-        raise HealthError(msg)
+        # M2 2.3 (G5): no longer a hard failure here. The marker state is
+        # returned and guard G5 BLOCKS the run for a human decision; an
+        # approval on the dashboard recreates the marker, so the decision is
+        # recorded. Only the read-only /L listing below still runs.
+        logger.error(
+            f"Mount marker {canary_file} missing or not a regular file - guard G5 "
+            "will block this run until a person confirms the destination on the "
+            "dashboard. Nothing will be copied or deleted.")
 
     robocopy_exe = resolve_binary("robocopy") or "robocopy"
     cmd = [
@@ -170,7 +166,7 @@ def run_lan_dry_run(
         logger.info(f"LAN dry-run passed (exit {code}); summary Files row: {counts}; "
                     f"planned deletions (*EXTRA File lines): {planned_deletes}")
         return {"ok": True, "exit_code": code, "error": None, "counts": counts,
-                "planned_deletes": planned_deletes}
+                "planned_deletes": planned_deletes, "canary_present": canary_valid}
 
     except subprocess.TimeoutExpired:
         logger.error(f"LAN dry-run timed out after {timeout}s")
