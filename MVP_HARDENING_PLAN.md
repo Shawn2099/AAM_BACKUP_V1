@@ -499,12 +499,15 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 - [x] 1.8 Bool exit-code rejection (WP15)
 
 ### M2 — Data safety
-- [ ] 2.1 `core/guards.py` G1–G5 + property tests
+- [x] 2.1 `core/guards.py` G1–G5 + property tests (e41db7f) — pure module, wiring is 2.2
 - [ ] 2.2 LAN deletion count from `/L` summary; cloud `--dry-run` count + `--max-delete` backstop
-- [ ] 2.3 Approvals table + dashboard approve/dismiss + approval-rerun parameter (§6)
+- [~] 2.3 Approvals: decision logic done (`core/approvals.py`, 465c04d); TODO approvals table in ManifestDB, `*_BLOCKED` rows, dashboard approve/dismiss, `approval_id` flow parameter (§6)
 - [ ] 2.4 Preflight: `whoami /priv`, destination write probe, source read probe, dest free space, cloud write probe (WP4)
-- [ ] 2.5 **Shared `wait_for_smb_ready` with config timings (WP10 wake timings)**
+- [~] 2.5 **Shared `wait_for_smb_ready`**: module done (`core/smb_ready.py`, 5eb450d); TODO config keys (wol.wake_timeout 900 cap 3600, stability 90, retry 5/10, smb_connect_timeout 15, lan.preflight_smb_attempts 8 / wait 15) + replace lan_preflight 2 s probe and wol.wait_for_server
 - [ ] 2.6 FY rollover inside slot, forward-only, reuse pipelines, placeholder, config backup (WP11)
+
+### M3 prep already done
+- [~] WP7 prep: `core/rclone_errors.py` transport-failure classifier from real prod signatures (f4cc48b); TODO use it in `core/integrity.py` (AUDIT_INCOMPLETE) and preflight error text
 
 ### M3 — Truth
 - [ ] 3.1 Terminal-status function; RUNNING row before slot; SLOT_TIMEOUT / ABANDONED (WP5)
