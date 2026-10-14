@@ -244,6 +244,39 @@ def _backup_slot(config):
                     pass
 
 
+def _cloud_diff_count(manifest: list, before: dict) -> int:
+    """Files whose bucket entry differs from the cloud leg's last recorded
+    state (new, other size, mtime off by > 1.1 s, or baseline unknown).
+    Metrics CROSS-CHECK only (plan WP6) - never the reported count."""
+    if not isinstance(before, dict):     # no usable baseline: everything differs
+        before = {}
+    changed = 0
+    for item in manifest:
+        path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
+        size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
+        mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
+        old_size, old_mtime = before.get(path, (None, None))
+        if old_size is None or old_mtime is None:
+            changed += 1
+            continue
+        # 0.01-byte threshold: float representation noise in reported sizes.
+        if abs(float(size) - float(old_size)) > 0.01:
+            changed += 1
+            continue
+        try:
+            if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
+                t1, t2 = float(mtime), float(old_mtime)
+            else:
+                t1 = pendulum.parse(str(mtime)).timestamp()
+                t2 = pendulum.parse(str(old_mtime)).timestamp()
+            if abs(t1 - t2) > 1.1:
+                changed += 1
+        except Exception:  # noqa: BLE001 - unparsable = compare as text
+            if str(mtime) != str(old_mtime):
+                changed += 1
+    return changed
+
+
 def _exception_kind(exc: BaseException) -> str:
     """Map a pipeline exception onto statuses.decide_terminal_status kinds."""
     if isinstance(exc, guards.GuardBlocked):
@@ -1168,39 +1201,23 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     synchronous=config.maintenance.sqlite_synchronous,
                 )
 
-            # Calculate files and bytes copied by comparing old database state with new live GCS manifest
-            manifest = verify_data.get("manifest", [])
-            copied_files_list = []
-            for item in manifest:
-                path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
-                size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
-                mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
-            
-                if path not in before_dict:
-                    copied_files_list.append((path, size))
-                else:
-                    old_size, old_mtime = before_dict[path]
-                    # 0.01-byte threshold: guards against float representation noise
-                    # in rclone's size reporting. Accurate for all real file sizes
-                    # since actual byte counts are always whole numbers.
-                    if abs(float(size) - float(old_size)) > 0.01:
-                        copied_files_list.append((path, size))
-                    else:
-                        try:
-                            if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
-                                # Numeric Unix timestamps — compare directly
-                                t1, t2 = float(mtime), float(old_mtime)
-                            else:
-                                t1 = pendulum.parse(str(mtime)).timestamp()
-                                t2 = pendulum.parse(str(old_mtime)).timestamp()
-                            if abs(t1 - t2) > 1.1:
-                                copied_files_list.append((path, size))
-                        except Exception:
-                            if str(mtime) != str(old_mtime):
-                                copied_files_list.append((path, size))
-
-            files_copied = len(copied_files_list)
-            bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
+            # WP6: the numbers are rclone's OWN accounting (final stats line).
+            # The bucket-vs-DB diff is only a cross-check (it re-derived "579
+            # files copied" on no-change nights when the baseline was wrong).
+            diff_copied = _cloud_diff_count(verify_data.get("manifest", []), before_dict)
+            stats = sync_result.get("stats")
+            if isinstance(stats, dict):
+                files_copied, bytes_copied = stats.get("transfers"), stats.get("bytes")
+                counts_source = "rclone"
+            else:
+                files_copied = bytes_copied = None
+                counts_source = "unavailable"
+                logger.warning("rclone final stats missing - files/bytes copied recorded as unknown")
+            metrics_consistent = files_copied is not None and diff_copied == files_copied
+            if files_copied is not None and not metrics_consistent:
+                logger.warning(f"Cloud metrics cross-check: rclone uploaded {files_copied} file(s), "
+                               f"the bucket-vs-DB diff shows {diff_copied} - the tool count is "
+                               "recorded; the DB baseline was stale")
 
             extended_metrics = json.dumps({
                 "stage_seconds": dict(stage_seconds),
@@ -1218,6 +1235,12 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 "manifest_ok": manifest_error is None,
                 "size_ok": "_error" not in (verify_data.get("size") or {}),
                 "diff_partial": bool((verify_data.get("diff") or {}).get("_partial")),
+                "counts_source": counts_source,
+                "tool_counts": {k: stats.get(k) for k in ("transfers", "bytes", "deletes",
+                                                          "errors", "checks")}
+                if isinstance(stats, dict) else None,
+                "diff_copied": diff_copied,
+                "metrics_consistent": metrics_consistent,
             })
             try:
                 cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
@@ -1364,6 +1387,15 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             phase = "post"
             # F12: robocopy per-file failure count (0 on clean/anomaly runs)
             files_failed = int(sync_result.get("files_failed", 0))
+            # WP6: the numbers are robocopy's OWN summary (Files / Bytes
+            # "Copied"); unknown when the summary is missing.
+            tool_files = (sync_result.get("counts") or {}).get("copied")
+            tool_bytes = (sync_result.get("bytes") or {}).get("copied")
+            files_copied, bytes_copied = tool_files, tool_bytes
+            tool_metrics = {
+                "counts_source": "robocopy" if tool_files is not None else "unavailable",
+                "files_deleted": sync_result.get("files_deleted"),
+            }
             after_dict = lan_snapshot_after_task(config)
             if after_dict is not None:
                 lan_record_task(
@@ -1373,25 +1405,32 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     synchronous=config.maintenance.sqlite_synchronous,
                 )
 
-                # Calculate files and bytes copied
+                # Cross-check only: the before/after walk diff vs the tool count.
                 diff = diff_snapshots(before_dict, after_dict)
-                copied_paths = diff.get("added", []) + diff.get("modified", [])
-                files_copied = len(copied_paths)
-                bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
-
+                diff_copied = len(diff.get("added", [])) + len(diff.get("modified", []))
+                metrics_consistent = tool_files is not None and diff_copied == tool_files
+                if tool_files is not None and not metrics_consistent:
+                    logger.warning(f"LAN metrics cross-check: robocopy copied {tool_files} file(s), "
+                                   f"the destination walk diff shows {diff_copied} - the tool "
+                                   "count is recorded")
                 extended_metrics = json.dumps({
                     "added": len(diff.get("added", [])),
                     "modified": len(diff.get("modified", [])),
                     "removed": len(diff.get("removed", [])),
                     "total_files": len(after_dict),
                     "stage_seconds": dict(stage_seconds),
+                    **tool_metrics,
+                    "diff_copied": diff_copied,
+                    "metrics_consistent": metrics_consistent,
                 })
                 try:
                     lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
                 except Exception:
                     pass
             else:
-                # G14: metrics unavailable this run — record the sync outcome only
+                # G14: walk unavailable - the tool counts are still recorded.
+                extended_metrics = json.dumps({"stage_seconds": dict(stage_seconds),
+                                               **tool_metrics})
                 logger.error(
                     "Post-sync snapshot unavailable - diff metrics and file-level "
                     "DB record skipped for this run; the sync outcome is recorded "

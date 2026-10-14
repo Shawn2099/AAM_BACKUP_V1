@@ -185,7 +185,8 @@ class TestRunLanSync:
     """
 
     KEYS = {"status", "exit_code", "error", "anomaly_details", "files_failed",
-            "termination", "log_complete", "counts", "log_retained"}
+            "termination", "log_complete", "counts", "log_retained",
+            "bytes", "files_deleted"}           # WP6: the tool's own accounting
 
     @pytest.fixture(autouse=True)
     def _art(self, tmp_path):

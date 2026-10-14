@@ -17,7 +17,7 @@ from core.time_utils import cutoff_iso, now_iso
 # Critical-6: version gate for schema migrations. Bump when DDL or the
 # legacy-migration steps below change. Fresh databases are stamped straight
 # to this value; pre-versioning databases run _migrate_legacy_schema once.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Per-connection pragmas. journal_mode=WAL is persistent (set once per file)
 # and is applied separately with a bounded retry: SQLite does not invoke the
@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS file_entries (
     cloud_status    TEXT DEFAULT 'unknown',
     lan_last_synced_at      TEXT,
     cloud_last_synced_at    TEXT,
+    -- v2 (plan WP6): size/mtime PER LEG. The shared file_size/mtime pair was
+    -- overwritten by whichever leg wrote last, so the cloud diff compared
+    -- against LAN values ("579 files copied" on no-change nights).
+    lan_size        INTEGER,
+    lan_mtime       REAL,
+    cloud_size      INTEGER,
+    cloud_mtime     REAL,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -276,6 +283,17 @@ class ManifestDB:
                     conn.execute(
                         "ALTER TABLE run_history ADD COLUMN extended_metrics TEXT"
                     )
+                # v2 (WP6): per-leg size/mtime. Existing rows stay NULL - the
+                # old shared value cannot be attributed to a leg truthfully.
+                fe_columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(file_entries)").fetchall()
+                }
+                for column, sql_type in (("lan_size", "INTEGER"), ("lan_mtime", "REAL"),
+                                         ("cloud_size", "INTEGER"), ("cloud_mtime", "REAL")):
+                    if column not in fe_columns:
+                        conn.execute(
+                            f"ALTER TABLE file_entries ADD COLUMN {column} {sql_type}")
                 # Legacy tables may predate UNIQUE(run_id): drop duplicate
                 # run_ids (keep the first) and add the unique index that
                 # insert_run's ON CONFLICT(run_id) relies on. Runs once,
@@ -441,6 +459,8 @@ class ManifestDB:
 
         status_field = f"{mode}_status"
         ts_field = f"{mode}_last_synced_at"
+        size_field = f"{mode}_size"
+        mtime_field = f"{mode}_mtime"
 
         with self._lock:
             conn = self._get_conn()
@@ -451,15 +471,17 @@ class ManifestDB:
                 chunk = entries[i : i + 100]
                 conn.executemany(
                     f"""INSERT INTO file_entries
-                        (relative_path, file_size, mtime, md5_checksum,
-                         {status_field}, {ts_field},
+                        (relative_path, file_size, mtime, {size_field}, {mtime_field},
+                         md5_checksum, {status_field}, {ts_field},
                          created_at, updated_at)
-                        VALUES (?, ?, ?, ?,
+                        VALUES (?, ?, ?, ?, ?, ?,
                                 'synced', ?,
                                 ?, ?)
                         ON CONFLICT(relative_path) DO UPDATE SET
                             file_size = excluded.file_size,
                             mtime = excluded.mtime,
+                            {size_field} = excluded.{size_field},
+                            {mtime_field} = excluded.{mtime_field},
                             md5_checksum = COALESCE(excluded.md5_checksum, file_entries.md5_checksum),
                             {status_field} = 'synced',
                             {ts_field} = CASE
@@ -471,6 +493,8 @@ class ManifestDB:
                     [
                         (
                             e["path"].replace("\\", "/"),
+                            e.get("size", 0),
+                            e.get("mtime", 0),
                             e.get("size", 0),
                             e.get("mtime", 0),
                             e.get("md5_checksum"),
@@ -556,18 +580,19 @@ class ManifestDB:
             return row["cnt"] if row else 0
 
     def get_cloud_synced_entries(self) -> dict[str, tuple[int, float]]:
-        """Return all cloud-synced entries as {relative_path: (file_size, mtime)}.
+        """Cloud-synced entries as {relative_path: (cloud_size, cloud_mtime)}.
 
-        Used by _run_cloud_pipeline to compute differential transfer metrics
-        without accessing private DB internals.
+        The CLOUD leg's own last-recorded values (schema v2) - never the LAN
+        leg's. None = unknown (rows from before v2). Used only for the
+        metrics cross-check (plan WP6).
         """
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
-                "SELECT relative_path, file_size, mtime "
+                "SELECT relative_path, cloud_size, cloud_mtime "
                 "FROM file_entries WHERE cloud_status = 'synced'"
             ).fetchall()
-        return {r["relative_path"]: (r["file_size"], r["mtime"]) for r in rows}
+        return {r["relative_path"]: (r["cloud_size"], r["cloud_mtime"]) for r in rows}
 
     def get_synced_paths(self, mode: str) -> list[str]:
         """Return all relative_paths where the given mode status is 'synced'.

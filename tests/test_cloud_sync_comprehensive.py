@@ -465,7 +465,8 @@ class TestRunCloudSyncFullLog(_SyncHarness):
 
     def test_return_structure(self):
         result = self.sync(exit_code=0, log=_INFO)
-        assert set(result) == {"status", "exit_code", "error", "suspect_reason", "log_path"}
+        assert set(result) == {"status", "exit_code", "error", "suspect_reason", "log_path",
+                               "stats"}          # WP6: rclone's final stats
 
 
 class TestRunCloudSyncPassthrough(_SyncHarness):

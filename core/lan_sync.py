@@ -47,6 +47,31 @@ def is_extra_file_line(line: str) -> bool:
     """One destination file `robocopy /MIR` deletes (streaming form)."""
     return bool(_EXTRA_FILE_LINE.match(line))
 
+
+def scan_robocopy_log(log_path) -> tuple[int | None, str]:
+    """Stream a /UNILOG log: (*EXTRA File line count, final summary block).
+
+    Streaming keeps memory flat even when a mass deletion lists every file;
+    only the block after the last "-----" separator (the job summary) is
+    kept. Unreadable log -> (None, "") so callers record "unknown".
+    """
+    extra = 0
+    summary: list[str] = []
+    in_summary = False
+    try:
+        with open(log_path, encoding="utf-16", errors="replace") as f:
+            for line in f:
+                if line.lstrip().startswith("-----"):
+                    summary, in_summary = [], True
+                elif in_summary:
+                    summary.append(line)
+                elif is_extra_file_line(line):
+                    extra += 1
+    except OSError as e:
+        logger.error(f"robocopy log unreadable ({log_path}): {e}")
+        return None, ""
+    return extra, "".join(summary)
+
 # Integrity-verification contract: a robocopy run that terminated normally
 # ALWAYS ends its /LOG with the job-summary table ("Files :" row + "Ended :"
 # line). An externally killed run (taskkill, WMI Terminate, NtTerminateProcess,
@@ -400,7 +425,7 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
         f"/MT:{lan_config.mt_threads}",
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
-        "/V", "/TS", "/FP",
+        "/V", "/TS", "/FP", "/BYTES",
         "/NJH", "/NDL", "/NP",
         "/XF", ".AAM_TARGET_MOUNTED", PROBE_PATTERN,
         "/XD", "System Volume Information", "$RECYCLE.BIN",
@@ -465,6 +490,7 @@ def run_lan_sync(
             "anomaly_details": None, "files_failed": 0,
             "termination": "abnormal", "log_complete": False,
             "counts": None, "log_retained": str(log_path),
+            "bytes": None, "files_deleted": None,
         }
 
     if result.spawn_error:
@@ -535,4 +561,8 @@ def run_lan_sync(
         "log_complete": decision["log_complete"],
         "counts": decision["counts"],
         "log_retained": str(log_path),
+        # WP6: the tool's own accounting (bytes need /BYTES; deletions are the
+        # *EXTRA File lines - streamed over the FULL log, not the tail).
+        "bytes": summarize_log_bytes(decision_tail),
+        "files_deleted": scan_robocopy_log(log_path)[0],
     }

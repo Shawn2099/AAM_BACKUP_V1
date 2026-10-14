@@ -68,6 +68,26 @@ def count_planned_deletes(log_text: str) -> int:
     return planned
 
 
+def final_stats(log_text: str) -> dict | None:
+    """The run's own totals: the LAST JSON log line carrying "stats".
+
+    rclone prints it at exit with --use-json-log (verified v1.74.3):
+    transfers (files uploaded), bytes, deletes, errors, checks. None when
+    the log has no stats line (killed / never started) - counts unknown.
+    """
+    for line in reversed((log_text or "").splitlines()):
+        if '"stats"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        stats = entry.get("stats") if isinstance(entry, dict) else None
+        if isinstance(stats, dict):
+            return stats
+    return None
+
+
 def classify_rclone_exit(code: int) -> str:
     """Classify rclone exit code per official documentation.
 
@@ -255,7 +275,7 @@ def run_cloud_sync(
         result = run_tool(step, cmd, timeout_s=timeout,
                           artefacts=artefacts, log_path=log_path)
 
-    base = {"suspect_reason": None, "log_path": str(log_path)}
+    base = {"suspect_reason": None, "log_path": str(log_path), "stats": None}
     if dry_run:
         base["planned_deletes"] = None  # set below only for a clean, completed dry-run
     if result.spawn_error:
@@ -312,6 +332,7 @@ def run_cloud_sync(
         logger.error(f"rclone error (exit {code}); full log: {log_path}\n{detail}")
 
     logger.info(f"Cloud {'dry-run' if dry_run else 'sync'} exit {code} -> {status}")
+    base["stats"] = final_stats(result.log_text())
     if dry_run and status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"):
         # exit 0 = copies planned, 9 = none planned (--error-on-no-transfer);
         # planned deletions do not change the exit code (verified v1.74.3).

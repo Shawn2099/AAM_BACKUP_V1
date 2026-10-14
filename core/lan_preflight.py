@@ -15,7 +15,7 @@ from core.smb_ready import wait_for_smb_ready
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
 from core.lan_sync import (
     _read_log_tail,
-    is_extra_file_line,
+    scan_robocopy_log,
     summarize_log_bytes,
     summarize_log_counts,
 )
@@ -179,36 +179,10 @@ def run_lan_dry_run(
         return {"ok": False, "exit_code": code,
                 "error": f"Robocopy /L failed with exit {code}\nOutput: {error_output}"}
 
-    planned_deletes, summary = _scan_dry_run_log(log_path)
+    planned_deletes, summary = scan_robocopy_log(log_path)
     counts = summarize_log_counts(summary)
     logger.info(f"LAN dry-run passed (exit {code}); summary Files row: {counts}; "
                 f"planned deletions (*EXTRA File lines): {planned_deletes}; full log: {log_path}")
     return {"ok": True, "exit_code": code, "error": None, "counts": counts,
             "planned_deletes": planned_deletes, "canary_present": canary_valid,
             "bytes": summarize_log_bytes(summary), "log_path": str(log_path)}
-
-
-def _scan_dry_run_log(log_path) -> tuple[int, str]:
-    """Stream the /UNILOG dry-run log: (*EXTRA File line count, summary block).
-
-    Streaming keeps memory flat even when a mass deletion lists every file;
-    only the block after the last "-----" separator (the job summary) is
-    kept. An unreadable log yields an empty summary -> counts None -> the
-    guards fail the run.
-    """
-    extra = 0
-    summary: list[str] = []
-    in_summary = False
-    try:
-        with open(log_path, encoding="utf-16", errors="replace") as f:
-            for line in f:
-                if line.lstrip().startswith("-----"):
-                    summary, in_summary = [], True
-                elif in_summary:
-                    summary.append(line)
-                elif is_extra_file_line(line):
-                    extra += 1
-    except OSError as e:
-        logger.error(f"LAN dry-run log unreadable ({log_path}): {e}")
-        return extra, ""
-    return extra, "".join(summary)
