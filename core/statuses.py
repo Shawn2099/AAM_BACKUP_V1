@@ -204,3 +204,39 @@ def describe(status, files_copied: int | None = 0, files_failed: int | None = 0)
     if cat == CATEGORY_FAILED:
         return "Backup failed - see issue below"
     return f"Unrecognised status {s or '(none)'}"
+
+
+# ── Terminal status of a pipeline (plan WP5) ──────────────────────────────
+# Kinds of exception a pipeline can end with (flow._exception_kind maps them).
+EXC_ERROR = "error"        # anything unexpected
+EXC_BLOCKED = "blocked"    # a guard asked for a human decision
+EXC_PARTIAL = "partial"    # terminal policy: the run ended with a non-success status
+
+
+def decide_terminal_status(leg: str, phase: str, current: str, exc_kind: str | None) -> str:
+    """The ONE place that decides a run's final status.
+
+    leg: "cloud" | "lan"; phase: "pre" | "sync" | "verify" | "post" (where
+    the pipeline was); current: the status the pipeline had set so far.
+    Rule: an exception never leaves a success status behind - a verify-phase
+    exception is CLOUD_VERIFY_FAILED (probe P1), a post-phase exception is
+    *_FAILED (probe P2); the sync's own verdict is preserved by the caller in
+    extended_metrics.sync_status.
+    """
+    prefix = leg.upper()
+    failed = f"{prefix}_FAILED"
+    if exc_kind is None:
+        return current
+    if exc_kind == EXC_BLOCKED:
+        return f"{prefix}_BLOCKED"
+    unsettled = is_success(current) or category(current) in (
+        CATEGORY_SKIPPED, CATEGORY_RUNNING, CATEGORY_UNKNOWN)
+    if exc_kind == EXC_PARTIAL:
+        return failed if unsettled else current
+    if phase == "sync":
+        return current if current in (failed, f"{prefix}_SUSPECT") else failed
+    if phase == "verify":
+        return "CLOUD_VERIFY_FAILED" if leg == "cloud" else failed
+    if phase == "post":
+        return failed if unsettled else current
+    return failed

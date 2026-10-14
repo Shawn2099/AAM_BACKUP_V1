@@ -205,21 +205,17 @@ def test_w1e_bug2_lan_post_phase_exception_records_complete(sandbox, monkeypatch
              if exc is not None and last_success else "status correct")
     print(f"[BUG-2 lan] raised={type(exc).__name__} db_status={status!r} "
           f"last_success={last_success['status'] if last_success else None}")
-    # A9 - M-2 SIGNATURE (asserted, not sanitised): a post-phase exception must
-    # still be recorded as a failure. Today the post phase has no branch in the
-    # except handler, so the row says LAN_COMPLETE while the flow FAILS and
-    # last_successful_run() reports it as a success. The day this turns red,
-    # M-2 is fixed - update the assertion to expect LAN_FAILED.
+    # A9 - M-2 CLOSED in M3 3.1 (plan WP5, statuses.decide_terminal_status): a
+    # post-phase exception is recorded as LAN_FAILED, last_successful_run()
+    # never returns it, and the transfer's own verdict is kept in
+    # extended_metrics.sync_status.
+    import json
+
     assert exc is not None, "the pipeline should have raised (post-phase DB error)"
-    assert last_success is not None, (
-        "M-2 appears FIXED: a failed run is no longer returned by "
-        "last_successful_run() - update this assertion to the fail-closed contract")
-    assert last_success["status"] == "LAN_COMPLETE", (
-        f"M-2 appears FIXED: run_history says {last_success['status']!r} instead of "
-        f"the expected misreport LAN_COMPLETE")
-    assert status == "LAN_COMPLETE", (
-        f"M-2 appears FIXED: run_history row says {status!r} instead of the "
-        f"expected misreport LAN_COMPLETE")
+    assert status == "LAN_FAILED", f"M-2 REGRESSION: run_history row says {status!r}"
+    assert last_success is None, (
+        f"M-2 REGRESSION: last_successful_run() returned {last_success['status']!r}")
+    assert json.loads(recent[0]["extended_metrics"])["sync_status"] == "LAN_COMPLETE"
 
 
 # â”€â”€ locks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

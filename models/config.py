@@ -445,6 +445,11 @@ class MaintenanceConfig(StrictModel):
         le=50000,
         description="VACUUM triggers when SQLite freelist page count exceeds this value (~40 MB at default). Lower = more frequent VACUUM.",
     )
+    abandon_running_after_hours: float = Field(
+        default=24, ge=1, le=168,
+        description="At agent start, a run still marked RUNNING after this many hours is "
+                    "recorded as ABANDONED (the process died without an outcome).",
+    )
 
 
 class RunLogsConfig(StrictModel):

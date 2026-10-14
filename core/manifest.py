@@ -941,6 +941,32 @@ class ManifestDB:
             conn = self._get_conn()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
+    def mark_abandoned_runs(self, older_than_hours: float) -> int:
+        """*_RUNNING rows older than the threshold -> *_ABANDONED (plan WP5).
+
+        Called at agent start: such a run's process is gone without writing
+        an outcome. Truthful history instead of a run that looks in progress
+        forever. Returns the number of rows changed.
+        """
+        import pendulum
+
+        from core.time_utils import IST
+
+        cutoff = pendulum.now(IST).subtract(hours=older_than_hours).isoformat()
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                cur = conn.execute(
+                    "UPDATE run_history SET status = REPLACE(status, '_RUNNING', '_ABANDONED'), "
+                    "ended_at = COALESCE(ended_at, ?), "
+                    "error_message = COALESCE(error_message, ?) "
+                    "WHERE status IN ('CLOUD_RUNNING', 'LAN_RUNNING') AND started_at < ?",
+                    (now_iso(),
+                     f"The run stopped without recording an outcome (agent restart or crash); "
+                     f"still RUNNING after {older_than_hours}h.",
+                     cutoff))
+                return cur.rowcount
+
     def purge_old_runs(self, retention_days: int = 90):
         """Delete run_history entries older than retention_days.
 

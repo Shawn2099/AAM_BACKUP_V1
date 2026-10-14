@@ -120,6 +120,26 @@ def _ensure_concurrency_limit():
             _pool.submit(asyncio.run, _create()).result()
 
 
+def _mark_abandoned_runs():
+    """Plan WP5: a run still RUNNING after maintenance.abandon_running_after_hours
+    died without an outcome (agent restart/crash) - record it as ABANDONED so
+    the history and the dashboard stay truthful. Never blocks startup."""
+    try:
+        from core.manifest import ManifestDB
+        from models.config import CONFIG_PATH, load_config
+
+        cfg = load_config(CONFIG_PATH)
+        db = ManifestDB.from_config(cfg)
+        try:
+            n = db.mark_abandoned_runs(older_than_hours=cfg.maintenance.abandon_running_after_hours)
+        finally:
+            db.close()
+        if n:
+            print(f"[launch] {n} run(s) left RUNNING by a previous agent recorded as ABANDONED")
+    except Exception as e:  # noqa: BLE001
+        print(f"[launch] Warning: could not mark abandoned runs (non-fatal): {e}")
+
+
 def _cancel_orphaned_runs():
     """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session.
 
@@ -350,6 +370,7 @@ def main():
 
     # Cancel orphaned flow runs from previous crashed/shutdown sessions
     _cancel_orphaned_runs()
+    _mark_abandoned_runs()
 
     # P2-SCHED: pause deployments whose leg is disabled in config (and resume
     # re-enabled ones). Filtering registration alone is NOT enough - Prefect's

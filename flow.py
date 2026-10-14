@@ -15,7 +15,7 @@ import os
 import re
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import pendulum
 from loguru import logger
@@ -242,6 +242,68 @@ def _backup_slot(config):
                         )
                 except OSError:
                     pass
+
+
+def _exception_kind(exc: BaseException) -> str:
+    """Map a pipeline exception onto statuses.decide_terminal_status kinds."""
+    if isinstance(exc, guards.GuardBlocked):
+        return statuses.EXC_BLOCKED
+    if isinstance(exc, PartialRun):
+        return statuses.EXC_PARTIAL
+    return statuses.EXC_ERROR
+
+
+def _merge_metrics(extended_metrics: str | None, **fields) -> str | None:
+    """Add fields to the extended_metrics JSON (never drops existing data)."""
+    try:
+        payload = json.loads(extended_metrics) if extended_metrics else {}
+    except ValueError:
+        payload = {"unparsed_metrics": extended_metrics}
+    payload.update(fields)
+    return json.dumps(payload, default=str)
+
+
+def _record_running(config, leg: str, run_id: str, started_at: str) -> None:
+    """Write the *_RUNNING row BEFORE the slot is requested (plan WP5), so a
+    run that never gets the slot - or dies - is still visible. Never blocks
+    the backup."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            db.insert_run({"run_id": run_id, "mode": leg, "started_at": started_at,
+                           "status": f"{leg.upper()}_RUNNING"})
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup
+        logger.error(f"Could not record the RUNNING row for {leg} run {run_id}: {e}")
+
+
+@contextmanager
+def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
+                   monotonic_start: float | None = None):
+    """RUNNING row, then the backup slot. If the slot (or the watchdog lock)
+    cannot be obtained, the row becomes *_SLOT_TIMEOUT ("could not start")
+    and the error is re-raised - previously no row was written at all."""
+    _record_running(config, leg, run_id, started_at)
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_backup_slot(config))
+        except Exception as e:
+            status = f"{leg.upper()}_SLOT_TIMEOUT"
+            logger.error(f"{leg} run {run_id} could not start: {e}")
+            try:
+                _record_run(
+                    config.paths.database_path, run_id, leg, started_at, status, -1,
+                    f"Backup could not start: {e}",
+                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                    synchronous=config.maintenance.sqlite_synchronous,
+                    monotonic_start=monotonic_start,
+                )
+            except Exception as rec_err:  # noqa: BLE001
+                logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
+            raise
+        yield
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -993,7 +1055,7 @@ def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> st
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                         approval_id: str | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
-    with _backup_slot(config):
+    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start):
         db_path = config.paths.database_path
         fy_prefix = _effective_fy_prefix(config)
 
@@ -1194,20 +1256,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
         except Exception as e:
             error_msg = str(e)
-            if phase == "sync":
-                # Preserve the sync task's own verdict (FAILED/SUSPECT);
-                # only default to FAILED when it carries no usable status.
-                if sync_result.get("status") not in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
-                    status = "CLOUD_FAILED"
-                else:
-                    status = sync_result["status"]
-            elif phase == "verify" and status == "CLOUD_COMPLETE":
-                status = "CLOUD_VERIFY_FAILED"
-            elif isinstance(e, guards.GuardBlocked):
-                status = "CLOUD_BLOCKED"
+            current = sync_result.get("status", status) if phase == "sync" else status
+            status = statuses.decide_terminal_status("cloud", phase, current, _exception_kind(e))
+            if isinstance(e, guards.GuardBlocked):
                 guard_record = e.record
-            elif phase == "pre":
-                status = "CLOUD_FAILED"
             if status == "CLOUD_SUSPECT":
                 # Abnormal transfer termination (killed/timeout-ambiguous):
                 # alert specifically — the backup() tail skips its generic
@@ -1230,6 +1282,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 # actually measured (possibly none). Business state above
                 # is unchanged; this only preserves evidence for tuning.
                 extended_metrics = _failure_telemetry(stage_seconds, phase)
+            if phase in ("verify", "post"):
+                # WP5: the transfer's own verdict survives a later failure.
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_status=sync_result.get("status"))
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
@@ -1261,7 +1317,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                       approval_id: str | None = None):
     """Execute LAN backup tasks sequentially. Each task is independently tracked."""
-    with _backup_slot(config):
+    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start):
         db_path = config.paths.database_path
 
         # Apply config-driven retries to tasks that benefit from retrying
@@ -1392,18 +1448,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
 
         except Exception as e:
             error_msg = str(e)
-            if phase == "sync":
-                # Preserve the sync task's own verdict (FAILED/SUSPECT);
-                # only default to FAILED when it carries no usable status.
-                if sync_result.get("status") not in ("LAN_FAILED", "LAN_SUSPECT"):
-                    status = "LAN_FAILED"
-                else:
-                    status = sync_result["status"]
-            elif isinstance(e, guards.GuardBlocked):
-                status = "LAN_BLOCKED"
+            current = sync_result.get("status", status) if phase == "sync" else status
+            status = statuses.decide_terminal_status("lan", phase, current, _exception_kind(e))
+            if isinstance(e, guards.GuardBlocked):
                 guard_record = e.record
-            elif phase == "pre":
-                status = "LAN_FAILED"
             shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
             if status == "LAN_SUSPECT":
                 # Abnormal transfer termination (killed/timeout-ambiguous):
@@ -1433,6 +1481,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 lan_shutdown_task(config)
             if extended_metrics is None:
                 extended_metrics = _failure_telemetry(stage_seconds, phase)
+            if phase == "post":
+                # WP5: the transfer's own verdict survives a later failure.
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_status=sync_result.get("status"))
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
