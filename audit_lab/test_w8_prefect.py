@@ -105,7 +105,7 @@ def pf_rig(sandbox, monkeypatch):
     orig_build = ls.build_robocopy_command
     ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig_build(s, d, c))
     alerts: list = []
-    monkeypatch.setattr(flow, "send_failure_alert", lambda *a, **k: alerts.append(a) or True)
+    monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
     monkeypatch.setattr(flow, "temp_rclone_config",
                         lambda *a, **k: contextlib.nullcontext(rc))
     monkeypatch.chdir(bucket_root)

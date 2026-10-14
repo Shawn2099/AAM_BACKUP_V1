@@ -41,7 +41,7 @@ def _make_config():
 # ═══════════════════════════════════════════════════════════════
 
 class TestCloudVerifyFailure:
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.cloud_publish_artifact_task")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
@@ -82,7 +82,7 @@ class TestCloudVerifyFailure:
         assert "unexpected-in-cloud=2" in args[6]
         # Alert fired with the verify details
         mock_alert.assert_called_once()
-        alert_err = mock_alert.call_args.args[2]
+        alert_err = mock_alert.call_args.args[1].message
         assert "missing-from-cloud=1" in alert_err
         assert "unexpected-in-cloud=2" in alert_err
         assert "size-changed=1" in alert_err
@@ -91,7 +91,7 @@ class TestCloudVerifyFailure:
         # No artifact on failure
         mock_artifact.assert_not_called()
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.cloud_publish_artifact_task")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
@@ -241,7 +241,7 @@ class TestLanFailureStatus:
 # ═══════════════════════════════════════════════════════════════
 
 class TestLanPartialShutdown:
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
@@ -270,12 +270,12 @@ class TestLanPartialShutdown:
 
         mock_shutdown.assert_not_called()  # THE F3 BUG: used to shut the NAS down
         mock_alert.assert_called_once()
-        alert_msg = mock_alert.call_args.args[2]
+        alert_msg = mock_alert.call_args.args[1].message
         assert "PARTIAL" in alert_msg and "9" in alert_msg
         args = mock_record.call_args.args
         assert args[4] == "LAN_PARTIAL"
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")

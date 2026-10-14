@@ -62,8 +62,7 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
     orig = ls.build_robocopy_command
     ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
-    generic, emails = [], []
-    monkeypatch.setattr(flow, "send_failure_alert", lambda *a, **k: generic.append(a) or True)
+    emails = []
     monkeypatch.setattr(flow, "notify", lambda config, event, db=None: emails.append(event))
 
     def run(run_id, approval_id=None):
@@ -91,7 +90,7 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
         assert [g["guard"] for g in req["guards"]] == ["G5_CANARY"]
         assert req["phrase"] == "INITIALISE DESTINATION"
         assert files() == [], "nothing may be written to an unconfirmed destination"
-        assert [e.kind for e in emails] == ["ACTION_REQUIRED"] and generic == []
+        assert [e.kind for e in emails] == ["ACTION_REQUIRED"]   # one email, no FAILURE alert
 
         # 2. a scheduled rerun (no approval_id) stays blocked
         assert isinstance(run("w5c-2"), guards.GuardBlocked) and files() == []
@@ -130,7 +129,7 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
              "missing marker -> BLOCKED; scheduled rerun stays blocked; ONE approved rerun "
              "creates the marker and mirrors; the approval cannot be reused",
              f"rows: {row1['status']} -> {row3['status']} | emails={len(emails)} "
-             f"generic alerts={len(generic)} | approval {used['status']}",
+             f"| approval {used['status']}",
              "OK - human-in-the-loop cycle proven end to end with the real robocopy")
 
 

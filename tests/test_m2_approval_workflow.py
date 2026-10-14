@@ -198,7 +198,7 @@ def test_generic_failure_alert_skips_guard_blocks(tmp_path):
          patch("flow.configure_logging"), patch("flow.configure_prefect_bridge"), \
          patch("flow.cleanup_orphaned_robocopy_logs"), \
          patch("flow._run_lan_pipeline", side_effect=_guard_blocked("lan")), \
-         patch("flow.send_failure_alert") as generic:
+         patch("flow.notify") as generic:
         with pytest.raises(ExceptionGroup):
             flow.backup.fn(config_path="x", mode="lan")
     generic.assert_not_called()

@@ -120,7 +120,7 @@ def w12_rig(sandbox, monkeypatch):
     ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig_build(s, d, c))
 
     alerts: list = []
-    monkeypatch.setattr(flow, "send_failure_alert", lambda *a, **k: alerts.append(a) or True)
+    monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
     monkeypatch.setattr(flow, "temp_rclone_config",
                         lambda *a, **k: contextlib.nullcontext(rc))
     # W11's evidence corpus lives in %TEMP%\robocopy_sync_*.log and flow.backup()

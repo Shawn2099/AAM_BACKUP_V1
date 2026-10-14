@@ -30,7 +30,7 @@ def _make_config():
 
 def _patch_pipeline():
     return (
-        patch("flow.send_failure_alert", return_value=True),
+        patch("flow.notify"),
         patch("flow.cloud_publish_artifact_task"),
         patch("flow.cloud_record_task"),
         patch("flow.cloud_verify_and_report_task"),
@@ -204,7 +204,7 @@ class TestSuspectAndPartialPolicy:
 class TestLanSuspectPipeline:
     def _run_lan(self, sync_result):
         patches = (
-            patch("flow.send_failure_alert", return_value=True),
+            patch("flow.notify"),
             patch("flow.lan_publish_artifact_task"),
             patch("flow.lan_record_task"),
             patch("flow.lan_snapshot_after_task"),

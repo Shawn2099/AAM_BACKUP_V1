@@ -87,7 +87,7 @@ def _cfg():
 
 @patch("flow._record_running")
 @patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.send_failure_alert", return_value=True)
+@patch("flow.notify")
 @patch("flow.cloud_verify_and_report_task")
 @patch("flow.cloud_sync_task")
 @patch("flow.cloud_access_task")

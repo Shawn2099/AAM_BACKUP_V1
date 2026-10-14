@@ -115,7 +115,7 @@ def test_w4_cloud_pipeline_happy_path(sandbox, monkeypatch):
     saved = L.patch_cloud_modules_to_local(rc)   # preflight must use the local backend too
     monkeypatch.setattr(flow, "temp_rclone_config",
                         lambda *a, **k: (lambda: (yield rc))())
-    monkeypatch.setattr(flow, "send_failure_alert",
+    monkeypatch.setattr(flow, "notify",
                         lambda *a, **k: alerts.append(a) or True)
     import contextlib
 
@@ -182,7 +182,7 @@ def test_w4_cloud_killed_mid_sync_is_rejected_by_gate(sandbox, monkeypatch):
     cfg.notifications.recipients = ["r@x"]
 
     alerts: list[tuple] = []
-    monkeypatch.setattr(flow, "send_failure_alert",
+    monkeypatch.setattr(flow, "notify",
                         lambda *a, **k: alerts.append(a) or True)
     monkeypatch.setattr(flow, "temp_rclone_config",
                         lambda *a, **k: L.patch_cloud_modules_to_local.__wrapped__
@@ -283,7 +283,7 @@ def test_w4_lan_pipeline_happy_path_loopback_unc(sandbox, monkeypatch):
 
     monkeypatch.setattr(ls, "build_robocopy_command", _no_zb)
     alerts: list[tuple] = []
-    monkeypatch.setattr(flow, "send_failure_alert", lambda *a, **k: alerts.append(a) or True)
+    monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
 
     out = flow._run_lan_pipeline(cfg, "w4-lan-ok", "2026-09-06T01:00:00+05:30", time.monotonic())
 

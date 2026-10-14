@@ -306,16 +306,16 @@ def _stop_service(service: str) -> None:
 def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
     """Send an alert if watchdog deferrals hit their cap on a live lock owner."""
     try:
-        from core.report import send_failure_alert
+        from core.notify import AlertEvent, notify
         from models.config import CONFIG_PATH, load_config
 
         cfg = load_config(CONFIG_PATH)
-        send_failure_alert(
-            cfg.notifications,
-            cfg.firm_name,
-            f"Watchdog alert: backup lock held by live PID {pid} while Prefect API is unhealthy: {reason}. Manual review required.",
-            {"mode": "watchdog", "status": "LIVE_LOCK_CAP_EXCEEDED", "pid": pid},
-        )
+        notify(cfg, AlertEvent(
+            key="watchdog:live_lock_cap", kind="ACTION_REQUIRED", mode="watchdog",
+            title="Backup lock held while the scheduler is unhealthy",
+            message=(f"Watchdog alert: backup lock held by live PID {pid} while Prefect API "
+                     f"is unhealthy: {reason}. Manual review required."),
+            status="LIVE_LOCK_CAP_EXCEEDED"))
     except Exception as e:
         logger.warning(f"Watchdog alert delivery skipped/failed: {e}")
 

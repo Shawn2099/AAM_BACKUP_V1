@@ -17,22 +17,18 @@ def test_core_notifications_does_not_exist():
         import core.notifications  # noqa: F401
 
 
-def test_alert_wedged_lock_executes_and_calls_report(monkeypatch):
-    """Verify runtime execution of _alert_wedged_lock and parameter dispatch."""
-    mock_send = MagicMock(return_value=True)
-    monkeypatch.setattr("core.report.send_failure_alert", mock_send)
+def test_alert_wedged_lock_goes_through_notify(monkeypatch):
+    """WP8: the watchdog alert uses the single alert path (core.notify)."""
+    mock_notify = MagicMock()
+    monkeypatch.setattr("core.notify.notify", mock_notify)
 
     mock_cfg = MagicMock()
-    mock_cfg.firm_name = "Test Firm"
-    mock_cfg.notifications = MagicMock()
     monkeypatch.setattr("models.config.load_config", lambda _: mock_cfg)
 
     watchdog._alert_wedged_lock("Test deadlock reason", pid=8888)
 
-    assert mock_send.called
-    args, kwargs = mock_send.call_args
-    assert args[0] is mock_cfg.notifications
-    assert args[1] == "Test Firm"
-    assert "PID 8888" in args[2]
-    assert args[3]["pid"] == 8888
-    assert args[3]["status"] == "LIVE_LOCK_CAP_EXCEEDED"
+    assert mock_notify.called
+    cfg, event = mock_notify.call_args.args
+    assert cfg is mock_cfg
+    assert "PID 8888" in event.message
+    assert event.status == "LIVE_LOCK_CAP_EXCEEDED" and event.kind == "ACTION_REQUIRED"

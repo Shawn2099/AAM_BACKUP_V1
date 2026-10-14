@@ -247,7 +247,7 @@ class TestCanaryExclusion:
 
 
 class TestBug01AbnormalTerminationShape:
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")

@@ -44,7 +44,6 @@ from core.manifest import ManifestDB
 from core.notify import AlertEvent, notify
 from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
-from core.report import send_failure_alert
 from core.run_artefacts import RunArtefacts
 from core.shutdown import shutdown_server
 from core.time_utils import get_fy_prefix, now_iso
@@ -277,6 +276,49 @@ def _cloud_diff_count(manifest: list, before: dict) -> int:
     return changed
 
 
+def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
+                    occurred_at: str) -> None:
+    """THE failure alert of one run (plan WP8): one per failed run, at the
+    terminal decision, through core.notify (delivery recorded, cooldown per
+    leg+status, dashboard link). Never raises."""
+    notify(config, AlertEvent(
+        key=f"backup:{leg}:{status}", kind="FAILURE", mode=leg,
+        title=f"{leg.upper()} backup {statuses.label(status).lower()}",
+        message=message, status=status,
+        exit_code=exit_code if type(exit_code) is int else None,
+        occurred_at=occurred_at,
+    ))
+
+
+def _failure_alert_text(leg: str, status: str, error: str | None, nas_note: str = "") -> str:
+    name = "Cloud" if leg == "cloud" else "LAN"
+    if status.endswith("_SUSPECT"):
+        return (f"{name} backup SUSPECT: {error} The transfer did not terminate normally; "
+                f"completion is unproven. {nas_note or 'The next scheduled run will re-sync.'}")
+    return f"{name} backup {statuses.label(status)}: {error or status} {nas_note}".strip()
+
+
+def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
+    """RECOVERED email on the first success after a failure (plan WP8)."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            previous = db.previous_run_status(leg, run_id)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - never affects the run
+        logger.warning(f"Recovery check skipped ({leg}): {e}")
+        return
+    if previous and statuses.category(previous) in (
+            statuses.CATEGORY_FAILED, statuses.CATEGORY_PARTIAL, statuses.CATEGORY_BLOCKED):
+        notify(config, AlertEvent(
+            key=f"recovered:{leg}", kind="RECOVERED", mode=leg,
+            title=f"{leg.upper()} backup recovered",
+            message=f"The {leg.upper()} backup completed successfully again "
+                    f"(previous run: {statuses.label(previous)}).",
+            status="RECOVERED"))
+
+
 def _exception_kind(exc: BaseException) -> str:
     """Map a pipeline exception onto statuses.decide_terminal_status kinds."""
     if isinstance(exc, guards.GuardBlocked):
@@ -335,6 +377,8 @@ def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
                 )
             except Exception as rec_err:  # noqa: BLE001
                 logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
+            _send_run_alert(config, leg, status, f"The {leg.upper()} backup could not start: {e}",
+                            None, started_at)
             raise
         yield
 
@@ -1148,6 +1192,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         verify_report_seconds: float | None = None
         phase = "pre"
         guard_record = None
+        alert_sent = False   # WP8: exactly one alert per failed run
 
         try:
             health_check_task(config, "cloud", artefacts_dir)
@@ -1189,15 +1234,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 status = "CLOUD_VERIFY_FAILED"
                 error_msg = verify_err
                 logger.error(verify_err)
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name, verify_err,
-                        {"mode": "cloud", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send verify-failure alert: {alert_err}")
+                _send_run_alert(config, "cloud", status, verify_err,
+                                sync_result.get("exit_code"), started_at)
+                alert_sent = True
                 raise RuntimeError(verify_err)
 
             phase = "post"
@@ -1271,22 +1310,15 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             if status == "CLOUD_PARTIAL":
                 # Transient rclone outcome (rc 4/5/10) over a destination the
                 # evidence gate just approved: data-true, but incomplete work
-                # remains. Alert specifically (LAN F3 equivalent — cloud had
-                # no partial alert), then fail via the terminal policy below.
-                # The backup() tail skips its generic alert for PartialRun.
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        f"Cloud backup PARTIAL: rclone exit "
-                        f"{sync_result.get('exit_code')} — some work did not "
-                        "complete. rclone sync is resumable; the next scheduled "
-                        "run continues from where this one left off.",
-                        {"mode": "cloud", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send partial-backup alert: {alert_err}")
+                # remains. Alert specifically, then fail via the terminal
+                # policy below.
+                _send_run_alert(
+                    config, "cloud", status,
+                    f"Cloud backup PARTIAL: rclone exit {sync_result.get('exit_code')} - some "
+                    "work did not complete. rclone sync is resumable; the next scheduled run "
+                    "continues from where this one left off.",
+                    sync_result.get("exit_code"), started_at)
+                alert_sent = True
             # Terminal-state policy (single authoritative decision point):
             # a non-success status must never return normally (which the
             # engine would record as Prefect COMPLETED).
@@ -1302,24 +1334,12 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             current = sync_result.get("status", status) if phase == "sync" else status
             status = statuses.decide_terminal_status("cloud", phase, current, _exception_kind(e))
             if isinstance(e, guards.GuardBlocked):
-                guard_record = e.record
-            if status == "CLOUD_SUSPECT":
-                # Abnormal transfer termination (killed/timeout-ambiguous):
-                # alert specifically — the backup() tail skips its generic
-                # alert for PartialRun-wrapped legs, and SUSPECT must never
-                # be silent.
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        f"Cloud backup SUSPECT: {error_msg} The transfer did not "
-                        "terminate normally; completion is unproven. The next "
-                        "scheduled run will re-sync.",
-                        {"mode": "cloud", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send suspect-backup alert: {alert_err}")
+                guard_record = e.record   # its ACTION REQUIRED email goes out below
+            elif not alert_sent:
+                _send_run_alert(config, "cloud", status,
+                                _failure_alert_text("cloud", status, error_msg),
+                                sync_result.get("exit_code"), started_at)
+                alert_sent = True
             if extended_metrics is None:
                 # Failure-path telemetry: persist whatever stages were
                 # actually measured (possibly none). Business state above
@@ -1351,6 +1371,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
             if status == "CLOUD_BLOCKED" and guard_record:
                 _open_block_request(config, "cloud", run_id, guard_record, started_at)
+            elif statuses.is_success(status):
+                _send_recovery_if_needed(config, "cloud", run_id)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1386,6 +1408,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         stage_seconds: dict = {}
         phase = "pre"
         guard_record = None
+        alert_sent = False   # WP8: exactly one alert per failed run
 
         try:
             health_check_task(config, "lan", artefacts_dir)
@@ -1475,21 +1498,14 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
                     f"some files were not copied. {nas_msg}"
                 )
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        (
-                            f"LAN backup PARTIAL: robocopy exit code "
-                            f"{sync_result.get('exit_code')} — some files were not "
-                            f"copied. {nas_msg} "
-                            f"{sync_result.get('error') or ''}"
-                        ).strip(),
-                        {"mode": "lan", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send partial-backup alert: {alert_err}")
+                # The alert goes out BEFORE any NAS shutdown below.
+                _send_run_alert(
+                    config, "lan", status,
+                    (f"LAN backup PARTIAL: robocopy exit code {sync_result.get('exit_code')} - "
+                     f"some files were not copied. {nas_msg} "
+                     f"{sync_result.get('error') or ''}").strip(),
+                    sync_result.get("exit_code"), started_at)
+                alert_sent = True
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
                     lan_shutdown_task(config)
@@ -1512,27 +1528,17 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             if isinstance(e, guards.GuardBlocked):
                 guard_record = e.record
             shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
-            if status == "LAN_SUSPECT":
-                # Abnormal transfer termination (killed/timeout-ambiguous):
-                # alert specifically — the backup() tail skips its generic
-                # alert for PartialRun-wrapped legs, and SUSPECT must never
-                # be silent.
+            if not alert_sent and not isinstance(e, guards.GuardBlocked):
+                # The one alert of this run, sent BEFORE any NAS shutdown below.
                 nas_msg = (
                     "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
                     if shutdown_on_fail
                     else "The NAS was NOT shut down; the next scheduled run will re-sync."
                 )
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        f"LAN backup SUSPECT: {error_msg} The transfer did not "
-                        f"terminate normally; completion is unproven. {nas_msg}",
-                        {"mode": "lan", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send suspect-backup alert: {alert_err}")
+                _send_run_alert(config, "lan", status,
+                                _failure_alert_text("lan", status, error_msg, nas_msg),
+                                sync_result.get("exit_code"), started_at)
+                alert_sent = True
             if shutdown_on_fail and not isinstance(e, PartialRun):
                 logger.info(
                     f"shutdown_on_all_retries_exhausted enabled: powering down NAS after {status} failure alert"
@@ -1566,6 +1572,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
             if status == "LAN_BLOCKED" and guard_record:
                 _open_block_request(config, "lan", run_id, guard_record, started_at)
+            elif statuses.is_success(status):
+                _send_recovery_if_needed(config, "lan", run_id)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1929,14 +1937,10 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             if excs:
                 error_summary = '; '.join(str(e) for e in excs)
                 logger.error(f"Integrity audit failed: {error_summary}")
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name, error_summary,
-                        {"mode": mode, "status": "INTEGRITY_AUDIT_NOT_VERIFIED"},
-                        timestamp=now_iso(),
-                    )
-                except Exception:
-                    pass
+                notify(config, AlertEvent(
+                    key=f"audit:{mode}", kind="FAILURE", mode="audit",
+                    title="Integrity audit did not verify", message=error_summary,
+                    status="NOT_VERIFIED"))
                 raise ExceptionGroup("Integrity audit did not verify", excs)
             logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
     finally:
@@ -2025,21 +2029,10 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
         if excs:
             error_summary = '; '.join(str(e) for e in excs)
             logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
-            # PartialRun legs already sent their specific (partial/suspect)
-            # alert in-pipeline, and a GuardBlocked leg its ACTION REQUIRED
-            # email; a duplicate generic alert would page twice for one
-            # event. Generic alert fires for all other failures.
-            if any(not isinstance(e, (PartialRun, guards.GuardBlocked)) for e in excs):
-                try:
-                    send_failure_alert(
-                        config.notifications,
-                        config.firm_name,
-                        error_summary,
-                        {"mode": mode},
-                        timestamp=now_iso(),
-                    )
-                except Exception:
-                    pass
+            # WP8: no generic alert here - every failed leg already sent its
+            # ONE alert at its terminal decision (or its ACTION REQUIRED
+            # email when blocked); a second email per failure was the
+            # duplicate-alert finding.
             raise ExceptionGroup("Backup completed with errors", excs)
 
         # ── Maintenance ──

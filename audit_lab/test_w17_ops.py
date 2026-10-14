@@ -414,30 +414,30 @@ def test_w17_check_health_branches(monkeypatch):
 
 def test_w17_alert_wedged_lock(monkeypatch, sandbox):
     import watchdog as wd
-    from core import report as cr
+    from core import notify as cn
     import models.config as mc
 
     sent = []
-    monkeypatch.setattr(cr, "send_failure_alert", lambda *a, **k: sent.append((a, k)))
+    monkeypatch.setattr(cn, "notify", lambda cfg, event, db=None: sent.append(event))
     cfg = L.build_config(sandbox, source=sandbox / "src", lan_dest=str(sandbox / "nas"),
                          runtime=sandbox / "runtime")
     monkeypatch.setattr(mc, "load_config", lambda p=None: cfg)
 
     wd._alert_wedged_lock("reason-x", pid=99)
     assert sent, "the wedged-lock CRITICAL must reach the operator"
-    msg, detail = sent[0][0][2], sent[0][0][3]
-    assert "99" in msg and detail["status"] == "LIVE_LOCK_CAP_EXCEEDED"
-    assert detail["mode"] == "watchdog"
+    event = sent[0]
+    assert "99" in event.message and event.status == "LIVE_LOCK_CAP_EXCEEDED"
+    assert event.mode == "watchdog"
 
     # delivery failure is contained (the monitor must keep running)
     def boom(*a, **k):
         raise RuntimeError("smtp down")
 
-    monkeypatch.setattr(cr, "send_failure_alert", boom)
+    monkeypatch.setattr(cn, "notify", boom)
     wd._alert_wedged_lock("reason-x", pid=99)   # must not raise
     L.record("W17.wedged_lock_alert",
              "the deferral-cap alert is delivered and its failure is contained",
-             f"delivered message pid=99 status={detail['status']} | "
+             f"delivered message pid=99 status={event.status} | "
              "smtp outage -> no exception",
              "OK - alert delivered, outage contained")
 

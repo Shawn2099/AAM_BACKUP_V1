@@ -93,7 +93,7 @@ def _mock_cfg(cfg, db_path: str):
 
 def _patch_pipeline():
     return (
-        patch("flow.send_failure_alert", return_value=True),
+        patch("flow.notify"),
         patch("flow.cloud_publish_artifact_task"),
         patch("flow.cloud_record_task"),
         patch("flow.cloud_verify_and_report_task"),
@@ -168,7 +168,7 @@ def test_w1e_bug2_lan_post_phase_exception_records_complete(sandbox, monkeypatch
     db = sandbox / "runtime" / "manifest.db"
     cfg = _mock_cfg(None, str(db))
 
-    with (patch("flow.send_failure_alert", return_value=True),
+    with (patch("flow.notify"),
           patch("flow.lan_sync_task") as sync,
           patch("flow.lan_preflight_task"),
           patch("flow.lan_snapshot_before_task", return_value={"a.txt": (1, 1.0)}),

@@ -371,65 +371,28 @@ class TestMonthlyReportFlow:
 # ═══════════════════════════════════════════════════════════════
 
 class TestFailureAlertPath:
-    @patch("flow.load_config")
-    @patch("flow.configure_logging")
-    @patch("flow.configure_prefect_bridge")
-    @patch("flow.send_failure_alert")
-    @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud: auth failed"))
-    def test_single_failure_sends_alert(self, mock_pipeline, mock_alert, mock_bridge, mock_log, mock_cfg):
-        mock_config = MagicMock()
-        mock_config.cloud.enabled = True
-        mock_config.lan.enabled = False
-        mock_config.firm_name = "Test Firm"
-        mock_config.notifications = MagicMock()
-        mock_cfg.return_value = mock_config
-
-        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
-            backup.fn("config.yaml", "cloud")
-
-        mock_alert.assert_called_once()
-        call_args = mock_alert.call_args
-        assert call_args[0][2] == "cloud: auth failed"
-        assert call_args[0][3]["mode"] == "cloud"
+    """WP8: backup() sends NO alert of its own - each failed leg already sent
+    exactly one at its terminal decision (tests/test_m3_alerts.py). The old
+    joined generic alert was the duplicate-alert finding."""
 
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud error"))
     @patch("flow._run_lan_pipeline", side_effect=RuntimeError("lan error"))
-    def test_both_failures_join_messages(self, mock_lan, mock_cloud, mock_alert, mock_bridge, mock_log, mock_cfg):
+    def test_failures_raise_without_a_second_alert(self, mock_lan, mock_cloud, mock_alert,
+                                                   mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = True
-        mock_config.firm_name = "Test Firm"
-        mock_config.notifications = MagicMock()
         mock_cfg.return_value = mock_config
 
-        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
+        with pytest.raises(ExceptionGroup, match="Backup completed with errors") as ei:
             backup.fn("config.yaml", "all")
 
-        call_args = mock_alert.call_args
-        error_msg = call_args[0][2]
-        assert "cloud error" in error_msg
-        assert "lan error" in error_msg
-        assert "; " in error_msg
-
-    @patch("flow.load_config")
-    @patch("flow.configure_logging")
-    @patch("flow.configure_prefect_bridge")
-    @patch("flow.send_failure_alert", side_effect=RuntimeError("SMTP down"))
-    @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud error"))
-    def test_alert_failure_does_not_suppress_backup_exception(self, mock_pipeline, mock_alert, mock_bridge, mock_log, mock_cfg):
-        mock_config = MagicMock()
-        mock_config.cloud.enabled = True
-        mock_config.lan.enabled = False
-        mock_config.firm_name = "Test Firm"
-        mock_config.notifications = MagicMock()
-        mock_cfg.return_value = mock_config
-
-        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
-            backup.fn("config.yaml", "cloud")
+        assert {str(e) for e in ei.value.exceptions} == {"cloud error", "lan error"}
+        mock_alert.assert_not_called()
 
 
 # ---------------------------------------------------------------

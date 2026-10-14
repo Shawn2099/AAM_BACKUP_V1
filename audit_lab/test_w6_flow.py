@@ -73,7 +73,7 @@ def rig(sandbox, monkeypatch):
     orig_build = ls.build_robocopy_command
     ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig_build(s, d, c))
     alerts: list = []
-    monkeypatch.setattr(flow, "send_failure_alert", lambda *a, **k: alerts.append(a) or True)
+    monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
     monkeypatch.setattr(flow, "temp_rclone_config",
                         lambda *a, **k: __import__("contextlib").nullcontext(rc))
     monkeypatch.chdir(bucket_root)
@@ -213,25 +213,22 @@ def test_w6_backup_flow_failure_alert_policy(rig, monkeypatch):
 
     rows, _lan, _cloud = _db_rows(rig["cfg_path"])
     is_partial = any(isinstance(x, PartialRun) for x in getattr(exc, "exceptions", []))
-    subjects = [a[2] for a in rig["alerts"]]
+    # rig["alerts"] captures notify(config, event) calls (WP8 single alert path)
+    failures = [a[1] for a in rig["alerts"] if a[1].kind == "FAILURE"]
     L.record("W6.alert_policy",
              "a failed cloud run raises an ExceptionGroup and alerts exactly once",
              f"raised={type(exc).__name__} | sub-exceptions={[type(x).__name__ for x in getattr(exc, 'exceptions', [])]} | "
-             f"is_partial={is_partial} | alerts emitted={len(rig['alerts'])} | "
+             f"is_partial={is_partial} | failure alerts={len(failures)} | "
              f"run_history={[r['status'] for r in rows]} | "
-             f"alert subjects={[s[:70] for s in subjects]}",
-             "FINDING — the verify-gate failure PAGES TWICE: the in-pipeline gate alert "
-             "('Cloud integrity verification FAILED…') AND backup()'s generic "
-             "'Backup completed with errors' alert, because the raised exception is a "
-             "plain RuntimeError and only PartialRun suppresses the generic one"
-             if exc is not None and len(rig["alerts"]) == 2
-             else "OK — ExceptionGroup + exactly one alert (generic path for a non-PartialRun failure)"
-             if exc is not None and len(rig["alerts"]) == 1 and rows
-             and rows[0]["status"].startswith("CLOUD_")
-             else "ISSUE — alert/status policy deviates")
-    print(f"[W6-fail] exc={type(exc).__name__} alerts={len(rig['alerts'])} "
-          f"status={[r['status'] for r in rows]} subjects={[s[:50] for s in subjects]}")
-    assert exc is not None and len(rig["alerts"]) == 2
+             f"alert keys={[e.key for e in failures]}",
+             "OK — ExceptionGroup + exactly ONE alert at the terminal decision (the old "
+             "in-pipeline + generic double page is gone, M3 3.4)"
+             if exc is not None and len(failures) == 1 else "ISSUE — alert policy deviates")
+    print(f"[W6-fail] exc={type(exc).__name__} failures={len(failures)} "
+          f"status={[r['status'] for r in rows]} keys={[e.key for e in failures]}")
+    # M3 3.4 (WP8): the duplicate page this test used to record is fixed.
+    assert exc is not None and len(failures) == 1
+    assert failures[0].key == "backup:cloud:CLOUD_VERIFY_FAILED"
 
 
 def test_w6_rollover_check_flow(rig, monkeypatch):

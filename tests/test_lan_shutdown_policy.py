@@ -44,7 +44,7 @@ def _make_lan_config(
 
 class TestLanShutdownPolicy:
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
@@ -73,13 +73,13 @@ class TestLanShutdownPolicy:
 
         # Alert fired
         mock_alert.assert_called_once()
-        alert_msg = mock_alert.call_args.args[2]
+        alert_msg = mock_alert.call_args.args[1].message
         assert "NOT shut down" in alert_msg
 
         # Shutdown must NOT be called
         mock_shutdown.assert_not_called()
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
@@ -108,13 +108,13 @@ class TestLanShutdownPolicy:
 
         # Alert fired first
         mock_alert.assert_called_once()
-        alert_msg = mock_alert.call_args.args[2]
+        alert_msg = mock_alert.call_args.args[1].message
         assert "scheduled for shutdown" in alert_msg
 
         # Shutdown IS called
         mock_shutdown.assert_called_once_with(cfg)
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
@@ -141,7 +141,7 @@ class TestLanShutdownPolicy:
         # Shutdown IS called
         mock_shutdown.assert_called_once_with(cfg)
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
@@ -169,7 +169,7 @@ class TestLanShutdownPolicy:
         mock_shutdown.assert_called_once_with(cfg)
         mock_alert.assert_not_called()
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.shutdown_server")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")

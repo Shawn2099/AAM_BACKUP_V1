@@ -58,7 +58,7 @@ def _make_mock_config(tmp_path=None):
 # ── BUG-01: Premature cloud_record_task ──────────────────────────────────────
 
 class TestBug01CloudRecordPostGate:
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
@@ -127,7 +127,7 @@ class TestBug01CloudRecordPostGate:
 # ── BUG-02 & BUG-03 & BUG-08: integrity_audit_flow slot + WoL + clamp ────────
 
 class TestBug02And03AuditOrchestration:
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.wol_check_task")
     @patch("flow.temp_rclone_config")
