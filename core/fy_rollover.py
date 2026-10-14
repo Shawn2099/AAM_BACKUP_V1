@@ -394,14 +394,15 @@ def run_archive_transition(
         return False
 
 
-def rollover(config_path: str = "config.yaml") -> bool:
+def rollover(config_path: str | None = None) -> bool:
     """Detect FY boundary and execute rollover if needed.
 
     Returns True if rollover was performed, False if no rollover needed.
     Raises RolloverError if final backup fails (config unchanged, retry next run).
     """
-    from models.config import load_config
+    from models.config import CONFIG_PATH, load_config
 
+    config_path = config_path or CONFIG_PATH
     config = load_config(config_path)
     source_drive = config.paths.source_drive
     lan_destination = config.paths.lan_destination

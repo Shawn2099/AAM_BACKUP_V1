@@ -11,7 +11,36 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CONFIG_PATH = "config.yaml"
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+# Absolute config path: AAM_CONFIG env (set by the service installer) or
+# <project>/config.yaml. Never CWD-relative — a service or tool started from
+# another working directory must still load the same file.
+CONFIG_PATH = str(
+    Path(os.environ["AAM_CONFIG"]).resolve()
+    if os.environ.get("AAM_CONFIG")
+    else _PROJECT_DIR / "config.yaml"
+)
+
+# Keys that were valid in earlier releases and are now ignored on purpose.
+# They are dropped with a WARNING instead of failing the strict
+# (extra="forbid") validation, so an older client config still loads.
+# Anything not listed here is rejected loudly.
+DEPRECATED_KEYS: dict[str, frozenset[str]] = {
+    # F12: no code path ever read it; success emails were removed.
+    "notifications": frozenset({"send_on_success"}),
+}
+
+
+class StrictModel(BaseModel):
+    """Base for every config section: unknown keys are a validation error.
+
+    A typo (e.g. `shutdown_after_bakup`) must fail at load with the key
+    name in the message — silently falling back to the default is how a
+    safety switch gets flipped without anyone noticing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
 _DEFAULT_RUNTIME_DIR = os.environ.get(
     "AAM_RUNTIME_DIR",
@@ -19,7 +48,7 @@ _DEFAULT_RUNTIME_DIR = os.environ.get(
 )
 
 
-class PathsConfig(BaseModel):
+class PathsConfig(StrictModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     source_drive: str = Field(..., description="Source drive root path, e.g. D:\\")
@@ -76,7 +105,7 @@ class PathsConfig(BaseModel):
         return v
 
 
-class LanConfig(BaseModel):
+class LanConfig(StrictModel):
     enabled: bool = True
     retry_count: int = Field(default=3, ge=1, le=10)
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
@@ -99,7 +128,7 @@ class LanConfig(BaseModel):
     dry_run_timeout_seconds: int = Field(default=900, ge=60, le=7200, description="Timeout for the robocopy /L preflight dry-run (seconds)")
 
 
-class WolConfig(BaseModel):
+class WolConfig(StrictModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     enabled: bool = True
@@ -182,7 +211,7 @@ class WolConfig(BaseModel):
         return f"{parts[0]}.255"
 
 
-class CloudConfig(BaseModel):
+class CloudConfig(StrictModel):
     enabled: bool = True
     # C-A: in-rclone duration cap. None = auto (subprocess timeout minus a
     # 300s margin); 0 disables the flag entirely; explicit value wins.
@@ -260,7 +289,7 @@ class CloudConfig(BaseModel):
         return v
 
 
-class NotificationConfig(BaseModel):
+class NotificationConfig(StrictModel):
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
@@ -294,7 +323,7 @@ class NotificationConfig(BaseModel):
         return self.__repr__()
 
 
-class MaintenanceConfig(BaseModel):
+class MaintenanceConfig(StrictModel):
     """Operational housekeeping settings."""
     concurrency_wait_seconds: int = Field(
         default=3600,
@@ -342,7 +371,7 @@ class MaintenanceConfig(BaseModel):
     )
 
 
-class HealthConfig(BaseModel):
+class HealthConfig(StrictModel):
     """Pre-backup health check tuning."""
     max_clock_skew_seconds: int = Field(
         default=600,
@@ -376,7 +405,7 @@ class HealthConfig(BaseModel):
     )
 
 
-class DashboardConfig(BaseModel):
+class DashboardConfig(StrictModel):
     auth_enabled: bool = True
     api_key: str = Field(default="", description="API key for dashboard authentication")
     bind_address: str = "127.0.0.1"
@@ -395,7 +424,7 @@ class DashboardConfig(BaseModel):
         return self.__repr__()
 
 
-class ScheduleConfig(BaseModel):
+class ScheduleConfig(StrictModel):
     """Per-deployment cron schedule configuration."""
     cloud_cron: str = Field(default="0 18 * * *", description="Cloud backup cron expression")
     lan_cron: str = Field(default="0 1 * * *", description="LAN backup cron expression")
@@ -448,7 +477,7 @@ class ScheduleConfig(BaseModel):
         return self
 
 
-class AppConfig(BaseModel):
+class AppConfig(StrictModel):
     firm_name: str = "AAM Associates"
     paths: PathsConfig
     lan: LanConfig = Field(default_factory=LanConfig)
@@ -509,7 +538,24 @@ class AppConfig(BaseModel):
     def from_yaml(cls, path: str) -> "AppConfig":
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls(**data)
+        return cls(**_drop_deprecated_keys(data or {}))
+
+
+def _drop_deprecated_keys(data: dict) -> dict:
+    """Remove DEPRECATED_KEYS from a raw config mapping, warning per key."""
+    from loguru import logger
+
+    for section, keys in DEPRECATED_KEYS.items():
+        values = data.get(section)
+        if not isinstance(values, dict):
+            continue
+        for key in sorted(keys & values.keys()):
+            values.pop(key)
+            logger.warning(
+                f"config: '{section}.{key}' is deprecated and ignored - "
+                "remove it from config.yaml"
+            )
+    return data
 
 
 def load_config(config_path: str = CONFIG_PATH) -> AppConfig:

@@ -224,7 +224,6 @@ def _base_config(**path_overrides):
         gcs_key_path="keys/gcs.json",
         database_path="db/m.db",
         log_directory="logs",
-        backup_lock_path="db/lock",
     )
     paths.update(path_overrides)
     return dict(
