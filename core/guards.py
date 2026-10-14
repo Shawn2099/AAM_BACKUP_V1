@@ -221,24 +221,38 @@ class GuardBlocked(RuntimeError):
     def __init__(self, leg: str, record: dict):
         self.leg = leg
         self.record = record
-        reasons = [r["reason"] for r in record.get("results", []) if r.get("verdict") == BLOCK]
-        super().__init__(f"{leg.upper()} backup BLOCKED - human approval needed: "
-                         + " | ".join(reasons))
+        approved = set(record.get("approved_guards", []))
+        reasons = [r["reason"] for r in record.get("results", [])
+                   if r.get("verdict") == BLOCK and r.get("guard") not in approved]
+        message = f"{leg.upper()} backup BLOCKED - human approval needed: " + " | ".join(reasons)
+        if record.get("approval_rejected"):
+            message += (f" | approval {record.get('approval_id')} not applied: "
+                        f"{record['approval_rejected']}")
+        super().__init__(message)
 
 
-def enforce(leg: str, results: list[GuardResult], **record) -> dict:
+def enforce(leg: str, results: list[GuardResult],
+            approved_guards: frozenset[str] = frozenset(), **record) -> dict:
     """Log every guard decision (rule §2.6) and return the run's guard record.
 
-    Raises GuardBlocked when any guard blocked; all results are kept so the
-    operator sees every reason at once.
+    Raises GuardBlocked when any guard blocked that is not in
+    `approved_guards` (a valid human approval for THIS run, already checked
+    by the caller); all results are kept so the operator sees every reason.
     """
+    overridden = []
     for r in results:
         if r.passed:
             logger.info(f"Guard {r.guard} PASS ({leg}): {r.reason} {r.metrics}")
+        elif r.guard in approved_guards:
+            overridden.append(r.guard)
+            logger.warning(f"Guard {r.guard} BLOCK overridden by human approval ({leg}): "
+                           f"{r.reason} {r.metrics}")
         else:
             logger.error(f"Guard {r.guard} BLOCK ({leg}): {r.reason} {r.metrics}")
     record = {**record, "results": [asdict(r) for r in results]}
-    if any(not r.passed for r in results):
+    if overridden:
+        record["approved_guards"] = overridden
+    if any(not r.passed and r.guard not in approved_guards for r in results):
         raise GuardBlocked(leg, record)
     return record
 

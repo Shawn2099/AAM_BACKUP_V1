@@ -487,6 +487,21 @@ class GuardsConfig(StrictModel):
     )
 
 
+class ApprovalsConfig(StrictModel):
+    """Human approval of a BLOCKED run (plan §6.2, owner DEC-3)."""
+
+    expiry_hours: float = Field(
+        default=12, ge=1, le=168,
+        description="An approval given on the dashboard is valid for this many hours "
+                    "and for ONE run only.",
+    )
+    tolerance_percent: float = Field(
+        default=0, ge=0, le=100,
+        description="How much worse the re-measured numbers may be than the approved "
+                    "ones (0 = must not be worse at all).",
+    )
+
+
 class HealthConfig(StrictModel):
     """Pre-backup health check tuning."""
     max_clock_skew_seconds: int = Field(
@@ -612,6 +627,7 @@ class AppConfig(StrictModel):
     run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     guards: GuardsConfig = Field(default_factory=GuardsConfig)
+    approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
 
     @property
     def run_logs_dir(self) -> Path:

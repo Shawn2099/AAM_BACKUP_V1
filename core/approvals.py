@@ -33,6 +33,15 @@ _MUST_MATCH: dict[str, tuple[str, ...]] = {
 }
 
 
+# Request lifecycle (stored in ManifestDB.approvals). Expiry is derived from
+# expires_at, never a stored status.
+PENDING = "PENDING"        # blocked run waiting for a human
+APPROVED = "APPROVED"      # approved once on the dashboard, not used yet
+DISMISSED = "DISMISSED"    # human declined; nothing will run on it
+USED = "USED"              # consumed by exactly one run
+SUPERSEDED = "SUPERSEDED"  # a newer block of the same leg replaced it
+
+
 @dataclass(frozen=True)
 class ApprovalDecision:
     allowed: bool
@@ -56,6 +65,37 @@ def confirmation_phrase(guard: str, metrics: dict) -> str:
     if guard == "G1_SOURCE_HAS_FILES":
         return "MIRROR EMPTY SOURCE"
     return f"APPROVE {guard}"
+
+
+def request_phrase(blocked: list[dict]) -> str:
+    """Phrase for a request covering several blocked guards (one per guard)."""
+    return " / ".join(confirmation_phrase(b["guard"], b.get("metrics") or {})
+                      for b in blocked)
+
+
+def evaluate_request(request: dict | None, *, leg: str, blocked: list, now_iso: str,
+                     tolerance_percent: float) -> ApprovalDecision:
+    """May this run proceed past ALL its blocked guards on `request`?
+
+    `blocked` are the fresh GuardResults that blocked. Every one must be
+    covered by the request and pass `evaluate_approval` (same leg, approved,
+    unused, unexpired, numbers not worse than approved).
+    """
+    if not request:
+        return ApprovalDecision(False, "no approval supplied")
+    approved = {g["guard"]: g.get("metrics") or {} for g in request.get("guards") or []}
+    for result in blocked:
+        if result.guard not in approved:
+            return ApprovalDecision(
+                False, f"{result.guard} blocked but is not covered by approval "
+                       f"{request.get('approval_id')} - a new approval is needed")
+        decision = evaluate_approval(
+            {**request, "guard": result.guard, "approved_metrics": approved[result.guard]},
+            leg=leg, guard=result.guard, fresh_metrics=result.metrics,
+            now_iso=now_iso, tolerance_percent=tolerance_percent)
+        if not decision.allowed:
+            return ApprovalDecision(False, f"{result.guard}: {decision.reason}")
+    return ApprovalDecision(True, "approval covers every blocked guard")
 
 
 def phrase_matches(expected: str, typed: str) -> bool:

@@ -112,6 +112,29 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_key ON notifications(event_key, created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, created_at);
 
+-- Human approval of a BLOCKED run (plan §6.2). One request per blocked run,
+-- covering every guard that blocked it; single use; expires.
+CREATE TABLE IF NOT EXISTS approvals (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    approval_id     TEXT NOT NULL UNIQUE,
+    leg             TEXT NOT NULL,          -- 'lan' | 'cloud'
+    blocked_run_id  TEXT NOT NULL,
+    fy              TEXT,
+    guards          TEXT NOT NULL,          -- JSON [{guard, reason, metrics}]
+    phrase          TEXT NOT NULL,
+    status          TEXT NOT NULL,          -- core.approvals PENDING/APPROVED/...
+    created_at      TEXT NOT NULL,
+    approved_at     TEXT,
+    approved_by     TEXT,
+    expires_at      TEXT,
+    dismissed_at    TEXT,
+    dismissed_by    TEXT,
+    used_at         TEXT,
+    used_by_run_id  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_leg_status ON approvals(leg, status);
+
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
 
@@ -794,6 +817,86 @@ class ManifestDB:
             return dict(row) if row else None
 
     # ── Notifications ────────────────────────────────────────
+
+    # ── Approvals (plan §6.2) ─────────────────────────────────────────────
+
+    def open_approval_request(self, *, leg: str, blocked_run_id: str, fy: str | None,
+                              guards: list[dict], phrase: str, created_at: str) -> str:
+        """Record a request for a blocked run; older PENDING ones of the leg
+        are SUPERSEDED (only the latest situation can be approved)."""
+        from core import approvals as ap
+
+        approval_id = ap.new_approval_id()
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                conn.execute("UPDATE approvals SET status = ? WHERE leg = ? AND status = ?",
+                             (ap.SUPERSEDED, leg, ap.PENDING))
+                conn.execute(
+                    """INSERT INTO approvals (approval_id, leg, blocked_run_id, fy, guards,
+                                              phrase, status, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (approval_id, leg, blocked_run_id, fy, json.dumps(guards), phrase,
+                     ap.PENDING, created_at))
+        return approval_id
+
+    @staticmethod
+    def _approval_row(row) -> dict | None:
+        if row is None:
+            return None
+        d = dict(row)
+        d["guards"] = json.loads(d["guards"])
+        return d
+
+    def get_approval(self, approval_id: str) -> dict | None:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT * FROM approvals WHERE approval_id = ?",
+                               (approval_id,)).fetchone()
+        return self._approval_row(row)
+
+    def open_approvals(self) -> list[dict]:
+        """Requests a human can still act on: PENDING, or APPROVED but unused."""
+        from core import approvals as ap
+
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT * FROM approvals WHERE status IN (?, ?) ORDER BY id",
+                (ap.PENDING, ap.APPROVED)).fetchall()
+        return [self._approval_row(r) for r in rows]
+
+    def _transition(self, sql: str, params: tuple) -> bool:
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                return conn.execute(sql, params).rowcount == 1
+
+    def approve_request(self, approval_id: str, *, approved_by: str, approved_at: str,
+                        expires_at: str) -> bool:
+        from core import approvals as ap
+
+        return self._transition(
+            "UPDATE approvals SET status = ?, approved_by = ?, approved_at = ?, expires_at = ? "
+            "WHERE approval_id = ? AND status = ?",
+            (ap.APPROVED, approved_by, approved_at, expires_at, approval_id, ap.PENDING))
+
+    def dismiss_request(self, approval_id: str, *, dismissed_by: str, dismissed_at: str) -> bool:
+        from core import approvals as ap
+
+        return self._transition(
+            "UPDATE approvals SET status = ?, dismissed_by = ?, dismissed_at = ? "
+            "WHERE approval_id = ? AND status IN (?, ?)",
+            (ap.DISMISSED, dismissed_by, dismissed_at, approval_id, ap.PENDING, ap.APPROVED))
+
+    def mark_approval_used(self, approval_id: str, *, run_id: str, used_at: str) -> bool:
+        """Consume an approval exactly once (atomic; False if already used)."""
+        from core import approvals as ap
+
+        return self._transition(
+            "UPDATE approvals SET status = ?, used_at = ?, used_by_run_id = ? "
+            "WHERE approval_id = ? AND status = ? AND used_at IS NULL",
+            (ap.USED, used_at, run_id, approval_id, ap.APPROVED))
 
     def record_notification(self, data: dict) -> None:
         with self._lock:

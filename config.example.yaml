@@ -207,3 +207,17 @@ guards:
   max_source_shrink_percent: 20
   # Block a LAN destination that points back at this server (true/false)
   forbid_local_destination: true
+
+# ═══════════════════════════════════════════════════
+# APPROVALS (for blocked backups)
+# ═══════════════════════════════════════════════════
+# A blocked backup emails everyone "open the dashboard". On the dashboard a
+# person reviews the numbers, types the confirmation phrase, and approves the
+# backup ONCE; it then re-runs, re-measures, and goes ahead only if nothing
+# got worse. Scheduled runs never use an approval.
+approvals:
+  # Hours an approval stays valid after it is given (1–168)
+  expiry_hours: 12
+  # How much worse the re-measured numbers may be than approved, in % (0–100).
+  # 0 = not worse at all.
+  tolerance_percent: 0

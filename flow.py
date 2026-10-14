@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import guards, statuses
+from core import approvals, guards, statuses
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import (
@@ -41,6 +41,7 @@ from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
+from core.notify import AlertEvent, notify
 from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.report import send_failure_alert
@@ -292,7 +293,8 @@ def cloud_preflight_task(config, fy_prefix: str):
 
 
 @task(name="cloud-guards")
-def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None) -> dict:
+def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
+                      approval_id: str | None = None, run_id: str | None = None) -> dict:
     """Data-safety guards G1-G4 before rclone sync (plan WP3, M2 2.2).
 
     Measures with rclone itself: `rclone size` of source and destination,
@@ -357,11 +359,18 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None) 
             dry["planned_deletes"], destination_files,
             limits.max_delete_files, limits.max_delete_percent))
 
+    approved, approval_record = _apply_approval(config, "cloud", approval_id, run_id, results)
+    if "G3_MASS_DELETE" in approved:
+        # Approved mass deletion: the backstop is the re-measured count the
+        # approval was just checked against - nothing beyond it.
+        max_delete = dry["planned_deletes"]
+    else:
+        max_delete = guards.max_delete_allowance(
+            destination_files, limits.max_delete_files, limits.max_delete_percent)
     return guards.enforce(
-        "cloud", results, fy=fy_prefix, source_file_count=source_files,
-        destination=destination, destination_files=destination_files,
-        max_delete=guards.max_delete_allowance(
-            destination_files, limits.max_delete_files, limits.max_delete_percent),
+        "cloud", results, approved_guards=approved, fy=fy_prefix,
+        source_file_count=source_files, destination=destination,
+        destination_files=destination_files, max_delete=max_delete, **approval_record,
     )
 
 
@@ -559,9 +568,87 @@ def lan_snapshot_before_task(config):
         return None
 
 
+def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | None,
+                    results: list) -> tuple[frozenset, dict]:
+    """Which blocked guards a human approved for THIS run (plan §6.2).
+
+    Returns (approved guard names, record additions). The approval is
+    consumed atomically here - before any transfer - so it can never cover
+    a second run. No approval_id (every scheduled run) -> nothing approved.
+    """
+    blocked = [r for r in results if not r.passed]
+    if not blocked or not approval_id:
+        return frozenset(), {}
+    db = ManifestDB.from_config(config)
+    try:
+        request = db.get_approval(approval_id)
+        if request is not None and request.get("leg") != leg:
+            logger.info(f"Approval {approval_id} is for the {request.get('leg')} leg - "
+                        f"not applied to {leg}")
+            return frozenset(), {}
+        decision = approvals.evaluate_request(
+            request, leg=leg, blocked=blocked, now_iso=now_iso(),
+            tolerance_percent=config.approvals.tolerance_percent)
+        if decision.allowed and not db.mark_approval_used(
+                approval_id, run_id=run_id, used_at=now_iso()):
+            decision = approvals.ApprovalDecision(
+                False, "approval already used by another run")
+    finally:
+        db.close()
+    if not decision.allowed:
+        logger.error(f"Approval {approval_id} not applied ({leg}): {decision.reason}")
+        return frozenset(), {"approval_id": approval_id, "approval_rejected": decision.reason}
+    logger.warning(f"Approval {approval_id} used by run {run_id} ({leg}): "
+                   f"{', '.join(r.guard for r in blocked)} overridden once")
+    return frozenset(r.guard for r in blocked), {"approval_id": approval_id}
+
+
+def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
+                        occurred_at: str) -> None:
+    """BLOCKED run -> one approval request + ONE attention email (DEC-3).
+
+    Never raises: the run row is already written, and the human must be
+    told even when the request could not be stored.
+    """
+    blocked = [r for r in guard_record.get("results", [])
+               if r.get("verdict") == guards.BLOCK
+               and r.get("guard") not in guard_record.get("approved_guards", [])]
+    approval_id = None
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            approval_id = db.open_approval_request(
+                leg=leg, blocked_run_id=run_id, fy=guard_record.get("fy"),
+                guards=[{k: r.get(k) for k in ("guard", "reason", "metrics")} for r in blocked],
+                phrase=approvals.request_phrase(blocked), created_at=now_iso())
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - the alert below must still go out
+        logger.error(f"Could not record the approval request for blocked run {run_id}: {e}")
+    rejected = guard_record.get("approval_rejected")
+    message = "\n".join(r.get("reason", "") for r in blocked)
+    if rejected:
+        message += f"\n\nThe approval supplied for this run was not applied: {rejected}"
+    message += ("\n\nNothing was copied or deleted. Open the dashboard to review the "
+                "numbers and either approve this backup once or dismiss it.")
+    notify(config, AlertEvent(
+        key=f"blocked:{leg}", kind="ACTION_REQUIRED", mode=leg,
+        title=f"{leg.upper()} backup blocked - approval needed",
+        message=message, status=f"{leg.upper()}_BLOCKED",
+        details={"Blocked by": ", ".join(r.get("guard", "?") for r in blocked),
+                 "Run": run_id,
+                 "Approval request": approval_id or "could not be recorded - see the logs"},
+        occurred_at=occurred_at,
+    ))
+
+
 @task(name="lan-guards")
-def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: int | None) -> dict:
+def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: int | None,
+                    approval_id: str | None = None, run_id: str | None = None) -> dict:
     """Data-safety guards G1-G4 before robocopy /MIR (plan WP3, M2 2.2).
+
+    approval_id: dashboard re-run of a blocked run (plan §6.2); used up here
+    if it validly covers every guard that blocks again.
 
     A measurement that could not be taken FAILS the run (retried next
     night); a guard verdict BLOCKs it for a human (GuardBlocked). No Prefect
@@ -606,9 +693,11 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
         guards.g3_mass_delete(planned_deletes, destination_files,
                               limits.max_delete_files, limits.max_delete_percent),
     ]
+    approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)
     return guards.enforce(
-        "lan", results, fy=fy_prefix, source_file_count=counts["total"],
-        destination=dest, destination_files=destination_files,
+        "lan", results, approved_guards=approved, fy=fy_prefix,
+        source_file_count=counts["total"], destination=dest,
+        destination_files=destination_files, **approval_record,
     )
 
 
@@ -841,7 +930,8 @@ def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> st
     )
 
 
-def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
+def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
+                        approval_id: str | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
     with _backup_slot(config):
         db_path = config.paths.database_path
@@ -889,7 +979,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         try:
             health_check_task(config, "cloud")
             preflight(config, fy_prefix)
-            guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir)
+            guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
+                                             approval_id=approval_id, run_id=run_id)
             phase = "sync"
             _t_sync = time.monotonic()
             sync_result = sync(config, fy_prefix, artefacts_dir,
@@ -1098,13 +1189,16 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 )
             except Exception as rec_err:
                 logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
+            if status == "CLOUD_BLOCKED" and guard_record:
+                _open_block_request(config, "cloud", run_id, guard_record, started_at)
 
 
 # ═══════════════════════════════════════════════════════════════
 # LAN pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
-def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
+def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
+                      approval_id: str | None = None):
     """Execute LAN backup tasks sequentially. Each task is independently tracked."""
     with _backup_slot(config):
         db_path = config.paths.database_path
@@ -1141,6 +1235,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             guard_record = lan_guards_task(
                 config, _effective_fy_prefix(config), dry_run,
                 None if before_dict is None else guards.count_backup_files(before_dict),
+                approval_id=approval_id, run_id=run_id,
             )
             phase = "sync"
             _t_sync = time.monotonic()
@@ -1296,6 +1391,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 )
             except Exception as rec_err:
                 logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
+            if status == "LAN_BLOCKED" and guard_record:
+                _open_block_request(config, "lan", run_id, guard_record, started_at)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1600,7 +1697,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
 # ═══════════════════════════════════════════════════════════════
 
 @flow(name="aam-backup", log_prints=True)
-def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
+def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str | None = None):
     """AAM Backup Automation — nightly backup orchestrator.
 
     Each pipeline step is a separate Prefect task — visible in the Prefect UI
@@ -1610,6 +1707,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         cloud — Run only cloud backup (rclone sync → GCS)
         lan   — Run only LAN backup (robocopy /MIR, includes WoL + shutdown)
         all   — Run both sequentially (cloud first, then LAN)
+
+    approval_id: set only by the dashboard when a human approved a BLOCKED
+    run once (plan §6.2); scheduled runs never pass one.
     """
     valid_modes = {"cloud", "lan", "all"}
     mode = mode.lower()
@@ -1656,7 +1756,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         if mode in ("cloud", "all") and config.cloud.enabled:
             logger.info("Starting cloud backup pipeline")
             try:
-                _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic())
+                _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic(),
+                                    approval_id=approval_id)
             except Exception as e:
                 excs.append(e)
 
@@ -1664,7 +1765,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         if mode in ("lan", "all") and config.lan.enabled:
             logger.info("Starting LAN backup pipeline")
             try:
-                _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic())
+                _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic(),
+                                  approval_id=approval_id)
             except Exception as e:
                 excs.append(e)
 
@@ -1673,9 +1775,10 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
             error_summary = '; '.join(str(e) for e in excs)
             logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
             # PartialRun legs already sent their specific (partial/suspect)
-            # alert in-pipeline; a duplicate generic alert would page twice
-            # for one event. Generic alert fires for all other failures.
-            if any(not isinstance(e, PartialRun) for e in excs):
+            # alert in-pipeline, and a GuardBlocked leg its ACTION REQUIRED
+            # email; a duplicate generic alert would page twice for one
+            # event. Generic alert fires for all other failures.
+            if any(not isinstance(e, (PartialRun, guards.GuardBlocked)) for e in excs):
                 try:
                     send_failure_alert(
                         config.notifications,
