@@ -76,6 +76,18 @@ function integrityText(integrity) {
     if (s === 'AUDIT_INCOMPLETE') return 'Integrity: AUDIT COULD NOT RUN' + when + (integrity.detail ? ' — ' + integrity.detail : '');
     return 'Integrity: NOT VERIFIED — no audit recorded';
 }
+// Plan WP9: what needs attention, computed by the server (core/attention.py).
+function renderAttention(items) {
+    var box = document.getElementById('attention-banner');
+    if (!box) return;
+    if (!items || !items.length) { box.innerHTML = ''; return; }
+    box.innerHTML = items.map(function(i) {
+        var red = i.level === 'red';
+        return '<div style="border-radius:0.5rem;padding:0.6rem 1rem;margin-bottom:0.5rem;font-size:0.9rem;'
+            + (red ? 'background:#7f1d1d;color:#fee2e2' : 'background:#78350f;color:#fef3c7') + '">'
+            + (red ? '&#9888; ' : '') + escHtml(i.message) + '</div>';
+    }).join('');
+}
 async function updateStatus() {
     try {
         const response = await fetch('/status');
@@ -84,6 +96,7 @@ async function updateStatus() {
         setSessionExpired(false);
         _lastStatusErr = 0;
         const data = await response.json();
+        renderAttention(data.attention);
 
         function agoClass(diffDays) {
             if (diffDays < 1) return 'success-ago';

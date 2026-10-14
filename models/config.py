@@ -616,6 +616,14 @@ class DashboardConfig(StrictModel):
         description="Dashboard address put into attention emails (e.g. "
                     "http://backup-server:8080). Empty = http://<bind_address>:<port>.",
     )
+    stale_after_hours: float = Field(
+        default=26, ge=1, le=720,
+        description="Banner + /health turn red when an enabled leg has had no successful "
+                    "backup for this many hours.")
+    alert_failure_window_days: int = Field(
+        default=7, ge=1, le=90,
+        description="Banner + /health turn red when an alert or report email failed to be "
+                    "delivered within this many days.")
 
     @model_validator(mode="after")
     def api_key_required_when_auth_enabled(self) -> "DashboardConfig":

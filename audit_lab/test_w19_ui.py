@@ -612,27 +612,45 @@ def test_w19_get_health_branches(ui_rig):
 
 
 def test_w19_health_endpoint(ui_rig):
+    """M3 3.5 (plan WP9): /health is truthful. It used to answer 200/healthy
+    unconditionally - even when its own check crashed - so monitoring could
+    never see an outage (11 days, Aug 22 - Sep 1)."""
     from fastapi.testclient import TestClient
+
+    import pendulum
+
+    from core.manifest import ManifestDB
+    from core.time_utils import IST
 
     ui = ui_rig["ui"]
     ui_rig["cfg"].dashboard.auth_enabled = False
-    ui_rig["cfg"].paths.source_drive = str(ui_rig["sandbox"])   # exists
     ui_rig["monkeypatch"].setattr(ui, "_is_running", lambda leg: _async(False))
+    # 1. nothing has ever succeeded -> 503 with the reasons, no paths/secrets
     with TestClient(ui.app) as client:
         r = client.get("/health")
-        assert r.status_code == 200
-        assert r.json()["status"] == "healthy"
-        assert r.json()["source_accessible"] is True
-        assert r.json()["source_drive"] == str(ui_rig["sandbox"])
+        assert r.status_code == 503 and r.json()["status"] == "attention"
+        assert any("no successful backup" in m for m in r.json()["reasons"])
+        assert "source_drive" not in r.json()
 
-    # the endpoint's own source probe raising must still answer 200/healthy
+    # 2. fresh successful runs on every enabled leg -> 200 healthy
+    now = pendulum.now(IST).isoformat()
+    db = ManifestDB(str(ui_rig["cfg"].paths.database_path))
+    for leg, status in (("cloud", "CLOUD_COMPLETE"), ("lan", "LAN_COMPLETE")):
+        db.insert_run({"run_id": f"h-{leg}", "mode": leg, "started_at": now, "ended_at": now,
+                       "status": status})
+    db.close()
+    with TestClient(ui.app) as client:
+        r = client.get("/health")
+        assert r.status_code == 200 and r.json()["status"] == "healthy"
+
+    # 3. health that cannot be evaluated is NOT healthy
     def _boom():
         raise RuntimeError("cfg exploded")
 
     ui_rig["monkeypatch"].setattr(ui, "_cfg", _boom)
     with TestClient(ui.app) as client:
         r = client.get("/health")
-        assert r.status_code == 200 and r.json() == {"status": "healthy"}
+        assert r.status_code == 503 and r.json()["status"] == "unknown"
 
 
 # ── email report endpoints ────────────────────────────────────────────────────

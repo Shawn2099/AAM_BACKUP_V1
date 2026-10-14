@@ -84,10 +84,7 @@ def _effective_fy_prefix(config) -> str:
     before the rollover executes. Non-FY sources fall back to the date.
     Enumeration scope is unchanged (source_drive is still the root).
     """
-    leaf = config.paths.source_drive.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    if _FY_LEAF_PATTERN.match(leaf):
-        return leaf.upper()
-    return get_fy_prefix()
+    return fy_rollover.effective_fy_prefix(config.paths.source_drive)
 
 
 def _failure_telemetry(stage_seconds: dict, phase: str, verified: bool = False) -> str | None:

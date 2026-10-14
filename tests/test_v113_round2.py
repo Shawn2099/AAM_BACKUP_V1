@@ -274,6 +274,7 @@ def test_f_template_hides_disabled_trigger_and_shows_integrity(monkeypatch, tmp_
         cloud=SimpleNamespace(enabled=False),
         lan=SimpleNamespace(enabled=True),
         dashboard=SimpleNamespace(auth_enabled=False),
+        paths=SimpleNamespace(source_drive=r"E:\DATA\FY26-27"),
     )
     monkeypatch.setattr(ui, "_cfg", lambda: fake_cfg)
     html = TestClient(ui.app, raise_server_exceptions=False).get("/").text

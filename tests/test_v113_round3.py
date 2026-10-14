@@ -158,5 +158,6 @@ def test_r3_effective_prefix_prefers_configured_leaf(monkeypatch):
 def test_r3_effective_prefix_falls_back_to_date(monkeypatch):
     import flow
     cfg = SimpleNamespace(paths=SimpleNamespace(source_drive="C:\\ChaosTest\\source"))
-    monkeypatch.setattr(flow, "get_fy_prefix", lambda: "FY27-28")
+    from core import fy_rollover   # WP9: one effective-FY function for flow + dashboard
+    monkeypatch.setattr(fy_rollover, "get_fy_prefix", lambda: "FY27-28")
     assert flow._effective_fy_prefix(cfg) == "FY27-28"

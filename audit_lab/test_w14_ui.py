@@ -401,8 +401,12 @@ def test_w14_dashboard_and_status_endpoints(ui_rig, monkeypatch):
 
         r_health = client.get("/health")
         rows.append(f"GET /health      -> {r_health.status_code} {r_health.text[:120]}")
-        if r_health.status_code != 200:
-            problems.append(f"GET /health returned {r_health.status_code}")
+        # WP9: the seeded runs are days old -> /health must say so (503 + the
+        # staleness reason); it used to answer 200 "healthy" regardless.
+        if r_health.status_code != 503 or not any(
+                "last successful backup" in m for m in r_health.json().get("reasons", [])):
+            problems.append(f"GET /health did not report the stale backups: "
+                            f"{r_health.status_code} {r_health.text[:200]}")
 
         # report endpoints with runs present -> a downloadable attachment
         r_weekly = client.get("/report/weekly")

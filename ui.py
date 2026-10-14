@@ -33,7 +33,8 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import approvals, statuses
+from core import approvals, fy_rollover, statuses
+from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, get_fy_prefix, now_iso
 
@@ -486,7 +487,7 @@ async def dashboard(request: Request, status: str = ""):
 
     context = {
         "request": request,
-        "fy_prefix": get_fy_prefix(),
+        "fy_prefix": fy_rollover.effective_fy_prefix(cfg.paths.source_drive),
         "flash_html": flash_html,
         "auth_enabled": _auth_enabled(),
         "cloud_schedule": cloud_schedule,
@@ -541,7 +542,8 @@ async def status(request: Request):
 
     return JSONResponse({
         "firm": cfg.firm_name,
-        "fy_prefix": get_fy_prefix(),
+        "fy_prefix": fy_rollover.effective_fy_prefix(cfg.paths.source_drive),
+        "attention": _attention(db, cfg),
         "schedule": {
             "cloud_cron": cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
             "lan_cron": cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
@@ -575,19 +577,35 @@ async def status(request: Request):
     })
 
 
+def _attention(db, cfg) -> list[dict]:
+    try:
+        return compute_attention(db, cfg)
+    except Exception as e:  # noqa: BLE001 - say so instead of hiding it
+        logger.error(f"Attention banner could not be evaluated: {e}")
+        return [{"level": RED, "code": "attention_error",
+                 "message": "The dashboard could not check the backup state "
+                            f"({type(e).__name__}) - see the agent log."}]
+
+
 @app.get("/health")
 async def health():
-    """Unauthenticated health check for monitoring systems."""
+    """Unauthenticated health check for monitoring systems (plan WP9).
+
+    200 only when nothing needs attention (amber warnings are listed); 503
+    with the reasons when anything is red - or when health cannot even be
+    evaluated (that used to answer "healthy"). No paths, no secrets."""
     try:
-        src = _cfg().paths.source_drive
-        source_ok = await asyncio.to_thread(Path(src).exists)
-        return JSONResponse({
-            "status": "healthy",
-            "source_drive": str(src),
-            "source_accessible": source_ok,
-        })
-    except Exception:
-        return JSONResponse({"status": "healthy"}, status_code=200)
+        items = compute_attention(get_db(), _cfg())
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"status": "unknown",
+                             "reasons": [f"health could not be evaluated ({type(e).__name__})"]},
+                            status_code=503)
+    red = [i["message"] for i in items if i["level"] == RED]
+    warnings = [i["message"] for i in items if i["level"] != RED]
+    if red:
+        return JSONResponse({"status": "attention", "reasons": red, "warnings": warnings},
+                            status_code=503)
+    return JSONResponse({"status": "healthy", "warnings": warnings})
 
 
 @app.post("/trigger/cloud")

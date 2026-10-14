@@ -130,6 +130,13 @@ def classify_rollover(configured_fy: str, computed_fy: str) -> str:
     return JUMP if diff < 50 else CLOCK_BEHIND
 
 
+def effective_fy_prefix(source_drive: str) -> str:
+    """The FY the backups use: the source folder's FY leaf when it is one,
+    else the calendar FY. Shared by the cloud prefix and the dashboard so the
+    page never shows a different FY than the backups use (plan WP9)."""
+    return _fy_name(source_drive) or get_fy_prefix()
+
+
 def configured_fy(source_drive: str, lan_destination: str) -> str | None:
     """FY the backups are configured for (source leaf first), or None."""
     return _fy_name(source_drive) or _fy_name(lan_destination)
