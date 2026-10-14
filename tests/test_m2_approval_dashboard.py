@@ -152,3 +152,25 @@ def test_run_refuses_pending_used_and_expired(rig):
     resp = rig.client.post(f"/approvals/{used}/run", headers=KEY)
     assert resp.status_code == 409 and "expired" in resp.json()["detail"]
     assert rig.calls == []
+
+
+def test_rollover_approval_reruns_the_rollover_deployment(rig):
+    guards = [{"guard": "G6_FY_ROLLOVER", "reason": "final LAN backup failed",
+               "metrics": {"from_fy": "FY26-27", "to_fy": "FY27-28"}}]
+    aid = rig.db.open_approval_request(
+        leg="rollover", blocked_run_id="run-r", fy="FY26-27", guards=guards,
+        phrase=ap.request_phrase(guards), created_at=pendulum.now("UTC").isoformat())
+    resp = _approve(rig, aid, phrase="roll over to fy27-28")
+    assert resp.status_code == 202, resp.text
+    assert rig.calls == [{"name": "rollover-check/rollover-check",
+                          "parameters": {"approval_id": aid}, "timeout": 0}]
+
+
+def test_rollover_deployment_is_tagged_for_the_busy_check():
+    import inspect
+
+    import serve
+    src = inspect.getsource(serve)
+    block = src[src.index('name="rollover-check"'):]
+    tags_line = next(line for line in block.splitlines() if "tags=" in line)
+    assert '"rollover"' in tags_line

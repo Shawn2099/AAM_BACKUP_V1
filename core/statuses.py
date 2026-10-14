@@ -36,6 +36,9 @@ class RunStatus(StrEnum):
     LAN_ABANDONED = "LAN_ABANDONED"
     LAN_RUNNING = "LAN_RUNNING"
 
+    ROLLOVER_COMPLETE = "ROLLOVER_COMPLETE"
+    ROLLOVER_BLOCKED = "ROLLOVER_BLOCKED"
+
 
 class AuditStatus(StrEnum):
     """Integrity-audit verdicts (separate fact from the backup result)."""
@@ -57,6 +60,7 @@ SUCCESS_STATUSES: frozenset[str] = frozenset({
     RunStatus.CLOUD_COMPLETE,
     RunStatus.CLOUD_NO_CHANGES_COMPLETE,
     RunStatus.LAN_COMPLETE,
+    RunStatus.ROLLOVER_COMPLETE,
 }) | _LEGACY_SUCCESS
 
 NO_CHANGES_STATUSES: frozenset[str] = frozenset({
@@ -68,7 +72,7 @@ PARTIAL_STATUSES: frozenset[str] = frozenset({
 })
 
 BLOCKED_STATUSES: frozenset[str] = frozenset({
-    RunStatus.CLOUD_BLOCKED, RunStatus.LAN_BLOCKED,
+    RunStatus.CLOUD_BLOCKED, RunStatus.LAN_BLOCKED, RunStatus.ROLLOVER_BLOCKED,
 })
 
 RUNNING_STATUSES: frozenset[str] = frozenset({
@@ -122,6 +126,8 @@ _LABELS: dict[str, str] = {
     RunStatus.LAN_ABANDONED: "Abandoned",
     RunStatus.CLOUD_RUNNING: "Running",
     RunStatus.LAN_RUNNING: "Running",
+    RunStatus.ROLLOVER_COMPLETE: "FY rolled over",
+    RunStatus.ROLLOVER_BLOCKED: "Blocked - approval needed",
 }
 
 

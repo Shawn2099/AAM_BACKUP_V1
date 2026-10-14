@@ -341,21 +341,9 @@ def main():
         print("[launch] Warning: Dashboard thread not alive after start (may be race in tests)")
     _supervise_dashboard(dash_thread)
 
-    # Check for FY rollover before starting normal operations.
-    # On April 1, this runs a final backup of the closing FY, transitions
-    # old GCS data to ARCHIVE storage, creates new FY folders, and
-    # atomically updates config.yaml to point to the new FY paths.
-    # Backup flows load config fresh on every run, so they pick up the
-    # new paths without a restart.
-    from core.fy_rollover import RolloverError, rollover
-    try:
-        if rollover():
-            print("[launch] FY rollover completed — config updated for new FY")
-    except RolloverError as e:
-        print(f"[launch] FY rollover blocked: {e}")
-        print("[launch] Will retry on next scheduled run.")
-    except Exception as e:
-        print(f"[launch] Warning: FY rollover check failed (non-fatal): {e}")
+    # FY rollover is NOT run here (plan WP11): it ran synchronously before the
+    # scheduler started, outside the backup slot. The scheduled rollover-check
+    # deployment (daily) is the single entry point.
 
     # Create the global concurrency limit for backup serialization
     _ensure_concurrency_limit()

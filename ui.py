@@ -666,7 +666,12 @@ async def trigger_lan(request: Request):
 # approval_id, re-measures, and proceeds only if nothing got worse. Approving
 # needs dashboard sign-in (it is the accountable record of who decided).
 
-_APPROVAL_LABEL = {"cloud": "Cloud", "lan": "LAN"}
+# leg -> (label, deployment re-run on approval, has an `enabled` switch)
+_APPROVAL_TARGETS = {
+    "cloud": ("Cloud", "aam-backup/backup-cloud", True),
+    "lan": ("LAN", "aam-backup/backup-lan", True),
+    "rollover": ("FY rollover", "rollover-check/rollover-check", False),
+}
 
 
 def _approval_actor(request: Request) -> str:
@@ -707,7 +712,9 @@ def _load_open_approval(approval_id: str) -> dict:
 
 
 async def _ensure_leg_idle(leg: str) -> None:
-    if not getattr(_cfg(), leg).enabled:
+    if leg not in _APPROVAL_TARGETS:
+        raise HTTPException(status_code=409, detail=f"Unknown approval target {leg!r}.")
+    if _APPROVAL_TARGETS[leg][2] and not getattr(_cfg(), leg).enabled:
         raise HTTPException(status_code=409,
                             detail=f"The {leg} backup leg is disabled in configuration.")
     running = await _is_running(leg)
@@ -721,10 +728,10 @@ async def _ensure_leg_idle(leg: str) -> None:
 
 async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
     leg = req["leg"]
-    label = _APPROVAL_LABEL.get(leg, leg)
+    label, deployment, _ = _APPROVAL_TARGETS[leg]
     try:
         flow_run = await arun_deployment(
-            name=f"aam-backup/backup-{leg}",
+            name=deployment,
             parameters={"approval_id": req["approval_id"]},
             timeout=_trigger_timeout(request),
         )

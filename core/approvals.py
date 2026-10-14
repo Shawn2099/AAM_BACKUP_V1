@@ -30,6 +30,7 @@ _MUST_MATCH: dict[str, tuple[str, ...]] = {
     "G4_DESTINATION_IDENTITY": ("destination",),
     "G5_CANARY": ("destination",),
     "G1_SOURCE_HAS_FILES": ("source",),
+    "G6_FY_ROLLOVER": ("from_fy", "to_fy"),
 }
 
 
@@ -64,6 +65,8 @@ def confirmation_phrase(guard: str, metrics: dict) -> str:
         return "INITIALISE DESTINATION"
     if guard == "G1_SOURCE_HAS_FILES":
         return "MIRROR EMPTY SOURCE"
+    if guard == "G6_FY_ROLLOVER":
+        return f"ROLL OVER TO {metrics.get('to_fy', '?')}"
     return f"APPROVE {guard}"
 
 

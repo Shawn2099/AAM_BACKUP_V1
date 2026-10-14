@@ -209,6 +209,39 @@ def g5_canary(canary_present: bool | None, destination_has_files: bool | None,
     )
 
 
+# ── G6: FY rollover only in the normal case (owner DEC-4) ─────────────────
+
+def g6_fy_rollover(from_fy: str, to_fy: str, kind: str, final_status: dict) -> GuardResult:
+    """Automatic rollover only for exactly the next FY with every enabled
+    leg's final backup of the closing FY complete; anything else asks a
+    human. (A clock that is BEHIND is never a rollover - the caller refuses
+    it before this guard: fix the clock, there is nothing to approve.)"""
+    from core.fy_rollover import FORWARD
+    from core.statuses import is_success
+
+    name = "G6_FY_ROLLOVER"
+    metrics = dict(from_fy=from_fy, to_fy=to_fy, kind=kind, final_status=dict(final_status))
+    if kind != FORWARD:
+        return _block(
+            name,
+            f"The computer date says the current FY is {to_fy}, but the backups are set up "
+            f"for {from_fy} - more than one FY later. Check the date and the FY folders; "
+            f"approve only if moving straight to {to_fy} is intended.",
+            **metrics,
+        )
+    failed = sorted(leg for leg, status in final_status.items() if not is_success(status))
+    if failed:
+        return _block(
+            name,
+            f"The final backup of {from_fy} did not complete for: {', '.join(failed)} "
+            f"({', '.join(f'{leg}={final_status[leg]}' for leg in failed)}). Rolling over now "
+            f"would leave {from_fy}'s last changes on that leg unprotected. Fix it and the "
+            "daily check retries, or approve to roll over anyway.",
+            **metrics,
+        )
+    return _pass(name, f"{from_fy} -> {to_fy}: next FY and every final backup complete", **metrics)
+
+
 # ── Enforcement (shared by both legs) ─────────────────────────────────────
 
 class GuardBlocked(RuntimeError):

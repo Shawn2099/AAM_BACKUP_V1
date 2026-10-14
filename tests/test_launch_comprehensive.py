@@ -230,7 +230,6 @@ class TestMainPrefectApiReady:
             "launch.time.sleep": patch("launch.time.sleep"),
             "launch.threading.Thread": patch("launch.threading.Thread"),
             "models.config.load_config": patch("models.config.load_config", return_value=mock_cfg),
-            "core.fy_rollover.rollover": patch("core.fy_rollover.rollover", return_value=False),
             "serve.deployments": patch("serve.deployments", return_value=mock_deployments),
         }
 
@@ -245,7 +244,6 @@ class TestMainPrefectApiReady:
              patches["launch.time.sleep"], \
              patches["launch.threading.Thread"], \
              patches["models.config.load_config"], \
-             patches["core.fy_rollover.rollover"], \
              patches["serve.deployments"]:
             try:
                 main()
@@ -269,7 +267,6 @@ class TestMainPrefectApiReady:
              patches["launch.time.sleep"], \
              patches["launch.threading.Thread"], \
              patches["models.config.load_config"], \
-             patches["core.fy_rollover.rollover"], \
              patches["serve.deployments"]:
             try:
                 main()
@@ -297,17 +294,16 @@ class TestMainPrefectApiReady:
 
 
 class TestMainFyRollover:
-    def _run_main(self, rollover_return=None, rollover_side_effect=None):
+    """Plan WP11: the agent no longer rolls the FY over at boot (it ran
+    synchronously before the scheduler, outside the backup slot). The daily
+    rollover-check deployment is the single entry point."""
+
+    def test_main_never_touches_the_rollover(self):
         from launch import main
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
         mock_deployments = tuple(MagicMock() for _ in range(5))  # G10: 5 deployments
-        rollover_kwargs = {}
-        if rollover_return is not None:
-            rollover_kwargs["return_value"] = rollover_return
-        if rollover_side_effect is not None:
-            rollover_kwargs["side_effect"] = rollover_side_effect
         with patch("launch._check_prefect_api", return_value=True), \
              patch("launch._run_dashboard"), \
              patch("launch._ensure_concurrency_limit"), \
@@ -316,22 +312,15 @@ class TestMainFyRollover:
              patch("launch.time.sleep"), \
              patch("launch.threading.Thread"), \
              patch("models.config.load_config", return_value=mock_cfg), \
-             patch("core.fy_rollover.rollover", **rollover_kwargs), \
+             patch("core.fy_rollover.create_new_fy_folders") as folders, \
+             patch("core.fy_rollover.update_config_yaml") as update, \
              patch("serve.deployments", return_value=mock_deployments):
             try:
                 main()
             except Exception:
                 pass
-
-    def test_rollover_success(self):
-        self._run_main(rollover_return=True)
-
-    def test_rollover_failure_non_fatal(self):
-        from core.fy_rollover import RolloverError
-        self._run_main(rollover_side_effect=RolloverError("blocked"))
-
-    def test_rollover_exception_non_fatal(self):
-        self._run_main(rollover_side_effect=Exception("unexpected"))
+        folders.assert_not_called()
+        update.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -354,6 +343,5 @@ class TestMainShutdown:
              patch("launch.time.sleep"), \
              patch("launch.threading.Thread"), \
              patch("models.config.load_config", return_value=mock_cfg), \
-             patch("core.fy_rollover.rollover", return_value=False), \
              patch("serve.deployments", return_value=mock_deployments):
             main()

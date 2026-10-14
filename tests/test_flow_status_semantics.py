@@ -337,23 +337,14 @@ class TestCloudTimeoutMessage:
 # ═══════════════════════════════════════════════════════════════
 
 class TestRolloverCheckFlow:
-    @patch("core.fy_rollover.rollover", return_value=False)
-    def test_no_rollover_needed(self, mock_rollover):
-        assert flow.rollover_check_flow.fn("config.yaml") == "NO_ROLLOVER_NEEDED"
-        mock_rollover.assert_called_once_with(config_path="config.yaml")
+    """G10 kept: the flow is a daily, idempotent no-op until the FY changes.
+    The rollover decisions themselves (forward-only, final backups through
+    the pipelines, G6 approval) are covered in tests/test_m2_rollover.py."""
 
-    @patch("core.fy_rollover.rollover", return_value=True)
-    def test_rollover_completed(self, mock_rollover):
-        assert flow.rollover_check_flow.fn("config.yaml") == "ROLLOVER_COMPLETED"
-
+    @patch("flow.log_retention_task")
+    @patch("flow.get_fy_prefix", return_value="FY26-27")
     @patch("flow.load_config")
-    @patch("flow.send_failure_alert", return_value=True)
-    @patch("core.fy_rollover.rollover")
-    def test_blocked_alerts_and_raises(self, mock_rollover, mock_alert, mock_cfg):
-        from core.fy_rollover import RolloverError
-        mock_rollover.side_effect = RolloverError("source drive E: not mounted")
+    def test_no_rollover_needed(self, mock_cfg, _fy, _ret):
         mock_cfg.return_value = _make_config()
-        with pytest.raises(RolloverError, match="not mounted"):
-            flow.rollover_check_flow.fn("config.yaml")
-        mock_alert.assert_called_once()
-        assert "BLOCKED" in mock_alert.call_args.args[2]
+        assert flow.rollover_check_flow.fn("config.yaml") == "NO_ROLLOVER_NEEDED"
+

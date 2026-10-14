@@ -520,6 +520,24 @@ class ApprovalsConfig(StrictModel):
     )
 
 
+class RolloverConfig(StrictModel):
+    """FY rollover (plan WP11, owner DEC-4)."""
+
+    source_placeholder_name: str = Field(
+        default="README_FY.txt", min_length=1, max_length=100,
+        description="Small text file written into the NEW source FY folder at rollover "
+                    "(never overwritten), so the first backups of the new FY have a real "
+                    "file and guard G1 does not block an intentionally new, empty FY.",
+    )
+
+    @field_validator("source_placeholder_name")
+    @classmethod
+    def plain_file_name(cls, v: str) -> str:
+        if any(c in v for c in "\\/:") or v.strip(".") == "":
+            raise ValueError(f"rollover.source_placeholder_name must be a plain file name, got {v!r}")
+        return v
+
+
 class HealthConfig(StrictModel):
     """Pre-backup health check tuning."""
     max_clock_skew_seconds: int = Field(
@@ -646,6 +664,7 @@ class AppConfig(StrictModel):
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     guards: GuardsConfig = Field(default_factory=GuardsConfig)
     approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
+    rollover: RolloverConfig = Field(default_factory=RolloverConfig)
 
     @property
     def run_logs_dir(self) -> Path:

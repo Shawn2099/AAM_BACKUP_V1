@@ -234,30 +234,49 @@ def test_w6_backup_flow_failure_alert_policy(rig, monkeypatch):
     assert exc is not None and len(rig["alerts"]) == 2
 
 
-def test_w6_rollover_check_flow(rig):
-    """The scheduled rollover flow: final backup -> folders -> config.yaml rewrite."""
+def test_w6_rollover_check_flow(rig, monkeypatch):
+    """The scheduled rollover flow end to end with the real tools (M2 2.6):
+    final backups through the normal pipelines -> new folders + placeholder ->
+    config backup -> config.yaml rewrite, all recorded.
+
+    The clock is pinned to the NEXT FY: the rig's FY26-26 folders are then
+    exactly one FY behind (the forward-only rule no longer treats any
+    difference as a rollover - that was probe P4's backward-rollover bug)."""
     flow = rig["flow"]
     before = rig["cfg"].model_dump()["paths"]
+    monkeypatch.setattr(flow, "get_fy_prefix", lambda *a, **k: "FY27-28")
 
     result = flow.rollover_check_flow(config_path=str(rig["cfg_path"]))
     after_path = rig["sandbox"] / "config.yaml"
 
-    from core.time_utils import get_fy_prefix
     from models.config import load_config
 
     reloaded = load_config(str(after_path))
+    rows = [r["status"] for r in _db_rows(after_path)[0]]
+    new_src = Path(reloaded.paths.source_drive)
+    placeholder = new_src / reloaded.rollover.source_placeholder_name
+    backups = sorted(after_path.parent.glob("config.yaml.bak-*"))
     L.record("W6.rollover_flow",
              "rollover_check_flow performs the real rollover and rewrites config.yaml",
              f"flow returned={result!r} | old source={before['source_drive']!r} | "
              f"new source={reloaded.paths.source_drive!r} | new lan={reloaded.paths.lan_destination!r} | "
-             f"expected FY={get_fy_prefix()} | "
-             f"new source folder exists={Path(reloaded.paths.source_drive).exists()} | "
-             f"run_history={[r['status'] for r in _db_rows(after_path)[0]]}",
-             "OK — real rollover executed through the flow (config atomically rewritten to the new FY)"
-             if result == "ROLLOVER_COMPLETED" and reloaded.paths.source_drive.endswith(get_fy_prefix())
+             f"placeholder={placeholder.is_file()} | config backups={len(backups)} | "
+             f"run_history={rows}",
+             "OK — final backups via the pipelines, config atomically rewritten to the next FY"
+             if result == "ROLLOVER_COMPLETED" and reloaded.paths.source_drive.endswith("FY27-28")
              else f"ISSUE — returned {result!r}, source={reloaded.paths.source_drive!r}")
-    print(f"[W6-rollover] {result} -> {reloaded.paths.source_drive}")
+    print(f"[W6-rollover] {result} -> {reloaded.paths.source_drive} rows={rows}")
     assert result == "ROLLOVER_COMPLETED"
+    assert reloaded.paths.source_drive.endswith("FY27-28")
+    assert reloaded.paths.lan_destination.endswith("FY27-28")
+    assert placeholder.is_file(), "new FY source folder must hold the placeholder (G1)"
+    assert (Path(L._to_unc(rig["nas"].parent / "FY27-28")) / ".AAM_TARGET_MOUNTED").is_file() \
+        or (rig["nas"].parent / "FY27-28" / ".AAM_TARGET_MOUNTED").is_file()
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") != \
+        after_path.read_text(encoding="utf-8")
+    assert "ROLLOVER_COMPLETE" in rows
+    assert any(s in ("LAN_COMPLETE",) for s in rows) and \
+        any(s in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE") for s in rows)
 
 
 def test_w6_integrity_audit_flow(rig, monkeypatch):

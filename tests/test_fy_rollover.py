@@ -5,7 +5,6 @@ run_archive_transition, detect_rollover.
 """
 
 import os
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -139,96 +138,60 @@ class TestUpdateConfigYaml:
 
 
 class TestRunArchiveTransition:
+    """gcloud runs through run_tool (WP11): fake_run_tool returns one result for
+    every call in the test."""
+
+    def _run(self, key, **fake):
+        from test_support.fake_tools import fake_run_tool
+        with patch("core.fy_rollover._resolve_gcloud", return_value="gcloud"), \
+             fake_run_tool("core.fy_rollover", **fake) as calls:
+            ok = run_archive_transition(bucket="my-bucket", old_fy="FY25-26",
+                                        gcs_key_path=str(key), auth_timeout=30,
+                                        archive_timeout=600)
+        return ok, calls
+
     def test_gcloud_not_found(self):
         """gcloud not found → False."""
         with patch("core.fy_rollover._resolve_gcloud", return_value=None):
-            result = run_archive_transition(
-                bucket="test-bucket",
-                old_fy="FY25-26",
-                gcs_key_path="key.json",
-            )
-            assert result is False
+            assert run_archive_transition(bucket="test-bucket", old_fy="FY25-26",
+                                          gcs_key_path="key.json") is False
 
     def test_auth_failure(self, tmp_path):
-        """gcloud auth fails → False."""
+        """gcloud auth fails → False, archive never attempted."""
         key = tmp_path / "key.json"
         key.write_text('{"type": "service_account"}')
-
-        with patch("core.fy_rollover._resolve_gcloud", return_value="gcloud"), \
-             patch("core.fy_rollover.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stderr="auth failed")
-            result = run_archive_transition(
-                bucket="test-bucket",
-                old_fy="FY25-26",
-                gcs_key_path=str(key),
-            )
-            assert result is False
+        ok, calls = self._run(key, exit_code=1, stderr="auth failed")
+        assert ok is False and len(calls) == 1 and calls[0]["name"] == "gcloud-auth"
 
     def test_archive_success(self, tmp_path):
-        """Successful archive transition → True."""
+        """Successful auth + archive → True; key injected via the environment."""
         key = tmp_path / "key.json"
         key.write_text('{"type": "service_account"}')
-
-        with patch("core.fy_rollover._resolve_gcloud", return_value="gcloud"), \
-             patch("core.fy_rollover.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stderr="")
-            result = run_archive_transition(
-                bucket="test-bucket",
-                old_fy="FY25-26",
-                gcs_key_path=str(key),
-            )
-            assert result is True
+        ok, calls = self._run(key, exit_code=0)
+        assert ok is True and [c["name"] for c in calls] == ["gcloud-auth", "gcloud-archive"]
+        assert [c["timeout_s"] for c in calls] == [30, 600]
 
     def test_archive_command_construction(self, tmp_path):
         """Command includes --storage-class=ARCHIVE and --recursive."""
         key = tmp_path / "key.json"
         key.write_text('{"type": "service_account"}')
-
-        with patch("core.fy_rollover._resolve_gcloud", return_value="gcloud"), \
-             patch("core.fy_rollover.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stderr="")
-            run_archive_transition(
-                bucket="my-bucket",
-                old_fy="FY25-26",
-                gcs_key_path=str(key),
-            )
-
-            cmd = mock_run.call_args[0][0]
-            assert "storage" in cmd
-            assert "objects" in cmd
-            assert "update" in cmd
-            assert "gs://my-bucket/FY25-26/" in cmd
-            assert "--storage-class=ARCHIVE" in cmd
-            assert "--recursive" in cmd
+        _, calls = self._run(key, exit_code=0)
+        cmd = calls[-1]["argv"]
+        assert cmd[1:4] == ["storage", "objects", "update"]
+        assert "gs://my-bucket/FY25-26/" in cmd
+        assert "--storage-class=ARCHIVE" in cmd and "--recursive" in cmd
 
     def test_timeout(self, tmp_path):
-        """TimeoutExpired → False."""
+        """Timeout → False (run_tool killed the process tree)."""
         key = tmp_path / "key.json"
         key.write_text('{"type": "service_account"}')
-
-        with patch("core.fy_rollover._resolve_gcloud", return_value="gcloud"), \
-             patch("core.fy_rollover.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gcloud", timeout=600)
-            result = run_archive_transition(
-                bucket="test-bucket",
-                old_fy="FY25-26",
-                gcs_key_path=str(key),
-            )
-            assert result is False
+        ok, _ = self._run(key, timed_out=True)
+        assert ok is False
 
     def test_no_key_file_uses_ambient_auth(self, tmp_path):
         """No key file → skips auth, goes straight to archive."""
-        with patch("core.fy_rollover._resolve_gcloud", return_value="gcloud"), \
-             patch("core.fy_rollover.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stderr="")
-            result = run_archive_transition(
-                bucket="test-bucket",
-                old_fy="FY25-26",
-                gcs_key_path=str(tmp_path / "nonexistent.json"),
-            )
-            assert result is True
-            # Only one subprocess call (the archive command, no auth)
-            assert mock_run.call_count == 1
+        ok, calls = self._run(tmp_path / "nonexistent.json", exit_code=0)
+        assert ok is True and [c["name"] for c in calls] == ["gcloud-archive"]
 
 
 class TestDetectRollover:

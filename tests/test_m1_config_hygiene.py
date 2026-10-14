@@ -109,10 +109,10 @@ def test_config_path_env_override(monkeypatch, tmp_path):
 def test_rollover_default_config_path_is_the_shared_constant():
     import inspect
 
-    from core import fy_rollover
+    import flow
 
-    default = inspect.signature(fy_rollover.rollover).parameters["config_path"].default
-    assert default is None or Path(default).is_absolute()
+    default = inspect.signature(flow.rollover_check_flow.fn).parameters["config_path"].default
+    assert Path(default).is_absolute()
 
 
 # ── M1 1.8: bool exit codes are never usable (kept with the M1 tests)

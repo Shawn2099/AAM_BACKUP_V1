@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import approvals, guards, permissions, statuses
+from core import approvals, fy_rollover, guards, permissions, statuses
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import (
@@ -1592,24 +1592,26 @@ def log_retention_task(config) -> dict:
 
 
 @flow(name="rollover-check", log_prints=False)
-def rollover_check_flow(config_path: str = CONFIG_PATH):
-    """Daily FY-rollover check (G10 fix).
+def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None = None):
+    """Daily FY-rollover check (plan WP11, owner DEC-4). The single entry
+    point: the boot-time rollover in launch.py is gone.
 
-    The rollover call in launch.py runs only when the agent process starts.
-    On a 24x7 server that is rarely rebooted, the April 1 rollover would
-    silently never happen. This scheduled deployment runs the SAME idempotent
-    rollover() every day: a no-op all year, and the real rollover on the
-    boundary (idempotency was verified with crash-injection probes).
+    * Forward only: today's FY must be exactly the next FY. A clock that is
+      BEHIND never rolls back (probe P4) and is not approvable - fix the
+      clock. More than one FY ahead needs a human (G6).
+    * The final backup of the closing FY runs through the NORMAL pipelines
+      (backup slot, guards, permission checks, run rows, alerts). Every
+      enabled leg must end COMPLETE, otherwise G6 blocks and asks a human.
+    * The switch runs inside the backup slot: new FY folders (+ placeholder
+      so the new, empty FY is not mistaken for a missing drive), config
+      backup, atomic config update, then the archive transition (slow,
+      non-blocking, last).
+    * One run_history row (mode "rollover") per decision.
 
-    Returns:
-        "ROLLOVER_COMPLETED" | "NO_ROLLOVER_NEEDED"
-    Raises:
-        RolloverError — rollover is BLOCKED (e.g. source not mounted). The
-        flow run fails in the Prefect console and an alert email is sent, so
-        a blocked rollover is visible daily until resolved.
+    Returns "ROLLOVER_COMPLETED" | "NO_ROLLOVER_NEEDED".
+    Raises RolloverError when blocked (the Prefect run fails; the attention
+    email points to the dashboard; the check repeats daily).
     """
-    from core.fy_rollover import RolloverError, rollover
-
     # Daily housekeeping rides on this daily deployment (no extra schedule).
     # Runs first so a blocked rollover can never stop log retention.
     try:
@@ -1617,29 +1619,104 @@ def rollover_check_flow(config_path: str = CONFIG_PATH):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Log retention skipped (config load failed): {e}")
 
-    try:
-        if rollover(config_path=config_path):
-            logger.info("FY rollover completed (scheduled check) - config updated for new FY")
-            return "ROLLOVER_COMPLETED"
+    config = load_config(config_path)
+    source, lan_dest = config.paths.source_drive, config.paths.lan_destination
+    from_fy = fy_rollover.configured_fy(source, lan_dest)
+    if from_fy is None:
+        fy_rollover.detect_rollover(source, lan_dest)   # logs the opt-out warning
         return "NO_ROLLOVER_NEEDED"
-    except RolloverError as e:
-        logger.error(f"FY rollover BLOCKED: {e}")
+    to_fy = get_fy_prefix()
+    kind = fy_rollover.classify_rollover(from_fy, to_fy)
+    if kind == fy_rollover.NONE:
+        return "NO_ROLLOVER_NEEDED"
+
+    run_id = _stable_run_id("rollover")
+    started_at = now_iso()
+    monotonic_start = time.monotonic()
+    metrics = {"from_fy": from_fy, "to_fy": to_fy, "kind": kind}
+
+    def record(status: str, error: str | None, extra: dict) -> None:
         try:
-            cfg = load_config(config_path)
-            send_failure_alert(
-                cfg.notifications, cfg.firm_name,
-                (
-                    f"FY Rollover BLOCKED: {e} The fiscal-year transition "
-                    "(new FY folders + config update) did not happen. Until "
-                    "this is resolved, new-FY data may not be backed up. "
-                    "The scheduled check retries daily."
-                ),
-                {"mode": "rollover", "status": "ROLLOVER_BLOCKED", "exit_code": None},
-                now_iso(),
+            _record_run(config.paths.database_path, run_id, "rollover", started_at, status,
+                        0 if status == "ROLLOVER_COMPLETE" else -1, error,
+                        extended_metrics=json.dumps({**metrics, **extra}, default=str),
+                        busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
+                        vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
+                        synchronous=config.maintenance.sqlite_synchronous,
+                        monotonic_start=monotonic_start)
+        except Exception as e:  # noqa: BLE001 - the decision itself stands
+            logger.critical(f"Failed to record rollover run {run_id}: {e}")
+
+    if kind == fy_rollover.CLOCK_BEHIND:
+        msg = (f"FY rollover refused: the computer clock says the current FY is {to_fy}, "
+               f"which is EARLIER than the configured {from_fy}. The clock is wrong; the "
+               "backups keep using " + from_fy + ". Correct the server date/time "
+               "(w32tm /resync). Nothing was changed.")
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {})
+        notify(config, AlertEvent(
+            key="rollover:clock_behind", kind="ACTION_REQUIRED", mode="rollover",
+            title="Server clock is behind - FY rollover refused", message=msg,
+            status="ROLLOVER_BLOCKED", occurred_at=started_at))
+        raise fy_rollover.RolloverError(msg)
+
+    logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
+    final_status, final_errors = _run_final_backups(config, run_id)
+    g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
+    approved, approval_record = _apply_approval(config, "rollover", approval_id, run_id, [g6])
+    try:
+        guard_record = guards.enforce("rollover", [g6], approved_guards=approved,
+                                      **metrics, **approval_record)
+    except guards.GuardBlocked as e:
+        record("ROLLOVER_BLOCKED", str(e), {"guards": e.record, "final_errors": final_errors})
+        _open_block_request(config, "rollover", run_id, e.record, started_at)
+        raise fy_rollover.RolloverError(str(e)) from e
+
+    src_root = fy_rollover._parent_path(source)
+    lan_root = fy_rollover._parent_path(lan_dest)
+    with _backup_slot(config):
+        fy_rollover.create_new_fy_folders(
+            src_root, lan_root, to_fy,
+            placeholder_name=config.rollover.source_placeholder_name)
+        config_backup = fy_rollover.backup_config_file(config_path)
+        fy_rollover.update_config_yaml(config_path, src_root, lan_root, to_fy)
+        archive_ok = None
+        if config.cloud.enabled:
+            archive_ok = fy_rollover.run_archive_transition(
+                bucket=config.cloud.bucket, old_fy=from_fy,
+                gcs_key_path=config.paths.gcs_key_path,
+                auth_timeout=config.health.rollover_auth_timeout_seconds,
+                archive_timeout=config.health.rollover_archive_timeout_seconds,
             )
-        except Exception as alert_err:
-            logger.warning(f"Could not send rollover-blocked alert: {alert_err}")
-        raise
+            if not archive_ok:
+                logger.warning(f"Archive transition of {from_fy} failed - the rollover itself "
+                               "is complete; re-run the transition manually (see logs)")
+    record("ROLLOVER_COMPLETE", None, {"guards": guard_record, "final_status": final_status,
+                                       "archive_ok": archive_ok,
+                                       "config_backup": str(config_backup)})
+    logger.info(f"FY rollover complete: {from_fy} -> {to_fy} | archive_ok={archive_ok}")
+    return "ROLLOVER_COMPLETED"
+
+
+def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
+    """Final backup of the closing FY on every enabled leg, through the normal
+    pipelines (config still points at the closing FY). Returns
+    ({leg: terminal status}, {leg: error})."""
+    status: dict = {}
+    errors: dict = {}
+    for leg, enabled, pipeline in (("cloud", config.cloud.enabled, _run_cloud_pipeline),
+                                   ("lan", config.lan.enabled, _run_lan_pipeline)):
+        if not enabled:
+            continue
+        try:
+            result = pipeline(config, f"{run_id}-final-{leg}", now_iso(), time.monotonic())
+            status[leg] = result.get("status", "UNKNOWN")
+        except Exception as e:  # noqa: BLE001 - recorded; G6 blocks on it
+            status[leg] = f"{leg.upper()}_BLOCKED" if isinstance(e, guards.GuardBlocked) \
+                else f"{leg.upper()}_NOT_COMPLETE"
+            errors[leg] = str(e)
+            logger.error(f"FY rollover: final {leg} backup did not complete: {e}")
+    return status, errors
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -740,32 +740,32 @@ class TestFyRolloverCharacterization:
 
     def test_archive_transition_success(self, tmp_path):
         from core.fy_rollover import run_archive_transition
+        from test_support.fake_tools import fake_run_tool
 
         key = tmp_path / "key.json"
         key.write_text("{}")
         with patch("core.fy_rollover._resolve_gcloud", return_value="/usr/bin/gcloud"), \
-             patch("core.fy_rollover.subprocess.run") as m:
-            m.return_value = MagicMock(returncode=0, stdout="", stderr="")
+             fake_run_tool("core.fy_rollover", exit_code=0):
             assert run_archive_transition("bucket", "FY25-26", str(key)) is True
 
     def test_archive_transition_nonzero_returns_false(self, tmp_path):
         from core.fy_rollover import run_archive_transition
+        from test_support.fake_tools import fake_run_tool
 
         key = tmp_path / "key.json"
         key.write_text("{}")
         with patch("core.fy_rollover._resolve_gcloud", return_value="/usr/bin/gcloud"), \
-             patch("core.fy_rollover.subprocess.run") as m:
-            m.return_value = MagicMock(returncode=1, stdout="", stderr="denied")
+             fake_run_tool("core.fy_rollover", exit_code=1, stderr="denied"):
             assert run_archive_transition("bucket", "FY25-26", str(key)) is False
 
     def test_archive_transition_timeout_returns_false(self, tmp_path):
         from core.fy_rollover import run_archive_transition
+        from test_support.fake_tools import fake_run_tool
 
         key = tmp_path / "key.json"
         key.write_text("{}")
         with patch("core.fy_rollover._resolve_gcloud", return_value="/usr/bin/gcloud"), \
-             patch("core.fy_rollover.subprocess.run",
-                   side_effect=subprocess.TimeoutExpired(cmd="gcloud", timeout=1)):
+             fake_run_tool("core.fy_rollover", timed_out=True):
             assert run_archive_transition("bucket", "FY25-26", str(key)) is False
 
     def test_resolve_gcloud_returns_str_or_none(self):
@@ -774,64 +774,20 @@ class TestFyRolloverCharacterization:
         result = _resolve_gcloud()
         assert result is None or isinstance(result, str)
 
-    def test_run_final_backup_both_disabled(self):
-        from core.fy_rollover import run_final_backup
+    # run_final_backup()/rollover() were removed in M2 2.6 (plan WP11): the
+    # final backup now runs through the normal pipelines and the orchestration
+    # is flow.rollover_check_flow - characterised in tests/test_m2_rollover.py.
 
-        lan_cfg = MagicMock(enabled=False)
-        cloud_cfg = MagicMock(enabled=False)
-        config = MagicMock()
-        config.wol.enabled = False
-        assert run_final_backup(
-            "E:/src", r"\\nas\share", lan_cfg, cloud_cfg, MagicMock(), config, "FY25-26"
-        ) == (False, False)
+    def test_rollover_no_fy_is_a_deliberate_no_op(self):
+        import flow
 
-    def test_run_final_backup_cloud_complete(self):
-        from core.fy_rollover import run_final_backup
-
-        lan_cfg = MagicMock(enabled=False)
-        cloud_cfg = MagicMock(enabled=True)
-        config = MagicMock()
-        config.wol.enabled = False
-        paths = MagicMock()
-        with patch("core.fy_rollover.run_cloud_sync",
-                   return_value={"status": "CLOUD_COMPLETE", "exit_code": 0}):
-            cloud_ok, lan_ok = run_final_backup(
-                "E:/src", r"\\nas\share", lan_cfg, cloud_cfg, paths, config, "FY25-26"
-            )
-        assert cloud_ok is True and lan_ok is False
-
-    def test_run_final_backup_cloud_runtime_error_is_caught(self):
-        from core.fy_rollover import run_final_backup
-
-        lan_cfg = MagicMock(enabled=False)
-        cloud_cfg = MagicMock(enabled=True)
-        config = MagicMock()
-        config.wol.enabled = False
-        with patch("core.fy_rollover.run_cloud_sync", side_effect=OSError("disk gone")):
-            cloud_ok, lan_ok = run_final_backup(
-                "E:/src", r"\\nas\share", lan_cfg, cloud_cfg, MagicMock(), config, "FY25-26"
-            )
-        assert cloud_ok is False and lan_ok is False
-
-    def test_rollover_no_fy_returns_false(self, tmp_path):
-        from core.fy_rollover import rollover
-
-        runtime = tmp_path / "runtime"
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text(
-            "firm_name: Test\n"
-            "paths:\n"
-            "  source_drive: E:/data\n"
-            "  lan_destination: '\\\\nas\\share'\n"
-            f"  runtime_dir: '{runtime.as_posix()}'\n"
-            "cloud:\n  enabled: false\n"
-            "lan:\n  enabled: true\n"
-            "wol:\n  enabled: false\n"
-            "dashboard:\n  auth_enabled: false\n",
-            encoding="utf-8",
-        )
-        # No FYxx-xx folder anywhere -> rollover is a deliberate no-op.
-        assert rollover(str(cfg)) is False
+        cfg = MagicMock()
+        cfg.paths.source_drive = "E:/data"
+        cfg.paths.lan_destination = "\\\\nas\\share"
+        with patch("flow.load_config", return_value=cfg), patch("flow.log_retention_task"), \
+             patch("flow._run_lan_pipeline") as lan:
+            assert flow.rollover_check_flow.fn("cfg.yaml") == "NO_ROLLOVER_NEEDED"
+        lan.assert_not_called()
 
 
 # ══════════════════════════════════════════════════════════════════════════

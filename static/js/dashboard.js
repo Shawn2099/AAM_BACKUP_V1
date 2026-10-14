@@ -234,17 +234,17 @@ window.addEventListener('DOMContentLoaded', updateStatus);
 function escHtml(text) { return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 var _approvalsSig = '';
 function approvalCard(a, authEnabled) {
-    var leg = a.leg === 'cloud' ? 'Cloud' : 'LAN';
+    var leg = a.leg === 'cloud' ? 'Cloud backup' : (a.leg === 'rollover' ? 'FY rollover' : 'LAN backup');
     var reasons = (a.guards || []).map(function(g) { return '<li>' + escHtml(g.reason) + '</li>'; }).join('');
     var id = escHtml(a.approval_id);
     var html = '<div class="approval-card ' + (a.status === 'APPROVED' ? 'approved' : 'pending') + '" style="border:2px solid ' + (a.status === 'APPROVED' ? '#d97706' : '#dc2626') + ';border-radius:0.75rem;padding:1rem 1.25rem;margin-bottom:1rem;background:rgba(220,38,38,0.06)">';
-    html += '<h2 style="margin:0 0 0.5rem 0">' + leg + ' backup blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
+    html += '<h2 style="margin:0 0 0.5rem 0">' + leg + ' blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
     html += '<ul style="margin:0 0 0.5rem 1.25rem">' + reasons + '</ul>';
-    html += '<p style="font-size:0.8rem;color:#6b7280">Nothing was copied or deleted. Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';
+    html += '<p style="font-size:0.8rem;color:#6b7280">' + (a.leg === 'rollover' ? 'Nothing was changed.' : 'Nothing was copied or deleted.') + ' Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';
     if (!authEnabled) {
         html += '<p style="font-weight:600">Approving needs dashboard sign-in: set <code>dashboard.auth_enabled: true</code> in config.yaml.</p>';
     } else if (a.status === 'PENDING') {
-        html += '<p>To run this backup <b>once</b> anyway, type <code>' + escHtml(a.phrase) + '</code> and approve. The backup re-checks first and stops again if anything got worse.</p>';
+        html += '<p>To run this <b>once</b> anyway, type <code>' + escHtml(a.phrase) + '</code> and approve. The backup re-checks first and stops again if anything got worse.</p>';
         html += '<input id="phrase-' + id + '" type="text" autocomplete="off" placeholder="' + escHtml(a.phrase) + '" style="padding:0.4rem;margin-right:0.5rem;min-width:16rem">';
         html += '<button class="btn-trigger" style="background:#dc2626" onclick="approvalAction(\'' + id + '\', \'approve\')">Approve this backup once</button> ';
         html += '<button class="btn-trigger" style="background:#4b5563" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';

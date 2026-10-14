@@ -61,11 +61,13 @@ def test_rollover_check_runs_retention_even_when_rollover_blocked(tmp_path):
     from core.fy_rollover import RolloverError
 
     cfg = _cfg(tmp_path)
+    # configured FY25-26 but the clock says FY24-25 -> rollover refused (blocked)
+    cfg.paths.source_drive = "E:\\DATA\\FY25-26"
     with patch.object(flow, "load_config", return_value=cfg), \
          patch.object(flow, "log_retention_task") as retention, \
-         patch("core.fy_rollover.rollover", side_effect=RolloverError("blocked")), \
-         patch.object(flow, "send_failure_alert"):
-        with pytest.raises(RolloverError):
+         patch.object(flow, "get_fy_prefix", return_value="FY24-25"), \
+         patch.object(flow, "_record_run"), patch.object(flow, "notify"):
+        with pytest.raises(RolloverError):              # clock behind -> refused
             flow.rollover_check_flow.fn("cfg.yaml")
     retention.assert_called_once_with(cfg)
 

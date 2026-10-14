@@ -74,15 +74,15 @@ def _deployments():
         )
     )
 
-    # G10: scheduled FY-rollover check. A no-op except on the fiscal-year
-    # boundary; required because the boot-time check in launch.py only runs
-    # when the agent process starts (24x7 servers are rarely rebooted).
+    # G10 / WP11: scheduled FY-rollover check - the ONLY rollover entry point
+    # (the boot-time check in launch.py was removed). Tagged "rollover" so the
+    # dashboard can tell it is running before re-running an approved rollover.
     deployments_out.append(
         rollover_check_flow.to_deployment(
             name="rollover-check",
             parameters={"config_path": CONFIG_PATH},
             schedules=[Cron(config.schedule.rollover_cron, tz)],
-            tags=["maintenance"],
+            tags=["maintenance", "rollover"],
             description="Daily FY rollover check - idempotent; runs the real rollover on April 1",
         )
     )

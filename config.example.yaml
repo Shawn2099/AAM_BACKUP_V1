@@ -235,3 +235,15 @@ approvals:
   # How much worse the re-measured numbers may be than approved, in % (0–100).
   # 0 = not worse at all.
   tolerance_percent: 0
+
+# ═══════════════════════════════════════════════════
+# FY ROLLOVER (checked daily by the rollover-check schedule)
+# ═══════════════════════════════════════════════════
+# Automatic only when the date has moved to exactly the NEXT financial year and
+# the final backup of the closing year completed on every enabled leg. Anything
+# else (a final backup failed, more than one year ahead) waits for approval on
+# the dashboard. A clock that is BEHIND never rolls back.
+rollover:
+  # Small note written into the NEW source FY folder (never overwritten), so the
+  # new, still-empty year is not mistaken for a missing drive by the backup.
+  source_placeholder_name: README_FY.txt
