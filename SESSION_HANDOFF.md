@@ -47,10 +47,7 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M5 Acceptance (on-box) | not started |
 
 **Test status at last check:** `tests/` 1413 passed / 0 failed / 19 skipped (environment skips).
-Audit lab (`audit_lab/`, ~20 min): last full run during M1 = 233 passed / 3 failed, of which
-two fixed since (W13 newline, W16 fixture) and one intentional red remains
-(`test_w16_schedule_collisions_across_year` → fixed in WP8 / 3.4). A final M1 lab run was in
-progress at hand-off time: result in `audit_lab/raw/m1_final_lab.err` (look for `EXIT=`).
+Audit lab (`audit_lab/`, ~20 min) final M1 run 2026-10-14: **235 passed / 1 failed / 3 skipped** — the one red is intentional (`test_w16_schedule_collisions_across_year` → fixed in WP8 / 3.4). Both M-6 DB reds are now green.
 
 ### Built but NOT wired yet (M2/M3 must call these)
 | Module | What | Wire in |
@@ -63,13 +60,12 @@ progress at hand-off time: result in `audit_lab/raw/m1_final_lab.err` (look for 
 
 ## 4. Next steps (in order)
 
-1. Check the M1 final lab result (`audit_lab/raw/m1_final_lab.err`); expected only the W16 schedule-collision red.
-2. **2.5 wiring**: add WoL/SMB timing config keys (plan WP10 table) → use `wait_for_smb_ready` in `core/wol.py` and `core/lan_preflight.py` → update their tests.
-3. **2.2**: guards config section (`guards.max_delete_files=500`, `max_delete_percent=10`, `max_source_shrink_percent=20`, `forbid_local_destination=true`); LAN planned deletions = `Extras` column of `robocopy /L` summary (drop `/NJS` in dry-run); cloud = `rclone sync --dry-run` delete count + `--max-delete` backstop; G1 replaces `check_source_drive` emptiness; record `source_file_count` + `destination` in extended_metrics for G2/G4 baselines.
-4. **2.3**: `approvals` table + `*_BLOCKED` run rows + dashboard approve/dismiss (typed phrase) + `approval_id` parameter on `backup()`; attention email via `core/notify`.
-5. **2.4** preflight permission checks (`whoami /priv`, write probe, free space, cloud write probe).
-6. **2.6** rollover inside slot, forward-only.
-7. Then M3 (plan §13).
+1. **2.5 wiring**: add WoL/SMB timing config keys (plan WP10 table) → use `wait_for_smb_ready` in `core/wol.py` and `core/lan_preflight.py` → update their tests.
+2. **2.2**: guards config section (`guards.max_delete_files=500`, `max_delete_percent=10`, `max_source_shrink_percent=20`, `forbid_local_destination=true`); LAN planned deletions = `Extras` column of `robocopy /L` summary (drop `/NJS` in dry-run); cloud = `rclone sync --dry-run` delete count + `--max-delete` backstop; G1 replaces `check_source_drive` emptiness; record `source_file_count` + `destination` in extended_metrics for G2/G4 baselines.
+3. **2.3**: `approvals` table + `*_BLOCKED` run rows + dashboard approve/dismiss (typed phrase) + `approval_id` parameter on `backup()`; attention email via `core/notify`.
+4. **2.4** preflight permission checks (`whoami /priv`, write probe, free space, cloud write probe).
+5. **2.6** rollover inside slot, forward-only.
+6. Then M3 (plan §13).
 
 ## 5. Gotchas learned (save time)
 
