@@ -257,7 +257,21 @@ Format per WP: **Problem/evidence → Design → Config → Files → Tests → 
   - WoL: unchanged mechanism (magic packet via `wakeonlan`, already a dependency); readiness = TCP 445 **plus** a real SMB operation (`os.stat` of the destination canary) before declaring online. Each attempt logged with timings into the run artefacts.
   - Shutdown: only after `LAN_COMPLETE` (kept). Result inspected: `0` → poll TCP 445 until closed within `wol.shutdown_verify_timeout_seconds`; `1190` → treated as "already scheduled" (INFO); other codes → ERROR + dashboard flag `nas_shutdown=FAILED` (the backup status itself stays truthful and separate). Never shut down while another LAN run/audit holds or is queued for the slot.
   - Integrity audit LAN leg follows the same wake/shutdown helpers (no duplication — today `flow.py` re-implements the conditions).
-- **Config:** `wol.smb_ready_check_canary` (bool), `wol.shutdown_delay_seconds` (today hard-coded 300), `wol.shutdown_verify_timeout_seconds`.
+- **Realistic wake timings (owner issue 2026-10-14):** the post-WoL / preflight SMB probe is hard-coded to a **2.0 s** connect timeout × 4 attempts × 3 s wait (`core/lan_preflight.py:36,66` ≈ 15 s total) and `core/wol.py:19` hard-codes 5 s; `wake_timeout_seconds` is capped at 600 s (`models/config.py:119`). A NAS cold boot (POST + RAID/disk spin-up + OS + SMB service) routinely exceeds these → false "not reachable" failures (31 WoL timeouts in production logs). Fix: one shared readiness function (`wait_for_smb_ready`) used by WoL, LAN preflight and the LAN audit, with **all timings from config** and generous real-world defaults:
+
+  | Key | New default | Bounds | Was |
+  |---|---|---|---|
+  | `wol.wake_timeout_seconds` | 900 | 60–3600 | 300 (max 600) |
+  | `wol.ping_interval_seconds` | 15 | 5–120 | 15 |
+  | `wol.stability_wait_seconds` | 90 | 0–900 | 30 |
+  | `wol.wake_retry_count` (magic-packet rounds) | 5 | 1–20 | 3 |
+  | `wol.wake_retry_interval_seconds` | 10 | 1–120 | 5 |
+  | `wol.smb_connect_timeout_seconds` | 15 | 1–120 | 2.0 / 5.0 hard-coded |
+  | `lan.preflight_smb_attempts` | 8 | 1–60 | 4 hard-coded |
+  | `lan.preflight_smb_wait_seconds` | 15 | 1–300 | 3 hard-coded |
+
+  Readiness = TCP 445 open **and** a real SMB operation (stat of the destination canary) succeeds **and** the stability wait has passed. Every attempt is logged with elapsed time, so a slow NAS can be tuned from the run artefacts. Defaults are starting points: the on-box acceptance run (WP17) measures the real cold-boot time and the config is set to measured time × 2.
+- **Config:** `wol.smb_ready_check_canary` (bool), `wol.shutdown_delay_seconds` (today hard-coded 300), `wol.shutdown_verify_timeout_seconds`, plus the wake-timing keys above.
 - **Tests:** fake `shutdown.exe` outcomes; on-box test with the real NAS (WP17).
 
 ### WP11 — FY rollover
@@ -334,7 +348,9 @@ Format per WP: **Problem/evidence → Design → Config → Files → Tests → 
 | `maintenance.service_log_retention_days` | 90 | never pruned |
 | `lan.use_backup_mode` | true | `/ZB` hard-coded |
 | `lan.min_free_dest_gb` | 5 | none |
-| `lan.preflight_smb_attempts` / `_wait_seconds` / `_timeout_seconds` | 4 / 3 / 2 | hard-coded `lan_preflight.py` |
+| `lan.preflight_smb_attempts` / `lan.preflight_smb_wait_seconds` | 8 / 15 | 4 / 3 hard-coded `lan_preflight.py` |
+| `wol.smb_connect_timeout_seconds` | 15 | 2.0 (`lan_preflight.py`) / 5.0 (`wol.py`) hard-coded |
+| `wol.wake_timeout_seconds` / `stability_wait_seconds` / `wake_retry_count` / `wake_retry_interval_seconds` | 900 / 90 / 5 / 10 | 300 (cap 600) / 30 / 3 / 5 — see WP10 table |
 | `cloud.write_probe_enabled` | true *(DEC-5)* | — |
 | `cloud.check_checkers` | 4 | hard-coded |
 | `cloud.retries_sleep` | `30s` | hard-coded |
@@ -451,3 +467,53 @@ All new sections get pydantic bounds (`ge`/`le`) and descriptions; `config.examp
 | Watchdog + NSSM writing the same file | prod watchdog logs | WP2 |
 | Full logs not retained | code `lan_sync.py`, `cloud_sync.py` finally blocks | WP2 |
 | Committed suite red (24) | test run 2026-10-14 | WP0 |
+
+---
+
+## 13. Execution checklist (subtasks)
+
+Cost-control rules for execution: work inline (no parallel agents), run only the affected test files while iterating, run the full suite + audit lab once per milestone (not per commit), read files in targeted ranges.
+
+### M0 — Baseline
+- [ ] 0.1 `.gitignore`: `audit_lab/raw/*.err`, `audit_lab/raw/*_report.txt`, `.coverage`, `htmlcov/`, `MagicMock/`
+- [ ] 0.2 Fix 21 stale tests to current intended behaviour (no production change)
+- [ ] 0.3 `skipif` the 3 chaos-tool tests when `C:\ChaosTest\tools` is absent
+- [ ] 0.4 Pytest markers `unit` / `lab` / `onbox`; record baseline in `docs/audit/BASELINE_mvp-hardening.md`
+
+### M1 — Foundations
+- [ ] 1.1 Config hygiene: `extra="forbid"`, absolute `CONFIG_PATH` (`AAM_CONFIG`), all new config sections with defaults/bounds (§8) — **incl. WoL timings (WP10)**
+- [ ] 1.2 `core/statuses.py`
+- [ ] 1.3 `ManifestDB.from_config()` + busy_timeout-first + dedup into migration (WP15)
+- [ ] 1.4 `core/tool_runner.py` + migrate call sites one module per commit
+- [ ] 1.5 `core/run_artefacts.py` + retention purge task (WP2)
+- [ ] 1.6 `core/notify.py` (tenacity, delivery table, cooldown, dashboard link)
+- [ ] 1.7 Test-isolation guard (WP16)
+- [ ] 1.8 Bool exit-code rejection (WP15)
+
+### M2 — Data safety
+- [ ] 2.1 `core/guards.py` G1–G5 + property tests
+- [ ] 2.2 LAN deletion count from `/L` summary; cloud `--dry-run` count + `--max-delete` backstop
+- [ ] 2.3 Approvals table + dashboard approve/dismiss + approval-rerun parameter (§6)
+- [ ] 2.4 Preflight: `whoami /priv`, destination write probe, source read probe, dest free space, cloud write probe (WP4)
+- [ ] 2.5 **Shared `wait_for_smb_ready` with config timings (WP10 wake timings)**
+- [ ] 2.6 FY rollover inside slot, forward-only, reuse pipelines, placeholder, config backup (WP11)
+
+### M3 — Truth
+- [ ] 3.1 Terminal-status function; RUNNING row before slot; SLOT_TIMEOUT / ABANDONED (WP5)
+- [ ] 3.2 Metrics from tool accounting; schema v2 per-leg size/mtime (WP6)
+- [ ] 3.3 "Size check" relabel; audit `AUDIT_INCOMPLETE` classification (WP7)
+- [ ] 3.4 One alert per failure; report flows fail on send failure; stale alert; monthly cron offset (WP8)
+- [ ] 3.5 Dashboard banner, truthful `/health`, status labels from server (WP9)
+
+### M4 — Operations
+- [ ] 4.1 Shutdown result verification (WP10)
+- [ ] 4.2 Clock tri-state + `w32tm` fallback (WP12)
+- [ ] 4.3 Watchdog restart order, STOP_PENDING escalation, config, own log file (WP13)
+- [ ] 4.4 Schedule/time-budget validator with cronsim (WP14)
+- [ ] 4.5 Installer: `uv run --frozen --no-sync`, `AAM_CONFIG`; readiness script verifies rights (WP16)
+- [ ] 4.6 `config.example.yaml` fully documented
+
+### M5 — Acceptance
+- [ ] 5.1 Full suite + audit lab green; review of every diff
+- [ ] 5.2 On-box Wave 7 checklist (WP17), incl. measured NAS cold-boot time → WoL config
+- [ ] 5.3 7 truthful nights; sign-off doc
