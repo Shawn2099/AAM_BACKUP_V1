@@ -63,9 +63,10 @@ class TestNowFormatted:
 
 class TestCutoffIso:
     def test_format(self):
-        result = cutoff_iso()
+        result = cutoff_iso(7)
         assert isinstance(result, str)
         assert "T" in result
+        assert result.endswith("+05:30")  # always IST, explicit offset
 
 
 class TestISTConstant:

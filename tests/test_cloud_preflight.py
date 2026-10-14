@@ -156,7 +156,7 @@ class TestProbeB:
                 timeout=30,
             )
             assert result["ok"] is False
-            assert "timed out" in result["error"]
+            assert result["error"] == "Timeout after 30s"
 
     def test_rclone_not_found(self, tmp_path):
         """FileNotFoundError → rclone not found message."""

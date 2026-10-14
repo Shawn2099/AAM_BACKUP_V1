@@ -38,23 +38,50 @@ class TestBackupModeRouting:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    def test_valid_modes_accepted(self, mock_bridge, mock_log, mock_cfg):
+    @patch("flow.cleanup_orphaned_robocopy_logs")
+    @patch("flow.ManifestDB")
+    @patch("flow._run_lan_pipeline")
+    @patch("flow._run_cloud_pipeline")
+    def test_valid_modes_accepted(self, mock_cloud, mock_lan, mock_db, mock_cleanup,
+                                  mock_bridge, mock_log, mock_cfg):
+        # Both legs enabled: every valid mode routes to the right pipeline(s).
+        mock_config = MagicMock()
+        mock_config.cloud.enabled = True
+        mock_config.lan.enabled = True
+        mock_cfg.return_value = mock_config
+        for mode in ("cloud", "lan", "all"):
+            backup.fn("config.yaml", mode)
+        assert mock_cloud.call_count == 2   # cloud + all
+        assert mock_lan.call_count == 2     # lan + all
+
+    @pytest.mark.parametrize("mode", ["cloud", "lan"])
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.configure_prefect_bridge")
+    def test_single_disabled_leg_refuses(self, mock_bridge, mock_log, mock_cfg, mode):
+        # Disabled-leg guard: an explicit single-leg request for a disabled
+        # leg must fail loudly, never no-op into a successful run.
         mock_config = MagicMock()
         mock_config.cloud.enabled = False
         mock_config.lan.enabled = False
         mock_cfg.return_value = mock_config
-        for mode in ("cloud", "lan", "all"):
+        with pytest.raises(ValueError, match="disabled in configuration"):
             backup.fn("config.yaml", mode)
 
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    def test_mode_case_insensitive(self, mock_bridge, mock_log, mock_cfg):
+    @patch("flow.cleanup_orphaned_robocopy_logs")
+    @patch("flow.ManifestDB")
+    @patch("flow._run_cloud_pipeline")
+    def test_mode_case_insensitive(self, mock_cloud, mock_db, mock_cleanup,
+                                   mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
-        mock_config.cloud.enabled = False
+        mock_config.cloud.enabled = True
         mock_config.lan.enabled = False
         mock_cfg.return_value = mock_config
         backup.fn("config.yaml", "CLOUD")
+        mock_cloud.assert_called_once()
 
 
 class TestBackupDisabledPipelines:
@@ -488,6 +515,8 @@ class TestCloudPipelineSkipsRecordOnManifestError:
             mock_db_cls.return_value.get_cloud_synced_entries.return_value = {}
             config = MagicMock()
             config.paths.database_path = str(tmp_path / "m.db")
+            # _effective_fy_prefix() parses the source leaf: must be a real str.
+            config.paths.source_drive = str(tmp_path / "FY26-27")
             config.maintenance.sqlite_busy_timeout_ms = 30000
             config.maintenance.sqlite_vacuum_freelist_threshold = 10000
             config.maintenance.sqlite_synchronous = "normal"

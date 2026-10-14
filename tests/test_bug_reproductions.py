@@ -37,7 +37,8 @@ class TestBugTimeoutMismatch:
         """get_cloud_diff default timeout is 18000."""
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
              patch("core.cloud_reporter.subprocess.run") as mock_run, \
-             patch("core.cloud_reporter.tempfile.mkstemp", return_value=(0, "/tmp/diff.txt")):
+             patch("core.cloud_reporter.tempfile.mkstemp", return_value=(0, "/tmp/diff.txt")), \
+             patch("core.cloud_reporter.os.close"):
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             from core.cloud_reporter import get_cloud_diff
             get_cloud_diff(

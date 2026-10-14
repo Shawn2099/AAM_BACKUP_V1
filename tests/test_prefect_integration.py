@@ -118,10 +118,11 @@ class TestFlowWithEphemeralServer:
 
     @pytest.fixture
     def ephemeral_server(self):
-        """Start an ephemeral Prefect server for testing."""
-        os.environ["PREFECT_SERVER_ALLOW_EPHEMERAL_MODE"] = "1"
-        os.environ["PREFECT_API_URL"] = "http://localhost:4200"
-        yield
+        """Isolated temporary Prefect server (no global env mutation: the old
+        fixture leaked PREFECT_API_URL=localhost:4200 into later tests)."""
+        from prefect.testing.utilities import prefect_test_harness
+        with prefect_test_harness():
+            yield
 
     def test_flow_runs_in_test_mode(self, ephemeral_server):
         """A simple flow runs successfully in test mode."""
@@ -154,7 +155,7 @@ class TestServeModule:
     def test_serve_module_imports(self):
         """serve.py can be imported."""
         import serve
-        assert hasattr(serve, "main") or hasattr(serve, "create_deployments")
+        assert callable(getattr(serve, "deployments", None))
 
     def test_serve_has_deployment_functions(self):
         """serve.py has deployment-related functions."""

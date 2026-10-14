@@ -186,11 +186,14 @@ class TestVerifyTempConfig:
 
 class TestVerifyTimeoutPassthrough:
     @patch("core.cloud_verify.subprocess.run")
-    def test_default_timeout_14400(self, mock_run):
+    def test_default_timeout_matches_config_default(self, mock_run):
+        # The function default must equal the config-model default
+        # (config is the single source of truth for timeouts).
+        from models.config import CloudConfig
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["timeout"] == 14400
+        assert call_kwargs["timeout"] == CloudConfig.model_fields["verify_timeout_seconds"].default
 
     @patch("core.cloud_verify.subprocess.run")
     def test_custom_timeout(self, mock_run):
@@ -204,7 +207,7 @@ class TestVerifyExceptions:
     @patch("core.cloud_verify.subprocess.run")
     def test_timeout_expired(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=14400)
-        result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
+        result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg", timeout=14400)
         assert result["verified"] is False
         assert result["exit_code"] == -1
         assert "Timeout after 14400s" in result["error"]

@@ -9,6 +9,13 @@ from chaos_harness import faults, runner, safety, scenarios
 from chaos_harness import scenarios_batch3 as b3
 
 
+_CHAOS_TOOLS_PRESENT = Path(r"C:\ChaosTest\tools").exists()
+_needs_chaos_tools = pytest.mark.skipif(
+    not _CHAOS_TOOLS_PRESENT,
+    reason="chaos-test tool directory C:\ChaosTest\tools not present on this machine",
+)
+
+
 class TestBatch3Registry:
     def test_four_scenarios(self):
         assert [s.sid for s in b3.ALL3] == ["B3-1", "B3-2", "B3-3", "B3-4"]
@@ -48,6 +55,7 @@ class TestCloudHelpers:
             faults.cloud_plant(str(tmp_path / "x"), "aam-chaos-67q1zs",
                                "FY26-27", "small_1.dat", r"C:\Windows\rclone.conf")
 
+    @_needs_chaos_tools
     def test_ph22_tool_exists(self):
         assert Path(r"C:\ChaosTest\evidence\POST_REMEDIATION\tools\ph22_xbackend.py").exists()
 

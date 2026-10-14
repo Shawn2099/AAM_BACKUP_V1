@@ -28,3 +28,13 @@ prefect_logs/.~lock*
 plan.md
 deploy/bin/google-cloud-sdk/
 deploy/bin/*.zip
+
+# Local test/coverage artefacts (raw lab run output stays local; the
+# evidence ledger audit_lab/raw/evidence*.jsonl is tracked)
+.coverage
+htmlcov/
+.hypothesis/
+.mypy_cache/
+MagicMock/
+audit_lab/raw/*.err
+audit_lab/raw/*_report.txt

@@ -155,6 +155,7 @@ class TestDataIntegrityConditions:
 
             with patch("core.integrity.subprocess.run") as mock_run, \
                  patch("core.integrity.tempfile.mkstemp", return_value=(0, diff_path)), \
+                 patch("core.integrity.os.close"), \
                  patch("core.integrity.resolve_binary", return_value="rclone"):
                 mock_run.return_value = MagicMock(
                     returncode=1,

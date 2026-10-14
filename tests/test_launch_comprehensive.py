@@ -105,8 +105,9 @@ class TestCancelOrphanedRuns:
     def test_cancels_pending_and_running(self):
         from launch import _cancel_orphaned_runs
         mock_client = AsyncMock()
-        mock_run_pending = MagicMock(id="p-123", name="pending-run")
-        mock_run_running = MagicMock(id="r-456", name="running-run")
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        mock_run_pending = MagicMock(id="p-123", name="pending-run", flow_id="aam-flow")
+        mock_run_running = MagicMock(id="r-456", name="running-run", flow_id="aam-flow")
         mock_client.read_flow_runs.side_effect = [[mock_run_pending], [mock_run_running]]
         with patch("prefect.client.orchestration.get_client") as mock_get_client, \
              patch("core.process.read_lock_alive", return_value=(False, None)):
@@ -117,7 +118,8 @@ class TestCancelOrphanedRuns:
     def test_backup_active_skips_running(self):
         from launch import _cancel_orphaned_runs
         mock_client = AsyncMock()
-        mock_run_pending = MagicMock(id="p-123", name="pending-run")
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        mock_run_pending = MagicMock(id="p-123", name="pending-run", flow_id="aam-flow")
         mock_client.read_flow_runs.return_value = [mock_run_pending]
         # F18: the config load must be patched — without a root config.yaml
         # _cancel_orphaned_runs falls back to lock_path=None and never reads
@@ -130,6 +132,19 @@ class TestCancelOrphanedRuns:
             mock_get_client.return_value.__aenter__.return_value = mock_client
             _cancel_orphaned_runs()
             assert mock_client.set_flow_run_state.call_count == 1
+
+    def test_non_aam_flow_runs_are_not_cancelled(self):
+        # Orphan cleanup is scoped to AAM flows: a RUNNING/PENDING run of any
+        # other flow on the same Prefect server must never be cancelled.
+        from launch import _cancel_orphaned_runs
+        mock_client = AsyncMock()
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        foreign = MagicMock(id="x-1", name="foreign-run", flow_id="other-flow")
+        mock_client.read_flow_runs.side_effect = [[foreign], [foreign]]
+        with patch("prefect.client.orchestration.get_client") as mock_get_client,              patch("core.process.read_lock_alive", return_value=(False, None)):
+            mock_get_client.return_value.__aenter__.return_value = mock_client
+            _cancel_orphaned_runs()
+            assert mock_client.set_flow_run_state.call_count == 0
 
     def test_stale_lock_cleaned_up(self):
         from pathlib import Path
@@ -153,7 +168,8 @@ class TestCancelOrphanedRuns:
     def test_live_lock_with_backup_active(self):
         from launch import _cancel_orphaned_runs
         mock_client = AsyncMock()
-        mock_run_pending = MagicMock(id="p-123", name="pending-run")
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        mock_run_pending = MagicMock(id="p-123", name="pending-run", flow_id="aam-flow")
         mock_client.read_flow_runs.return_value = [mock_run_pending]
         # F18: config load patched (see test_backup_active_skips_running).
         with patch("prefect.client.orchestration.get_client") as mock_get_client,              patch("core.process.read_lock_alive", return_value=(True, 12345)),              patch("models.config.CONFIG_PATH", "/tmp/test_config.yaml"),              patch("models.config.load_config") as mock_config:

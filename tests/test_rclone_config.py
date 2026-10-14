@@ -16,7 +16,7 @@ class TestWriteTempConfig:
         key_path.write_text('{"type": "service_account"}')
 
         config_path = write_temp_config(
-            key_path=str(key_path),
+            gcs_key_path=str(key_path),
             location="asia-south1",
             project_number="123456",
             storage_class="STANDARD",
@@ -34,13 +34,14 @@ class TestWriteTempConfig:
         key_path.write_text('{"type": "service_account"}')
 
         config_path = write_temp_config(
-            key_path=str(key_path),
+            gcs_key_path=str(key_path),
             location="us-east1",
             project_number="999",
             storage_class="COLDLINE",
         )
         content = Path(config_path).read_text()
-        assert str(key_path) in content
+        # write_temp_config stores the resolved path with forward slashes
+        assert key_path.resolve().as_posix() in content
 
 
 class TestTempRcloneConfig:
@@ -50,7 +51,7 @@ class TestTempRcloneConfig:
         key_path.write_text('{"type": "service_account"}')
 
         with temp_rclone_config(
-            key_path=str(key_path),
+            gcs_key_path=str(key_path),
             location="asia-south1",
             project_number="123",
             storage_class="STANDARD",
@@ -58,8 +59,7 @@ class TestTempRcloneConfig:
             assert config_path is not None
             assert Path(config_path).exists()
 
-        # After context exit, file should be cleaned up
-        # (though the implementation may not always clean up — that's a known issue)
+        assert not Path(config_path).exists()  # removed on context exit
 
     def test_context_manager_cleanup_on_error(self, tmp_path):
         """Config is cleaned up even on error."""
@@ -69,7 +69,7 @@ class TestTempRcloneConfig:
         config_path = None
         try:
             with temp_rclone_config(
-                key_path=str(key_path),
+                gcs_key_path=str(key_path),
                 location="asia-south1",
                 project_number="123",
                 storage_class="STANDARD",

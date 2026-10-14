@@ -475,10 +475,10 @@ All new sections get pydantic bounds (`ge`/`le`) and descriptions; `config.examp
 Cost-control rules for execution: work inline (no parallel agents), run only the affected test files while iterating, run the full suite + audit lab once per milestone (not per commit), read files in targeted ranges.
 
 ### M0 — Baseline
-- [ ] 0.1 `.gitignore`: `audit_lab/raw/*.err`, `audit_lab/raw/*_report.txt`, `.coverage`, `htmlcov/`, `MagicMock/`
-- [ ] 0.2 Fix 21 stale tests to current intended behaviour (no production change)
-- [ ] 0.3 `skipif` the 3 chaos-tool tests when `C:\ChaosTest\tools` is absent
-- [ ] 0.4 Pytest markers `unit` / `lab` / `onbox`; record baseline in `docs/audit/BASELINE_mvp-hardening.md`
+- [x] 0.1 `.gitignore`: `audit_lab/raw/*.err`, `audit_lab/raw/*_report.txt`, `.coverage`, `htmlcov/`, `MagicMock/`
+- [x] 0.2 Fix 21 stale tests to current intended behaviour (no production change)
+- [x] 0.3 `skipif` the 3 chaos-tool tests when `C:\ChaosTest\tools` is absent
+- [x] 0.4 Baseline recorded (markers deferred: `tests/` and `audit_lab/` are already separate roots; on-box tests live only in `audit_lab/test_w7_deployed.py`); record baseline in `docs/audit/BASELINE_mvp-hardening.md`
 
 ### M1 — Foundations
 - [ ] 1.1 Config hygiene: `extra="forbid"`, absolute `CONFIG_PATH` (`AAM_CONFIG`), all new config sections with defaults/bounds (§8) — **incl. WoL timings (WP10)**
