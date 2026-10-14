@@ -139,6 +139,56 @@ def test_lan_dry_run_keeps_job_summary_and_returns_counts(tmp_path):
     assert res["counts"]["total"] == 1000 and res["counts"]["extras"] == 3
 
 
+# Real robocopy 10.0 /L /MIR output (probe 2026-10-14): 3 files really get
+# deleted (all listed as *EXTRA File, nested ones too), but the Files Extras
+# column says 5 - it also counts the two /XF-excluded mount markers, which
+# /MIR keeps. Planned deletions must come from the lines, not the column.
+_ROBOCOPY_L_WITH_MARKERS = (
+    "\t                   1\tC:\\p\\rs\\\n"
+    "\t                   1\tC:\\p\\rd\\extra_dir\\\n"
+    "\t  *EXTRA File \t\t       1\t1.txt\n"
+    "\t                   1\tC:\\p\\rd\\extra_dir\\deep\\\n"
+    "\t  *EXTRA File \t\t       0\t2.txt\n"
+    "\t  *EXTRA File \t\t       2\tx_extra.txt\n"
+    "\t    Older     \t\t       2\ta.txt\n"
+    "------------------------------------------------------------------------------\n"
+    "\n"
+    "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
+    "    Dirs :         2         0         2         0         0         4\n"
+    "   Files :         1         1         0         0         0         5\n"
+    "   Bytes :         2         2         0         0         0         5\n"
+    "   Ended : 14 October 2026 23:06:43\n"
+)
+
+
+def test_lan_planned_deletes_exclude_kept_mount_markers(tmp_path):
+    from core import lan_preflight
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / ".AAM_TARGET_MOUNTED").write_text("")
+    done = MagicMock(returncode=3, stdout=_ROBOCOPY_L_WITH_MARKERS, stderr="")
+    with patch.object(lan_preflight.subprocess, "run", return_value=done):
+        res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
+    assert res["planned_deletes"] == 3
+    assert res["counts"]["extras"] == 5
+
+
+def test_lan_guards_use_planned_deletes_not_extras_column(tmp_path):
+    """Lab regression: a fresh destination holding only the mount marker
+    (Extras=1) was blocked as 'would delete 1 of 1'."""
+    cfg = _lan_cfg(tmp_path)
+    rec = _run_lan_guards(cfg, _counts(3, 1), 1, planned_deletes=0)
+    assert [r for r in rec["results"] if r["guard"] == "G3_MASS_DELETE"][0]["metrics"][
+        "planned_deletes"] == 0
+
+
+def test_lan_guards_fail_when_extra_lines_exceed_extras_column(tmp_path):
+    with pytest.raises(RuntimeError, match="inconsistent") as ei:
+        _run_lan_guards(_lan_cfg(tmp_path), _counts(3, 1), 10, planned_deletes=2)
+    assert not isinstance(ei.value, g.GuardBlocked)
+
+
 def test_lan_snapshot_before_failure_is_unknown_not_empty():
     cfg = MagicMock()
     with patch("flow.walk_lan_destination", side_effect=OSError("SMB timeout")):
@@ -158,14 +208,18 @@ def _lan_cfg(tmp_path, dest="\\\\10.0.0.9\\backup\\FY26-27", forbid_local=True):
     return cfg
 
 
-def _run_lan_guards(cfg, counts, dest_files, baseline=None, dest_ips=frozenset({"10.0.0.9"})):
+def _run_lan_guards(cfg, counts, dest_files, baseline=None, dest_ips=frozenset({"10.0.0.9"}),
+                    planned_deletes="extras"):
     db = MagicMock()
     db.guard_baseline.return_value = baseline
+    if planned_deletes == "extras":  # default: every Extras entry really gets deleted
+        planned_deletes = counts["extras"] if counts else None
+    dry_run = {"ok": True, "counts": counts, "planned_deletes": planned_deletes}
     with patch("flow.ManifestDB") as mdb, \
          patch("flow.guards.resolve_host", return_value=set(dest_ips)), \
          patch("flow.guards.local_addresses", return_value={"127.0.0.1", "10.0.0.5"}):
         mdb.from_config.return_value = db
-        return flow.lan_guards_task.fn(cfg, "FY26-27", {"ok": True, "counts": counts}, dest_files)
+        return flow.lan_guards_task.fn(cfg, "FY26-27", dry_run, dest_files)
 
 
 def _counts(total, extras):

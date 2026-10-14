@@ -570,10 +570,18 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
     source = config.paths.source_drive
     dest = config.paths.lan_destination
     counts = (dry_run or {}).get("counts")
-    if not counts:
+    planned_deletes = (dry_run or {}).get("planned_deletes")
+    if not counts or planned_deletes is None:
         raise RuntimeError(
             "LAN guard measurement failed: the robocopy /L job summary is missing or "
             "unreadable, so planned deletions cannot be counted - refusing to mirror")
+    if planned_deletes > counts["extras"]:
+        # Every listed *EXTRA File is also in the Extras column; more lines
+        # than the column means the listing cannot be trusted.
+        raise RuntimeError(
+            f"LAN guard measurement failed: robocopy /L listing is inconsistent "
+            f"({planned_deletes} '*EXTRA File' lines but Extras column = "
+            f"{counts['extras']}) - refusing to mirror")
     if destination_files is None:
         raise RuntimeError(
             f"LAN guard measurement failed: the destination could not be listed ({dest}), "
@@ -595,7 +603,7 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
             dest, baseline.get("destination"),
             guards.resolve_host(guards.unc_host(dest)), guards.local_addresses(),
             limits.forbid_local_destination),
-        guards.g3_mass_delete(counts["extras"], destination_files,
+        guards.g3_mass_delete(planned_deletes, destination_files,
                               limits.max_delete_files, limits.max_delete_percent),
     ]
     return guards.enforce(

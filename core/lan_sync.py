@@ -30,6 +30,16 @@ def _validate_required_flags(flags: list[str]) -> None:
 
 
 _FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
+# One "*EXTRA File" line per destination file /MIR deletes (nested files in
+# extra folders included). /XF-excluded files (the mount marker) are NOT
+# listed although the summary Extras column counts them - verified on
+# robocopy 10.0, 2026-10-14.
+_EXTRA_FILE_LINE = re.compile(r"^\s*\*EXTRA File\b", re.MULTILINE)
+
+
+def count_extra_file_lines(listing: str) -> int:
+    """Files a `robocopy /L /MIR` run would delete (guard G3 input)."""
+    return len(_EXTRA_FILE_LINE.findall(listing or ""))
 
 # Integrity-verification contract: a robocopy run that terminated normally
 # ALWAYS ends its /LOG with the job-summary table ("Files :" row + "Ended :"
