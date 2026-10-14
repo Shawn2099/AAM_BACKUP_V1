@@ -42,7 +42,7 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M0 Baseline | **done** (a8f7f7f) — suite 0 failed |
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
 | M2 Data safety | **done** (2.1–2.6); full-lab milestone run was started at the end of session 2 - re-run it first |
-| M3 Truth | not started (WP7 classifier module already done) |
+| M3 Truth | **in progress** — 3.1, 3.2 done; 3.3–3.5 TODO |
 | M4 Operations | not started |
 | M5 Acceptance (on-box) | not started |
 
@@ -82,23 +82,17 @@ experiment now opts into `/ZB`; targeted re-run green); the only remaining red i
    M2 full lab: 234 passed / 6 failed -> the 5 W18 launch tests patched the removed
    `core.fy_rollover.rollover`; fixed (W18 29/29 green). Remaining red: W16 schedule collision
    (intentional, WP8 / 3.4). **M2 milestone: green except the intentional red.**
-4. **NEXT: M3 3.1 (WP5) - design agreed, no code yet:**
-   - `statuses.decide_terminal_status(leg, phase, sync_status, exc)`: exc None -> sync status;
-     GuardBlocked -> *_BLOCKED; PartialRun -> keep the (non-success) status already set; phase pre ->
-     *_FAILED; sync -> sync verdict if FAILED/SUSPECT else *_FAILED; verify -> CLOUD_VERIFY_FAILED
-     (fixes P1: NO_CHANGES_COMPLETE kept on a verify exception); post -> *_FAILED with
-     `extended_metrics.sync_status` preserved (fixes P2). Replace both pipelines' except branches;
-     table-driven test over phase x exception x sync status; P1/P2 probes as regressions.
-   - `_pipeline_slot(config, leg, run_id, ...)` context manager replacing `with _backup_slot(config):`
-     in both pipelines: writes a `*_RUNNING` row first (insert_run upserts by run_id), then enters
-     the slot; any exception while ENTERING (Prefect concurrency TimeoutError, live lock) -> row
-     `*_SLOT_TIMEOUT` and re-raise. Pipeline tests assert `_record_run.call_args` (last call) - check
-     any that assert call_count.
-   - launch.py at agent start: mark `*_RUNNING` rows older than new key
-     `maintenance.abandon_running_after_hours` (proposed default 24) as `*_ABANDONED`.
-5. Then M3 3.2-3.5 (plan §13).
+4. **M3 3.1 DONE** (22706fc) and **3.2 DONE** (fd1abce) - see plan §13. Unit suite 1655 / 0 failed.
+   Full audit lab after 3.2: **238 passed / 1 failed** (only the intentional W16 red).
+5. **NEXT: 3.3 (WP7)** - "Size check" relabel everywhere (dashboard badge, Prefect artifact,
+   report, extended_metrics key `size_check_passed`, old key kept for reads); integrity audit
+   classification order: transport/listing error (`core.rclone_errors.find_transport_failure`,
+   patterns overridable via config `audit.network_error_patterns`) -> `AUDIT_INCOMPLETE` with the
+   cause; completed with differences -> VERIFICATION_FAILED; clean -> VERIFIED. Then 3.4, 3.5.
 
 ### Verified tool facts (real binaries, 2026-10-14/15)
+- **rclone final stats**: the LAST JSON log line with a "stats" key holds the totals
+  (`transfers` = files uploaded, `bytes`, `deletes`, `errors`, `checks`); no change -> all 0.
 - **whoami**: Git Bash's `whoami` shadows Windows' - call `%SystemRoot%\System32\whoami.exe`.
   `/priv /fo csv /nh` = one CSV row per privilege, column 1 = name (locale independent).
 - **robocopy `/BYTES`**: exact Bytes row (without it: rounded `3.33 m`); Files row and

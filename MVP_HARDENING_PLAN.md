@@ -510,8 +510,8 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 - [~] WP7 prep: `core/rclone_errors.py` transport-failure classifier from real prod signatures (f4cc48b); TODO use it in `core/integrity.py` (AUDIT_INCOMPLETE) and preflight error text
 
 ### M3 — Truth
-- [ ] 3.1 Terminal-status function; RUNNING row before slot; SLOT_TIMEOUT / ABANDONED (WP5)
-- [ ] 3.2 Metrics from tool accounting; schema v2 per-leg size/mtime (WP6)
+- [x] 3.1 Terminal-status function (22706fc): `statuses.decide_terminal_status` (P1, P2/M-2 fixed; sync verdict kept in `extended_metrics.sync_status`); `*_RUNNING` row before the slot; `*_SLOT_TIMEOUT` when the slot/lock is not obtained; `*_ABANDONED` at agent start (`maintenance.abandon_running_after_hours`).
+- [x] 3.2 Metrics from tool accounting (fd1abce): rclone final stats / robocopy Files+Bytes Copied (`/BYTES`) + `*EXTRA File` deletions; diffs are a cross-check (`metrics_consistent`); unknown = NULL; schema v2 per-leg size/mtime, old rows NULL.
 - [ ] 3.3 "Size check" relabel; audit `AUDIT_INCOMPLETE` classification (WP7)
 - [ ] 3.4 One alert per failure; report flows fail on send failure; stale alert; monthly cron offset (WP8)
 - [ ] 3.5 Dashboard banner, truthful `/health`, status labels from server (WP9)
