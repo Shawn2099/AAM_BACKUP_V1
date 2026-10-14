@@ -11,6 +11,7 @@ from pathlib import Path
 from loguru import logger
 
 from core.guards import require_source_files
+from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool
@@ -60,6 +61,9 @@ _SUMMARY_COLUMN_NAMES = ("total", "copied", "skipped", "mismatch", "failed", "ex
 _SUMMARY_FILES_ROW = re.compile(r"^\s*Files\s*:", re.MULTILINE)
 
 
+_SUMMARY_BYTES_ROW = re.compile(r"^\s*Bytes\s*:", re.MULTILINE)
+
+
 def _summary_files_row_values(log_text: str) -> list[int] | None:
     """Return the numeric columns of the job-summary Files row, or None.
 
@@ -67,7 +71,11 @@ def _summary_files_row_values(log_text: str) -> list[int] | None:
     letters or missing columns abort parsing) so callers can fall back to the
     exit-bitmask floor instead of reporting a false 0.
     """
-    match = _SUMMARY_FILES_ROW.search(log_text or "")
+    return _summary_row_values(log_text, _SUMMARY_FILES_ROW)
+
+
+def _summary_row_values(log_text: str, row: re.Pattern) -> list[int] | None:
+    match = row.search(log_text or "")
     if not match:
         return None
     line_end = log_text.find("\n", match.start())
@@ -162,6 +170,18 @@ def summarize_log_counts(log_text: str) -> dict | None:
     None when the summary is absent/unparseable (killed or corrupt log).
     """
     values = _summary_files_row_values(log_text)
+    if not values or len(values) < len(_SUMMARY_COLUMN_NAMES):
+        return None
+    return dict(zip(_SUMMARY_COLUMN_NAMES, values[:len(_SUMMARY_COLUMN_NAMES)]))
+
+
+def summarize_log_bytes(log_text: str) -> dict | None:
+    """Parse the job-summary "Bytes :" row (needs robocopy /BYTES), or None.
+
+    Without /BYTES robocopy rounds ("3.33 m") - that fails closed to None
+    (verified on robocopy 10.0, 2026-10-15). "copied" = bytes the run writes.
+    """
+    values = _summary_row_values(log_text, _SUMMARY_BYTES_ROW)
     if not values or len(values) < len(_SUMMARY_COLUMN_NAMES):
         return None
     return dict(zip(_SUMMARY_COLUMN_NAMES, values[:len(_SUMMARY_COLUMN_NAMES)]))
@@ -347,8 +367,9 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
                   dest is an exact replica; orphaned destination files are pruned.
         /Z      — Restartable mode. Partially-copied files resume on retry instead
                   of starting over (important for large files over unstable LAN).
-        /ZB     — Falls back to Backup mode if a file is access-denied. Requires
-                  SeBackupPrivilege on the service account for full effectiveness.
+        /ZB     — Falls back to Backup mode if a file is access-denied. Only when
+                  lan.use_backup_mode (DEC-8); needs SeBackupPrivilege, which the
+                  preflight checks (permissions.check_backup_privilege).
         /XJ     — Exclude junction points (both files and dirs). Prevents infinite
                   recursion through Windows symlinks / volume mount points.
         /MT:n   — Multi-threaded copy. Tuned via config; default 4 matches the
@@ -369,14 +390,14 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
     flags = [
         "/MIR",
         "/Z",
-        "/ZB",
+        *(["/ZB"] if lan_config.use_backup_mode else []),
         "/XJ",
         f"/MT:{lan_config.mt_threads}",
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
         "/V", "/TS", "/FP",
         "/NJH", "/NDL", "/NP",
-        "/XF", ".AAM_TARGET_MOUNTED",
+        "/XF", ".AAM_TARGET_MOUNTED", PROBE_PATTERN,
         "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
 

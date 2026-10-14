@@ -296,7 +296,8 @@ def test_w13_command_builders_flag_contract(sandbox):
     src = sandbox / "source" / "FY26-26"
     L.write_file(src / "a.txt", b"a")
     dest = L.make_canary(sandbox / "nas" / "FY26-26")
-    cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
+                         lan=dict(L.PRODUCTION_LAN))
     cfg.lan.mt_threads = 6
     cfg.lan.retry_count = 3
     cfg.lan.retry_wait_seconds = 7

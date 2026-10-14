@@ -310,6 +310,7 @@ def _blocked(leg):
 @patch("flow._open_run_artefacts", return_value=None)
 @patch("flow.lan_shutdown_task")
 @patch("flow.lan_sync_task")
+@patch("flow.lan_access_task", new=MagicMock())
 @patch("flow.lan_guards_task")
 @patch("flow.lan_snapshot_before_task", return_value={"a": (1, 1.0)})
 @patch("flow.lan_preflight_task")
@@ -334,6 +335,7 @@ def test_lan_pipeline_guard_block_records_lan_blocked(
 
 @patch("flow._open_run_artefacts", return_value=None)
 @patch("flow.lan_sync_task")
+@patch("flow.lan_access_task", new=MagicMock())
 @patch("flow.lan_guards_task")
 @patch("flow.lan_snapshot_before_task", return_value={
     ".AAM_TARGET_MOUNTED": (0, 1.0), "Clients/.aam_target_mounted": (0, 1.0),
@@ -359,6 +361,7 @@ def test_lan_destination_count_excludes_mount_markers(
 @patch("flow.lan_snapshot_after_task", return_value={"a": (1, 1.0)})
 @patch("flow.lan_shutdown_task")
 @patch("flow.lan_sync_task")
+@patch("flow.lan_access_task", new=MagicMock())
 @patch("flow.lan_guards_task")
 @patch("flow.lan_snapshot_before_task", return_value={"a": (1, 1.0)})
 @patch("flow.lan_preflight_task")
@@ -599,6 +602,7 @@ def test_cloud_guard_measurement_failures_fail_the_run(tmp_path):
 
 @patch("flow._open_run_artefacts", return_value=None)
 @patch("flow.cloud_sync_task")
+@patch("flow.cloud_access_task", new=MagicMock())
 @patch("flow.cloud_guards_task")
 @patch("flow.cloud_preflight_task")
 @patch("flow.health_check_task")
@@ -622,6 +626,7 @@ def test_cloud_pipeline_guard_block_records_cloud_blocked(
 @patch("flow.cloud_record_task")
 @patch("flow.cloud_verify_and_report_task")
 @patch("flow.cloud_sync_task")
+@patch("flow.cloud_access_task", new=MagicMock())
 @patch("flow.cloud_guards_task")
 @patch("flow.cloud_preflight_task")
 @patch("flow.health_check_task")

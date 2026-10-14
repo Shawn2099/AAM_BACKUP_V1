@@ -133,6 +133,18 @@ class LanConfig(StrictModel):
                     "(each up to wol.smb_connect_timeout_seconds)")
     preflight_smb_wait_seconds: int = Field(
         default=15, ge=1, le=300, description="LAN preflight: seconds between SMB attempts")
+    use_backup_mode: bool = Field(
+        default=True,
+        description="robocopy /ZB (backup mode) so files the account cannot open normally "
+                    "are still copied (owner DEC-8). Needs SeBackupPrivilege on the service "
+                    "account; the preflight checks it. false = no /ZB.")
+    min_free_dest_gb: float = Field(
+        default=5, ge=0, le=100_000,
+        description="Preflight: the NAS must have the bytes this backup will copy plus this "
+                    "many GB free.")
+    privilege_check_timeout_seconds: int = Field(
+        default=60, ge=5, le=600,
+        description="Timeout for the `whoami /priv` SeBackupPrivilege check (seconds)")
 
 
 class WolConfig(StrictModel):
@@ -275,6 +287,12 @@ class CloudConfig(StrictModel):
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
     buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
     error_tail_lines: int = Field(default=100, ge=1, le=10000, description="Max rclone error lines carried into alerts/DB/dashboard; the full log is always kept in run_logs")
+    write_probe_enabled: bool = Field(
+        default=True,
+        description="Preflight: create and delete a tiny test object under "
+                    "<bucket>/_aam_preflight/ (outside every FY folder) to prove write and "
+                    "delete rights before syncing (owner DEC-5). Uses "
+                    "preflight_timeout_seconds.")
 
     @field_validator("bucket")
     @classmethod

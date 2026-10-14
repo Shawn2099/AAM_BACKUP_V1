@@ -102,6 +102,7 @@ def _patch_pipeline():
         patch("flow.health_check_task"),
         patch("flow.get_fy_prefix", return_value="FY26-27"),
         patch("flow.cloud_guards_task"),
+        patch("flow.cloud_access_task"),
     )
 
 
@@ -114,7 +115,8 @@ def test_w1e_bug2_cloud_no_changes_gate_failure_records_success(sandbox, monkeyp
     cfg = _mock_cfg(None, str(db))
 
     patches = _patch_pipeline()
-    (alert, _art, _rec, verify, sync, _pf, _hc, _fy, _guards) = [p.start() for p in patches]
+    (alert, _art, _rec, verify, sync, _pf, _hc, _fy, _guards, _access) = [
+        p.start() for p in patches]
     try:
         sync.with_options.return_value.return_value = {
             "status": "CLOUD_NO_CHANGES_COMPLETE", "exit_code": 9, "error": None}
@@ -171,6 +173,7 @@ def test_w1e_bug2_lan_post_phase_exception_records_complete(sandbox, monkeypatch
           patch("flow.lan_preflight_task"),
           patch("flow.lan_snapshot_before_task", return_value={"a.txt": (1, 1.0)}),
           patch("flow.lan_guards_task"),
+          patch("flow.lan_access_task"),
           patch("flow.lan_snapshot_after_task", return_value={"a.txt": (1, 1.0)}),
           patch("flow.lan_record_task", side_effect=sqlite3.OperationalError("database is locked")),
           patch("flow.health_check_task"),

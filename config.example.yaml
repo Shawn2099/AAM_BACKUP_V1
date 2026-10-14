@@ -45,6 +45,15 @@ lan:
   retry_delay_seconds: 600
   # Robocopy /MT — parallel copy threads
   mt_threads: 4
+  # Robocopy /ZB backup mode: also copies files the account cannot open normally.
+  # Needs the "Back up files and directories" right (SeBackupPrivilege) for the
+  # backup service account; every LAN run checks it first. false = no /ZB.
+  use_backup_mode: true
+  # The NAS must have the size of this backup's new/changed files PLUS this many GB
+  # free before copying starts (0–100000)
+  min_free_dest_gb: 5
+  # Timeout for the SeBackupPrivilege check (seconds, 5–600)
+  privilege_check_timeout_seconds: 60
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
@@ -107,6 +116,11 @@ cloud:
   # rclone --buffer-size: upload read buffer per transfer slot
   # 2 transfers × 64M = 128M total. Matches GCS multipart chunk sizing.
   buffer_size: "64M"
+  # Before each sync, create and delete a tiny test object under
+  # <bucket>/_aam_preflight/ (outside every FY folder) to prove write and delete
+  # rights. Leaves one tiny old version in a versioned bucket; the lifecycle rule
+  # removes it. Uses preflight_timeout_seconds.
+  write_probe_enabled: true
 
 # ═══════════════════════════════════════════════════
 # SCHEDULES (cron, all times in timezone below)

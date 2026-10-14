@@ -145,6 +145,9 @@ def _to_unc(p: str | Path) -> str:
 # tiny random trees, where one stray file is already > the 10 % delete
 # limit. The guards themselves are proven in tests/test_m2_guard_wiring.py
 # and the W1A/W1C data-loss regressions, which keep the default limits.
+# Production LAN command (/ZB) for the C-1/C-2 experiments.
+PRODUCTION_LAN = {"use_backup_mode": True}
+
 MIRROR_MECHANICS_GUARDS = {"max_delete_files": 100_000_000, "max_delete_percent": 100,
                            "max_source_shrink_percent": 100,
                            "forbid_local_destination": False}
@@ -180,6 +183,10 @@ def build_config(base: Path, *, source: Path, lan_dest: str, runtime: Path,
             "retry_delay_seconds": 60,
             "mt_threads": 2,
             "dry_run_timeout_seconds": 120,
+            # The lab account has no SeBackupPrivilege (experiment C1), so the
+            # lab runs the documented no-/ZB mode; experiments that need the
+            # production command pass lan=dict(PRODUCTION_LAN).
+            "use_backup_mode": False,
         },
         "wol": {"enabled": False, "mac_address": "", "server_ip": "127.0.0.1",
                 "broadcast_address": "", "wake_timeout_seconds": 60,

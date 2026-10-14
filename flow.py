@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import approvals, guards, statuses
+from core import approvals, guards, permissions, statuses
 from core.backup_repository import record_run_history, record_sync_results
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import (
@@ -249,8 +249,12 @@ def _backup_slot(config):
 # ═══════════════════════════════════════════════════════════════
 
 @task(name="health-check")
-def health_check_task(config, mode: str):
-    """Run pre-backup health checks. Fail fast — won't fix itself."""
+def health_check_task(config, mode: str, artefacts_dir: str | None = None):
+    """Run pre-backup health checks. Fail fast — won't fix itself.
+
+    LAN with /ZB (lan.use_backup_mode): SeBackupPrivilege is checked here,
+    before the slow dry-run (plan WP4, DEC-8).
+    """
     logger.info(f"Running health checks (mode={mode})")
     pre_backup_health(
         config.paths.source_drive,
@@ -260,6 +264,11 @@ def health_check_task(config, mode: str):
         max_clock_skew_seconds=config.health.max_clock_skew_seconds,
         clock_check_timeout_seconds=config.health.clock_check_timeout_seconds,
     )
+    if mode == "lan" and config.lan.use_backup_mode:
+        permissions.check_backup_privilege(
+            RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("health"),
+            timeout_s=config.lan.privilege_check_timeout_seconds,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -372,6 +381,26 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         source_file_count=source_files, destination=destination,
         destination_files=destination_files, max_delete=max_delete, **approval_record,
     )
+
+
+@task(name="cloud-access")
+def cloud_access_task(config, run_id: str, artefacts_dir: str | None = None):
+    """Prove the rights the sync uses (plan WP4, CL3/CL13): read a real source
+    file; create + delete a probe object outside every FY prefix (DEC-5).
+    Runs after the guards; a missing right FAILS the run."""
+    permissions.probe_source_read(config.paths.source_drive)
+    if not config.cloud.write_probe_enabled:
+        logger.info("Cloud write probe disabled (cloud.write_probe_enabled: false)")
+        return
+    with temp_rclone_config(
+        config.paths.gcs_key_path, config.cloud.location,
+        config.cloud.project_number, config.cloud.storage_class,
+    ) as rclone_conf:
+        permissions.probe_cloud_write(
+            config.cloud.bucket, run_id, rclone_conf, config.cloud.preflight_timeout_seconds,
+            RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-access"),
+            error_tail_lines=config.cloud.error_tail_lines,
+        )
 
 
 @task(name="cloud-sync")
@@ -715,6 +744,21 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
     return record
 
 
+@task(name="lan-access")
+def lan_access_task(config, dry_run: dict, run_id: str):
+    """Prove the rights the mirror uses (plan WP4, CL3/LA7/LA9): read a real
+    source file; create/read/delete a probe at the destination; NAS free
+    space for the bytes /L says will be copied. Runs AFTER the guards, so
+    nothing is ever written to a destination whose mount marker is not
+    confirmed. A missing right FAILS the run."""
+    dest = config.paths.lan_destination
+    permissions.probe_source_read(config.paths.source_drive)
+    permissions.probe_destination_write(dest, run_id)
+    permissions.check_destination_free_space(
+        dest, bytes_needed=((dry_run or {}).get("bytes") or {}).get("copied"),
+        min_free_gb=config.lan.min_free_dest_gb)
+
+
 @task(name="lan-snapshot-after")
 def lan_snapshot_after_task(config):
     """Snapshot LAN destination after sync for diff comparison.
@@ -991,10 +1035,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         guard_record = None
 
         try:
-            health_check_task(config, "cloud")
+            health_check_task(config, "cloud", artefacts_dir)
             preflight(config, fy_prefix)
             guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
                                              approval_id=approval_id, run_id=run_id)
+            cloud_access_task(config, run_id, artefacts_dir)
             phase = "sync"
             _t_sync = time.monotonic()
             sync_result = sync(config, fy_prefix, artefacts_dir,
@@ -1242,7 +1287,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         guard_record = None
 
         try:
-            health_check_task(config, "lan")
+            health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
             dry_run = preflight(config)
             before_dict = lan_snapshot_before_task(config)
@@ -1251,6 +1296,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 None if before_dict is None else guards.count_backup_files(before_dict),
                 approval_id=approval_id, run_id=run_id,
             )
+            lan_access_task(config, dry_run, run_id)
             phase = "sync"
             _t_sync = time.monotonic()
             sync_result = sync(config, artefacts_dir)

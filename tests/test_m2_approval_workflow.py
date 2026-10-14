@@ -158,6 +158,7 @@ def _guard_blocked(leg):
 @patch("flow.ManifestDB")
 @patch("flow._open_run_artefacts", return_value=None)
 @patch("flow.lan_sync_task")
+@patch("flow.lan_access_task", new=MagicMock())
 @patch("flow.lan_guards_task")
 @patch("flow.lan_snapshot_before_task", return_value={})
 @patch("flow.lan_preflight_task")

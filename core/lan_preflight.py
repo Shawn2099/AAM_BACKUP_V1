@@ -14,7 +14,8 @@ import time
 from core.smb_ready import wait_for_smb_ready
 
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
-from core.lan_sync import count_extra_file_lines, summarize_log_counts
+from core.lan_sync import count_extra_file_lines, summarize_log_bytes, summarize_log_counts
+from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
 
 
@@ -88,7 +89,9 @@ def run_lan_dry_run(
          "counts": summarize_log_counts() dict, or None when the summary
                    is missing/unreadable (the guards then fail the run),
          "planned_deletes": number of "*EXTRA File" lines,
-         "canary_present": mount marker is a regular file (guard G5)}
+         "canary_present": mount marker is a regular file (guard G5),
+         "bytes": Bytes-row counts (/BYTES, exact) - "copied" feeds the
+                  NAS free-space check, or None when unreadable}
     """
     # 1. Fast SMB Reachability Probe for UNC destinations (bypasses 45s OS hang)
     host = _extract_unc_host(dest)
@@ -132,8 +135,8 @@ def run_lan_dry_run(
         source,
         dest,
         "/L", "/MIR", "/XJ",
-        "/NJH", "/NP",
-        "/XF", ".AAM_TARGET_MOUNTED",
+        "/NJH", "/NP", "/BYTES",
+        "/XF", ".AAM_TARGET_MOUNTED", PROBE_PATTERN,
         "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
 
@@ -166,7 +169,8 @@ def run_lan_dry_run(
         logger.info(f"LAN dry-run passed (exit {code}); summary Files row: {counts}; "
                     f"planned deletions (*EXTRA File lines): {planned_deletes}")
         return {"ok": True, "exit_code": code, "error": None, "counts": counts,
-                "planned_deletes": planned_deletes, "canary_present": canary_valid}
+                "planned_deletes": planned_deletes, "canary_present": canary_valid,
+                "bytes": summarize_log_bytes(result.stdout or "")}
 
     except subprocess.TimeoutExpired:
         logger.error(f"LAN dry-run timed out after {timeout}s")

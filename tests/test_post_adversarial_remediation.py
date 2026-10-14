@@ -251,6 +251,7 @@ class TestBug01AbnormalTerminationShape:
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
     @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task")

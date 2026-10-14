@@ -47,7 +47,8 @@ def test_w1a_diag_robocopy_exit16_reason(sandbox):
     dest = sandbox / "nas" / "FY26-26"
     write_file(dest / "Clients" / "ledger.txt", b"x" * 100)
 
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
+                       lan=dict(L.PRODUCTION_LAN))
     res = run_lan_sync(str(src), str(dest), cfg.lan)
     err = (res.get("error") or "")[:1200]
     survivors = len([p for p in dest.rglob("*") if p.is_file()])
@@ -103,7 +104,8 @@ def test_w1a_d2_partial_readability_both_legs(sandbox):
     for i in range(5):
         write_file(dest / "B" / f"b{i}.txt", f"B{i}\n".encode() * 10)
 
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
+                       lan=dict(L.PRODUCTION_LAN))
     lan = run_lan_sync(str(src), str(dest), cfg.lan)
     b_survivors = len([p for p in (dest / "B").rglob("*") if p.is_file()]) if (dest / "B").exists() else 0
     a_files = len([p for p in (dest / "A").rglob("*") if p.is_file()])

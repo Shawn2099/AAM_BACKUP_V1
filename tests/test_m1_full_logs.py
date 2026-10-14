@@ -85,6 +85,7 @@ def test_pipeline_records_artefacts_dir_and_finalizes(tmp_path):
          patch.object(flow, "lan_preflight_task", MagicMock()), \
          patch.object(flow, "lan_snapshot_before_task", return_value={}), \
          patch.object(flow, "lan_guards_task", MagicMock()), \
+         patch.object(flow, "lan_access_task", MagicMock()), \
          patch.object(flow, "lan_sync_task", sync_mock), \
          patch.object(flow, "_record_run", side_effect=fake_record):
         with pytest.raises(RuntimeError):

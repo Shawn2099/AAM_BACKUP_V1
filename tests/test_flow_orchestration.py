@@ -507,6 +507,7 @@ class TestCloudPipelineSkipsRecordOnManifestError:
         with patch.object(flow, "health_check_task"), \
              patch.object(flow, "cloud_preflight_task", mock_preflight), \
              patch.object(flow, "cloud_guards_task", MagicMock()), \
+             patch.object(flow, "cloud_access_task", MagicMock()), \
              patch.object(flow, "cloud_sync_task", mock_sync), \
              patch.object(flow, "cloud_verify_and_report_task", mock_verify), \
              patch.object(flow, "cloud_record_task") as mock_record, \

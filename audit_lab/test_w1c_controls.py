@@ -137,7 +137,8 @@ def test_w1c_c4_denied_file_with_production_command(sandbox):
     write_file(dest / "A" / "a1.txt", b"A1\n" * 10)
     write_file(dest / "A" / "locked.txt", b"OLD COPY\n" * 10)
 
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
+                       lan=dict(L.PRODUCTION_LAN))
     res = run_lan_sync(str(src), str(dest), cfg.lan)
     left = (dest / "A" / "locked.txt").exists()
     content = (dest / "A" / "locked.txt").read_bytes()[:20] if left else b""
