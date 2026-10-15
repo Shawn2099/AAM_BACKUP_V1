@@ -36,10 +36,21 @@ HOW IT WORKS
       CRITICAL and keep deferring. A PID-dead/reused lock is not a live
       backup: it is treated as no-backup and collected via restart/boot-heal.
    - No lock and no transfer process → restart promptly.
-   - If no backup → issues sc stop AamPrefectServer. NSSM + sc failure
-     actions restart both AamPrefectServer and AamBackupAgent automatically.
-4. After a restart, sleeps 120 seconds (RESTART_COOLDOWN) before resuming
-   health checks, giving Prefect time to fully boot.
+   - If no backup → restarts the stack IN ORDER (WP13): stop AamBackupAgent
+     → wait STOPPED → stop AamPrefectServer → wait STOPPED → start the server
+     → wait for the API → start the agent. (The agent depends on the server:
+     `sc stop AamPrefectServer` alone is refused with 1051 - production logs.)
+4. After a restart, sleeps RESTART_COOLDOWN before resuming health checks.
+5. A service stuck in STOP_PENDING beyond watchdog.stop_pending_timeout_seconds
+   has its process tree killed - ONLY when no backup holds the lock; otherwise
+   a CRITICAL alert and the watchdog waits (production: 14+ min STOP_PENDING
+   with no escalation).
+
+Every CRITICAL is also emailed through core.notify (de-duplicated, recorded
+in the notifications table -> dashboard); a RECOVERED email follows once the
+API is healthy and the agent RUNNING again. All tunables: config `watchdog:`.
+The watchdog's own log is watchdog_app.log (NSSM keeps watchdog_svc.log for
+stdout), so the two writers never interleave in one file (plan WP2).
 
 BACKUP LOCK PROTOCOL
 ─────────────────────
@@ -54,34 +65,52 @@ Zero new dependencies: httpx and loguru are already project requirements.
 """
 
 import contextlib
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 from loguru import logger
 
+from core import services
+from models.config import RunLogsConfig, WatchdogConfig
+
 # ── Configuration ─────────────────────────────────────────────────────────────
-PREFECT_HEALTH_URL     = "http://127.0.0.1:4200/api/health"
-CHECK_INTERVAL_SECONDS = 60     # normal poll interval
-FAILURE_THRESHOLD      = 5      # consecutive failures before considering action
-REQUEST_TIMEOUT        = 30     # HTTP timeout per health check (seconds)
-BACKUP_WAIT_INTERVAL   = 120    # re-check interval while a backup is running
-MAX_DEFERRALS          = 15     # stale-lock cap: force restart after ~30 min (no transfer process seen)
-MAX_TRANSFER_DEFERRALS = 240    # real-transfer cap: force restart after 8 h (240 × 2 min)
-                                 # — well above subprocess_timeout_seconds (21 600 s = 6 h),
-                                 #   so a legitimate transfer is never cut short.
-                                 #   A genuinely zombie/hung rclone is recovered within 8 h.
-RESTART_COOLDOWN       = 120    # wait after triggering a restart before resuming
+# The live values are module globals (tests patch them); they are set from the
+# `watchdog:` config section by _apply_config() - defaults live in the model.
 WATCHED_SERVICE        = "AamPrefectServer"
 AGENT_SERVICE          = "AamBackupAgent"   # G4: hosts the scheduler + dashboard
 
-# Circuit breaker for auto-starts (mirrors the SCM failure-action budget the
-# install scripts configure: 3 failures per 24h). Prevents a crash-looping
-# service from being flapped forever by the watchdog.
-MAX_STARTS_PER_WINDOW  = 3      # max auto-starts per service per window
-START_WINDOW_SECONDS   = 3600   # window in which starts are counted
 
+def _apply_config(wc: WatchdogConfig, run_logs: RunLogsConfig | None = None) -> None:
+    global PREFECT_HEALTH_URL, CHECK_INTERVAL_SECONDS, FAILURE_THRESHOLD, REQUEST_TIMEOUT
+    global BACKUP_WAIT_INTERVAL, MAX_DEFERRALS, MAX_TRANSFER_DEFERRALS, RESTART_COOLDOWN
+    global MAX_STARTS_PER_WINDOW, START_WINDOW_SECONDS, STOP_PENDING_TIMEOUT, KILL_WAIT
+    global API_READY_TIMEOUT, SERVICE_POLL, SC_TIMEOUT, LOG_ROTATION_MB, LOG_RETENTION_DAYS
+    PREFECT_HEALTH_URL = wc.prefect_health_url
+    CHECK_INTERVAL_SECONDS = wc.check_interval_seconds
+    FAILURE_THRESHOLD = wc.failure_threshold
+    REQUEST_TIMEOUT = wc.request_timeout_seconds
+    BACKUP_WAIT_INTERVAL = wc.backup_wait_interval_seconds
+    # MAX_DEFERRALS: lock held, no transfer process. MAX_TRANSFER_DEFERRALS: a
+    # real transfer - well above the longest legitimate one (6 h), so it is
+    # never cut short while a zombie rclone is still recovered.
+    MAX_DEFERRALS = wc.max_deferrals
+    MAX_TRANSFER_DEFERRALS = wc.max_transfer_deferrals
+    RESTART_COOLDOWN = wc.restart_cooldown_seconds
+    # Circuit breaker for auto-starts (mirrors the SCM failure-action budget):
+    # a crash-looping service is never flapped forever by the watchdog.
+    MAX_STARTS_PER_WINDOW = wc.max_starts_per_window
+    START_WINDOW_SECONDS = wc.start_window_seconds
+    STOP_PENDING_TIMEOUT = wc.stop_pending_timeout_seconds
+    KILL_WAIT = wc.kill_wait_seconds
+    API_READY_TIMEOUT = wc.api_ready_timeout_seconds
+    SERVICE_POLL = wc.service_poll_seconds
+    SC_TIMEOUT = wc.sc_timeout_seconds
+    LOG_ROTATION_MB = wc.log_rotation_mb
+    LOG_RETENTION_DAYS = (run_logs or RunLogsConfig()).service_log_retention_days
+
+
+_apply_config(WatchdogConfig())
 
 # Defaults — overwritten by _resolve_paths() at startup from config.yaml.
 BACKUP_LOCK_PATH: Path = Path(r"C:\BackupAgent\backup.lock")
@@ -89,9 +118,9 @@ LOG_DIR: Path          = Path(r"C:\BackupAgent\logs")
 
 
 def _resolve_paths() -> None:
-    """Derive BACKUP_LOCK_PATH and LOG_DIR from config.yaml.
+    """Derive BACKUP_LOCK_PATH, LOG_DIR and the watchdog tunables from config.yaml.
 
-    Falls back to the hardcoded defaults if config is missing or invalid.
+    Falls back to the defaults if config is missing or invalid.
     Called once at the start of main() — before _configure_logging().
     """
     global BACKUP_LOCK_PATH, LOG_DIR
@@ -100,18 +129,21 @@ def _resolve_paths() -> None:
         cfg = load_config(CONFIG_PATH)
         BACKUP_LOCK_PATH = cfg.paths.backup_lock_path
         LOG_DIR = Path(cfg.paths.log_directory)
+        _apply_config(cfg.watchdog, cfg.run_logs)
     except Exception as exc:
-        logger.warning(f"Could not load config.yaml ({exc}) - using default paths")
+        logger.warning(f"Could not load config.yaml ({exc}) - using default paths and settings")
 
 
 def _configure_logging() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.remove()
+    # Own file: NSSM writes this process's stdout to watchdog_svc.log; loguru
+    # writing that same file interleaved lines in production (plan WP2).
     logger.add(
-        LOG_DIR / "watchdog_svc.log",
+        LOG_DIR / "watchdog_app.log",
         level="INFO",
-        rotation="10 MB",
-        retention=5,
+        rotation=f"{LOG_ROTATION_MB} MB",
+        retention=f"{LOG_RETENTION_DAYS} days",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level:<7} | {message}",
     )
     logger.add(sys.stdout, level="INFO",
@@ -195,30 +227,10 @@ def _service_state(service: str) -> str:
     already restarting it' from 'it is stopped and nothing will ever
     restart it'. Parsing the state makes that distinction possible.
     """
-    for attempt in range(2):
-        try:
-            r = subprocess.run(
-                ["sc", "query", service],
-                capture_output=True, text=True, timeout=15,
-            )
-            for line in r.stdout.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("STATE"):
-                    tokens = stripped.split(":", 1)[1].split()
-                    if len(tokens) >= 2 and tokens[0].isdigit():
-                        return tokens[1].strip()
-                    if tokens:
-                        return tokens[0].strip()
-            return ""
-        except subprocess.TimeoutExpired:
-            logger.warning(f"sc query {service} timed out (attempt {attempt+1}/2)")
-            if attempt == 0:
-                time.sleep(2)
-                continue
-        except Exception as exc:
-            logger.warning(f"sc query {service} failed: {exc}")
-            return ""
-    return ""
+    status = services.query(service, timeout_s=SC_TIMEOUT)
+    if not status.state:
+        logger.warning(f"sc queryex {service}: state unknown ({status.detail})")
+    return status.state
 
 
 def _service_is_running(service: str) -> bool:
@@ -241,21 +253,7 @@ def _start_service(service: str) -> bool:
     Returns True if the start request was accepted by the SCM.
     """
     logger.warning(f"Issuing: sc start {service}")
-    try:
-        r = subprocess.run(
-            ["sc", "start", service],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            logger.info(f"sc start {service} accepted - service should be up within ~30-60s")
-            return True
-        logger.error(f"sc start {service} returned {r.returncode}: {r.stderr.strip() or r.stdout.strip()}")
-        return False
-    except subprocess.TimeoutExpired:
-        logger.error(f"sc start {service} timed out (30s) - service may need manual attention")
-    except Exception as exc:
-        logger.error(f"Start attempt failed for {service}: {exc}")
-    return False
+    return services.start(service, timeout_s=SC_TIMEOUT).ok
 
 
 # Per-service list of auto-start timestamps (module-level so main() can pass it).
@@ -279,45 +277,156 @@ def _start_allowed(service: str) -> bool:
     return True
 
 
-def _stop_service(service: str) -> None:
-    """Stop the service via Windows SCM.
+# ── Alerts ────────────────────────────────────────────────────────────────────
 
-    With sc failureflag=1 (set during install), any stop increments the SCM
-    failure counter and triggers the sc failure restart actions.
-    DependOnService causes AamBackupAgent to stop and restart automatically
-    once AamPrefectServer is Running again.
-    """
-    logger.warning(f"Issuing: sc stop {service}")
-    try:
-        r = subprocess.run(
-            ["sc", "stop", service],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            logger.info("Stop accepted - NSSM will restart within ~30s")
-        else:
-            logger.error(f"sc stop returned {r.returncode}: {r.stderr.strip()}")
-    except subprocess.TimeoutExpired:
-        logger.error("sc stop timed out (30s) - service may need manual attention")
-    except Exception as exc:
-        logger.error(f"Stop attempt failed: {exc}")
+# True after a CRITICAL was emailed; the next fully healthy check sends RECOVERED.
+_attention_raised = False
 
 
-def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
-    """Send an alert if watchdog deferrals hit their cap on a live lock owner."""
+def _notify(event_kwargs: dict) -> None:
     try:
         from core.notify import AlertEvent, notify
         from models.config import CONFIG_PATH, load_config
 
-        cfg = load_config(CONFIG_PATH)
-        notify(cfg, AlertEvent(
-            key="watchdog:live_lock_cap", kind="ACTION_REQUIRED", mode="watchdog",
-            title="Backup lock held while the scheduler is unhealthy",
-            message=(f"Watchdog alert: backup lock held by live PID {pid} while Prefect API "
-                     f"is unhealthy: {reason}. Manual review required."),
-            status="LIVE_LOCK_CAP_EXCEEDED"))
+        notify(load_config(CONFIG_PATH), AlertEvent(mode="watchdog", **event_kwargs))
     except Exception as e:
         logger.warning(f"Watchdog alert delivery skipped/failed: {e}")
+
+
+def _critical(key: str, title: str, message: str, status: str) -> None:
+    """Log CRITICAL and email it (ACTION_REQUIRED, de-duplicated by key, recorded)."""
+    global _attention_raised
+    logger.critical(message)
+    _notify({"key": f"watchdog:{key}", "kind": "ACTION_REQUIRED", "title": title,
+             "message": message, "status": status})
+    _attention_raised = True
+
+
+def _send_recovered_if_needed() -> None:
+    global _attention_raised
+    if not _attention_raised:
+        return
+    _notify({"key": "watchdog:recovered", "kind": "RECOVERED",
+             "title": "Scheduler healthy again",
+             "message": (f"The Prefect API is healthy and {AGENT_SERVICE} is RUNNING again "
+                         "after the earlier watchdog alert."),
+             "status": "RECOVERED"})
+    _attention_raised = False
+
+
+def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
+    """Alert when watchdog deferrals hit their cap on a live lock owner."""
+    _critical("live_lock_cap", "Backup lock held while the scheduler is unhealthy",
+              f"Watchdog alert: backup lock held by live PID {pid} while Prefect API "
+              f"is unhealthy: {reason}. Manual review required.",
+              "LIVE_LOCK_CAP_EXCEEDED")
+
+
+# ── Stop / restart (WP13) ─────────────────────────────────────────────────────
+
+def _resolve_stuck_stop(service: str) -> bool:
+    """A service stuck in STOP_PENDING: kill its process tree - never under a backup.
+
+    Returns True when the service ended STOPPED.
+    """
+    if _is_backup_running():
+        _critical(f"stuck_stop:{service}", f"{service} stuck stopping during a backup",
+                  f"{service} has been STOP_PENDING for over {STOP_PENDING_TIMEOUT}s while a "
+                  "backup holds the lock - NOT killing it (that would kill the backup). "
+                  f"Manual review required: sc queryex {service}",
+                  "STOP_PENDING_UNDER_BACKUP")
+        return False
+    status = services.query(service, timeout_s=SC_TIMEOUT)
+    if status.state == services.STOPPED:
+        return True
+    if status.state != services.STOP_PENDING or not status.pid:
+        _critical(f"stuck_stop:{service}", f"{service} could not be stopped",
+                  f"{service} did not stop within {STOP_PENDING_TIMEOUT}s and cannot be killed "
+                  f"(state {status.state or 'unknown'}, PID {status.pid}). "
+                  f"Manual intervention required: sc queryex {service}",
+                  "STOP_FAILED")
+        return False
+    logger.error(f"{service} STOP_PENDING for over {STOP_PENDING_TIMEOUT}s and no backup is "
+                 f"running - killing service process PID {status.pid}")
+    outcome = services.kill_process_tree(status.pid)
+    logger.error(f"{service}: {outcome}")
+    after = services.wait_for(service, {services.STOPPED}, timeout_s=KILL_WAIT,
+                              poll_s=SERVICE_POLL, sc_timeout_s=SC_TIMEOUT,
+                              clock=time.monotonic, sleep=time.sleep)
+    if after.state != services.STOPPED:
+        _critical(f"stuck_stop:{service}", f"{service} could not be stopped",
+                  f"{service} still {after.state or 'unknown'} {KILL_WAIT}s after killing PID "
+                  f"{status.pid} ({outcome}). Manual intervention required.",
+                  "STOP_FAILED")
+        return False
+    return True
+
+
+def _stop_and_wait(service: str) -> bool:
+    status = services.query(service, timeout_s=SC_TIMEOUT)
+    if status.state == services.STOPPED:
+        return True
+    if status.state != services.STOP_PENDING:
+        logger.warning(f"Issuing: sc stop {service}")
+        result = services.stop(service, timeout_s=SC_TIMEOUT)
+        if not result.ok:
+            _critical("restart_failed", f"{service} could not be stopped",
+                      f"sc stop {service} failed (exit {result.exit_code}): {result.detail}. "
+                      "The scheduler restart was abandoned - manual intervention required.",
+                      "RESTART_FAILED")
+            return False
+    status = services.wait_for(service, {services.STOPPED}, timeout_s=STOP_PENDING_TIMEOUT,
+                               poll_s=SERVICE_POLL, sc_timeout_s=SC_TIMEOUT,
+                               clock=time.monotonic, sleep=time.sleep)
+    if status.state == services.STOPPED:
+        return True
+    return _resolve_stuck_stop(service)
+
+
+def _wait_api_healthy() -> bool:
+    deadline = time.monotonic() + API_READY_TIMEOUT
+    while True:
+        if _check_health():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(SERVICE_POLL)
+
+
+def _restart_stack() -> bool:
+    """Stop agent -> stop server -> start server -> API healthy -> start agent.
+
+    The agent DEPENDS ON the server: stopping the server first is refused with
+    1051 while the agent runs (production logs), so the agent goes first.
+    """
+    logger.error(f"Restarting {AGENT_SERVICE} + {WATCHED_SERVICE} in order")
+    for service in (AGENT_SERVICE, WATCHED_SERVICE):
+        if not _stop_and_wait(service):
+            return False
+    for service in (WATCHED_SERVICE, AGENT_SERVICE):
+        logger.warning(f"Issuing: sc start {service}")
+        result = services.start(service, timeout_s=SC_TIMEOUT)
+        if not result.ok:
+            _critical("restart_failed", f"{service} could not be started",
+                      f"sc start {service} failed (exit {result.exit_code}): {result.detail}. "
+                      "Manual intervention required.", "RESTART_FAILED")
+            return False
+        status = services.wait_for(service, {services.RUNNING}, timeout_s=API_READY_TIMEOUT,
+                                   poll_s=SERVICE_POLL, sc_timeout_s=SC_TIMEOUT,
+                                   clock=time.monotonic, sleep=time.sleep)
+        if status.state != services.RUNNING:
+            _critical("restart_failed", f"{service} did not start",
+                      f"{service} is {status.state or 'unknown'} {API_READY_TIMEOUT}s after "
+                      "sc start. Manual intervention required.", "RESTART_FAILED")
+            return False
+        if service == WATCHED_SERVICE and not _wait_api_healthy():
+            _critical("restart_failed", "Prefect API not healthy after restart",
+                      f"{WATCHED_SERVICE} is RUNNING but its API did not answer within "
+                      f"{API_READY_TIMEOUT}s; {AGENT_SERVICE} was not started. "
+                      "Manual intervention required.", "RESTART_FAILED")
+            return False
+    logger.info("Restart complete: server RUNNING, API healthy, agent RUNNING")
+    return True
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -355,6 +464,12 @@ def main() -> None:
     lock_deferrals = 0      # capped at MAX_DEFERRALS (~30 min)
     _alert_sentinel = object()
     _alerted_deadlock_pid = _alert_sentinel
+    # WP13: when each service was first seen STOP_PENDING (monotonic seconds)
+    pending_since: dict[str, float] = {}
+
+    def _stop_pending_too_long(service: str) -> bool:
+        since = pending_since.setdefault(service, time.monotonic())
+        return time.monotonic() - since >= STOP_PENDING_TIMEOUT
 
     while True:
         try:
@@ -373,19 +488,27 @@ def main() -> None:
                 # run and nothing else reports it (the server looks perfectly
                 # fine). Monitor it directly.
                 agent_state = _service_state(AGENT_SERVICE)
+                if agent_state != "STOP_PENDING":
+                    pending_since.pop(AGENT_SERVICE, None)
                 if agent_state == "RUNNING":
                     service_start_log.pop(AGENT_SERVICE, None)  # breaker reset
+                    _send_recovered_if_needed()
+                elif agent_state == "STOP_PENDING" and _stop_pending_too_long(AGENT_SERVICE):
+                    # WP13: production saw 14+ min STOP_PENDING with no escalation.
+                    if _resolve_stuck_stop(AGENT_SERVICE):
+                        pending_since.pop(AGENT_SERVICE, None)  # STOPPED: started next check
                 elif agent_state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
                     logger.info(f"{AGENT_SERVICE} is {agent_state} - waiting for NSSM to finish the transition")
                 elif agent_state == "STOPPED":
                     if _start_allowed(AGENT_SERVICE):
                         _start_service(AGENT_SERVICE)
                     else:
-                        logger.critical(
+                        _critical(
+                            f"start_suppressed:{AGENT_SERVICE}", f"{AGENT_SERVICE} is stopped",
                             f"{AGENT_SERVICE} is STOPPED and auto-start is suppressed "
-                            f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
-                            f"Manual intervention required: sc query {AGENT_SERVICE}"
-                        )
+                            f"({MAX_STARTS_PER_WINDOW} starts in the last hour). No backups are "
+                            f"being scheduled. Manual intervention required: sc query {AGENT_SERVICE}",
+                            "START_SUPPRESSED")
                 else:
                     logger.warning(
                         f"{AGENT_SERVICE} state unknown ({agent_state!r}) - "
@@ -524,6 +647,17 @@ def main() -> None:
 
             # ── No backup running — safe to act ──────────────────────────────────
             state = _service_state(WATCHED_SERVICE)
+            if state != "STOP_PENDING":
+                pending_since.pop(WATCHED_SERVICE, None)
+            if state == "STOP_PENDING" and _stop_pending_too_long(WATCHED_SERVICE):
+                # WP13: stuck stopping - kill (no backup is running on this
+                # path), then the ordered restart.
+                pending_since.pop(WATCHED_SERVICE, None)
+                if _resolve_stuck_stop(WATCHED_SERVICE):
+                    _restart_stack()
+                failures = 0
+                time.sleep(RESTART_COOLDOWN)
+                continue
             if state in ("START_PENDING", "STOP_PENDING", "PAUSED", "PAUSE_PENDING"):
                 # NSSM is already handling a restart — wait.
                 logger.info(
@@ -542,11 +676,12 @@ def main() -> None:
                     _start_service(WATCHED_SERVICE)
                     failures = 0
                 else:
-                    logger.critical(
+                    _critical(
+                        f"start_suppressed:{WATCHED_SERVICE}", f"{WATCHED_SERVICE} is down",
                         f"{WATCHED_SERVICE} is down and auto-start is suppressed "
-                        f"({MAX_STARTS_PER_WINDOW} starts in the last hour). "
-                        f"Manual intervention required: sc query {WATCHED_SERVICE}"
-                    )
+                        f"({MAX_STARTS_PER_WINDOW} starts in the last hour). No backups are "
+                        f"being scheduled. Manual intervention required: sc query {WATCHED_SERVICE}",
+                        "START_SUPPRESSED")
                 time.sleep(BACKUP_WAIT_INTERVAL)
                 continue
 
@@ -555,7 +690,7 @@ def main() -> None:
                 f"{WATCHED_SERVICE} reports RUNNING but Prefect API has been "
                 f"unreachable for {failures} consecutive checks. Triggering restart."
             )
-            _stop_service(WATCHED_SERVICE)
+            _restart_stack()
             failures = 0
 
             logger.info(

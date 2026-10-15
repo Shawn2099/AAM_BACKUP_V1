@@ -12,6 +12,15 @@ def prefect_harness():
 
 
 import watchdog
+from test_support.fake_sc import fake_sc
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sc():
+    """WP13: sc.exe runs through core.services.run_capture - never for real in tests."""
+    ok = MagicMock(returncode=0, stdout="STATE : 4  RUNNING")
+    with fake_sc(return_value=ok):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -167,50 +176,22 @@ class TestServiceIsRunning:
     def test_running_returns_true(self):
         mock_result = MagicMock()
         mock_result.stdout = "STATE : 4  RUNNING"
-        with patch("watchdog.subprocess.run", return_value=mock_result):
+        with fake_sc( return_value=mock_result):
             assert watchdog._service_is_running("AamPrefectServer") is True
 
     def test_start_pending_returns_false(self):
         mock_result = MagicMock()
         mock_result.stdout = "STATE : 2  START_PENDING"
-        with patch("watchdog.subprocess.run", return_value=mock_result):
+        with fake_sc( return_value=mock_result):
             assert watchdog._service_is_running("AamPrefectServer") is False
 
     def test_exception_returns_false(self):
-        with patch("watchdog.subprocess.run", side_effect=Exception("error")):
+        with fake_sc( side_effect=Exception("error")):
             assert watchdog._service_is_running("AamPrefectServer") is False
 
     def test_timeout_returns_false(self):
-        with patch("watchdog.subprocess.run", side_effect=subprocess.TimeoutExpired("sc", 5)):
+        with fake_sc( side_effect=subprocess.TimeoutExpired("sc", 5)):
             assert watchdog._service_is_running("AamPrefectServer") is False
-
-
-# ═══════════════════════════════════════════════════════════════════
-# _stop_service
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestStopService:
-    def test_success(self):
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        with patch("watchdog.subprocess.run", return_value=mock_result):
-            watchdog._stop_service("AamPrefectServer")  # should not raise
-
-    def test_failure(self):
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stderr = "error"
-        with patch("watchdog.subprocess.run", return_value=mock_result):
-            watchdog._stop_service("AamPrefectServer")  # should not raise
-
-    def test_timeout(self):
-        with patch("watchdog.subprocess.run", side_effect=subprocess.TimeoutExpired("sc", 30)):
-            watchdog._stop_service("AamPrefectServer")  # should not raise
-
-    def test_exception(self):
-        with patch("watchdog.subprocess.run", side_effect=Exception("unexpected")):
-            watchdog._stop_service("AamPrefectServer")  # should not raise
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -275,9 +256,9 @@ class TestMainLoop:
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_is_running", return_value=True), \
-             patch("watchdog._stop_service"):
+             patch("watchdog._restart_stack"):
             mock_sleep = self._run_loop(watchdog.FAILURE_THRESHOLD)
-            # After threshold, a stop should be issued
+            # After threshold, the ordered restart runs
             assert mock_sleep.call_count >= watchdog.FAILURE_THRESHOLD
 
     def test_threshold_transferring_defers(self):
@@ -296,13 +277,13 @@ class TestMainLoop:
             assert mock_sleep.call_args_list[-1][0][0] == watchdog.BACKUP_WAIT_INTERVAL
 
     def test_no_backup_restarts(self):
-        """Hung service (RUNNING but API dead) is stopped. The loop now
+        """Hung service (RUNNING but API dead) gets the ordered restart (WP13). The loop now
         branches on _service_state, so patch that to 'RUNNING'."""
         with patch("httpx.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_state", return_value="RUNNING"), \
-             patch("watchdog._stop_service") as mock_stop:
+             patch("watchdog._restart_stack") as mock_stop:
             self._run_loop(watchdog.FAILURE_THRESHOLD)
             mock_stop.assert_called_once()
 
@@ -313,7 +294,7 @@ class TestMainLoop:
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=True), \
              patch("watchdog._service_is_running", return_value=True), \
-             patch("watchdog._stop_service"), \
+             patch("watchdog._restart_stack"), \
              patch("watchdog.BACKUP_LOCK_PATH", mock_lock):
             total_iters = watchdog.FAILURE_THRESHOLD + watchdog.MAX_TRANSFER_DEFERRALS
             mock_sleep = self._run_loop(total_iters)
@@ -329,7 +310,7 @@ class TestMainLoop:
         with patch("httpx.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=True), \
              patch("watchdog._transfer_process_running", return_value=False), \
-             patch("watchdog._stop_service") as mock_stop, \
+             patch("watchdog._restart_stack") as mock_stop, \
              patch("watchdog._start_service") as mock_start, \
              patch("watchdog.logger", mock_logger), \
              patch("watchdog.BACKUP_LOCK_PATH", mock_lock):
@@ -359,7 +340,7 @@ class TestMainLoop:
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_state", return_value="STOPPED"), \
              patch("watchdog._start_service") as mock_start, \
-             patch("watchdog._stop_service") as mock_stop:
+             patch("watchdog._restart_stack") as mock_stop:
             self._run_loop(watchdog.FAILURE_THRESHOLD)
             mock_stop.assert_not_called()
             mock_start.assert_called_once_with(watchdog.WATCHED_SERVICE)
@@ -371,7 +352,7 @@ class TestMainLoop:
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_state", return_value="START_PENDING"), \
              patch("watchdog._start_service") as mock_start, \
-             patch("watchdog._stop_service") as mock_stop:
+             patch("watchdog._restart_stack") as mock_stop:
             mock_sleep = self._run_loop(watchdog.FAILURE_THRESHOLD)
             mock_stop.assert_not_called()
             mock_start.assert_not_called()

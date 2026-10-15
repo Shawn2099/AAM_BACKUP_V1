@@ -967,6 +967,16 @@ class ManifestDB:
                 "ORDER BY id DESC", (cutoff,)).fetchall()
             return [dict(r) for r in rows]
 
+    def latest_notification_for_mode(self, mode: str, since_days: int) -> dict | None:
+        """Newest notification of a pipeline/mode (e.g. 'watchdog') in the window."""
+        cutoff = cutoff_iso(since_days)
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE mode = ? AND created_at >= ? "
+                "ORDER BY id DESC LIMIT 1", (mode, cutoff)).fetchone()
+            return dict(row) if row else None
+
     # ── Maintenance ──────────────────────────────────────────
 
     def wal_checkpoint(self):

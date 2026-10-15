@@ -12,6 +12,10 @@ Guarantees, for every rclone / robocopy / system-tool invocation:
   timing, file names).
 
 Decision logic stays in the calling module; this module only executes.
+
+`run_capture` is the same contract for small, frequent status queries
+outside a run (the watchdog's `sc` calls every minute): output is captured
+in memory, capped at `max_chars`, and no artefact files are written.
 """
 
 from __future__ import annotations
@@ -97,6 +101,49 @@ def _kill_tree(pid: int) -> None:
         except psutil.Error:
             pass
     psutil.wait_procs(procs, timeout=30)
+
+
+@dataclass
+class CaptureResult:
+    argv: list[str]
+    exit_code: int | None
+    timed_out: bool
+    spawn_error: str | None
+    output: str          # stdout + stderr, capped
+
+    @property
+    def completed(self) -> bool:
+        return self.exit_code is not None and not self.timed_out and self.spawn_error is None
+
+    def describe_failure(self) -> str:
+        if self.spawn_error:
+            return f"{self.argv[0]} could not be started: {self.spawn_error}"
+        if self.timed_out:
+            return f"{self.argv[0]} timed out and was terminated"
+        return ""
+
+
+def run_capture(argv: list[str], *, timeout_s: float, max_chars: int = 4000) -> CaptureResult:
+    """Run a short status command; same guarantees as run_tool, output in memory."""
+    argv = [str(a) for a in argv]
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL)
+    except OSError as e:
+        return CaptureResult(argv, None, False, f"{type(e).__name__}: {e}", "")
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        logger.error(f"{argv[0]} exceeded {timeout_s}s - terminating process tree")
+        _kill_tree(proc.pid)
+        try:
+            proc.communicate(timeout=30)
+        except (subprocess.TimeoutExpired, ValueError):
+            pass
+        return CaptureResult(argv, None, True, None, "")
+    rc = proc.returncode
+    text = (out + err).decode("utf-8", errors="replace")
+    return CaptureResult(argv, rc if type(rc) is int else None, False, None, text[:max_chars])
 
 
 def run_tool(

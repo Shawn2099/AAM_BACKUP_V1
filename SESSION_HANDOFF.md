@@ -43,11 +43,11 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
 | M2 Data safety | **done** (2.1–2.6) |
 | M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
-| M4 Operations | in progress — 4.1, 4.2 done |
+| M4 Operations | in progress — 4.1, 4.2, 4.3 done |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check (2026-10-15, after M4 4.2):** `tests/` **1720 passed / 0 failed / 19 skipped**
-(full audit lab not re-run since M3; the changed W16 shutdown, W12.5 and W11 clock lab tests pass on their own).
+**Test status at last check (2026-10-15, after M4 4.3):** `tests/` **1741 passed / 0 failed / 19 skipped**
+(full audit lab not re-run since M3; every changed lab test - W16 shutdown/watchdog, W12.5, W11 clock, W17/W18/W1e - passes on its own).
 Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
 config.yaml `monthly_cron` changed - DEC-7).
 
@@ -89,7 +89,10 @@ config.yaml `monthly_cron` changed - DEC-7).
    schedule == config) both read the owner's local config.yaml and turn green with:
    Owner action: change `schedule.monthly_cron` to `"30 8 1 * *"` in the local and the
    production config.yaml (code default + example already changed) - lab W16 then turns green.
-5. **M4 4.1 + 4.2 DONE** (shutdown verified; clock tri-state - see plan §13). **NEXT: 4.3 watchdog.**
+5. **M4 4.1 + 4.2 + 4.3 DONE** (shutdown verified; clock tri-state; watchdog - see plan §13).
+   **NEXT: 4.4 schedule/time-budget validator** (count the LAN shutdown verify window and the
+   watchdog never restarting under a lock). 4.3 was not run against the real services: on-box
+   check in WP17 (restart order + STOP_PENDING kill on the trial box needs owner OK).
    4.2 note: `block` policy = cloud FAILED (not an approval); owner may want it as G7 BLOCKED + approval
    later - ask if it matters. The audit's LAN shutdown has
    no run row: a non-VERIFIED audit shutdown is the WARNING email only (the banner reads the last
@@ -131,6 +134,9 @@ config.yaml `monthly_cron` changed - DEC-7).
 - **w32tm /stripchart /computer:X /samples:1 /dataonly** (Win 11 **and trial box WS2016**, identical, 2026-10-15): ok = rc 0, last line
   `12:10:52, +00.9227616s`; NTP server not answering = **rc 0** with `12:10:52, error: 0x800705B4`;
   unknown host = rc 2147953401, `The following error occurred: No such host is known. (0x80072AF9)`.
+- **sc.exe** (trial box WS2016, read-only `queryex`/`qc`, 2026-10-15): all text incl. errors on
+  **stdout**, exit = Win32 error (1060 missing service). `queryex`: `STATE : 4  RUNNING`,
+  `PID : 1100`. AamBackupAgent `DEPENDENCIES : AamPrefectServer`; all 3 run as LocalSystem.
 - Sending `\\host` through `ssh ... 'shutdown ...'` mangles the backslashes (got 1707); pipe a Python
   script written with the Write tool instead.
 

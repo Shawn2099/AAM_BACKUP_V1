@@ -1302,8 +1302,9 @@ def test_w16_watchdog_main_loop_deferral_and_breaker(monkeypatch):
         actions.append(f"sc start {service}")
         return True
 
-    def _fake_stop_service(service):
-        actions.append(f"sc stop {service}")
+    def _fake_restart_stack():
+        actions.append("ordered restart")
+        return True
 
     def _fake_sleep(seconds):
         idx[0] += 1
@@ -1318,7 +1319,7 @@ def test_w16_watchdog_main_loop_deferral_and_breaker(monkeypatch):
     monkeypatch.setattr(watchdog, "_is_backup_running", _fake_is_backup_running)
     monkeypatch.setattr(watchdog, "_transfer_process_running", _fake_transfer_running)
     monkeypatch.setattr(watchdog, "_start_service", _fake_start_service)
-    monkeypatch.setattr(watchdog, "_stop_service", _fake_stop_service)
+    monkeypatch.setattr(watchdog, "_restart_stack", _fake_restart_stack)
     monkeypatch.setattr(watchdog.time, "sleep", _fake_sleep)
 
     # reset module state
@@ -1335,12 +1336,12 @@ def test_w16_watchdog_main_loop_deferral_and_breaker(monkeypatch):
              "watchdog.main() deferral logic, circuit breaker, and service actions "
              "with scripted health/state sequences",
              f"actions={actions} | service_start_log={watchdog.service_start_log}",
-             "OK — sc stop on hung service, sc start on stopped service, "
+             "OK — ordered restart on hung service, sc start on stopped service, "
              "deferral on lock/transfer"
-             if "sc stop AamPrefectServer" in actions
+             if "ordered restart" in actions
              and "sc start AamPrefectServer" in actions
              else f"ISSUE — actions={actions}")
-    assert "sc stop AamPrefectServer" in actions, f"expected sc stop, got {actions}"
+    assert "ordered restart" in actions, f"expected the ordered restart, got {actions}"
     assert "sc start AamPrefectServer" in actions, f"expected sc start, got {actions}"
 
 

@@ -179,7 +179,7 @@ with _backup_slot(config):
 | D7 | Integrity audit verdict | `core/integrity._run_rclone_check` | rclone check (hash) diff + summary | VERIFIED / VERIFICATION_FAILED |
 | D8 | FY rollover needed? | `core/fy_rollover.detect_rollover` | FY leaf of paths vs date | rollover / no-op |
 | D9 | Shutdown NAS? | `flow._run_lan_pipeline` | status + `lan.shutdown_*` + `wol.enabled` | shutdown / skip |
-| D10 | Watchdog action | `watchdog.main` | API health, lock alive, rclone/robocopy running, SCM state | wait / defer / start / stop |
+| D10 | Watchdog action | `watchdog.main` | API health, lock alive, rclone/robocopy running, SCM state, time in STOP_PENDING | wait / defer / start / ordered restart / kill stuck service (no lock only) |
 | D11 | Alert sent? | `core/report.send_failure_alert` (today) → `core/notify.notify` **[built, not wired yet]** | `notifications.send_on_failure`, SMTP config, cooldown | SENT/FAILED/SUPPRESSED |
 
 **M2 decision points.** G1–G4 are **wired** (2.2): tasks `lan-guards` / `cloud-guards` run
@@ -250,12 +250,21 @@ auth: api_key → session cookie (dashboard.auth_enabled), rate limits in memory
 
 ### 5.5 Watchdog — `watchdog.py` (own service)
 ```
-every 60 s: GET http://127.0.0.1:4200/api/health
- healthy  → check AamBackupAgent state; STOPPED → sc start (≤3/hour)
- 5 fails  → backup running? (backup.lock PID alive / rclone|robocopy process)
+every watchdog.check_interval_seconds: GET watchdog.prefect_health_url
+ healthy  → check AamBackupAgent state; STOPPED → sc start (≤ max_starts_per_window)
+            STOP_PENDING > stop_pending_timeout_seconds → kill its process tree,
+            ONLY if no backup holds the lock (else CRITICAL + wait)
+            after a CRITICAL: RUNNING again → RECOVERED email
+ N fails  → backup running? (backup.lock PID alive / rclone|robocopy process)
               yes → defer (caps: 8 h transfer, 30 min lock-only → CRITICAL + alert)
-              no  → AamPrefectServer STOPPED → sc start ; RUNNING but dead → sc stop
-                    (fails with 1051 while the agent depends on it — WP13)
+              no  → AamPrefectServer STOPPED → sc start
+                    RUNNING but dead → ordered restart (WP13):
+                      stop agent → STOPPED → stop server → STOPPED → start server
+                      → API healthy → start agent   (any step fails → CRITICAL email)
+sc.exe via core/services.py (run_capture; sc prints errors on STDOUT).
+All tunables: config `watchdog:`. Own log: logs/watchdog_app.log.
+Every CRITICAL → core.notify (ACTION_REQUIRED, mode watchdog) → red banner
+until a RECOVERED notification follows.
 ```
 
 ---
@@ -269,7 +278,7 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `serve.py` | builds Prefect deployments from config | `deployments()` |
 | `flow.py` | all Prefect flows + tasks + pipelines | see §3–§5 |
 | `ui.py` | dashboard API | `status`, `trigger_*`, `_status_fields`, `get_db`; approvals: `GET /approvals`, `POST /approvals/{id}/approve` (typed phrase, sign-in required), `/run`, `/dismiss` |
-| `watchdog.py` | Prefect health monitor | `main`, `_is_backup_running`, `_service_state`, `_start/_stop_service` |
+| `watchdog.py` | Prefect health monitor | `main`, `_is_backup_running`, `_service_state`, `_start_service`, `_restart_stack`, `_resolve_stuck_stop`, `_critical` |
 | `collect_config_data.py`, `deploy/*` | install / discovery / restore scripts | — |
 
 ### `core/` — business logic
@@ -293,7 +302,8 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `backup_repository.py` | write sync results / run history | flow record tasks |
 | `report.py` | failure alert + weekly/monthly emails | flow, ui, watchdog |
 | `statuses.py` | single status vocabulary | flow, manifest, report, ui |
-| `tool_runner.py` | one subprocess wrapper (files, tree-kill, manifest) | cloud_sync, lan_sync (more in M2–M4) |
+| `tool_runner.py` | one subprocess wrapper: `run_tool` (files, tree-kill, manifest) and `run_capture` (small status queries, in memory, capped) | cloud_sync, lan_sync, preflights, permissions, shutdown, health (w32tm), services |
+| `services.py` | sc.exe `queryex`/`stop`/`start`, `wait_for`, `kill_process_tree` (WP13) | watchdog |
 | `run_artefacts.py` | per-run full-log folders + retention | flow, tool_runner |
 | `process.py` | lock file, binary resolution | flow, watchdog, launch |
 | `logging.py` | loguru setup + Prefect bridge | flows |

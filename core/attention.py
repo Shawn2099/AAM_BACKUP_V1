@@ -94,6 +94,13 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            f"{name} blocked - {what} (see below)."))
 
     window = config.dashboard.alert_failure_window_days
+    # WP13: a watchdog CRITICAL stays red until its RECOVERED notice follows
+    watchdog = db.latest_notification_for_mode("watchdog", window)
+    if watchdog and watchdog.get("kind") == "ACTION_REQUIRED":
+        items.append(_item(RED, "watchdog",
+                           f"Service watchdog: {watchdog.get('subject') or watchdog.get('event_key')} "
+                           f"({str(watchdog.get('created_at') or '')[:16].replace('T', ' ')})."))
+
     failed = db.notification_failures_since(window)
     if failed:
         latest = failed[0]

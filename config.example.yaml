@@ -295,3 +295,39 @@ audit:
   # added to the built-in network/TLS/DNS/auth/listing signatures. Example:
   #   - "SOPHOS BLOCKPAGE"
   network_error_patterns: []
+
+# ═══════════════════════════════════════════════════
+# WATCHDOG (AamWatchdog service)
+# ═══════════════════════════════════════════════════
+# Watches the Prefect API and both services. A hung API is fixed by an ordered
+# restart (stop agent -> stop server -> start server -> API healthy -> start
+# agent). It never restarts or kills anything while a backup holds the lock.
+# Every CRITICAL is emailed ("open the dashboard"); a RECOVERED email follows.
+watchdog:
+  prefect_health_url: "http://127.0.0.1:4200/api/health"
+  # Normal poll interval and HTTP timeout per check (seconds)
+  check_interval_seconds: 60
+  request_timeout_seconds: 30
+  # Consecutive failed checks before acting
+  failure_threshold: 5
+  # While a backup runs: re-check interval, and how many re-checks before the
+  # CRITICAL alert (lock but no rclone/robocopy: 15 x 120 s = 30 min;
+  # rclone/robocopy running: 240 x 120 s = 8 h)
+  backup_wait_interval_seconds: 120
+  max_deferrals: 15
+  max_transfer_deferrals: 240
+  # Pause after a restart before checking again (seconds)
+  restart_cooldown_seconds: 120
+  # Circuit breaker: at most this many automatic starts per service per window
+  max_starts_per_window: 3
+  start_window_seconds: 3600
+  # A service still "stopping" after this long is killed - only when no backup
+  # holds the lock (the agent stops gracefully within 180 s)
+  stop_pending_timeout_seconds: 600
+  kill_wait_seconds: 60
+  # Restart: wait this long for the Prefect API before starting the agent
+  api_ready_timeout_seconds: 300
+  service_poll_seconds: 5
+  sc_timeout_seconds: 30
+  # The watchdog's own log: logs\watchdog_app.log (NSSM keeps watchdog_svc.log)
+  log_rotation_mb: 10

@@ -15,20 +15,17 @@ import httpx
 import pytest
 
 import watchdog
+from test_support.fake_sc import fake_sc
 
 
 @pytest.fixture
 def mock_sc_run():
-    with patch("watchdog.subprocess.run") as m:
-        def side_effect(args, **kwargs):
-            mock_result = MagicMock()
-            if "query" in args:
-                mock_result.stdout = "STATE : 4  RUNNING"
-                mock_result.returncode = 0
-            elif "stop" in args:
-                mock_result.returncode = 0
-            return mock_result
-        m.side_effect = side_effect
+    def side_effect(args):
+        mock_result = MagicMock(returncode=0, stdout="")
+        if "queryex" in args:
+            mock_result.stdout = "STATE : 4  RUNNING"
+        return mock_result
+    with fake_sc(side_effect=side_effect) as m:
         yield m
 
 
@@ -76,7 +73,7 @@ def _run_loop(max_sleeps, events, lock_path):
             # args AS-IS — cmd here IS the command list ["sc", "stop", ...].
             events.append(("sc", list(cmd)))
             result = MagicMock()
-            if "query" in cmd:
+            if "queryex" in cmd:
                 result.stdout = "STATE : 4  RUNNING"
                 result.returncode = 0
             else:
@@ -86,7 +83,7 @@ def _run_loop(max_sleeps, events, lock_path):
         try:
             with patch("watchdog._resolve_paths"), \
                  patch("watchdog.BACKUP_LOCK_PATH", lock_path), \
-                 patch("watchdog.subprocess.run", side_effect=sc_wrapper):
+                 fake_sc(side_effect=sc_wrapper):
                 watchdog.main()
         except KeyboardInterrupt:
             pass

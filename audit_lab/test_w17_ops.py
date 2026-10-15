@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from audit_lab import labconf as L
+from test_support.fake_sc import adapt
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -294,26 +295,26 @@ def test_w17_service_state_parsing(monkeypatch):
     def run_factory(out):
         return lambda *a, **k: _cp(0, out)
 
-    monkeypatch.setattr(wd.subprocess, "run", run_factory("SERVICE_NAME: X\n        STATE              : 4  RUNNING\n"))
+    monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("SERVICE_NAME: X\n        STATE              : 4  RUNNING\n")))
     assert wd._service_state("AamPrefectServer") == "RUNNING"
-    monkeypatch.setattr(wd.subprocess, "run", run_factory("STATE              : 1  STOPPED\n"))
+    monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("STATE              : 1  STOPPED\n")))
     assert wd._service_state("x") == "STOPPED"
-    monkeypatch.setattr(wd.subprocess, "run", run_factory("STATE              : 4\n"))
+    monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("STATE              : 4\n")))
     assert wd._service_state("x") == "4"          # one-token fallback
-    monkeypatch.setattr(wd.subprocess, "run", run_factory("no state line here"))
+    monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("no state line here")))
     assert wd._service_state("x") == ""
 
     def tmo(*a, **k):
         raise subprocess.TimeoutExpired(cmd="sc", timeout=15)
 
-    monkeypatch.setattr(wd.subprocess, "run", tmo)
+    monkeypatch.setattr(wd.services, "run_capture", adapt(tmo))
     monkeypatch.setattr(wd.time, "sleep", lambda s: None)   # retry backoff
     assert wd._service_state("x") == ""           # two attempts then give up
 
     def boom(*a, **k):
         raise OSError("sc.exe not found")
 
-    monkeypatch.setattr(wd.subprocess, "run", boom)
+    monkeypatch.setattr(wd.services, "run_capture", adapt(boom))
     assert wd._service_state("x") == ""
 
 
@@ -330,23 +331,23 @@ def test_w17_start_service_branches(monkeypatch):
     import watchdog as wd
 
     cmds = []
-    monkeypatch.setattr(wd.subprocess, "run", lambda *a, **k: (cmds.append(a[0]), _cp(0, "ok"))[1])
+    monkeypatch.setattr(wd.services, "run_capture", adapt(lambda *a, **k: (cmds.append(a[0]), _cp(0, "ok"))[1]))
     assert wd._start_service("AamBackupAgent") is True
     assert cmds[0] == ["sc", "start", "AamBackupAgent"]
 
-    monkeypatch.setattr(wd.subprocess, "run", lambda *a, **k: _cp(5, "", "access denied"))
+    monkeypatch.setattr(wd.services, "run_capture", adapt(lambda *a, **k: _cp(5, "", "access denied")))
     assert wd._start_service("svc") is False
 
     def tmo(*a, **k):
         raise subprocess.TimeoutExpired(cmd="sc", timeout=30)
 
-    monkeypatch.setattr(wd.subprocess, "run", tmo)
+    monkeypatch.setattr(wd.services, "run_capture", adapt(tmo))
     assert wd._start_service("svc") is False
 
     def boom(*a, **k):
         raise OSError("no sc")
 
-    monkeypatch.setattr(wd.subprocess, "run", boom)
+    monkeypatch.setattr(wd.services, "run_capture", adapt(boom))
     assert wd._start_service("svc") is False
 
 
@@ -366,29 +367,33 @@ def test_w17_start_allowed_breaker(monkeypatch):
     assert wd._start_allowed("svc") is True
 
 
-def test_w17_stop_service_never_raises(monkeypatch):
+def test_w17_services_stop_never_raises(monkeypatch):
+    """WP13: sc stop runs through core.services; every branch returns a result
+    carrying sc's own text (sc writes errors to STDOUT), never raises."""
     import watchdog as wd
 
     cmds = []
-    monkeypatch.setattr(wd.subprocess, "run", lambda *a, **k: (cmds.append(a[0]), _cp(0))[1])
-    assert wd._stop_service("AamPrefectServer") is None
+    monkeypatch.setattr(wd.services, "run_capture",
+                        adapt(lambda *a, **k: (cmds.append(a[0]), _cp(0))[1]))
+    assert wd.services.stop("AamPrefectServer", timeout_s=30).ok is True
     assert cmds[0] == ["sc", "stop", "AamPrefectServer"]
 
-    monkeypatch.setattr(wd.subprocess, "run", lambda *a, **k: _cp(5, "", "denied"))
-    assert wd._stop_service("svc") is None
+    monkeypatch.setattr(wd.services, "run_capture", adapt(
+        lambda *a, **k: _cp(1051, "[SC] ControlService FAILED 1051: dependent services")))
+    r = wd.services.stop("svc", timeout_s=30)
+    assert r.ok is False and r.exit_code == 1051 and "dependent" in r.detail
 
     def tmo(*a, **k):
         raise subprocess.TimeoutExpired(cmd="sc", timeout=30)
 
-    monkeypatch.setattr(wd.subprocess, "run", tmo)
-    assert wd._stop_service("svc") is None
+    monkeypatch.setattr(wd.services, "run_capture", adapt(tmo))
+    assert wd.services.stop("svc", timeout_s=30).ok is False
 
     def boom(*a, **k):
         raise OSError("no sc")
 
-    monkeypatch.setattr(wd.subprocess, "run", boom)
-    assert wd._stop_service("svc") is None
-
+    monkeypatch.setattr(wd.services, "run_capture", adapt(boom))
+    assert wd.services.stop("svc", timeout_s=30).ok is False
 
 def test_w17_check_health_branches(monkeypatch):
     import httpx
@@ -524,7 +529,7 @@ def test_w17_main_unhealthy_below_threshold(monkeypatch, sandbox):
     transfers = []
     monkeypatch.setattr(wd, "_transfer_process_running", lambda: transfers.append(1) or True)
     stopped, started = [], []
-    monkeypatch.setattr(wd, "_stop_service", lambda s: stopped.append(s))
+    monkeypatch.setattr(wd, "_restart_stack", lambda: stopped.append("AamPrefectServer") or True)
     monkeypatch.setattr(wd, "_start_service", lambda s: started.append(s) or True)
     monkeypatch.setattr(wd.time, "sleep", _breaker(2))
     with pytest.raises(_StopLoop):
@@ -543,7 +548,7 @@ def test_w17_main_transfer_deferral(monkeypatch, sandbox):
     monkeypatch.setattr(wd, "_transfer_process_running", lambda: transfers.append(1) or True)
     monkeypatch.setattr(wd, "_is_backup_running", lambda: False)
     stopped, started = [], []
-    monkeypatch.setattr(wd, "_stop_service", lambda s: stopped.append(s))
+    monkeypatch.setattr(wd, "_restart_stack", lambda: stopped.append("AamPrefectServer") or True)
     monkeypatch.setattr(wd, "_start_service", lambda s: started.append(s) or True)
     monkeypatch.setattr(wd.time, "sleep", _breaker(1))
     with pytest.raises(_StopLoop):
@@ -569,7 +574,7 @@ def test_w17_main_transfer_cap_live_lock(monkeypatch, sandbox):
     alerts = []
     monkeypatch.setattr(wd, "_alert_wedged_lock", lambda reason, pid=None: alerts.append(pid))
     stopped, started = [], []
-    monkeypatch.setattr(wd, "_stop_service", lambda s: stopped.append(s))
+    monkeypatch.setattr(wd, "_restart_stack", lambda: stopped.append("AamPrefectServer") or True)
     monkeypatch.setattr(wd, "_start_service", lambda s: started.append(s) or True)
     lock = wd.BACKUP_LOCK_PATH
     lock.write_text("77:1", encoding="utf-8")
@@ -629,7 +634,7 @@ def test_w17_main_lock_only_deferral_alerts(monkeypatch, sandbox):
     alerts = []
     monkeypatch.setattr(wd, "_alert_wedged_lock", lambda reason, pid=None: alerts.append(pid))
     stopped, started = [], []
-    monkeypatch.setattr(wd, "_stop_service", lambda s: stopped.append(s))
+    monkeypatch.setattr(wd, "_restart_stack", lambda: stopped.append("AamPrefectServer") or True)
     monkeypatch.setattr(wd, "_start_service", lambda s: started.append(s) or True)
     monkeypatch.setattr(wd.time, "sleep", _breaker(1))
     with pytest.raises(_StopLoop):
@@ -648,12 +653,13 @@ def test_w17_main_hung_service_restart(monkeypatch, sandbox):
     monkeypatch.setattr(wd, "_is_backup_running", lambda: False)
     monkeypatch.setattr(wd, "_service_state", lambda s: "RUNNING")   # RUNNING but API dead
     stopped = []
-    monkeypatch.setattr(wd, "_stop_service", lambda s: stopped.append(s))
+    monkeypatch.setattr(wd, "_restart_stack", lambda: stopped.append("AamPrefectServer") or True)
     monkeypatch.setattr(wd.time, "sleep", _breaker(1))
     with pytest.raises(_StopLoop):
         wd.main()
-    assert "AamPrefectServer" in stopped, "a hung-but-RUNNING service is restarted via sc stop"
+    assert "AamPrefectServer" in stopped, "a hung-but-RUNNING service gets the ordered restart"
     L.record("W17.main_hung_restart",
-             "service RUNNING but API dead -> sc stop (SCM/NSSM failure actions revive it)",
+             "service RUNNING but API dead -> ordered restart (agent stop, server stop, "
+             "server start, API healthy, agent start - WP13)",
              f"stopped={stopped}",
              "OK - the genuine hung state triggers the restart")

@@ -641,6 +641,51 @@ class HealthConfig(StrictModel):
     )
 
 
+class WatchdogConfig(StrictModel):
+    """AamWatchdog tuning (plan WP13). Read once at watchdog start."""
+    prefect_health_url: str = Field(
+        default="http://127.0.0.1:4200/api/health", description="Prefect API health endpoint")
+    check_interval_seconds: int = Field(default=60, ge=10, le=600,
+                                        description="Normal poll interval")
+    failure_threshold: int = Field(
+        default=5, ge=1, le=60, description="Consecutive failed health checks before acting")
+    request_timeout_seconds: int = Field(default=30, ge=1, le=120,
+                                         description="HTTP timeout per health check")
+    backup_wait_interval_seconds: int = Field(
+        default=120, ge=10, le=1800, description="Re-check interval while a backup is running")
+    max_deferrals: int = Field(
+        default=15, ge=1, le=1000,
+        description="Lock held but no rclone/robocopy: deferrals before the CRITICAL alert")
+    max_transfer_deferrals: int = Field(
+        default=240, ge=1, le=10_000,
+        description=("rclone/robocopy running: deferrals before the zombie-transfer handling "
+                     "(240 x 120 s = 8 h, above the longest legitimate transfer)"))
+    restart_cooldown_seconds: int = Field(
+        default=120, ge=0, le=1800, description="Pause after a restart before resuming checks")
+    max_starts_per_window: int = Field(
+        default=3, ge=1, le=20, description="Circuit breaker: auto-starts per service per window")
+    start_window_seconds: int = Field(default=3600, ge=60, le=86_400,
+                                      description="Circuit-breaker window")
+    stop_pending_timeout_seconds: int = Field(
+        default=600, ge=60, le=7200,
+        description=("A service still STOP_PENDING after this long has its process killed - "
+                     "only when no backup holds the lock; otherwise alert and wait. Must exceed "
+                     "the agent's graceful stop (NSSM AppStopMethodConsole 180 s)"))
+    kill_wait_seconds: int = Field(
+        default=60, ge=5, le=600, description="After killing a stuck service: wait for STOPPED")
+    api_ready_timeout_seconds: int = Field(
+        default=300, ge=30, le=1800,
+        description="Restart: wait this long for the Prefect API before starting the agent")
+    service_poll_seconds: int = Field(default=5, ge=1, le=60,
+                                      description="Poll interval while waiting for a service state")
+    sc_timeout_seconds: int = Field(default=30, ge=5, le=120,
+                                    description="Max seconds for one sc.exe call")
+    log_rotation_mb: int = Field(
+        default=10, ge=1, le=1000,
+        description="Rotate the watchdog's own log (watchdog_app.log) at this size; kept "
+                    "run_logs.service_log_retention_days")
+
+
 class DashboardConfig(StrictModel):
     auth_enabled: bool = True
     api_key: str = Field(default="", description="API key for dashboard authentication")
@@ -746,6 +791,7 @@ class AppConfig(StrictModel):
     approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
     rollover: RolloverConfig = Field(default_factory=RolloverConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
+    watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
 
     @property
     def run_logs_dir(self) -> Path:
