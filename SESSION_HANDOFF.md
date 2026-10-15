@@ -43,11 +43,14 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
 | M2 Data safety | **done** (2.1–2.6) |
 | M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
-| M4 Operations | **done** (4.1–4.6) — milestone audit lab: see §4 |
+| M4 Operations | **done** (4.1–4.6) — M4 lab 238/1 → W10 stale expectation fixed → **0 red** |
 | M5 Acceptance (on-box) | not started |
 
 **Test status at last check (2026-10-15, end of M4):** `tests/` **1778 passed / 0 failed / 19 skipped**
-(full audit lab not re-run since M3; every changed lab test - W16 shutdown/watchdog, W12.5, W11 clock, W17/W18/W1e - passes on its own).
+**M4 milestone audit lab (2026-10-15): 238 passed / 1 failed / 2 skipped (20 min)**; the 1 red was
+W10 `deployment_schedules_fire_when_intended` expecting the old monthly 08:00 / audit 03:00 -
+updated to 08:30 / 10:00, green. W16 schedule collision is green now (local config fixed).
+**No intentional reds remain.**
 Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
 config.yaml `monthly_cron` changed - DEC-7).
 

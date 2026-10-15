@@ -61,9 +61,9 @@ def test_w10_deployment_schedules_fire_when_intended():
         "backup-cloud": (cfg.schedule.cloud_cron, 18, 0),
         "backup-lan": (cfg.schedule.lan_cron, 1, 0),
         "weekly-report": (cfg.schedule.weekly_cron, 8, 0),
-        "monthly-report": (cfg.schedule.monthly_cron, 8, 0),
+        "monthly-report": (cfg.schedule.monthly_cron, 8, 30),   # WP8: never the weekly minute
         "rollover-check": (cfg.schedule.rollover_cron, 6, 0),
-        "integrity-audit": (cfg.schedule.audit_cron, 3, 0),
+        "integrity-audit": (cfg.schedule.audit_cron, 10, 0),    # WP14: after the 01:00 LAN budget
     }
 
     problems, lines = [], []
