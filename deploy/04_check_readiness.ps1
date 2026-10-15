@@ -4,7 +4,8 @@
 #   runtime + config folder write, SeBackupPrivilege - the exact checks the
 #   nightly preflight makes (plan WP4/WP16).
 param(
-    [string]$ServiceAccount = ""
+    [string]$ServiceAccount = "",
+    [string]$PasswordFile = ""
 )
 
 # =======================================================================
@@ -13,8 +14,21 @@ param(
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $fwd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($ServiceAccount) { $fwd += " -ServiceAccount `"$ServiceAccount`"" }
+    if ($PasswordFile) { $fwd += " -PasswordFile `"$PasswordFile`"" }
     Start-Process powershell.exe -ArgumentList $fwd -Verb RunAs
     exit
+}
+
+# -PasswordFile (unattended install): a file holding the password as a DPAPI
+# secure string (ConvertFrom-SecureString) made by THIS Windows user on THIS
+# machine - nobody else can decrypt it. It is deleted as soon as it is read.
+function Read-PasswordFile([string]$Path) {
+    try {
+        $sec = Get-Content -Path $Path -Raw -ErrorAction Stop | ConvertTo-SecureString -ErrorAction Stop
+    } finally {
+        Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
+    }
+    return $sec
 }
 
 Set-StrictMode -Version Latest
@@ -268,7 +282,8 @@ if ($ServiceAccount) {
         Check-Item "Service account" "$ServiceAccount not found or disabled (create it: lusrmgr.msc)" $true
     }
     if ($local -and (Test-Path $venvPy)) {
-        $cred = Get-Credential -UserName $ServiceAccount -Message "Password of $ServiceAccount (probe runs as this account)"
+        $cred = if ($PasswordFile) { New-Object System.Management.Automation.PSCredential($ServiceAccount, (Read-PasswordFile $PasswordFile)) }
+                else { Get-Credential -UserName $ServiceAccount -Message "Password of $ServiceAccount (probe runs as this account)" }
         $resultFile = Join-Path $env:SystemRoot ("Temp\aam_account_probe_" + [guid]::NewGuid().ToString("N") + ".txt")
         $probe = Join-Path $ScriptDir "probe_service_account.py"
         try {

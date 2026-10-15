@@ -6,7 +6,8 @@
 #   Run 04_check_readiness.ps1 -ServiceAccount <same> first: it proves the account
 #   can reach the NAS, read the source and write the runtime folder.
 param(
-    [string]$ServiceAccount = ""
+    [string]$ServiceAccount = "",
+    [string]$PasswordFile = ""
 )
 
 # =======================================================================
@@ -15,8 +16,21 @@ param(
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $fwd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($ServiceAccount) { $fwd += " -ServiceAccount `"$ServiceAccount`"" }
+    if ($PasswordFile) { $fwd += " -PasswordFile `"$PasswordFile`"" }
     Start-Process powershell.exe -ArgumentList $fwd -Verb RunAs
     exit
+}
+
+# -PasswordFile (unattended install): a file holding the password as a DPAPI
+# secure string (ConvertFrom-SecureString) made by THIS Windows user on THIS
+# machine - nobody else can decrypt it. It is deleted as soon as it is read.
+function Read-PasswordFile([string]$Path) {
+    try {
+        $sec = Get-Content -Path $Path -Raw -ErrorAction Stop | ConvertTo-SecureString -ErrorAction Stop
+    } finally {
+        Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
+    }
+    return $sec
 }
 
 # =======================================================================
@@ -155,7 +169,7 @@ if ($cfgExit -ne 0) {
 # which a plain account cannot) stay LocalSystem.
 $AgentPassword = $null
 if ($ServiceAccount) {
-    $sec = Read-Host -AsSecureString "Password for $ServiceAccount"
+    $sec = if ($PasswordFile) { Read-PasswordFile $PasswordFile } else { Read-Host -AsSecureString "Password for $ServiceAccount" }
     $AgentPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
     # The agent writes the DB, logs, run logs, lock and Prefect home under the

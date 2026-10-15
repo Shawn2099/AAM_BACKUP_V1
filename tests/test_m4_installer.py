@@ -145,3 +145,16 @@ class TestInstallerContract:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
                              capture_output=True, text=True, timeout=120)
         assert out.stdout.strip() == "0", out.stdout + out.stderr
+
+
+def test_unattended_password_file_is_dpapi_only_and_always_deleted():
+    """Owner 2026-10-15 ("do everything for me"): an optional -PasswordFile for remote
+    installs. Only a DPAPI secure string of the same Windows user is accepted, and it is
+    deleted right after reading (finally) - never a plain-text password parameter."""
+    for script in (INSTALLER, READINESS):
+        assert "[string]$PasswordFile" in script
+        helper = script[script.index("function Read-PasswordFile"):]
+        helper = helper[:helper.index("\n}\n")]
+        assert "ConvertTo-SecureString -ErrorAction Stop" in helper      # DPAPI, no -AsPlainText
+        assert "-AsPlainText" not in helper
+        assert "finally" in helper and "Remove-Item -Path $Path" in helper
