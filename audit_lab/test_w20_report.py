@@ -234,7 +234,7 @@ def test_w20_failure_alert_long_error_attaches(sandbox, monkeypatch):
     assert "Firm &amp; Co" in body                # html-escaped
     assert "TRUNCATED - SEE ATTACHMENT" in body
     assert "LAN_PARTIAL" in body and ">11<" in body
-    assert "2026-10-13 10:00:00" in body          # the Time row
+    assert "2026-10-13 10:00 IST" in body         # the Time row, shown in IST (labelled)
     att = seen["attachments"]
     assert len(att) == 1 and att[0]["filename"] == "failure_details.txt"
     assert att[0]["content"] == long_err.encode("utf-8")   # full error, untruncated

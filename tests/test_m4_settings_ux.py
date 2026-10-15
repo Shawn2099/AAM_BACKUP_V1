@@ -106,6 +106,10 @@ class TestIST:
     def test_any_offset_is_shown_as_ist(self, iso):
         assert format_ist(iso) == "2026-10-15 21:05 IST"
 
+    def test_a_time_without_offset_is_local_ist_not_utc(self):
+        # regression: it was read as UTC and shown 5.5 h late
+        assert format_ist("2026-10-13T10:00:00") == "2026-10-13 10:00 IST"
+
     def test_missing_and_garbage_never_raise(self):
         assert format_ist(None) == "-" and format_ist("garbage") == "garbage"
 

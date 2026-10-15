@@ -46,7 +46,9 @@ def format_ist(iso_ts: str | None, fmt: str = "YYYY-MM-DD HH:mm") -> str:
     if not iso_ts:
         return "-"
     try:
-        return pendulum.parse(str(iso_ts)).in_timezone(IST).format(fmt) + " IST"
+        # a timestamp without an offset was written as local (IST) time - never
+        # read it as UTC (that would shift it by 5.5 h)
+        return pendulum.parse(str(iso_ts), tz=IST).in_timezone(IST).format(fmt) + " IST"
     except Exception:  # noqa: BLE001 - display helper: never raise
         return str(iso_ts)
 
