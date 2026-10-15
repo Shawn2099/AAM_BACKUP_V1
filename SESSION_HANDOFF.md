@@ -44,7 +44,7 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M2 Data safety | **done** (2.1–2.6) |
 | M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
 | M4 Operations | **done** (4.1–4.6) — M4 lab 238/1 → W10 stale expectation fixed → **0 red** |
-| M5 Acceptance (on-box) | not started |
+| M5 Acceptance (on-box) | **in progress on the trial box - PAUSED by owner 2026-10-15 ~16:40** (see §4a) |
 
 **Test status at last check (2026-10-15, after 4.7 admin login + plain language):** `tests/` **1850 passed / 0 failed / 19 skipped**
 **M4 milestone audit lab (2026-10-15): 238 passed / 1 failed / 2 skipped (20 min)**; the 1 red was
@@ -142,6 +142,44 @@ config.yaml `monthly_cron` changed - DEC-7).
    --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
    Deferred from M3 (plan §13 note): tool_runner migration of cloud_verify / cloud_reporter /
    integrity `subprocess.run` calls.
+
+## 4a. M5 on the trial box - where we paused (2026-10-15)
+
+Owner: the trial box is ours (fresh install OK, old config only as reference; memory
+`trial-box-full-access`). **Use this PC as the "NAS"; NO NAS shutdowns for now.**
+- Box `C:\AAMBackup` = fresh clone of `mvp-hardening` (now `74a905c`); old install kept as
+  `C:\AAMBackup_v113`; its config + local edits saved in the session scratchpad (`box_ref/`, NOT in git
+  - secrets). Box config: schedule fixed (cloud 02:00, monthly 08:30), LAN target
+  `\10.10.151.53am_nas\FY26-27` (= THIS PC, share `aam_nas` = `C:\AAM_NAS`, folder FY26-27 created),
+  `lan.shutdown_after_backup: false`, `wol.enabled: false`. Old config backups next to config.yaml.
+- Account `aambackup` exists on BOTH machines (same password; owner chose it and typed it in chat - it
+  equals the box Administrator password -> **owner should change both after testing**, then re-run
+  04/06). Box: member of Backup Operators. Services installed by `06_install_services.ps1
+  -ServiceAccount .ambackup -PasswordFile ...`; **AamBackupAgent runs as .ambackup (Running)**,
+  server + watchdog LocalSystem. A readiness-only re-run was in flight when paused - re-run it to
+  confirm all green except "Update Active Hours" (owner decision pending).
+- Done on the box with the new code: readiness (all green except Active Hours); cloud backup
+  CLOUD_NO_CHANGES_COMPLETE (clock OK, guards PASS, rclone counts); LAN with NAS unreachable ->
+  LAN_FAILED + exactly ONE alert email (real Gmail); graceful agent stop 0.6 s, lock released.
+- **Real deploy bugs found on the box and fixed** (all committed + tested): (1) DPAPI password file
+  trailing newline -> empty password, installer printed [OK] while agent stayed LocalSystem -> trim +
+  read back Win32_Service.StartName, stop if wrong; (2) Start-Process -Credential fails 0xC0000142
+  without a desktop -> probe runs as a scheduled task; (3) our own services on 4200/8080 flagged on
+  re-install -> OK; (4) uv hard-links .venv to the admin's cache (ACL shared) -> service account
+  could not import -> `uv sync --link-mode copy`; (5) runtime grant without /T missed existing
+  files -> NSSM could not open agent_svc.log -> `/T /C`, stop on failure.
+- **Next (after the pause):** confirm readiness green; first full LAN copy to this PC; then the
+  scenario list: no-change + changed-files nights (counts); NAS unavailable (stop share) -> one
+  email, RECOVERED; mass delete in E:\FY26-27 -> BLOCKED -> dashboard approval; empty/renamed
+  source -> blocked; tiny LAN budget -> LAN_PARTIAL; audit VERIFIED then a changed NAS file ->
+  difference; watchdog hung-API restart order + emails; settings page on the box. Restore the box's
+  E:\FY26-27 afterwards. Also: remove stale services AamChaosAgent/AamChaosServer/AamF4Rig and the
+  stale deployment backup-lan-p2scen; delete `AAM_setup_this_pc_as_NAS.ps1` +
+  `AAM_hand_password_to_Claude.ps1` from the owner's Desktop when done (the latter never saved:
+  double-click PowerShell is blocked by execution policy on this PC).
+- Remote-install mechanics (scripts prompt at the keyboard only): scratchpad
+  `box_account_template.py` = set aambackup password from stdin, write DPAPI files, run 04/06 with
+  `-PasswordFile` (files deleted by the scripts). Run it with the box's system Python when .venv is absent.
 
 ### Verified tool facts (real binaries, 2026-10-14/15)
 - **rclone final stats**: the LAST JSON log line with a "stats" key holds the totals
