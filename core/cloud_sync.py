@@ -285,7 +285,7 @@ def run_cloud_sync(
     if result.timed_out:
         # G7: a timeout is an interruption, not a data event — rclone sync
         # is resumable.
-        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "error": (
+        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "timed_out": True, "error": (
             f"Timeout after {timeout}s — rclone sync is resumable; progress is "
             "preserved and the next run continues from where this one left off"
         )}

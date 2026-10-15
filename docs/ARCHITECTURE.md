@@ -344,7 +344,8 @@ until a RECOVERED notification follows.
 | `lan` | robocopy retries/wait/threads/timeout, flow retries, shutdown policy, `log_tail_kb`, dry-run timeout, `use_backup_mode` (/ZB), `min_free_dest_gb`, `privilege_check_timeout_seconds` | lan_sync, lan_preflight, permissions, flow |
 | `wol` | enable, MAC, NAS IP, broadcast, wake timing, `shutdown_*` (delay, command timeout, verify window, closed probes) | wol, smb_ready, shutdown |
 | `cloud` | bucket/project/class, bandwidth, transfers/checkers, all rclone timeouts, flow retries, `error_tail_lines`, `dry_run_timeout_seconds`, `write_probe_enabled` | cloud_*, permissions |
-| `schedule` | 6 cron expressions + timezone | serve.py |
+| `schedule` | 6 cron expressions + timezone; at load, `core.budget.schedule_problems` (cronsim, 1 year) refuses any slot-job start whose budget could run past the next slot job's start + `maintenance.concurrency_wait_seconds` (WP14) | serve.py, models.config |
+| `budget` | per-job run budgets `cloud/lan/audit_max_hours` (from job start, slot wait included) + `cloud_verify_reserve_minutes`, `lan_post_reserve_minutes`. The long steps get `RunBudget.cap(...)`: cloud upload = rclone `--max-duration`, robocopy / checks = timeout. Budget stop = `*_PARTIAL` + `budget_stopped` (cloud: not verified, not recorded as bucket state), audit = `AUDIT_INCOMPLETE`; `extended_metrics.budget` on every run. Manual override: `backup(budget_hours=...)` | flow, core/budget |
 | `notifications` | SMTP host/port/security/auth/timeout/retries, recipients, enable flags | report, notify |
 | `alerts` | cooldown, body/attachment size | notify |
 | `dashboard` | auth, api key, bind, port, `public_url` (used in emails) | ui, notify |

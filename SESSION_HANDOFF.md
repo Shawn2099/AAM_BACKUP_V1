@@ -43,10 +43,10 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
 | M2 Data safety | **done** (2.1–2.6) |
 | M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
-| M4 Operations | in progress — 4.1, 4.2, 4.3 done |
+| M4 Operations | in progress — 4.1–4.4 done (4.5, 4.6 left) |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check (2026-10-15, after M4 4.3):** `tests/` **1741 passed / 0 failed / 19 skipped**
+**Test status at last check (2026-10-15, after M4 4.4):** `tests/` **1762 passed / 0 failed / 19 skipped**
 (full audit lab not re-run since M3; every changed lab test - W16 shutdown/watchdog, W12.5, W11 clock, W17/W18/W1e - passes on its own).
 Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
 config.yaml `monthly_cron` changed - DEC-7).
@@ -89,10 +89,19 @@ config.yaml `monthly_cron` changed - DEC-7).
    schedule == config) both read the owner's local config.yaml and turn green with:
    Owner action: change `schedule.monthly_cron` to `"30 8 1 * *"` in the local and the
    production config.yaml (code default + example already changed) - lab W16 then turns green.
-5. **M4 4.1 + 4.2 + 4.3 DONE** (shutdown verified; clock tri-state; watchdog - see plan §13).
-   **NEXT: 4.4 schedule/time-budget validator** (count the LAN shutdown verify window and the
-   watchdog never restarting under a lock). 4.3 was not run against the real services: on-box
-   check in WP17 (restart order + STOP_PENDING kill on the trial box needs owner OK).
+5. **M4 4.1-4.4 DONE** (shutdown verified; clock tri-state; watchdog; run budgets - plan §13).
+   **NEXT: 4.5 installer** (`uv run --frozen --no-sync`, `AAM_CONFIG`, readiness checks), then 4.6.
+   4.3 was not run against the real services: on-box check in WP17 (needs owner OK).
+   **OWNER ACTIONS before deploying this code (4.4 refuses the old schedules at load):**
+   - production `config.yaml`: `cloud_cron: "0 2 * * *"` (LAN stays 21:00), `audit_cron:
+     "0 10 * * SUN"`, `monthly_cron: "30 8 1 * *"`; otherwise the services will not start.
+   - local `config.yaml`: DONE 2026-10-15 (audit Sunday 10:00, monthly 08:30) - lab W16 schedule test should now turn green.
+   - Budgets are starting values (owner 2026-10-15: real durations unknown) - tune from
+     `extended_metrics.budget.used_hours` after 1-2 weeks of real nights.
+   - First full cloud upload: spreads over nights as CLOUD_PARTIAL, or run `backup-cloud` once by
+     hand in Prefect with parameter `budget_hours` (e.g. 48) over a weekend.
+   Owner questions answered 2026-10-15: a failed leg never fails the other (separate jobs/rows/
+   alerts); only an overrun can make the next job SLOT_TIMEOUT - which the budgets now prevent.
    4.2 note: `block` policy = cloud FAILED (not an approval); owner may want it as G7 BLOCKED + approval
    later - ask if it matters. The audit's LAN shutdown has
    no run row: a non-VERIFIED audit shutdown is the WARNING email only (the banner reads the last
@@ -162,6 +171,9 @@ config.yaml `monthly_cron` changed - DEC-7).
 - rclone v1.74.3, robocopy 10.0.14393. Config: LAN 21:00, cloud 22:00, LAN target `\\10.10.151.53\aam_test\CHAOS01\FY26-27` (test leftover), demo bucket. Both NAS IPs do not answer on 445.
 - Production `config.yaml` passes the new strict validation (only deprecated `notifications.send_on_success`, dropped with a warning).
 - DB: 59 legacy `*_SKIPPED` rows are really preflight failures (display as failures, never rewrite history).
+- Production schedule (read-only, 2026-10-15): LAN 21:00, cloud 22:00, audit = code default,
+  `concurrency_wait_seconds` default (1 h). Trial-box run durations are demo-sized (0-5 min,
+  579 files / 57 MB) - no basis for real budgets.
 - 2026-10-15 ~11:56 and ~12:08 IST: the box was **shut down twice by our 4.1 tests** with the owner's
   permission (owner restarts it by hand; after the first restart all 3 services came back Running).
   No backup was running either time.

@@ -216,7 +216,7 @@ def build_config(base: Path, *, source: Path, lan_dest: str, runtime: Path,
         "schedule": {
             "cloud_cron": "0 18 * * *", "lan_cron": "0 1 * * *",
             "weekly_cron": "0 8 * * MON", "monthly_cron": "30 8 1 * *",
-            "rollover_cron": "0 6 * * *", "audit_cron": "0 3 * * SUN",
+            "rollover_cron": "0 6 * * *", "audit_cron": "0 10 * * SUN",
             "timezone": "Asia/Kolkata",
         },
         "dashboard": {"auth_enabled": False, "api_key": "", "bind_address": "127.0.0.1", "port": 8080},

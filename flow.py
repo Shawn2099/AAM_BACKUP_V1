@@ -32,7 +32,8 @@ from core.cloud_reporter import (
     get_cloud_manifest,
     get_cloud_size,
 )
-from core.cloud_sync import run_cloud_sync
+from core.budget import BudgetExceeded, RunBudget
+from core.cloud_sync import resolve_max_duration_seconds, run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.health import pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
@@ -326,6 +327,13 @@ def _exception_kind(exc: BaseException) -> str:
     return statuses.EXC_ERROR
 
 
+def _budget_metrics(budget: RunBudget, sync_result: dict) -> dict:
+    """WP14 evidence on every run row: the budget and whether this run hit it."""
+    return {"hours": round(budget.seconds / 3600, 2),
+            "used_hours": round((budget.seconds - budget.remaining()) / 3600, 2),
+            "stopped": bool(sync_result.get("budget_stopped"))}
+
+
 def _merge_metrics(extended_metrics: str | None, **fields) -> str | None:
     """Add fields to the extended_metrics JSON (never drops existing data)."""
     try:
@@ -546,10 +554,38 @@ def cloud_access_task(config, run_id: str, artefacts_dir: str | None = None):
         )
 
 
+def _budget_stop_text(budget: RunBudget, what: str) -> str:
+    return (f"Stopped at the run budget of {budget.describe()}: {what}. This is not a "
+            "complete backup; the next run continues where this one stopped.")
+
+
 @task(name="cloud-sync")
 def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
-                    max_delete: int | None = None):
-    """Run rclone sync to mirror source → GCS (max_delete: G3 backstop)."""
+                    max_delete: int | None = None, budget: RunBudget | None = None):
+    """Run rclone sync to mirror source → GCS (max_delete: G3 backstop).
+
+    WP14: with a run budget the upload gets what is left of it (minus the
+    verify reserve) as rclone's own --max-duration; stopping there is
+    CLOUD_PARTIAL with `budget_stopped` - resumable, never a retry.
+    """
+    timeout = config.cloud.subprocess_timeout_seconds
+    max_duration = config.cloud.max_duration_seconds
+    limited = False
+    if budget is not None:
+        reserve = config.budget.cloud_verify_reserve_minutes * 60
+        try:
+            limited = budget.binding(timeout, reserve)
+            timeout = int(budget.cap(timeout, reserve))
+        except BudgetExceeded as e:
+            logger.error(str(e))
+            return {"status": "CLOUD_PARTIAL", "exit_code": -1, "budget_stopped": True,
+                    "stats": None, "error": _budget_stop_text(
+                        budget, "no time was left for the upload")}
+        if limited:
+            # rclone stops itself (exit 10) before the hard kill at `timeout`
+            max_duration = resolve_max_duration_seconds(timeout, None)
+            logger.info(f"Cloud upload limited by the run budget: --max-duration "
+                        f"{max_duration}s, hard stop {timeout}s")
     logger.info(f"Cloud sync: {config.paths.source_drive} → {config.cloud.bucket}/{fy_prefix}")
     result = run_cloud_sync(
         source=config.paths.source_drive,
@@ -564,20 +600,34 @@ def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         transfers=config.cloud.transfers,
         checkers=config.cloud.checkers,
         buffer_size=config.cloud.buffer_size,
-        timeout=config.cloud.subprocess_timeout_seconds,
-        max_duration_seconds=config.cloud.max_duration_seconds,
+        timeout=timeout,
+        max_duration_seconds=max_duration,
         artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
         error_tail_lines=config.cloud.error_tail_lines,
         max_delete=max_delete,
     )
+    if limited and (result.get("exit_code") == 10 or result.get("timed_out")):
+        stats = result.get("stats") or {}
+        done = (f"{stats.get('transfers', 'unknown')} file(s), "
+                f"{(stats.get('bytes') or 0) / 1024 ** 3:.2f} GB uploaded in this run"
+                if stats else "upload progress unknown (no rclone stats)")
+        logger.warning(f"Cloud upload stopped at the run budget - {done}")
+        return {**result, "status": "CLOUD_PARTIAL", "budget_stopped": True,
+                "error": _budget_stop_text(budget, done)}
     if result["status"] in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
         raise RuntimeError(result.get("error", "Cloud sync failed"))
     return result
 
 
 @task(name="cloud-verify-and-report")
-def cloud_verify_and_report_task(config, fy_prefix: str):
-    """Verify integrity + gather size/manifest/diff for reporting."""
+def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | None = None):
+    """Verify integrity + gather size/manifest/diff for reporting.
+
+    WP14: each check's timeout is capped by what is left of the run budget.
+    """
+    def limit(timeout_s):
+        return int(budget.cap(timeout_s)) if budget is not None else timeout_s
+
     with temp_rclone_config(
         config.paths.gcs_key_path,
         config.cloud.location,
@@ -591,7 +641,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             bucket=config.cloud.bucket,
             fy_prefix=fy_prefix,
             config_path=rclone_cfg,
-            timeout=config.cloud.verify_timeout_seconds,
+            timeout=limit(config.cloud.verify_timeout_seconds),
         )
         verify_s = time.monotonic() - _t_verify
 
@@ -599,7 +649,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
         _t_size = time.monotonic()
         size = get_cloud_size(
             config.cloud.bucket, fy_prefix, rclone_cfg,
-            timeout=config.cloud.cloud_size_timeout_seconds,
+            timeout=limit(config.cloud.cloud_size_timeout_seconds),
         )
         size_s = time.monotonic() - _t_size
         # M6: a failed manifest query must never look like an empty bucket.
@@ -609,7 +659,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
         try:
             manifest = get_cloud_manifest(
                 config.cloud.bucket, fy_prefix, rclone_cfg,
-                timeout=config.cloud.manifest_timeout_seconds,
+                timeout=limit(config.cloud.manifest_timeout_seconds),
             )
         except Exception as e:
             logger.warning(
@@ -623,7 +673,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             config.cloud.bucket,
             fy_prefix,
             rclone_cfg,
-            timeout=config.cloud.diff_timeout_seconds,
+            timeout=limit(config.cloud.diff_timeout_seconds),
         )
         diff_s = time.monotonic() - _t_diff
         stage_seconds = {
@@ -929,15 +979,38 @@ def lan_snapshot_after_task(config):
 
 
 @task(name="lan-sync")
-def lan_sync_task(config, artefacts_dir: str | None = None):
-    """Run robocopy /MIR mirror sync."""
+def lan_sync_task(config, artefacts_dir: str | None = None, budget: RunBudget | None = None):
+    """Run robocopy /MIR mirror sync.
+
+    WP14: with a run budget robocopy gets what is left of it (minus the
+    post-sync reserve); being stopped there is LAN_PARTIAL with
+    `budget_stopped` - the next run continues the mirror, never a retry.
+    """
     logger.info(f"LAN sync: {config.paths.source_drive} → {config.paths.lan_destination}")
+    timeout = config.lan.subprocess_timeout_seconds
+    limited = False
+    if budget is not None:
+        reserve = config.budget.lan_post_reserve_minutes * 60
+        try:
+            limited = budget.binding(timeout, reserve)
+            timeout = int(budget.cap(timeout, reserve))
+        except BudgetExceeded as e:
+            logger.error(str(e))
+            return {"status": "LAN_PARTIAL", "exit_code": -1, "budget_stopped": True,
+                    "files_failed": 0, "counts": None, "bytes": None, "files_deleted": None,
+                    "error": _budget_stop_text(budget, "no time was left for the mirror")}
     result = run_lan_sync(
         source=config.paths.source_drive,
         dest=config.paths.lan_destination,
         lan_config=config.lan,
         artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
+        timeout_s=timeout,
     )
+    if limited and result.get("timed_out"):
+        logger.warning("LAN mirror stopped at the run budget")
+        return {**result, "status": "LAN_PARTIAL", "budget_stopped": True,
+                "error": _budget_stop_text(budget, "robocopy was stopped before the mirror "
+                                                   "finished (full log kept)")}
     if result["status"] in ("LAN_FAILED", "LAN_SUSPECT"):
         raise RuntimeError(result.get("error", "LAN sync failed"))
     return result
@@ -1171,8 +1244,14 @@ def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> st
 
 
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
+                        budget_hours: float | None = None,
                         approval_id: str | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked."""
+    # WP14: the run budget counts from the job's start, including the slot wait
+    budget = RunBudget(
+        "cloud",
+        (budget_hours if budget_hours is not None else config.budget.cloud_max_hours) * 3600,
+        monotonic_start if monotonic_start is not None else time.monotonic())
     with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start):
         db_path = config.paths.database_path
         fy_prefix = _effective_fy_prefix(config)
@@ -1227,13 +1306,36 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             phase = "sync"
             _t_sync = time.monotonic()
             sync_result = sync(config, fy_prefix, artefacts_dir,
-                               max_delete=guard_record["max_delete"])
+                               max_delete=guard_record["max_delete"], budget=budget)
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
+            if sync_result.get("budget_stopped"):
+                # WP14: the upload stopped at the run budget. Not verified (the
+                # bucket is knowingly incomplete) and not recorded as bucket
+                # state; the next run continues. One PARTIAL alert.
+                phase = "post"
+                error_msg = sync_result["error"]
+                stats = sync_result.get("stats")
+                if isinstance(stats, dict):
+                    files_copied, bytes_copied = stats.get("transfers"), stats.get("bytes")
+                else:
+                    files_copied = bytes_copied = None
+                extended_metrics = json.dumps({
+                    "stage_seconds": dict(stage_seconds),
+                    "verify": "skipped - the upload stopped at the run budget",
+                    "counts_source": "rclone" if isinstance(stats, dict) else "unavailable",
+                    "tool_counts": {k: stats.get(k) for k in ("transfers", "bytes", "deletes",
+                                                              "errors", "checks")}
+                    if isinstance(stats, dict) else None,
+                })
+                _send_run_alert(config, "cloud", status, error_msg,
+                                sync_result.get("exit_code"), started_at)
+                alert_sent = True
+                raise PartialRun(f"Cloud run ended {status} - {error_msg}")
             phase = "verify"
             _t_verify_report = time.monotonic()
-            verify_data = verify_report(config, fy_prefix)
+            verify_data = verify_report(config, fy_prefix, budget=budget)
             verify_report_seconds = round(time.monotonic() - _t_verify_report, 1)
             stage_seconds.update(verify_data.get("stage_seconds") or {})
             stage_seconds["verify_report_s"] = verify_report_seconds
@@ -1376,6 +1478,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _merge_metrics(extended_metrics, budget=_budget_metrics(
+                budget, sync_result))
             if clock is not None:
                 extended_metrics = _merge_metrics(extended_metrics, clock=clock)
             extended_metrics = _with_guards(extended_metrics, guard_record)
@@ -1406,8 +1510,14 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 # ═══════════════════════════════════════════════════════════════
 
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
+                       budget_hours: float | None = None,
                       approval_id: str | None = None):
     """Execute LAN backup tasks sequentially. Each task is independently tracked."""
+    # WP14: the run budget counts from the job's start, including the slot wait
+    budget = RunBudget(
+        "lan",
+        (budget_hours if budget_hours is not None else config.budget.lan_max_hours) * 3600,
+        monotonic_start if monotonic_start is not None else time.monotonic())
     with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start):
         db_path = config.paths.database_path
 
@@ -1450,7 +1560,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             lan_access_task(config, dry_run, run_id)
             phase = "sync"
             _t_sync = time.monotonic()
-            sync_result = sync(config, artefacts_dir)
+            sync_result = sync(config, artefacts_dir, budget=budget)
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
@@ -1526,12 +1636,16 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     f"some files were not copied. {nas_msg}"
                 )
                 # The alert goes out BEFORE any NAS shutdown below.
-                _send_run_alert(
-                    config, "lan", status,
-                    (f"LAN backup PARTIAL: robocopy exit code {sync_result.get('exit_code')} - "
-                     f"some files were not copied. {nas_msg} "
-                     f"{sync_result.get('error') or ''}").strip(),
-                    sync_result.get("exit_code"), started_at)
+                partial_text = (
+                    f"LAN backup PARTIAL: {sync_result['error']} {nas_msg}"
+                    if sync_result.get("budget_stopped") else
+                    f"LAN backup PARTIAL: robocopy exit code {sync_result.get('exit_code')} - "
+                    f"some files were not copied. {nas_msg} {sync_result.get('error') or ''}"
+                ).strip()
+                if sync_result.get("budget_stopped"):
+                    error_msg = sync_result["error"]
+                _send_run_alert(config, "lan", status, partial_text,
+                                sync_result.get("exit_code"), started_at)
                 alert_sent = True
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
@@ -1580,6 +1694,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _merge_metrics(extended_metrics, budget=_budget_metrics(
+                budget, sync_result))
             if nas_shutdown is not None:
                 extended_metrics = _merge_metrics(extended_metrics, nas_shutdown=nas_shutdown)
             extended_metrics = _with_guards(extended_metrics, guard_record)
@@ -1893,6 +2009,14 @@ def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
 # Weekly independent integrity audit (read-only deep verification)
 # ═══════════════════════════════════════════════════════════════
 
+def _audit_budget_incomplete(exc: BudgetExceeded) -> dict:
+    """An audit leg with no time left in the run budget could not run (WP7/WP14)."""
+    logger.error(f"Integrity audit leg skipped: {exc}")
+    return {"status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
+            "bytes_checked": None, "mismatches": 0,
+            "detail": f"could not run - {exc}. Raise budget.audit_max_hours or move the audit."}
+
+
 @flow(name="integrity-audit", log_prints=True)
 def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
     """Read-only weekly integrity audit: source↔backup content verification.
@@ -1919,6 +2043,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         logger.debug(f"configure_prefect_bridge skipped: {e}")
 
     logger.info(f"AAM integrity audit starting - mode={mode}, firm={config.firm_name}")
+    # WP14: the audit's run budget counts from here, including the slot wait
+    budget = RunBudget("audit", config.budget.audit_max_hours * 3600, time.monotonic())
     db = ManifestDB.from_config(config)
     excs = []
     try:
@@ -1926,18 +2052,23 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             if mode in ("cloud", "all") and config.cloud.enabled:
                 audit_id = new_audit_id("cloud", "full")
                 started_at = now_iso()
-                with temp_rclone_config(
-                    config.paths.gcs_key_path,
-                    config.cloud.location,
-                    config.cloud.project_number,
-                    config.cloud.storage_class,
-                ) as rclone_cfg:
-                    result = audit_cloud(
-                        config.paths.source_drive, config.cloud.bucket,
-                        _effective_fy_prefix(config), rclone_cfg,
-                        timeout=config.cloud.verify_timeout_seconds,
-                        **_audit_settings(config),
-                    )
+                try:
+                    cloud_timeout = int(budget.cap(config.cloud.verify_timeout_seconds))
+                except BudgetExceeded as e:
+                    result = _audit_budget_incomplete(e)
+                else:
+                    with temp_rclone_config(
+                        config.paths.gcs_key_path,
+                        config.cloud.location,
+                        config.cloud.project_number,
+                        config.cloud.storage_class,
+                    ) as rclone_cfg:
+                        result = audit_cloud(
+                            config.paths.source_drive, config.cloud.bucket,
+                            _effective_fy_prefix(config), rclone_cfg,
+                            timeout=cloud_timeout,
+                            **_audit_settings(config),
+                        )
                 # A VERIFIED verdict is durable only once persisted: a failed
                 # DB write must fail the audit loudly (alert + FAILED flow),
                 # never silently drop a passing result or leave NOT_VERIFIED
@@ -1960,18 +2091,24 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             if mode in ("lan", "all") and config.lan.enabled:
                 audit_id = new_audit_id("lan", "full")
                 started_at = now_iso()
-                wol_check_task(config)
-                lan_timeout = int(getattr(config.lan, "subprocess_timeout_seconds", 14400))
                 try:
-                    result = audit_lan(
-                        config.paths.source_drive, config.paths.lan_destination,
-                        timeout=lan_timeout, **_audit_settings(config),
-                    )
-                finally:
-                    if config.lan.shutdown_after_backup and config.wol.enabled:
-                        audit_artefacts = _open_run_artefacts(config, audit_id)
-                        lan_shutdown_task(config, str(audit_artefacts.dir) if audit_artefacts else None)
-                        _finalize_run_artefacts(config, audit_artefacts)
+                    lan_timeout = int(budget.cap(config.lan.subprocess_timeout_seconds,
+                                                 config.budget.lan_post_reserve_minutes * 60))
+                except BudgetExceeded as e:
+                    result = _audit_budget_incomplete(e)   # NAS not woken: nothing to do
+                else:
+                    wol_check_task(config)
+                    try:
+                        result = audit_lan(
+                            config.paths.source_drive, config.paths.lan_destination,
+                            timeout=lan_timeout, **_audit_settings(config),
+                        )
+                    finally:
+                        if config.lan.shutdown_after_backup and config.wol.enabled:
+                            audit_artefacts = _open_run_artefacts(config, audit_id)
+                            lan_shutdown_task(config, str(audit_artefacts.dir)
+                                              if audit_artefacts else None)
+                            _finalize_run_artefacts(config, audit_artefacts)
                 try:
                     db.record_audit({
                         "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
@@ -2005,7 +2142,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
 # ═══════════════════════════════════════════════════════════════
 
 @flow(name="aam-backup", log_prints=True)
-def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str | None = None):
+def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str | None = None,
+           budget_hours: float | None = None):
     """AAM Backup Automation — nightly backup orchestrator.
 
     Each pipeline step is a separate Prefect task — visible in the Prefect UI
@@ -2018,7 +2156,13 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
 
     approval_id: set only by the dashboard when a human approved a BLOCKED
     run once (plan §6.2); scheduled runs never pass one.
+
+    budget_hours: manual runs only (e.g. the first full upload over a
+    weekend): replaces budget.<leg>_max_hours for this run. Scheduled runs
+    never pass it, so the schedule check (WP14) stays valid.
     """
+    if budget_hours is not None and not 0 < budget_hours <= 168:
+        raise ValueError(f"budget_hours must be between 0 and 168, got {budget_hours}")
     valid_modes = {"cloud", "lan", "all"}
     mode = mode.lower()
     if mode not in valid_modes:
@@ -2065,7 +2209,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             logger.info("Starting cloud backup pipeline")
             try:
                 _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic(),
-                                    approval_id=approval_id)
+                                    approval_id=approval_id, budget_hours=budget_hours)
             except Exception as e:
                 excs.append(e)
 
@@ -2074,7 +2218,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             logger.info("Starting LAN backup pipeline")
             try:
                 _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic(),
-                                  approval_id=approval_id)
+                                  approval_id=approval_id, budget_hours=budget_hours)
             except Exception as e:
                 excs.append(e)
 

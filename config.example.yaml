@@ -137,18 +137,41 @@ cloud:
 # ═══════════════════════════════════════════════════
 # SCHEDULES (cron, all times in timezone below)
 # ═══════════════════════════════════════════════════
+# Only one backup job (LAN, cloud, audit) runs at a time. The config is
+# REFUSED at start-up if a job could still be running, within its run budget
+# (see `budget:` below), when the next one would give up waiting for it -
+# the error message shows the arithmetic. Reports never wait for backups.
 schedule:
-  # Cloud backup: daily at 10:00 PM
-  cloud_cron: "0 22 * * *"
-  # LAN backup: daily at 9:00 PM
+  # LAN backup: daily at 9:00 PM (budget 4 h -> done by 1:00 AM)
   lan_cron: "0 21 * * *"
+  # Cloud backup: daily at 2:00 AM (5 h after LAN; budget 6 h -> done by 8:00 AM)
+  cloud_cron: "0 2 * * *"
   # Weekly email report: every Monday at 8:00 AM
   weekly_cron: "0 8 * * MON"
   # Monthly email report: 1st of every month at 8:30 AM (never the same minute as the weekly one)
   monthly_cron: "30 8 1 * *"
-  # Weekly read-only integrity audit: Sunday 3:00 AM low-load window
-  audit_cron: "0 3 * * SUN"
+  # Weekly read-only integrity audit: Sunday 10:00 AM (after the Sunday cloud
+  # backup's budget; budget 8 h -> done by 6:00 PM, before the 9:00 PM LAN run)
+  audit_cron: "0 10 * * SUN"
   timezone: "Asia/Kolkata"
+
+# ═══════════════════════════════════════════════════
+# RUN BUDGETS (how long each job may hold the backup slot)
+# ═══════════════════════════════════════════════════
+# Counted from the scheduled start, including any wait for the slot. A job
+# that reaches its budget stops cleanly as PARTIAL ("continues next run",
+# one alert) - it is never a success and never blocks the next job.
+# A first full upload therefore spreads over several nights; or run it once
+# by hand with a larger budget (Prefect run parameter `budget_hours`).
+# Starting values - tune them from the durations recorded for real runs.
+budget:
+  lan_max_hours: 4
+  cloud_max_hours: 6
+  audit_max_hours: 8
+  # Of the cloud budget, kept for the size check after the upload (minutes)
+  cloud_verify_reserve_minutes: 60
+  # Of the LAN budget, kept for the destination walk + verified NAS shutdown (minutes)
+  lan_post_reserve_minutes: 30
 
 # ═══════════════════════════════════════════════════
 # DASHBOARD UI

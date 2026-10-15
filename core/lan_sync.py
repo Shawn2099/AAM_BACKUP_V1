@@ -442,8 +442,12 @@ def run_lan_sync(
     dest: str,
     lan_config: LanConfig,
     artefacts: RunArtefacts | None = None,
+    timeout_s: float | None = None,
 ) -> dict:
     """Execute robocopy /MIR mirror sync and return a structured result dict.
+
+    `timeout_s` overrides lan.subprocess_timeout_seconds (the caller passes
+    what is left of the run budget, plan WP14).
 
     The FULL robocopy log is written with /UNILOG (UTF-16, so non-ASCII
     file names survive) into the run's artefact folder and kept (plan WP2);
@@ -478,9 +482,10 @@ def run_lan_sync(
     cmd.append(f"/UNILOG:{log_path}")
 
     logger.info(f"LAN sync: {' '.join(cmd[:4])}... (full log: {log_path})")
+    timeout = lan_config.subprocess_timeout_seconds if timeout_s is None else timeout_s
     result = run_tool(
         "robocopy", cmd,
-        timeout_s=lan_config.subprocess_timeout_seconds,
+        timeout_s=timeout,
         artefacts=artefacts, log_path=log_path,
     )
 
@@ -500,11 +505,11 @@ def run_lan_sync(
         logger.error(f"LAN sync OS error: {result.spawn_error}")
         return _no_exit(result.spawn_error)
     if result.timed_out:
-        logger.error(f"LAN sync timed out after {lan_config.subprocess_timeout_seconds}s")
-        return _no_exit(
-            f"Timeout after {lan_config.subprocess_timeout_seconds}s — robocopy "
+        logger.error(f"LAN sync timed out after {timeout:.0f}s")
+        return {**_no_exit(
+            f"Timeout after {timeout:.0f}s — robocopy "
             f"process killed (full log kept: {log_path})"
-        )
+        ), "timed_out": True}
 
     code = result.exit_code
     # Integrity contract: the exit code is only interpreted together with

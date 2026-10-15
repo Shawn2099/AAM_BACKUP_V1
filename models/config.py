@@ -641,6 +641,28 @@ class HealthConfig(StrictModel):
     )
 
 
+class BudgetConfig(StrictModel):
+    """Per-job run budgets (plan WP14). Counted from the job's start, including
+    any wait for the backup slot; a job that reaches its budget stops cleanly as
+    *_PARTIAL and continues next run. Starting values (owner 2026-10-15): tune
+    from the duration of real runs."""
+    cloud_max_hours: float = Field(
+        default=6, ge=1, le=72,
+        description="Cloud backup run budget (sync + size check). A first full upload "
+                    "spreads over several nights within this budget")
+    lan_max_hours: float = Field(default=4, ge=0.5, le=72,
+                                 description="LAN backup run budget (NAS wake + mirror + shutdown)")
+    audit_max_hours: float = Field(default=8, ge=0.5, le=72,
+                                   description="Weekly integrity audit run budget (both legs)")
+    cloud_verify_reserve_minutes: int = Field(
+        default=60, ge=0, le=600,
+        description="Of the cloud budget, kept for the size check / manifest after the upload")
+    lan_post_reserve_minutes: int = Field(
+        default=30, ge=0, le=600,
+        description="Of the LAN budget, kept after the mirror for the destination walk and the "
+                    "verified NAS shutdown")
+
+
 class WatchdogConfig(StrictModel):
     """AamWatchdog tuning (plan WP13). Read once at watchdog start."""
     prefect_health_url: str = Field(
@@ -732,8 +754,9 @@ class ScheduleConfig(StrictModel):
         description="Daily FY rollover check cron (no-op except on the fiscal-year boundary)",
     )
     audit_cron: str = Field(
-        default="0 3 * * SUN",
-        description="Weekly read-only integrity audit (Sunday low-load window, single checker)",
+        default="0 10 * * SUN",
+        description="Weekly read-only integrity audit (Sunday, single checker). 10:00 so the "
+                    "default 01:00 LAN run (4 h budget) can never overlap it (WP14)",
     )
     timezone: str = Field(default="Asia/Kolkata", description="IANA timezone for all schedules")
 
@@ -792,6 +815,27 @@ class AppConfig(StrictModel):
     rollover: RolloverConfig = Field(default_factory=RolloverConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
+
+    @model_validator(mode="after")
+    def _schedule_fits_the_budgets(self) -> "AppConfig":
+        """WP14 / DEC-7: the configured schedule must be provably free of slot
+        overruns. Only jobs that take the backup slot are checked (reports and
+        the daily no-op rollover check do not)."""
+        from core.budget import schedule_problems
+
+        jobs = {}
+        if self.cloud.enabled:
+            jobs["cloud"] = (self.schedule.cloud_cron, self.budget.cloud_max_hours * 3600)
+        if self.lan.enabled:
+            jobs["lan"] = (self.schedule.lan_cron, self.budget.lan_max_hours * 3600)
+        jobs["audit"] = (self.schedule.audit_cron, self.budget.audit_max_hours * 3600)
+        problems = schedule_problems(jobs, self.schedule.timezone,
+                                     self.maintenance.concurrency_wait_seconds)
+        if problems:
+            raise ValueError("schedule does not fit the run budgets (plan WP14):\n  - "
+                             + "\n  - ".join(problems))
+        return self
 
     @property
     def run_logs_dir(self) -> Path:

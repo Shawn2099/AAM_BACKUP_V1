@@ -4,7 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -100,7 +100,7 @@ def test_pipeline_records_artefacts_dir_and_finalizes(tmp_path):
     manifest = json.loads((art_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["notes"][-1]["text"] == "finalized"
     # the sync task received the folder path (Prefect-safe plain string)
-    sync_mock.with_options.return_value.assert_called_once_with(cfg, str(art_dir))
+    sync_mock.with_options.return_value.assert_called_once_with(cfg, str(art_dir), budget=ANY)
 
 
 def test_artefact_folder_failure_never_blocks_the_backup(tmp_path):
