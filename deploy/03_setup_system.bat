@@ -93,12 +93,27 @@ if "%UV_EXE%"=="" (
 )
 echo [OK]   uv installed: %UV_EXE%
 
-:: Pre-cache Python 3.12 so first backup run is instant
-echo [....] Pre-caching Python 3.12 via uv ^(one-time download^)...
-"%UV_EXE%" python install 3.12 >nul 2>&1
-echo [OK]   Python 3.12 ready.
-
 :uv_done
+
+:: Python 3.12 goes to %ProgramData%\uv\python - NOT into this admin's user
+:: profile: the backup service account (plan WP16) must be able to read the
+:: interpreter the project's .venv is built on. Set machine-wide so the later
+:: `uv sync --frozen` (04_check_readiness.ps1) uses the same place.
+if exist "C:\Program Files\Python312\python.exe" (
+    echo [OK]   Python 3.12 installed for all users: C:\Program Files\Python312
+    goto :python_done
+)
+set "UV_PYTHON_INSTALL_DIR=%ProgramData%\uv\python"
+setx UV_PYTHON_INSTALL_DIR "%ProgramData%\uv\python" /M >nul
+echo [....] Installing Python 3.12 via uv into %UV_PYTHON_INSTALL_DIR% ^(one-time download^)...
+"%UV_EXE%" python install 3.12 >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python 3.12 install failed - check internet access, then re-run.
+    pause
+    exit /b 1
+)
+echo [OK]   Python 3.12 ready ^(readable by the service account^).
+:python_done
 
 
 :: ====================================================================

@@ -35,7 +35,11 @@ if "%UV_EXE%"=="" if exist "%USERPROFILE%\.cargo\bin\uv.exe" set "UV_EXE=%USERPR
 if "%UV_EXE%"=="" if exist "C:\Program Files\Python312\Scripts\uv.exe" set "UV_EXE=C:\Program Files\Python312\Scripts\uv.exe"
 
 set "RUNTIME_DIR="
-if not "%UV_EXE%"=="" (
+:: Prefer the project venv's Python: `uv run` would sync packages from the internet
+set "VENV_PY=%PROJECT_DIR%\.venv\Scripts\python.exe"
+if exist "%VENV_PY%" (
+    for /f "delims=" %%R in ('""%VENV_PY%" "%PROJECT_DIR%\deploy\read_config.py" "%CONFIG_FILE%" paths.runtime_dir --default "%DEFAULT_RUNTIME%" 2^>nul"') do set "RUNTIME_DIR=%%R"
+) else if not "%UV_EXE%"=="" (
     cd /d "%PROJECT_DIR%"
     for /f "delims=" %%R in ('"%UV_EXE%" run --quiet python "%PROJECT_DIR%\deploy\read_config.py" "%CONFIG_FILE%" paths.runtime_dir --default "%DEFAULT_RUNTIME%" 2^>nul') do set "RUNTIME_DIR=%%R"
 ) else (

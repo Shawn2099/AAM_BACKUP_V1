@@ -68,6 +68,11 @@ if ($uvPath) {
         Check-Item "Python Runtime" "Failed to bootstrap Python. Check internet." $true
     }
 
+    # Managed Python outside any user profile (03_setup_system.bat sets this
+    # machine-wide; a shell opened before that does not see it yet)
+    if (-not $env:UV_PYTHON_INSTALL_DIR) {
+        $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:ProgramData "uv\python"
+    }
     # --frozen: exactly the versions in uv.lock, never a re-resolve (WP16)
     Write-Host "       -> Installing required libraries (uv sync --frozen)... " -NoNewline
     $sync = cmd /c "`"$uvPath`" sync --frozen --directory `"$ProjectDir`" 2>&1"

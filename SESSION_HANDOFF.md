@@ -187,6 +187,13 @@ config.yaml `monthly_cron` changed - DEC-7).
 - rclone v1.74.3, robocopy 10.0.14393. Config: LAN 21:00, cloud 22:00, LAN target `\\10.10.151.53\aam_test\CHAOS01\FY26-27` (test leftover), demo bucket. Both NAS IPs do not answer on 445.
 - Production `config.yaml` passes the new strict validation (only deprecated `notifications.send_on_success`, dropped with a warning).
 - DB: 59 legacy `*_SKIPPED` rows are really preflight failures (display as failures, never rewrite history).
+- **Deploy by hand: `docs/DEPLOY_RUNBOOK.md`** (owner asked 2026-10-15 - no AI agent on the server).
+  Compatibility verified on the box (read-only): all deploy `.ps1` parse on its PowerShell
+  5.1.14393; every tool the `.bat` files call exists; `Get-LocalUser`, `Start-Process -Credential`
+  available. Box has git (`C:\Program Files\Git`), `C:\AAMBackup` = clone on branch `production`
+  (6550aad) **with ~200 lines of uncommitted local edits** (core/integrity.py, ui.py, uv.lock) -
+  the runbook saves them (patch + stash) before switching; owner/dev to review if still needed.
+  Python on the box: `C:\Program Files\Python312` (all users) - fine for the service account.
 - Production schedule (read-only, 2026-10-15): LAN 21:00, cloud 22:00, audit = code default,
   `concurrency_wait_seconds` default (1 h). Trial-box run durations are demo-sized (0-5 min,
   579 files / 57 MB) - no basis for real budgets.

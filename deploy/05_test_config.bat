@@ -39,5 +39,10 @@ if "%UV_EXE%"=="" (
 )
 
 cd /d "%PROJECT_DIR%"
-"%UV_EXE%" run python "%SCRIPT_DIR%\test_config.py"
+:: Prefer the project venv's Python: `uv run` would sync packages from the internet
+if exist "%PROJECT_DIR%\.venv\Scripts\python.exe" (
+    "%PROJECT_DIR%\.venv\Scripts\python.exe" "%SCRIPT_DIR%\test_config.py"
+) else (
+    "%UV_EXE%" run --frozen python "%SCRIPT_DIR%\test_config.py"
+)
 :: pause
