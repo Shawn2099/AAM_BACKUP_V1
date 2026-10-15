@@ -90,8 +90,12 @@ if ($uvPath) {
         $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:ProgramData "uv\python"
     }
     # --frozen: exactly the versions in uv.lock, never a re-resolve (WP16)
-    Write-Host "       -> Installing required libraries (uv sync --frozen)... " -NoNewline
-    $sync = cmd /c "`"$uvPath`" sync --frozen --directory `"$ProjectDir`" 2>&1"
+    # --link-mode copy: uv otherwise HARD-LINKS the packages to its cache in this
+    # admin's profile - a hard link shares that file's permissions, so the
+    # service account could not read them (trial box: agent would not start).
+    # Copies inherit the project folder's "Users can read" permission instead.
+    Write-Host "       -> Installing required libraries (uv sync --frozen --link-mode copy)... " -NoNewline
+    $sync = cmd /c "`"$uvPath`" sync --frozen --link-mode copy --directory `"$ProjectDir`" 2>&1"
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK]" -ForegroundColor Green
     } else {
@@ -328,7 +332,12 @@ if ($ServiceAccount) {
                         Write-Host "[SKIP] " -NoNewline -ForegroundColor Yellow
                         Write-Host "as $($ServiceAccount): $($parts[1])"
                     } else {
-                        Check-Item "as $ServiceAccount" $parts[1] ($parts[0] -ne "OK")
+                        $msg = $parts[1]
+                        if ($msg -match "PermissionError" -and $msg -match "\.venv") {
+                            $msg += " -> the .venv was built with hard links to an admin-only cache: stop " +
+                                    "the AAM services, delete $ProjectDir\.venv, run this check again"
+                        }
+                        Check-Item "as $ServiceAccount" $msg ($parts[0] -ne "OK")
                     }
                 }
                 Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
