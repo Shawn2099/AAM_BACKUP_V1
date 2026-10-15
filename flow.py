@@ -2056,93 +2056,108 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
     # WP14: the audit's run budget counts from here, including the slot wait
     budget = RunBudget("audit", config.budget.audit_max_hours * 3600, time.monotonic())
     db = ManifestDB.from_config(config)
+    legs = [leg for leg in ("cloud", "lan")
+            if mode in (leg, "all") and getattr(config, leg).enabled]
+    recorded: set[str] = set()
     excs = []
+
+    def _record(leg: str, audit_id: str, started_at: str, result: dict) -> None:
+        # A VERIFIED verdict is durable only once persisted: a failed DB
+        # write must fail the audit loudly (alert + FAILED flow), never
+        # silently drop a passing result or leave NOT_VERIFIED behind a
+        # COMPLETED run.
+        name = "Cloud" if leg == "cloud" else "LAN"
+        recorded.add(leg)
+        try:
+            db.record_audit({
+                "audit_id": audit_id, "mode": leg, "scope": result["scope"],
+                "started_at": started_at, "ended_at": now_iso(),
+                "status": result["status"],
+                "files_checked": _nullable_audit_count(result.get("files_checked")),
+                "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
+                "mismatches": max(result["mismatches"], 0),
+                "detail": result["detail"], "created_at": now_iso(),
+            })
+        except Exception as e:
+            excs.append(RuntimeError(f"{name} audit persistence failed: {e}"))
+        if result["status"] != "VERIFIED":
+            excs.append(RuntimeError(_audit_outcome_text(name, result)))
+
+    def _audit_cloud_leg(audit_id: str) -> dict:
+        try:
+            cloud_timeout = int(budget.cap(config.cloud.verify_timeout_seconds))
+        except BudgetExceeded as e:
+            return _audit_budget_incomplete(e)
+        with temp_rclone_config(
+            config.paths.gcs_key_path,
+            config.cloud.location,
+            config.cloud.project_number,
+            config.cloud.storage_class,
+        ) as rclone_cfg:
+            return audit_cloud(
+                config.paths.source_drive, config.cloud.bucket,
+                _effective_fy_prefix(config), rclone_cfg,
+                timeout=cloud_timeout,
+                **_audit_settings(config),
+            )
+
+    def _audit_lan_leg(audit_id: str) -> dict:
+        try:
+            lan_timeout = int(budget.cap(config.lan.subprocess_timeout_seconds,
+                                         config.budget.lan_post_reserve_minutes * 60))
+        except BudgetExceeded as e:
+            return _audit_budget_incomplete(e)   # NAS not woken: nothing to do
+        wol_check_task(config)
+        try:
+            return audit_lan(
+                config.paths.source_drive, config.paths.lan_destination,
+                timeout=lan_timeout, **_audit_settings(config),
+            )
+        finally:
+            # Only after a successful wake; a failed shutdown never replaces the verdict.
+            if config.lan.shutdown_after_backup and config.wol.enabled:
+                try:
+                    audit_artefacts = _open_run_artefacts(config, audit_id)
+                    lan_shutdown_task(config, str(audit_artefacts.dir)
+                                      if audit_artefacts else None)
+                    _finalize_run_artefacts(config, audit_artefacts)
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"NAS shutdown after the LAN audit failed: {e}")
+
     try:
-        with _backup_slot(config):
-            if mode in ("cloud", "all") and config.cloud.enabled:
-                audit_id = new_audit_id("cloud", "full")
-                started_at = now_iso()
-                try:
-                    cloud_timeout = int(budget.cap(config.cloud.verify_timeout_seconds))
-                except BudgetExceeded as e:
-                    result = _audit_budget_incomplete(e)
-                else:
-                    with temp_rclone_config(
-                        config.paths.gcs_key_path,
-                        config.cloud.location,
-                        config.cloud.project_number,
-                        config.cloud.storage_class,
-                    ) as rclone_cfg:
-                        result = audit_cloud(
-                            config.paths.source_drive, config.cloud.bucket,
-                            _effective_fy_prefix(config), rclone_cfg,
-                            timeout=cloud_timeout,
-                            **_audit_settings(config),
-                        )
-                # A VERIFIED verdict is durable only once persisted: a failed
-                # DB write must fail the audit loudly (alert + FAILED flow),
-                # never silently drop a passing result or leave NOT_VERIFIED
-                # behind a COMPLETED run.
-                try:
-                    db.record_audit({
-                        "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
-                        "started_at": started_at, "ended_at": now_iso(),
-                        "status": result["status"],
-                        "files_checked": _nullable_audit_count(result.get("files_checked")),
-                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
-                        "mismatches": max(result["mismatches"], 0),
-                        "detail": result["detail"], "created_at": now_iso(),
-                    })
-                except Exception as e:
-                    excs.append(RuntimeError(f"Cloud audit persistence failed: {e}"))
-                if result["status"] != "VERIFIED":
-                    excs.append(RuntimeError(_audit_outcome_text("Cloud", result)))
-
-            if mode in ("lan", "all") and config.lan.enabled:
-                audit_id = new_audit_id("lan", "full")
-                started_at = now_iso()
-                try:
-                    lan_timeout = int(budget.cap(config.lan.subprocess_timeout_seconds,
-                                                 config.budget.lan_post_reserve_minutes * 60))
-                except BudgetExceeded as e:
-                    result = _audit_budget_incomplete(e)   # NAS not woken: nothing to do
-                else:
-                    wol_check_task(config)
+        try:
+            with _backup_slot(config):
+                for leg, run_leg in (("cloud", _audit_cloud_leg), ("lan", _audit_lan_leg)):
+                    if leg not in legs:
+                        continue
+                    audit_id, started_at = new_audit_id(leg, "full"), now_iso()
                     try:
-                        result = audit_lan(
-                            config.paths.source_drive, config.paths.lan_destination,
-                            timeout=lan_timeout, **_audit_settings(config),
-                        )
-                    finally:
-                        if config.lan.shutdown_after_backup and config.wol.enabled:
-                            audit_artefacts = _open_run_artefacts(config, audit_id)
-                            lan_shutdown_task(config, str(audit_artefacts.dir)
-                                              if audit_artefacts else None)
-                            _finalize_run_artefacts(config, audit_artefacts)
-                try:
-                    db.record_audit({
-                        "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
-                        "started_at": started_at, "ended_at": now_iso(),
-                        "status": result["status"],
-                        "files_checked": _nullable_audit_count(result.get("files_checked")),
-                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
-                        "mismatches": max(result["mismatches"], 0),
-                        "detail": result["detail"], "created_at": now_iso(),
-                    })
-                except Exception as e:
-                    excs.append(RuntimeError(f"LAN audit persistence failed: {e}"))
-                if result["status"] != "VERIFIED":
-                    excs.append(RuntimeError(_audit_outcome_text("LAN", result)))
+                        result = run_leg(audit_id)
+                    except Exception as e:  # noqa: BLE001 - recorded + alerted, never silent
+                        logger.error(f"Integrity audit ({leg}) could not run: {e}")
+                        result = {"status": "AUDIT_INCOMPLETE", "scope": "full",
+                                  "files_checked": None, "bytes_checked": None,
+                                  "mismatches": 0,
+                                  "detail": f"could not run - {type(e).__name__}: {e}"}
+                    _record(leg, audit_id, started_at, result)
+        except Exception as e:  # noqa: BLE001 - backup slot / lock not obtained
+            logger.error(f"Integrity audit could not run: {e}")
+            for leg in legs:
+                if leg not in recorded:
+                    _record(leg, new_audit_id(leg, "full"), now_iso(), {
+                        "status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
+                        "bytes_checked": None, "mismatches": 0,
+                        "detail": f"could not run - backup slot not obtained: {e}"})
 
-            if excs:
-                error_summary = '; '.join(str(e) for e in excs)
-                logger.error(f"Integrity audit failed: {error_summary}")
-                notify(config, AlertEvent(
-                    key=f"audit:{mode}", kind="FAILURE", mode="audit",
-                    title="Integrity audit did not verify", message=error_summary,
-                    status="NOT_VERIFIED"))
-                raise ExceptionGroup("Integrity audit did not verify", excs)
-            logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
+        if excs:
+            error_summary = '; '.join(str(e) for e in excs)
+            logger.error(f"Integrity audit failed: {error_summary}")
+            notify(config, AlertEvent(
+                key=f"audit:{mode}", kind="FAILURE", mode="audit",
+                title="Integrity audit did not verify", message=error_summary,
+                status="NOT_VERIFIED"))
+            raise ExceptionGroup("Integrity audit did not verify", excs)
+        logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
     finally:
         db.close()
 
