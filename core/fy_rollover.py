@@ -12,17 +12,16 @@ folder creation (+ placeholder), config backup/update, archive transition.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import shutil
-import tempfile
 from pathlib import Path
 
 from loguru import logger
 
+from core.config_file import backup_config_file, load_round_trip, write_atomic  # noqa: F401 - backup_config_file is part of this module's API
 from core.run_artefacts import RunArtefacts
-from core.time_utils import get_fy_prefix, now_iso
+from core.time_utils import get_fy_prefix
 from core.tool_runner import run_tool
 
 FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
@@ -213,58 +212,26 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str,
     return created
 
 
-def backup_config_file(config_path: str) -> Path:
-    """Timestamped byte-identical copy of config.yaml next to it, made before
-    the rollover rewrites it (plan WP11)."""
-    src = Path(config_path)
-    stamp = now_iso().replace(":", "").replace("+", "_")[:24]
-    dst = src.with_name(f"{src.name}.bak-{stamp}")
-    shutil.copy2(src, dst)
-    logger.info(f"FY rollover: config backed up to {dst}")
-    return dst
-
-
 def update_config_yaml(config_path: str, source_root: str, lan_root: str,
                        new_fy: str) -> None:
     """Atomically update source_drive and lan_destination in config.yaml.
 
-    Uses ruamel.yaml round-trip mode to preserve comments and formatting.
+    Uses the shared config writer (core.config_file): ruamel round-trip, so
+    comments and formatting survive; atomic replace.
     """
-    from ruamel.yaml import YAML
-
-    path = Path(config_path)
-
-    yaml = YAML()
-    yaml.preserve_quotes = True
-
-    with open(path, encoding="utf-8") as f:
-        cfg = yaml.load(f)
-
+    yaml, cfg = load_round_trip(config_path)
     new_source = _child_path(source_root, new_fy)
     new_lan = _child_path(lan_root, new_fy)
-
     old_source = cfg["paths"]["source_drive"]
     old_lan = cfg["paths"]["lan_destination"]
-
     cfg["paths"]["source_drive"] = new_source
     cfg["paths"]["lan_destination"] = new_lan
-
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".yaml", prefix=".config_rollover_"
+    write_atomic(config_path, yaml, cfg, tmp_prefix=".config_rollover_")
+    logger.info(
+        f"FY rollover: config.yaml updated\n"
+        f"  source:  {old_source} → {new_source}\n"
+        f"  LAN:     {old_lan} → {new_lan}"
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(cfg, f)
-        os.replace(tmp_path, str(path))
-        logger.info(
-            f"FY rollover: config.yaml updated\n"
-            f"  source:  {old_source} → {new_source}\n"
-            f"  LAN:     {old_lan} → {new_lan}"
-        )
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
 
 
 def run_archive_transition(

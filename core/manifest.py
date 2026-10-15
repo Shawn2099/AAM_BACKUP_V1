@@ -142,6 +142,19 @@ CREATE TABLE IF NOT EXISTS approvals (
 
 CREATE INDEX IF NOT EXISTS idx_approvals_leg_status ON approvals(leg, status);
 
+-- Settings changed on the dashboard (DEC-9): who, when, what. Secrets are
+-- stored as '(hidden)', never their value.
+CREATE TABLE IF NOT EXISTS config_changes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    changed_at   TEXT NOT NULL,
+    changed_by   TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    old_value    TEXT,
+    new_value    TEXT,
+    risky        INTEGER NOT NULL DEFAULT 0,
+    backup_file  TEXT
+);
+
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
 
@@ -965,6 +978,25 @@ class ManifestDB:
             rows = conn.execute(
                 "SELECT * FROM notifications WHERE status = 'FAILED' AND created_at >= ? "
                 "ORDER BY id DESC", (cutoff,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def record_config_change(self, data: dict) -> None:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                """INSERT INTO config_changes
+                   (changed_at, changed_by, key, old_value, new_value, risky, backup_file)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (data["changed_at"], data["changed_by"], data["key"], data.get("old_value"),
+                 data.get("new_value"), int(data.get("risky", 0)), data.get("backup_file")),
+            )
+            conn.commit()
+
+    def config_changes(self, limit: int = 100) -> list[dict]:
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute("SELECT * FROM config_changes ORDER BY id DESC LIMIT ?",
+                                (limit,)).fetchall()
             return [dict(r) for r in rows]
 
     def latest_notification_for_mode(self, mode: str, since_days: int) -> dict | None:

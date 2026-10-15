@@ -468,6 +468,10 @@ class MaintenanceConfig(StrictModel):
         le=50000,
         description="VACUUM triggers when SQLite freelist page count exceeds this value (~40 MB at default). Lower = more frequent VACUUM.",
     )
+    config_backups_keep: int = Field(
+        default=50, ge=5, le=1000,
+        description="config.yaml.bak-* copies kept next to config.yaml (one per settings save "
+                    "or FY rollover); older ones are deleted after a successful settings save")
     abandon_running_after_hours: float = Field(
         default=24, ge=1, le=168,
         description="At agent start, a run still marked RUNNING after this many hours is "

@@ -278,6 +278,7 @@ until a RECOVERED notification follows.
 | `serve.py` | builds Prefect deployments from config | `deployments()` |
 | `flow.py` | all Prefect flows + tasks + pipelines | see §3–§5 |
 | `ui.py` | dashboard API | `status`, `trigger_*`, `_status_fields`, `get_db`; approvals: `GET /approvals`, `POST /approvals/{id}/approve` (typed phrase, sign-in required), `/run`, `/dismiss` |
+| `ui.py` settings (DEC-9) | `/settings` page + `/api/settings` GET/POST + `/api/settings/history`; logic in `core/config_edit.py` (catalog from the pydantic models; locked / risky / secret / effect; candidate loaded exactly like service start; typed phrase for risky keys; refused while the backup lock is held); writer `core/config_file.py` (backup + ruamel round-trip + atomic replace, shared with the FY rollover); table `config_changes` | dashboard, operator |
 | `watchdog.py` | Prefect health monitor | `main`, `_is_backup_running`, `_service_state`, `_start_service`, `_restart_stack`, `_resolve_stuck_stop`, `_critical` |
 | `collect_config_data.py`, `deploy/*` | install / discovery / restore scripts | — |
 | `deploy/04_check_readiness.ps1 [-ServiceAccount .\x]` | `uv sync --frozen`; tools/registry/ports; base Python outside user profiles; config.yaml valid for this version; with an account: runs `probe_service_account.py` AS it (runtime + config folder write, source read, NAS write, SeBackupPrivilege) | operator, before 06 |

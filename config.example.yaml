@@ -281,6 +281,9 @@ maintenance:
   # VACUUM triggers when SQLite freelist page count exceeds this value
   # 10000 pages ≈ 40 MB. Higher threshold reduces HDD I/O overhead from frequent DB rewrites.
   sqlite_vacuum_freelist_threshold: 10000
+  # config.yaml.bak-* copies kept next to config.yaml (one is made before every
+  # settings change on the dashboard and every FY rollover). 5–1000
+  config_backups_keep: 50
   # At agent start, a backup still marked RUNNING after this many hours is recorded
   # as ABANDONED (its process died without an outcome). 1–168
   abandon_running_after_hours: 24

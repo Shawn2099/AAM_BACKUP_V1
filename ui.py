@@ -33,7 +33,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import approvals, fy_rollover, statuses
+from core import approvals, config_edit, fy_rollover, statuses
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, get_fy_prefix, now_iso
@@ -823,6 +823,94 @@ def dismiss_blocked_run(approval_id: str, request: Request):
     logger.warning(f"Approval request {approval_id} dismissed by {actor}")
     return {"status": "dismissed", "detail": "Dismissed. Nothing will run on this request; "
                                              "the next scheduled run re-checks the guards."}
+
+
+# ── Settings (owner decision DEC-9) ──────────────────────────
+# Every config key except the lock-out keys can be changed here by a signed-in
+# person. core.config_edit validates the whole candidate exactly like service
+# start before anything is written, asks a typed phrase for risky keys, backs
+# config.yaml up, writes it atomically (comments kept) and records who changed
+# what. Secrets are write-only.
+
+def _settings_config_path() -> str:
+    from models.config import CONFIG_PATH
+    return str(CONFIG_PATH)
+
+
+def _settings_lock_busy() -> str | None:
+    """A reason when a backup / the FY rollover holds the backup lock."""
+    from core.process import read_lock_alive
+
+    try:
+        alive, pid = read_lock_alive(_cfg().paths.backup_lock_path)
+    except Exception:  # noqa: BLE001 - unreadable lock: fail closed
+        return "the backup lock could not be read"
+    return f"a backup or the FY rollover is running (backup lock held by PID {pid})" if alive else None
+
+
+def _require_settings_rights(request: Request) -> None:
+    _require_auth(request)
+    if not _auth_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Changing settings needs dashboard sign-in: set dashboard.auth_enabled: true "
+                   "(with an api_key) in config.yaml.")
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    _require_auth(request)
+    context = {"request": request, "auth_enabled": _auth_enabled()}
+    try:
+        return templates.TemplateResponse(request=request, name="settings.html", context=context)
+    except TypeError:
+        return templates.TemplateResponse("settings.html", context)
+
+
+@app.get("/api/settings")
+def get_settings(request: Request):
+    _require_auth(request)
+    from models.config import load_config
+
+    try:
+        current = load_config(_settings_config_path())
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"config.yaml does not load: {e}") from e
+    return {"auth_enabled": _auth_enabled(), "sections": config_edit.catalog(current),
+            "effects": config_edit.EFFECT_TEXT}
+
+
+@app.post("/api/settings")
+async def save_settings(request: Request):
+    _require_settings_rights(request)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    actor = _approval_actor(request)
+    try:
+        result = config_edit.apply_changes(
+            _settings_config_path(), body.get("changes") or {}, phrase=body.get("phrase"),
+            actor=actor, lock_busy=_settings_lock_busy, db=get_db(), now_iso=now_iso)
+    except config_edit.ConfigEditError as e:
+        return JSONResponse({"detail": str(e), **e.extra}, status_code=e.status)
+    if result.changed:
+        global _config_loaded_at
+        with _CFG_LOCK:
+            _config_loaded_at = 0.0          # the dashboard re-reads config.yaml now
+        logger.warning(f"Settings changed by {actor}: "
+                       f"{', '.join(c['key'] for c in result.changed)} (backup {result.backup})")
+    return {"status": "saved" if result.changed else "unchanged", "changed": result.changed,
+            "effects": result.effects, "backup": result.backup}
+
+
+@app.get("/api/settings/history")
+def settings_history(request: Request):
+    _require_auth(request)
+    return {"changes": get_db().config_changes(limit=200)}
 
 
 # ── Verification trigger (read-only integrity audit) ─────────

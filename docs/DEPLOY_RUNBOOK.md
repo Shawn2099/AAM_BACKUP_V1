@@ -130,6 +130,15 @@ see `INSTALLATION COMPLETE`.
    `backup-lan`, `integrity-audit`, reports, `rollover-check`.
 4. `C:\BackupAgent\logs\watchdog_app.log` — recent lines, no CRITICAL.
 
+### Changing settings later
+
+Open `http://localhost:8080/settings` (signed in). Every setting except the
+dashboard login and the runtime/database paths can be changed there: the page
+checks the new values exactly like a service start before saving, asks you to
+type a confirmation for risky ones (paths, NAS, guards), backs up config.yaml
+and shows when the change applies (next run / after a service restart).
+Schedules apply after `deploy\07_restart_services.bat`.
+
 ## 8. First backups
 
 - Run `backup-lan` once from Prefect (*Run* → *Quick run*) and watch the
