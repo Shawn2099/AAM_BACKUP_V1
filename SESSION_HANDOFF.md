@@ -121,6 +121,11 @@ config.yaml `monthly_cron` changed - DEC-7).
   scheduled, **5** = access denied (this PC → trial box, workgroup), **1707** = invalid address;
   `/a` 0 = aborted, **1116** = nothing to abort. Real `/t 60` on the trial box: port 445 closed at
   **t+107 s** (~47 s after the delay) and stayed closed (no flapping).
+- **The committed 4.1 code run for real against the trial box from this PC (2026-10-15, owner-authorised):**
+  FAILED (no rights: exit 5 + "Access is denied.(5)", no polling); with an Administrator IPC$ session
+  (`net use \\<ip>\IPC$ /user:Administrator *`): NOT_VERIFIED (accepted, cancelled with `shutdown /a`
+  after 10 s, still reachable after 90 s) and VERIFIED (`/t 30`: port 445 closed after 56 s).
+  The IPC$ session also shows the fix for production: credentials the NAS accepts.
 - Sending `\\host` through `ssh ... 'shutdown ...'` mangles the backslashes (got 1707); pipe a Python
   script written with the Write tool instead.
 
@@ -146,8 +151,9 @@ config.yaml `monthly_cron` changed - DEC-7).
 - rclone v1.74.3, robocopy 10.0.14393. Config: LAN 21:00, cloud 22:00, LAN target `\\10.10.151.53\aam_test\CHAOS01\FY26-27` (test leftover), demo bucket. Both NAS IPs do not answer on 445.
 - Production `config.yaml` passes the new strict validation (only deprecated `notifications.send_on_success`, dropped with a warning).
 - DB: 59 legacy `*_SKIPPED` rows are really preflight failures (display as failures, never rewrite history).
-- 2026-10-15 ~11:56 IST: the box was **shut down by our 4.1 test** with the owner's permission (owner
-  restarts it by hand). It had no backup running at the time; the services restart with it.
+- 2026-10-15 ~11:56 and ~12:08 IST: the box was **shut down twice by our 4.1 tests** with the owner's
+  permission (owner restarts it by hand; after the first restart all 3 services came back Running).
+  No backup was running either time.
 
 ## 7. Housekeeping
 
