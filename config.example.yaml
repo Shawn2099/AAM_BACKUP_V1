@@ -22,6 +22,10 @@ paths:
   # Separate from code installation so updates don't delete runtime data.
   runtime_dir: "C:\\BackupAgent"
   gcs_key_path: "C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json"
+  # Leave empty: derived from runtime_dir (<runtime_dir>\manifest.db and <runtime_dir>\logs).
+  # Only set them to put the database / logs somewhere else.
+  database_path: ""
+  log_directory: ""
 
 # ═══════════════════════════════════════════════════
 # LAN BACKUP (Robocopy /MIR to NAS)
@@ -32,7 +36,8 @@ lan:
   retry_count: 3
   # Robocopy /W — seconds to wait between retries
   retry_wait_seconds: 10
-  # Hard timeout for the entire robocopy process (seconds). 14400 = 4 hours
+  # Hard timeout for the entire robocopy process (seconds). 14400 = 4 hours.
+  # The LAN run budget (budget.lan_max_hours) is usually the tighter limit.
   subprocess_timeout_seconds: 14400
   # Shut down the NAS server after a successful LAN sync
   shutdown_after_backup: true
@@ -54,6 +59,16 @@ lan:
   min_free_dest_gb: 5
   # Timeout for the SeBackupPrivilege check (seconds, 5–600)
   privilege_check_timeout_seconds: 60
+  # Timeout for the robocopy /L dry run that counts planned deletions before the
+  # mirror (seconds, 60–7200)
+  dry_run_timeout_seconds: 900
+  # Before the dry run: how many times to try the NAS on port 445, and the pause
+  # between tries (each try waits up to wol.smb_connect_timeout_seconds)
+  preflight_smb_attempts: 8
+  preflight_smb_wait_seconds: 15
+  # KB of the robocopy log's end used for the result and put into alerts/DB
+  # (the FULL log is always kept in run_logs). 4–10240
+  log_tail_kb: 100
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
@@ -69,12 +84,19 @@ wol:
   # Set explicitly if the NAS is on a different VLAN or managed switch
   # that blocks the global 255.255.255.255 broadcast.
   broadcast_address: ""
-  # Max seconds to wait for the NAS to respond on SMB port 445 after WoL
-  wake_timeout_seconds: 300
+  # Max seconds to wait for the NAS to be usable over SMB after WoL (60–3600).
+  # A cold boot (POST + disks + OS + SMB) takes minutes: set this to about 2x the
+  # cold-boot time measured on site.
+  wake_timeout_seconds: 900
   # Seconds between SMB reachability polls during wake wait
   ping_interval_seconds: 15
-  # Extra seconds to wait after SMB responds (allows services to fully start)
-  stability_wait_seconds: 30
+  # Extra seconds to wait after SMB first answers, then re-check (0–900)
+  stability_wait_seconds: 90
+  # TCP connect timeout of each port-445 probe (seconds, 1–120)
+  smb_connect_timeout_seconds: 15
+  # Magic packets: rounds per wake attempt, and seconds between rounds
+  wake_retry_count: 5
+  wake_retry_interval_seconds: 10
   # NAS shutdown after a complete LAN backup (shutdown /s /m \\<server_ip> /t <delay> /f).
   # Staff can cancel during the delay with `shutdown /a` on the NAS.
   shutdown_delay_seconds: 300
@@ -105,8 +127,12 @@ cloud:
   bandwidth_limit: "10M"
   # rclone --retries per failed file transfer
   retry_count: 3
-  # Hard timeout for the entire rclone sync process (seconds). 18000 = 5 hours (conservative initial limit)
+  # Hard timeout for the entire rclone sync process (seconds). 18000 = 5 hours (conservative initial limit).
+  # The cloud run budget (budget.cloud_max_hours) is usually the tighter limit.
   subprocess_timeout_seconds: 18000
+  # rclone --max-duration (seconds): rclone stops itself cleanly before the hard
+  # timeout. null = automatic (timeout minus 5 min); 0 = off; a number = that cap.
+  max_duration_seconds: null
   # Flow-level retry attempts (full rclone re-runs on failure)
   max_attempts: 3
   # Seconds between flow-level retry attempts
@@ -115,6 +141,9 @@ cloud:
   verify_timeout_seconds: 18000
   # Timeout for pre-sync rclone check dry-run (seconds)
   preflight_timeout_seconds: 300
+  # Timeout for each guard measurement before the sync: `rclone sync --dry-run`
+  # (planned deletions) and `rclone size` of the source (seconds, 60–86400)
+  dry_run_timeout_seconds: 1800
   # Timeout for rclone check --combined diff report (seconds). 18000 = 5 hours (conservative initial limit)
   diff_timeout_seconds: 18000
   # Timeout for rclone lsjson manifest listing (seconds). 18000 = 5 hours (conservative initial limit)
@@ -133,6 +162,9 @@ cloud:
   # rights. Leaves one tiny old version in a versioned bucket; the lifecycle rule
   # removes it. Uses preflight_timeout_seconds.
   write_probe_enabled: true
+  # rclone error lines carried into alerts/DB/dashboard (the FULL log is always
+  # kept in run_logs). 1–10000
+  error_tail_lines: 100
 
 # ═══════════════════════════════════════════════════
 # SCHEDULES (cron, all times in timezone below)
@@ -153,6 +185,9 @@ schedule:
   # Weekly read-only integrity audit: Sunday 10:00 AM (after the Sunday cloud
   # backup's budget; budget 8 h -> done by 6:00 PM, before the 9:00 PM LAN run)
   audit_cron: "0 10 * * SUN"
+  # Daily FY rollover check: does nothing except on the fiscal-year boundary
+  # (April 1), where it runs the final backups under their own run budgets.
+  rollover_cron: "0 6 * * *"
   timezone: "Asia/Kolkata"
 
 # ═══════════════════════════════════════════════════
@@ -188,6 +223,9 @@ dashboard:
   stale_after_hours: 26
   # ...or when an alert/report email failed to send within this many days (1–90)
   alert_failure_window_days: 7
+  # Dashboard address written into "open the dashboard" emails, as the recipients
+  # reach it (e.g. http://backup-server:8080). Empty = http://<bind_address>:<port>
+  public_url: ""
 
 # ═══════════════════════════════════════════════════
 # EMAIL NOTIFICATIONS
@@ -200,6 +238,17 @@ notifications:
   sender: "your-smtp-user@gmail.com"
   recipients:
     - "admin@yourcompany.com"
+  # auto = SSL on port 465, STARTTLS otherwise; starttls | ssl; none = plain text
+  # (internal relay only)
+  smtp_security: auto
+  # Log in with smtp_username/smtp_password. false = unauthenticated internal relay.
+  # When true, missing credentials are a recorded delivery FAILURE, never skipped.
+  smtp_auth: true
+  # Seconds per SMTP connection; attempts for temporary (4xx) errors, with an
+  # exponential back-off starting at retry_base_seconds
+  smtp_timeout_seconds: 30
+  retry_attempts: 3
+  retry_base_seconds: 10
   # Send an immediate alert email when a backup fails
   send_on_failure: true
   # NOTE: there is deliberately no send_on_success switch. Per-run success
@@ -217,8 +266,15 @@ notifications:
 maintenance:
   # Days of run history to keep in the SQLite database (7–3650)
   db_retention_days: 90
-  # Days of log files to keep before Loguru auto-deletion (1–365)
-  log_retention_days: 30
+  # Days of application log files to keep (1–365). 90 = the 3-month log
+  # retention the owner asked for (R8)
+  log_retention_days: 90
+  # How long a backup waits for another backup job to finish before it gives up
+  # as *_SLOT_TIMEOUT (seconds). The schedule check (see `schedule:`) uses it.
+  concurrency_wait_seconds: 3600
+  # SQLite durability: normal = safe (a power cut may lose the last commit);
+  # full = flush every commit (slower)
+  sqlite_synchronous: normal
   # SQLite PRAGMA busy_timeout in milliseconds (1000–120000)
   # Higher values prevent "database is locked" errors under concurrent access
   sqlite_busy_timeout_ms: 30000
@@ -228,6 +284,35 @@ maintenance:
   # At agent start, a backup still marked RUNNING after this many hours is recorded
   # as ABANDONED (its process died without an outcome). 1–168
   abandon_running_after_hours: 24
+
+# ═══════════════════════════════════════════════════
+# FULL TOOL LOGS (every rclone / robocopy log of every run)
+# ═══════════════════════════════════════════════════
+run_logs:
+  # Empty = <runtime_dir>\run_logs (one folder per day and run)
+  dir: ""
+  # Delete run log folders older than this many days (7–3650)
+  retention_days: 90
+  # gzip log files larger than this many KB after the run (0 = compress all)
+  compress_after_kb: 1024
+  # Below this many GB free on that drive: warning + the run is marked
+  # "logs incomplete" (the backup itself still runs)
+  min_free_gb: 5
+  # Delete NSSM-rotated service logs (agent_svc-*, prefect_svc-*, watchdog_svc-*)
+  # older than this many days (7–3650)
+  service_log_retention_days: 90
+
+# ═══════════════════════════════════════════════════
+# ALERT EMAILS
+# ═══════════════════════════════════════════════════
+alerts:
+  # The same alert is re-sent at most once per this many hours while the problem
+  # lasts (repeats are recorded as SUPPRESSED). 0 = never suppress.
+  repeat_cooldown_hours: 12
+  # Characters of the message shown in the email body; the full text is attached
+  body_max_chars: 1000
+  # Max size of that attachment (KB)
+  attachment_max_kb: 2048
 
 # ═══════════════════════════════════════════════════
 # HEALTH CHECKS
