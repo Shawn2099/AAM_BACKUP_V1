@@ -16,11 +16,11 @@ pass for a backup to run, to count as successful, and to be verified.**
 ```
  ┌──────────────────────────── Windows Server 2016 ─────────────────────────────┐
  │                                                                              │
- │  [Service] AamPrefectServer  (NSSM → "uv run prefect server start")          │
+ │  [Service] AamPrefectServer  (NSSM → .venv python -m prefect server start)   │
  │     Prefect API + UI on 127.0.0.1:4200, its own SQLite DB in PREFECT_HOME     │
  │     ▲  keeps schedules, flow-run states, task states, flow logs              │
  │     │ HTTP                                                                   │
- │  [Service] AamBackupAgent  (NSSM → "uv run python launch.py")                │
+ │  [Service] AamBackupAgent  (NSSM → .venv python launch.py; svc account)      │
  │     launch.py ─┬─ thread: Dashboard  (ui.py, FastAPI/uvicorn, :8080)         │
  │                ├─ boot: FY rollover check, concurrency limit, orphan cleanup │
  │                └─ main: prefect serve(deployments from serve.py)             │
@@ -31,7 +31,7 @@ pass for a backup to run, to count as successful, and to be verified.**
  │                        ▼                                                      │
  │                 core/*.py  → robocopy.exe, rclone.exe, shutdown.exe, SMTP     │
  │                                                                              │
- │  [Service] AamWatchdog  (NSSM → "uv run python watchdog.py")                 │
+ │  [Service] AamWatchdog  (NSSM → .venv python watchdog.py)                    │
  │     polls Prefect /api/health every 60 s; restarts services; honours lock    │
  │                                                                              │
  │  Runtime data (C:\BackupAgent = paths.runtime_dir):                          │
@@ -280,6 +280,8 @@ until a RECOVERED notification follows.
 | `ui.py` | dashboard API | `status`, `trigger_*`, `_status_fields`, `get_db`; approvals: `GET /approvals`, `POST /approvals/{id}/approve` (typed phrase, sign-in required), `/run`, `/dismiss` |
 | `watchdog.py` | Prefect health monitor | `main`, `_is_backup_running`, `_service_state`, `_start_service`, `_restart_stack`, `_resolve_stuck_stop`, `_critical` |
 | `collect_config_data.py`, `deploy/*` | install / discovery / restore scripts | — |
+| `deploy/04_check_readiness.ps1 [-ServiceAccount .\x]` | `uv sync --frozen`; tools/registry/ports; base Python outside user profiles; config.yaml valid for this version; with an account: runs `probe_service_account.py` AS it (runtime + config folder write, source read, NAS write, SeBackupPrivilege) | operator, before 06 |
+| `deploy/06_install_services.ps1 [-ServiceAccount .\x]` | validates config, then NSSM services running `.venv\Scripts\python.exe` (no uv at boot), `AAM_CONFIG` on all three; AamBackupAgent as the account (Modify on runtime folder + config.yaml/folder), server + watchdog LocalSystem | operator |
 
 ### `core/` — business logic
 | Module | Responsibility | Called by |

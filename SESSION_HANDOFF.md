@@ -43,10 +43,10 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
 | M2 Data safety | **done** (2.1–2.6) |
 | M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
-| M4 Operations | in progress — 4.1–4.4 done (4.5, 4.6 left) |
+| M4 Operations | in progress — 4.1–4.5 done (4.6 left) |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check (2026-10-15, after M4 4.4):** `tests/` **1762 passed / 0 failed / 19 skipped**
+**Test status at last check (2026-10-15, after M4 4.5):** `tests/` **1774 passed / 0 failed / 19 skipped**
 (full audit lab not re-run since M3; every changed lab test - W16 shutdown/watchdog, W12.5, W11 clock, W17/W18/W1e - passes on its own).
 Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
 config.yaml `monthly_cron` changed - DEC-7).
@@ -89,8 +89,20 @@ config.yaml `monthly_cron` changed - DEC-7).
    schedule == config) both read the owner's local config.yaml and turn green with:
    Owner action: change `schedule.monthly_cron` to `"30 8 1 * *"` in the local and the
    production config.yaml (code default + example already changed) - lab W16 then turns green.
-5. **M4 4.1-4.4 DONE** (shutdown verified; clock tri-state; watchdog; run budgets - plan §13).
-   **NEXT: 4.5 installer** (`uv run --frozen --no-sync`, `AAM_CONFIG`, readiness checks), then 4.6.
+5. **M4 4.1-4.5 DONE** (shutdown verified; clock tri-state; watchdog; run budgets; installer +
+   readiness probe as the service account - plan §13). **NEXT: 4.6** config.example.yaml fully
+   documented (every key incl. `maintenance.concurrency_wait_seconds`), then M5.
+   **Owner decision pending (found in 4.5):** `03_setup_system.bat` sets Windows Update Active
+   Hours 12:00-06:00, i.e. reboots allowed 06:00-12:00 - with cloud at 02:00 + 6 h budget a
+   Windows Update reboot can hit the cloud run until 08:00. Options: Active Hours 20:00-09:00
+   (protects 21:00-08:00, but reboots then fall in office hours) or shorter cloud budget.
+   **Service account (owner, before go-live):** create a local account (e.g. `aambackup`) on the
+   server AND the same user/password on the NAS with write on the share; put it in "Back up files
+   and directories" (secpol) if `lan.use_backup_mode`; then `04_check_readiness.ps1 -ServiceAccount
+   .\aambackup` must be all green before `06_install_services.ps1 -ServiceAccount .\aambackup`.
+   **WP17 on-box checks added by 4.3/4.5:** graceful `sc stop AamBackupAgent` with the new
+   NSSM -> .venv python launcher chain (Ctrl+C reaches launch.py, backup.lock released, no
+   STOP_PENDING); watchdog ordered restart + STOP_PENDING kill against the real services.
    4.3 was not run against the real services: on-box check in WP17 (needs owner OK).
    **OWNER ACTIONS before deploying this code (4.4 refuses the old schedules at load):**
    - production `config.yaml`: `cloud_cron: "0 2 * * *"` (LAN stays 21:00), `audit_cron:

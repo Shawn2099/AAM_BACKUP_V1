@@ -129,15 +129,15 @@ def test_server_and_watchdog_stop_timeouts_unchanged():
         assert int(skip) == 0, service
 
 
-def test_uv_python_process_chain_unchanged():
-    """The NSSM -> uv.exe -> python architecture is retained (evidence showed
-    uv does NOT orphan; the stop hang was NSSM-side rotation, not the chain)."""
+def test_venv_python_process_chain():
+    """WP16 (M4 4.5): NSSM -> .venv\\Scripts\\python.exe (a launcher that starts
+    the base interpreter as its child - the same two-process shape as the old
+    NSSM -> uv.exe -> python chain, which F4 showed does not orphan). No uv at
+    boot: `uv run` synced packages from the internet on every start."""
     text = _load_script()
-    # Every service's Application is the uv executable variable.
     apps = re.findall(r"&\s*\$NSSM\s+install\s+\$(SVC_\w+)\s+(\S+)", text)
     assert len(apps) == 3
     for svc_var, app in apps:
-        assert app == "$UV_EXE", f"{svc_var}: Application must stay $UV_EXE"
-    # Agent still launches the same entrypoint.
+        assert app == "$VenvPython", f"{svc_var}: Application must be $VenvPython"
     s = _settings()
-    assert s["AamBackupAgent"]["AppParameters"] == "run python launch.py"
+    assert s["AamBackupAgent"]["AppParameters"] == "launch.py"

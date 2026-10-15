@@ -35,7 +35,7 @@ The venv is at `.venv` (Python 3.12, managed by `uv`). Use the venv interpreter 
 - Known intentional audit-lab red: `test_w16_schedule_collisions_across_year` (fixed by plan WP8). `audit_lab/test_w7_deployed.py` needs the deployed services and is excluded.
 - While the audit lab runs, do not edit modules it imports: its Prefect child processes import fresh code.
 - Ruff is configured in `pyproject.toml` but not installed in the venv.
-- Production entry points: `uv run python launch.py` (agent), `uv run python watchdog.py`, flows via Prefect deployments. Install/ops scripts are in `deploy/` (`06_install_services.ps1` registers the NSSM services).
+- Production entry points: the NSSM services run `.venv\Scripts\python.exe launch.py` (agent), `.venv\Scripts\python.exe watchdog.py` and `-m prefect server start` directly (no `uv run` at boot, `AAM_CONFIG` set); flows via Prefect deployments. Install/ops scripts are in `deploy/`: `04_check_readiness.ps1 -ServiceAccount .\x` (runs `deploy/probe_service_account.py` as the account), then `06_install_services.ps1 -ServiceAccount .\x`.
 
 ## Architecture (big picture)
 

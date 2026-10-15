@@ -1,9 +1,19 @@
+# Usage:  04_check_readiness.ps1 [-ServiceAccount .\aambackup]
+#   With -ServiceAccount, the account's password is asked for and a probe runs
+#   AS that account (deploy\probe_service_account.py): NAS write, source read,
+#   runtime + config folder write, SeBackupPrivilege - the exact checks the
+#   nightly preflight makes (plan WP4/WP16).
+param(
+    [string]$ServiceAccount = ""
+)
 
 # =======================================================================
-# Self-Elevate to Administrator
+# Self-Elevate to Administrator (parameters are passed on)
 # =======================================================================
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    $fwd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    if ($ServiceAccount) { $fwd += " -ServiceAccount `"$ServiceAccount`"" }
+    Start-Process powershell.exe -ArgumentList $fwd -Verb RunAs
     exit
 }
 
@@ -58,8 +68,9 @@ if ($uvPath) {
         Check-Item "Python Runtime" "Failed to bootstrap Python. Check internet." $true
     }
 
-    Write-Host "       -> Installing required libraries (uv sync)... " -NoNewline
-    $sync = cmd /c "`"$uvPath`" sync --directory `"$ProjectDir`" 2>&1"
+    # --frozen: exactly the versions in uv.lock, never a re-resolve (WP16)
+    Write-Host "       -> Installing required libraries (uv sync --frozen)... " -NoNewline
+    $sync = cmd /c "`"$uvPath`" sync --frozen --directory `"$ProjectDir`" 2>&1"
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK]" -ForegroundColor Green
     } else {
@@ -207,6 +218,81 @@ if (Test-Path $key) {
 } else {
     Write-Host "[WARN] " -NoNewline -ForegroundColor Yellow
     Write-Host "GCS Key missing at $key (Required for cloud backups)"
+}
+
+# 15. Python the services will run (WP16: .venv's Python directly, no uv at boot)
+$venvPy = Join-Path $ProjectDir ".venv\Scripts\python.exe"
+$venvCfg = Join-Path $ProjectDir ".venv\pyvenv.cfg"
+if (Test-Path $venvPy) {
+    Check-Item "Project Python" "$venvPy" $false
+    $homeLine = Get-Content $venvCfg -ErrorAction SilentlyContinue | Where-Object { $_ -match '^home\s*=' }
+    $baseHome = if ($homeLine) { ($homeLine -split '=', 2)[1].Trim() } else { "" }
+    if ($baseHome -match '^[A-Za-z]:\\Users\\') {
+        # A service account cannot read another user's profile: the agent would not start.
+        $msg = "base Python is inside a user profile ($baseHome). Install Python for all users " +
+               "(e.g. C:\Program Files\Python312) or set UV_PYTHON_INSTALL_DIR to a shared folder, " +
+               "then re-create .venv"
+        Check-Item "Base Python location" $msg ([bool]$ServiceAccount)
+    } else {
+        Check-Item "Base Python location" "$baseHome (readable by every account)" $false
+    }
+
+    # 16. config.yaml valid for THIS code version (strict keys + schedule vs run budgets)
+    Push-Location $ProjectDir
+    $env:AAM_CONFIG = $cfg
+    $cfgOut = & $venvPy -c "from models.config import load_config; load_config(r'$cfg')" 2>&1
+    $cfgExit = $LASTEXITCODE
+    Pop-Location
+    if ($cfgExit -eq 0) {
+        Check-Item "Config validation" "config.yaml is valid (schedule fits the run budgets)" $false
+    } else {
+        Check-Item "Config validation" "config.yaml is NOT valid - the services would not start:" $true
+        $cfgOut | Select-Object -Last 12 | ForEach-Object { Write-Host "       $_" }
+    }
+} else {
+    Check-Item "Project Python" "Missing $venvPy (uv sync --frozen failed above?)" $true
+}
+
+# 17. Service account: exists, and the probe runs AS it (plan §10 item 2)
+if ($ServiceAccount) {
+    $shortName = ($ServiceAccount -split '\\')[-1]
+    $local = Get-LocalUser -Name $shortName -ErrorAction SilentlyContinue
+    if ($local -and $local.Enabled) {
+        Check-Item "Service account" "$ServiceAccount exists and is enabled" $false
+    } else {
+        Check-Item "Service account" "$ServiceAccount not found or disabled (create it: lusrmgr.msc)" $true
+    }
+    if ($local -and (Test-Path $venvPy)) {
+        $cred = Get-Credential -UserName $ServiceAccount -Message "Password of $ServiceAccount (probe runs as this account)"
+        $resultFile = Join-Path $env:SystemRoot ("Temp\aam_account_probe_" + [guid]::NewGuid().ToString("N") + ".txt")
+        $probe = Join-Path $ScriptDir "probe_service_account.py"
+        try {
+            $p = Start-Process -FilePath $venvPy -ArgumentList "`"$probe`" `"$cfg`" `"$resultFile`"" `
+                 -Credential $cred -WorkingDirectory $ProjectDir -Wait -PassThru -WindowStyle Hidden
+            if (Test-Path $resultFile) {
+                foreach ($line in Get-Content $resultFile) {
+                    $parts = $line -split ' ', 2
+                    if ($parts[0] -eq "SKIP") {
+                        Write-Host "[SKIP] " -NoNewline -ForegroundColor Yellow
+                        Write-Host "as $($ServiceAccount): $($parts[1])"
+                    } else {
+                        Check-Item "as $ServiceAccount" $parts[1] ($parts[0] -ne "OK")
+                    }
+                }
+                Remove-Item $resultFile -Force -ErrorAction SilentlyContinue
+            } else {
+                Check-Item "as $ServiceAccount" ("the probe could not run as the account (exit " +
+                    "$($p.ExitCode)) - wrong password, or the account cannot read the project " +
+                    "folder / Python") $true
+            }
+        } catch {
+            Check-Item "as $ServiceAccount" "could not start the probe as the account: $_" $true
+        }
+    }
+} else {
+    Write-Host "[WARN] " -NoNewline -ForegroundColor Yellow
+    Write-Host "No -ServiceAccount given: NAS access is NOT verified. In a WORKGROUP the agent must"
+    Write-Host "       run as a dedicated account that also exists (same password) on the NAS."
 }
 
 Write-Host ""
