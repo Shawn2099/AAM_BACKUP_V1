@@ -29,6 +29,9 @@ from zoneinfo import ZoneInfo
 from cronsim import CronSim
 
 
+_JOB_NAMES = {"lan": "LAN backup", "cloud": "Cloud backup", "audit": "weekly safety check"}
+
+
 class BudgetExceeded(RuntimeError):
     """No time left in the job's run budget for the next step."""
 
@@ -94,11 +97,13 @@ def schedule_problems(jobs: dict[str, tuple[str, float]], timezone: str,
         gap = (t_next - t).total_seconds()
         if budget_s > gap + wait_seconds and (name, nxt) not in seen:
             seen.add((name, nxt))
+            latest_end = t + timedelta(seconds=budget_s)
+            this, other = _JOB_NAMES.get(name, name), _JOB_NAMES.get(nxt, nxt)
             problems.append(
-                f"schedule.{name}_cron ({jobs[name][0]!r}, e.g. {t:%a %H:%M}) may run up to "
-                f"budget.{name}_max_hours = {budget_s / 3600:g} h, but schedule.{nxt}_cron "
-                f"({jobs[nxt][0]!r}) starts {gap / 3600:g} h later ({t_next:%a %H:%M}) and waits "
-                f"at most maintenance.concurrency_wait_seconds = {wait_seconds / 3600:g} h for "
-                f"the slot: {budget_s / 3600:g} h > {gap / 3600:g} h + {wait_seconds / 3600:g} h. "
-                f"Move one of the two jobs, or lower budget.{name}_max_hours.")
+                f"The {this} starts {t:%a %H:%M} and may run until {latest_end:%a %H:%M} "
+                f"({budget_s / 3600:g} h), but the {other} starts at {t_next:%a %H:%M} and can wait "
+                f"only {wait_seconds / 3600:g} h for it - so the {other} could be skipped. "
+                f"Move one of them further apart, or shorten the {this}'s maximum running time. "
+                f"[schedule.{name}_cron {jobs[name][0]!r} vs schedule.{nxt}_cron {jobs[nxt][0]!r}: "
+                f"{budget_s / 3600:g} h > {gap / 3600:g} h + {wait_seconds / 3600:g} h]")
     return problems

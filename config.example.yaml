@@ -223,6 +223,14 @@ dashboard:
   stale_after_hours: 26
   # ...or when an alert/report email failed to send within this many days (1–90)
   alert_failure_window_days: 7
+  # Advanced settings have their own login. Empty = its password is the same as
+  # api_key. Change it ONLY on the dashboard (Settings > Advanced > Change admin
+  # password): that stores a salted hash here, never the password itself.
+  admin_password_hash: ""
+  # The Advanced login locks itself after this many minutes (5–480)
+  admin_session_minutes: 30
+  # Minimum length of a new admin password (8–128)
+  admin_password_min_length: 10
   # Dashboard address written into "open the dashboard" emails, as the recipients
   # reach it (e.g. http://backup-server:8080). Empty = http://<bind_address>:<port>
   public_url: ""

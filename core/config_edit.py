@@ -30,14 +30,18 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from core import approvals
+from core.config_help import SECTION_TITLES, label_and_help
 from core.config_file import (backup_config_file, load_round_trip, prune_backups, set_dotted,
                                write_atomic)
 
 LOCKED = frozenset({
     "dashboard.auth_enabled", "dashboard.api_key", "dashboard.bind_address", "dashboard.port",
+    "dashboard.admin_password_hash",
     "paths.runtime_dir", "paths.database_path", "paths.log_directory",
 })
 SECRET = frozenset({"notifications.smtp_password"})
+# Never listed at all: changed only through "Change admin password".
+HIDDEN = frozenset({"dashboard.admin_password_hash"})
 _RISKY_SECTIONS = frozenset({"guards", "approvals"})
 _RISKY_KEYS = frozenset({
     # what / where is backed up
@@ -56,21 +60,17 @@ AGENT_RESTART = "agent_restart"
 WATCHDOG_RESTART = "watchdog_restart"
 DASHBOARD = "dashboard"
 EFFECT_TEXT = {
-    NEXT_RUN: "applies from the next run",
-    AGENT_RESTART: "applies after restarting the AAM Backup Agent service (schedules are "
-                   "registered when it starts)",
-    WATCHDOG_RESTART: "applies after restarting the AAM Watchdog service",
-    DASHBOARD: "the dashboard picks it up within 5 minutes",
+    NEXT_RUN: "Takes effect from the next backup.",
+    AGENT_RESTART: "Takes effect after the backup service is restarted (on the server: "
+                   "deploy\\07_restart_services.bat).",
+    WATCHDOG_RESTART: "Takes effect after the watchdog service is restarted.",
+    DASHBOARD: "The dashboard uses it within 5 minutes.",
 }
 
-_SECTION_TITLES = {
-    "paths": "Folders", "lan": "LAN backup (NAS)", "wol": "Wake-on-LAN + NAS shutdown",
-    "cloud": "Cloud backup", "schedule": "Schedules", "budget": "Run budgets",
-    "notifications": "Email", "alerts": "Alert emails", "dashboard": "Dashboard",
-    "maintenance": "Maintenance", "health": "Health checks", "run_logs": "Full tool logs",
-    "guards": "Data-safety guards", "approvals": "Approvals", "rollover": "FY rollover",
-    "audit": "Weekly integrity audit", "watchdog": "Watchdog",
-}
+# What people look for first (the timetable), then the rest.
+_SECTION_ORDER = ("general", "schedule", "notifications", "paths", "lan", "wol", "cloud", "budget",
+                  "dashboard", "alerts", "guards", "approvals", "health", "audit", "rollover",
+                  "maintenance", "run_logs", "watchdog")
 
 _WRITE_LOCK = threading.Lock()
 
@@ -104,9 +104,42 @@ _WIDGETS = {
 }
 
 
+# Owner 2026-10-15: units are fixed labels next to the box, never typed.
+_UNIT_SUFFIXES = (("_seconds", "seconds"), ("_minutes", "minutes"), ("_hours", "hours"),
+                  ("_days", "days"), ("_gb", "GB"), ("_mb", "MB"), ("_kb", "KB"),
+                  ("_ms", "milliseconds"), ("_percent", "%"))
+_UNITS = {
+    "lan.retry_count": "times", "lan.max_attempts": "times", "cloud.retry_count": "times",
+    "cloud.max_attempts": "times", "audit.retries": "times", "notifications.retry_attempts": "times",
+    "lan.preflight_smb_attempts": "times", "wol.wake_retry_count": "times",
+    "wol.shutdown_verify_closed_probes": "checks in a row", "watchdog.failure_threshold": "checks in a row",
+    "watchdog.max_deferrals": "times", "watchdog.max_transfer_deferrals": "times",
+    "watchdog.max_starts_per_window": "starts", "lan.mt_threads": "threads",
+    "cloud.transfers": "files at once", "cloud.checkers": "files at once", "audit.checkers": "files at once",
+    "cloud.error_tail_lines": "lines", "alerts.body_max_chars": "characters",
+    "dashboard.admin_password_min_length": "characters",
+    "maintenance.sqlite_vacuum_freelist_threshold": "pages", "maintenance.config_backups_keep": "copies",
+    "guards.max_delete_files": "files", "audit.detail_max_paths": "paths",
+    "cloud.bandwidth_limit": "MB/s", "cloud.buffer_size": "MB",
+}
+# rclone size strings ("10M", "500k") edited as a number with a fixed unit
+_SIZE_KEYS = frozenset({"cloud.bandwidth_limit", "cloud.buffer_size"})
+
+
+def unit_of(key: str) -> str | None:
+    if key in _UNITS:
+        return _UNITS[key]
+    for suffix, unit in _UNIT_SUFFIXES:
+        if key.endswith(suffix):
+            return unit
+    return None
+
+
 def _widget(key: str, kind: str) -> str:
     if key in _WIDGETS:
         return _WIDGETS[key]
+    if key in _SIZE_KEYS:
+        return "size_mb"
     if key.startswith("schedule.") and key.endswith("_cron"):
         return "schedule"
     return {"bool": "toggle", "list": "text_list"}.get(kind, kind)
@@ -175,8 +208,10 @@ def _field_entry(key: str, info, value) -> dict:
     kind, optional = _kind(info.annotation)
     default = info.get_default(call_default_factory=True)
     secret = key in SECRET
+    label, help_text = label_and_help(key, (info.description or "").strip())
     entry = {
         "key": key, "type": kind, "optional": optional,
+        "label": label, "help": help_text,
         "description": (info.description or "").strip(),
         "default": None if secret or default is ... or repr(default) == "PydanticUndefined"
         else default,
@@ -184,6 +219,7 @@ def _field_entry(key: str, info, value) -> dict:
         "effect": effect_of(key), "effect_text": EFFECT_TEXT[effect_of(key)],
         "widget": _widget(key, kind),
         "level": "basic" if key in BASIC_KEYS else "advanced",
+        "unit": unit_of(key),
         **_bounds_and_choices(info),
     }
     if key in _FIXED_CHOICES:
@@ -199,22 +235,27 @@ def _field_entry(key: str, info, value) -> dict:
     return entry
 
 
-def catalog(config) -> list[dict]:
-    """Every setting with its current (effective) value and metadata, by section."""
+def catalog(config, include_advanced: bool = True) -> list[dict]:
+    """Every setting with its current (effective) value and metadata, by section.
+
+    include_advanced=False (no Advanced login): only the basic settings - the
+    advanced values are not even sent to the browser."""
     from models.config import AppConfig
 
-    sections = [{"name": "general", "title": "General", "fields": [
+    sections = [{"name": "general", "title": SECTION_TITLES["general"], "fields": [
         _field_entry("firm_name", AppConfig.model_fields["firm_name"], config.firm_name)]}]
     for name, model in _sections(AppConfig):
         if model is None:
             continue
         current = getattr(config, name)
-        sections.append({
-            "name": name, "title": _SECTION_TITLES.get(name, name),
-            "fields": [_field_entry(f"{name}.{k}", info, getattr(current, k))
-                       for k, info in model.model_fields.items()],
-        })
-    return sections
+        entries = [_field_entry(f"{name}.{k}", info, getattr(current, k))
+                   for k, info in model.model_fields.items() if f"{name}.{k}" not in HIDDEN]
+        entries = [e for e in entries if include_advanced or e["level"] == "basic"]
+        if entries:
+            sections.append({"name": name, "title": SECTION_TITLES.get(name, name),
+                             "fields": entries})
+    order = {n: i for i, n in enumerate(_SECTION_ORDER)}
+    return sorted(sections, key=lambda sec: order.get(sec["name"], len(order)))
 
 
 def _current_value(config, key: str):
@@ -275,7 +316,7 @@ class SaveResult:
     effects: list[str] = field(default_factory=list)
 
 
-def _prepare(config_path: str, changes: dict):
+def _prepare(config_path: str, changes: dict, allow_advanced: bool = True):
     """(current config, {key: typed new value}) - raises ConfigEditError when the
     request is not allowed or the resulting config would not load. Shared by
     the live check and the save, so both always give the same verdict."""
@@ -291,6 +332,10 @@ def _prepare(config_path: str, changes: dict):
     if locked:
         raise ConfigEditError(403, f"{', '.join(locked)} can only be changed in config.yaml on "
                                    "the server (a mistake here could lock everyone out).")
+    advanced = sorted(k for k in changes if k not in BASIC_KEYS)
+    if advanced and not allow_advanced:
+        raise ConfigEditError(403, f"{', '.join(advanced)}: Advanced settings need the "
+                                   "Advanced login.")
     current = load_config(config_path)
     # an empty secret field means "keep the stored one"
     wanted = {k: v for k, v in changes.items()
@@ -309,11 +354,11 @@ def _prepare(config_path: str, changes: dict):
                      if k in SECRET or v != _current_value(current, k)}
 
 
-def validate_changes(config_path: str, changes: dict) -> dict:
+def validate_changes(config_path: str, changes: dict, allow_advanced: bool = True) -> dict:
     """Live check for the settings page: the same verdict a save would give,
     without writing anything (and without the lock / phrase steps)."""
     try:
-        _, typed = _prepare(config_path, changes)
+        _, typed = _prepare(config_path, changes, allow_advanced)
     except ConfigEditError as e:
         return {"ok": False, "detail": str(e), "errors": e.extra.get("errors")
                 or [{"key": None, "message": str(e)}]}
@@ -323,7 +368,7 @@ def validate_changes(config_path: str, changes: dict) -> dict:
 
 
 def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor: str,
-                  lock_busy, db=None, now_iso=None) -> SaveResult:
+                  lock_busy, db=None, now_iso=None, allow_advanced: bool = True) -> SaveResult:
     """Validate, confirm, back up and write `changes` ({dotted key: value}).
 
     lock_busy: callable -> str | None; a reason when a backup/rollover holds
@@ -332,7 +377,7 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
     from models.config import load_config
 
     with _WRITE_LOCK:
-        current, typed = _prepare(config_path, changes)
+        current, typed = _prepare(config_path, changes, allow_advanced)
         if not typed:
             return SaveResult()
 
@@ -380,3 +425,34 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
                 })
         result.effects = sorted({EFFECT_TEXT[c["effect"]] for c in result.changed})
         return result
+
+
+def set_admin_password_hash(config_path: str, new_hash: str, *, actor: str, db=None,
+                            now_iso=None) -> str:
+    """Store a new Advanced-login hash the same safe way as any setting:
+    backup, atomic comment-preserving write, load check (restore on failure),
+    history entry with the value hidden. Returns the backup file name."""
+    from models.config import load_config
+
+    with _WRITE_LOCK:
+        backup = backup_config_file(config_path)
+        yaml, doc = load_round_trip(config_path)
+        set_dotted(doc, "dashboard.admin_password_hash", new_hash)
+        write_atomic(config_path, yaml, doc, tmp_prefix=".config_edit_")
+        try:
+            saved = load_config(config_path)
+        except Exception as e:  # noqa: BLE001 - must never leave an unloadable file
+            shutil.copy2(backup, config_path)
+            raise ConfigEditError(500, f"The written file did not load ({e}); the previous "
+                                       f"config.yaml was restored from {backup.name}.") from e
+        try:
+            prune_backups(config_path, keep=saved.maintenance.config_backups_keep)
+        except OSError:
+            pass
+        if db is not None:
+            db.record_config_change({
+                "changed_at": now_iso(), "changed_by": actor,
+                "key": "dashboard.admin_password_hash", "old_value": "'(hidden)'",
+                "new_value": "'(hidden)'", "risky": 1, "backup_file": backup.name,
+            })
+        return backup.name

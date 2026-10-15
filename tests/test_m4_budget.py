@@ -75,7 +75,7 @@ class TestSchedule:
 
     def test_two_jobs_in_the_same_minute_are_rejected(self):
         problems = schedule_problems(self._jobs(cloud="0 1 * * *"), "Asia/Kolkata", H)
-        assert any("0 h later" in p for p in problems)
+        assert any("0 h + 1 h" in p for p in problems)   # same minute: no gap at all
 
     def test_budget_must_exceed_the_slot_wait(self):
         problems = schedule_problems({"lan": ("0 1 * * *", H)}, "Asia/Kolkata", H)

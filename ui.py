@@ -33,7 +33,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import approvals, config_edit, fy_rollover, statuses
+from core import admin_auth, approvals, config_edit, fy_rollover, statuses
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
@@ -860,6 +860,100 @@ def _require_settings_rights(request: Request) -> None:
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
 
+# ── Advanced-settings login (owner 2026-10-15) ───────────────
+# A second, separate login on top of the dashboard sign-in. Its password is
+# the dashboard key until changed here; then only a PBKDF2 hash is stored.
+# Enforced on the server: without it, advanced settings are neither sent to
+# the browser nor accepted in a save / validate.
+
+_admin_sessions: dict[str, float] = {}
+
+
+def _is_admin(request: Request) -> bool:
+    token = request.cookies.get("admin_session")
+    created = _admin_sessions.get(token) if token else None
+    if created is None:
+        return False
+    if time.time() - created > _cfg().dashboard.admin_session_minutes * 60:
+        _admin_sessions.pop(token, None)
+        return False
+    return True
+
+
+@app.get("/api/admin/status")
+def admin_status(request: Request):
+    _require_auth(request)
+    return {"admin": _is_admin(request),
+            "password_changed": bool(_cfg().dashboard.admin_password_hash),
+            "session_minutes": _cfg().dashboard.admin_session_minutes}
+
+
+@app.post("/api/admin/login")
+async def admin_login(request: Request):
+    _require_auth(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(f"admin_login:{client_ip}", _RATE_MAX_LOGIN):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+    try:
+        password = str((await request.json()).get("password", ""))
+    except Exception:  # noqa: BLE001
+        password = ""
+    if not admin_auth.verify_admin_password(password, _cfg().dashboard):
+        logger.warning(f"Advanced login refused for {client_ip}")
+        raise HTTPException(status_code=401, detail="Wrong admin password.")
+    token = secrets.token_hex(32)
+    _admin_sessions[token] = time.time()
+    logger.warning(f"Advanced login by {_approval_actor(request)}")
+    resp = JSONResponse({"status": "ok", "session_minutes": _cfg().dashboard.admin_session_minutes})
+    resp.set_cookie(key="admin_session", value=token, httponly=True, samesite="strict",
+                    secure=request.url.scheme == "https",
+                    max_age=_cfg().dashboard.admin_session_minutes * 60)
+    return resp
+
+
+@app.post("/api/admin/logout")
+def admin_logout(request: Request):
+    _admin_sessions.pop(request.cookies.get("admin_session") or "", None)
+    resp = JSONResponse({"status": "locked"})
+    resp.delete_cookie("admin_session")
+    return resp
+
+
+@app.post("/api/admin/password")
+async def admin_change_password(request: Request):
+    _require_settings_rights(request)
+    if not _is_admin(request):
+        raise HTTPException(status_code=403, detail="Sign in to Advanced first.")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    dashboard = _cfg().dashboard
+    if not admin_auth.verify_admin_password(str(body.get("current", "")), dashboard):
+        raise HTTPException(status_code=400, detail="The current admin password is wrong.")
+    problem = admin_auth.new_password_problem(str(body.get("new", "")), str(body.get("confirm", "")),
+                                              dashboard.admin_password_min_length)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    actor = _approval_actor(request)
+    try:
+        config_edit.set_admin_password_hash(
+            _settings_config_path(), admin_auth.hash_password(str(body["new"])),
+            actor=actor, db=get_db(), now_iso=now_iso)
+    except config_edit.ConfigEditError as e:
+        return JSONResponse({"detail": str(e)}, status_code=e.status)
+    global _config_loaded_at
+    with _CFG_LOCK:
+        _config_loaded_at = 0.0
+    # every OTHER Advanced session ends: they signed in with the old password
+    keep = request.cookies.get("admin_session")
+    for token in [t for t in _admin_sessions if t != keep]:
+        _admin_sessions.pop(token, None)
+    logger.warning(f"Advanced (admin) password changed by {actor}")
+    return {"status": "changed", "detail": "Admin password changed. Other Advanced sessions "
+                                           "were signed out."}
+
+
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     _require_auth(request)
@@ -879,7 +973,9 @@ def get_settings(request: Request):
         current = load_config(_settings_config_path())
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"config.yaml does not load: {e}") from e
-    return {"auth_enabled": _auth_enabled(), "sections": config_edit.catalog(current),
+    admin = _is_admin(request)
+    return {"auth_enabled": _auth_enabled(), "admin": admin,
+            "sections": config_edit.catalog(current, include_advanced=admin),
             "effects": config_edit.EFFECT_TEXT}
 
 
@@ -894,7 +990,8 @@ async def save_settings(request: Request):
     try:
         result = config_edit.apply_changes(
             _settings_config_path(), body.get("changes") or {}, phrase=body.get("phrase"),
-            actor=actor, lock_busy=_settings_lock_busy, db=get_db(), now_iso=now_iso)
+            actor=actor, lock_busy=_settings_lock_busy, db=get_db(), now_iso=now_iso,
+            allow_advanced=_is_admin(request))
     except config_edit.ConfigEditError as e:
         return JSONResponse({"detail": str(e), **e.extra}, status_code=e.status)
     if result.changed:
@@ -915,7 +1012,8 @@ async def validate_settings(request: Request):
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
-    return config_edit.validate_changes(_settings_config_path(), body.get("changes") or {})
+    return config_edit.validate_changes(_settings_config_path(), body.get("changes") or {},
+                                        allow_advanced=_is_admin(request))
 
 
 @app.get("/api/rollover")

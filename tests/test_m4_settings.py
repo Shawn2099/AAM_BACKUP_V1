@@ -183,7 +183,9 @@ class TestApply:
 @pytest.fixture
 def rig(monkeypatch, tmp_path, db):
     cfg_file = _write_config(tmp_path)
-    cfg = SimpleNamespace(dashboard=SimpleNamespace(auth_enabled=True, api_key="secret-key"))
+    cfg = SimpleNamespace(dashboard=SimpleNamespace(
+        auth_enabled=True, api_key="secret-key", admin_password_hash="",
+        admin_session_minutes=30, admin_password_min_length=10))
     monkeypatch.setattr(ui, "_cfg", lambda: cfg)
     monkeypatch.setattr(ui, "get_db", lambda: db)
     monkeypatch.setattr(ui, "_check_rate_limit", lambda key, max_attempts: True)
@@ -209,6 +211,8 @@ class TestEndpoints:
         assert hist[0]["key"] == "budget.lan_max_hours"
 
     def test_errors_and_phrase_are_returned_as_json(self, rig):
+        assert rig.client.post("/api/admin/login", headers=KEY,
+                               json={"password": "secret-key"}).status_code == 200
         r = rig.client.post("/api/settings", headers=KEY,
                             json={"changes": {"wol.wake_timeout_seconds": 5}})
         assert r.status_code == 400 and r.json()["errors"][0]["key"] == "wol.wake_timeout_seconds"

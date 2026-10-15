@@ -10,8 +10,12 @@ details.section { background:#1f2937; border-radius:0.5rem; margin-bottom:0.75re
 details.section > summary { cursor:pointer; padding:0.6rem 0; font-weight:600; }
 .field { display:grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1.2fr); gap:0.75rem;
          padding:0.6rem 0; border-top:1px solid #374151; }
-.field .name { font-family: ui-monospace, monospace; font-size:0.8rem; color:#e5e7eb; word-break:break-all; }
-.field .desc { font-size:0.75rem; color:#9ca3af; margin-top:0.25rem; }
+.field .label { font-size:0.9rem; font-weight:600; color:#f3f4f6; }
+.field .name { font-family: ui-monospace, monospace; font-size:0.65rem; color:#4b5563; word-break:break-all; margin-top:0.2rem; }
+.field .tech { font-size:0.7rem; color:#6b7280; margin-top:0.2rem; }
+.overview { background:#111827; border:1px solid #374151; border-radius:0.5rem; padding:0.75rem 1rem;
+            margin:0.5rem 0 0.75rem; font-size:0.85rem; }
+.field .desc { font-size:0.8rem; color:#d1d5db; margin-top:0.25rem; }
 .field .meta { font-size:0.7rem; color:#6b7280; margin-top:0.25rem; }
 .field input[type=text], .field input[type=number], .field input[type=password], .field select, .field textarea {
     width:100%; background:#111827; color:#e5e7eb; border:1px solid #4b5563; border-radius:0.375rem;
@@ -46,6 +50,14 @@ details.section > summary { cursor:pointer; padding:0.6rem 0; font-weight:600; }
 #rollover-panel { display:none; background:#1f2937; border-radius:0.5rem; padding:1.25rem; }
 #rollover-panel .row { margin:0.35rem 0; font-size:0.9rem; }
 #rollover-panel .k { color:#9ca3af; display:inline-block; min-width:12rem; }
+.with-unit { display:flex; align-items:center; gap:0.5rem; }
+.with-unit input { flex:1; }
+.with-unit .unit { color:#9ca3af; font-size:0.8rem; white-space:nowrap; min-width:5.5rem; }
+#admin-login, #admin-bar { display:none; background:#1f2937; border-radius:0.5rem; padding:1rem 1.25rem;
+                         margin-bottom:1rem; font-size:0.875rem; }
+#admin-login input, #admin-pw input { background:#111827; color:#e5e7eb; border:1px solid #4b5563;
+                         border-radius:0.375rem; padding:0.4rem 0.5rem; font-size:0.85rem; margin:0.25rem 0.4rem 0.25rem 0; }
+#admin-pw { display:none; margin-top:0.75rem; }
 #readonly-banner { display:none; background:#78350f; color:#fde68a; padding:0.75rem 1rem;
                    border-radius:0.5rem; margin-bottom:1rem; font-size:0.875rem; }
 </style>
@@ -64,6 +76,24 @@ details.section > summary { cursor:pointer; padding:0.6rem 0; font-weight:600; }
 <div id="advanced-banner"><strong>Advanced settings - for the support team.</strong> Timeouts, retries,
 guards, watchdog and log tuning. The defaults are tested values; change them only when you know why.
 Every change is still checked like a service start before it is saved.</div>
+<div id="admin-login">
+    <strong>Advanced settings need the admin login.</strong>
+    <p style="color:#9ca3af;margin:0.35rem 0 0.6rem">Until it is changed, the admin password is the same as the
+       dashboard key. Change it inside Advanced once you are signed in.</p>
+    <form onsubmit="adminLogin(event)"><input type="password" id="admin-password" autocomplete="current-password"
+       placeholder="Admin password"><button class="btn-trigger" type="submit">Open Advanced</button></form>
+</div>
+<div id="admin-bar">
+    <span id="admin-bar-text">Advanced is unlocked.</span>
+    <button class="btn-small" onclick="adminLogout()">Lock Advanced</button>
+    <button class="btn-small" onclick="document.getElementById('admin-pw').style.display='block'">Change admin password</button>
+    <form id="admin-pw" onsubmit="changeAdminPassword(event)">
+        <input type="password" id="pw-current" autocomplete="current-password" placeholder="Current admin password">
+        <input type="password" id="pw-new" autocomplete="new-password" placeholder="New password">
+        <input type="password" id="pw-confirm" autocomplete="new-password" placeholder="New password again">
+        <button class="btn-trigger" type="submit">Change password</button>
+    </form>
+</div>
 <div id="sections"><p style="color:#9ca3af">Loading settings...</p></div>
 <div id="rollover-panel">
     <div class="row"><span class="k">Backups are using</span><strong id="ro-configured">...</strong></div>

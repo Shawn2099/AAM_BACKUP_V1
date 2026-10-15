@@ -52,6 +52,7 @@ def load_round_trip(config_path: str):
 
     yaml = YAML()
     yaml.preserve_quotes = True
+    yaml.width = 4096   # never wrap a long value (hash, UNC path) onto the next line
     with open(config_path, encoding="utf-8") as f:
         return yaml, yaml.load(f)
 

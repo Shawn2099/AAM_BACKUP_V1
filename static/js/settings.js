@@ -21,6 +21,8 @@ let validateTimer = null;
 let validateSeq = 0;
 let scheduleTz = TZ;
 let currentTab = 'basic';
+let isAdmin = false;
+let adminMinutes = 30;
 
 function esc(text) {
     return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -107,8 +109,43 @@ function syncSchedule(f) {
     const when = { daily: 'every day', weekly: 'every ' + (DOW.find(d => d[0] === p.dow) || ['', p.dow])[1],
                    monthly: 'on day ' + p.dom + ' of every month' }[p.freq];
     document.getElementById('human-' + id).textContent = p.freq === 'custom'
-        ? 'Advanced cron expression: ' + values[f.key]
-        : 'Runs ' + when + ' at ' + p.time + ' ' + tzLabel() + '  (cron: ' + values[f.key] + ')';
+        ? 'Custom timing (cron): ' + values[f.key]
+        : 'Runs ' + when + ' at ' + p.time + ' ' + tzLabel() + '.';
+    renderOverview();
+}
+
+// ── "how the night looks" - built from the timetable + maximum running times ──
+const OVERVIEW_JOBS = [
+    ['schedule.lan_cron', 'LAN backup (to the NAS)', 'budget.lan_max_hours'],
+    ['schedule.cloud_cron', 'Cloud backup', 'budget.cloud_max_hours'],
+    ['schedule.audit_cron', 'Weekly safety check', 'budget.audit_max_hours'],
+    ['schedule.weekly_cron', 'Weekly report email', null],
+    ['schedule.monthly_cron', 'Monthly report email', null],
+];
+
+function renderOverview() {
+    const box = document.getElementById('overview');
+    if (!box) return;
+    const items = OVERVIEW_JOBS.filter(j => fields[j[0]]).map(j => {
+        const p = parseCron(values[j[0]]);
+        if (p.freq === 'custom') return { mins: 9999, html: '<b>' + esc(j[1]) + '</b>: custom timing' };
+        const [h, m] = p.time.split(':').map(Number);
+        const when = { daily: 'every day', weekly: 'every ' + (DOW.find(d => d[0] === p.dow) || ['', p.dow])[1],
+                       monthly: 'on day ' + p.dom + ' of the month' }[p.freq];
+        let until = '';
+        const hours = j[2] ? Number(values[j[2]]) : null;
+        if (hours) {
+            const end = (h * 60 + m + Math.round(hours * 60)) % (24 * 60);
+            until = ' &rarr; finished by ' + String(Math.floor(end / 60)).padStart(2, '0') + ':' +
+                String(end % 60).padStart(2, '0') + ' at the latest (' + hours + ' h)';
+        }
+        return { mins: h * 60 + m, html: '<b>' + p.time + '</b> ' + esc(j[1]) + ' <span style="color:#9ca3af">(' +
+            when + ')</span>' + until };
+    }).sort((a, b) => a.mins - b.mins);
+    box.innerHTML = '<div style="font-weight:600;margin-bottom:0.4rem">Your timetable at a glance (' + esc(tzLabel()) +
+        ')</div>' + items.map(i => '<div style="margin:0.15rem 0">' + i.html + '</div>').join('') +
+        '<div style="color:#9ca3af;font-size:0.75rem;margin-top:0.4rem">Only one backup runs at a time. ' +
+        'If two would overlap, the page shows it in red and will not save.</div>';
 }
 
 // ── lists: one entry per box, + to add, x to remove ─────────────────────────
@@ -155,6 +192,23 @@ function syncList(key) {
     onEdit();
 }
 
+// ── fixed units (owner: never typed into the value) ─────────────────────────
+function withUnit(inputHtml, unit) {
+    return unit ? '<div class="with-unit">' + inputHtml + '<span class="unit">' + esc(unit) + '</span></div>' : inputHtml;
+}
+
+// rclone size strings ("10M", "500k", "1G") <-> a number of MB
+function sizeToMb(v) {
+    const m = /^(\d+(?:\.\d+)?)([kMG])$/.exec(String(v || '').trim());
+    if (!m) return '';
+    const n = Number(m[1]);
+    return m[2] === 'k' ? +(n / 1024).toFixed(3) : (m[2] === 'G' ? n * 1024 : n);
+}
+
+function mbToSize(n) {
+    return Number.isInteger(n) ? n + 'M' : Math.round(n * 1024) + 'k';
+}
+
 // ── one editor per field ─────────────────────────────────────────────────────
 function editorHtml(f) {
     const id = fid(f.key), dis = disabledAttr(f);
@@ -172,10 +226,14 @@ function editorHtml(f) {
         return '<input type="password" id="in-' + id + '" autocomplete="new-password" placeholder="' +
             (f.is_set ? '(set - leave empty to keep it)' : '(not set)') + '"' + dis + '>';
     }
+    if (f.widget === 'size_mb') {
+        return withUnit('<input type="number" step="any" min="0.01" id="in-' + id + '" value="' +
+            esc(sizeToMb(f.value)) + '"' + dis + '>', f.unit);
+    }
     if (f.type === 'int' || f.type === 'float') {
         const b = (f.ge != null ? ' min="' + f.ge + '"' : '') + (f.le != null ? ' max="' + f.le + '"' : '');
-        return '<input type="number" step="' + (f.type === 'int' ? '1' : 'any') + '" id="in-' + id + '"' + b +
-            ' value="' + esc(f.value == null ? '' : f.value) + '"' + (f.optional ? ' placeholder="empty = automatic"' : '') + dis + '>';
+        return withUnit('<input type="number" step="' + (f.type === 'int' ? '1' : 'any') + '" id="in-' + id + '"' + b +
+            ' value="' + esc(f.value == null ? '' : f.value) + '"' + (f.optional ? ' placeholder="empty = automatic"' : '') + dis + '>', f.unit);
     }
     return '<input type="' + (f.widget === 'email' ? 'email' : 'text') + '" id="in-' + id + '" value="' + esc(f.value) + '"' + dis + '>';
 }
@@ -189,6 +247,17 @@ function readSimple(f) {
         return;
     }
     if (f.secret) { values[f.key] = el.value; return; }
+    if (f.widget === 'size_mb') {
+        const n = Number(el.value);
+        if (el.value.trim() === '' || isNaN(n) || n <= 0) {
+            values[f.key] = el.value;
+            localErrors[f.key] = 'Enter a number of ' + f.unit + ' greater than 0.';
+            return;
+        }
+        values[f.key] = mbToSize(n);
+        if (values[f.key] === mbToSize(Number(sizeToMb(original[f.key])))) values[f.key] = original[f.key];
+        return;
+    }
     if (f.type === 'int' || f.type === 'float') {
         const raw = el.value.trim();
         if (raw === '') {
@@ -214,21 +283,27 @@ function render() {
     document.getElementById('sections').innerHTML = catalog.map((s, i) => {
         const rows = s.fields.map(f => {
             const badges = [];
-            if (f.locked) badges.push('<span class="tag badge-locked">only in config.yaml on the server</span>');
-            if (f.risky) badges.push('<span class="tag badge-risky">RISKY - asks for confirmation</span>');
-            if (f.effect === 'agent_restart' || f.effect === 'watchdog_restart') badges.push('<span class="tag badge-restart">needs a service restart</span>');
+            if (f.locked) badges.push('<span class="tag badge-locked">changed only on the server</span>');
+            if (f.risky) badges.push('<span class="tag badge-risky">important - asks you to confirm</span>');
+            if (f.effect === 'agent_restart' || f.effect === 'watchdog_restart') badges.push('<span class="tag badge-restart">needs a restart</span>');
             const meta = [];
-            if (f.ge != null || f.le != null) meta.push('allowed ' + (f.ge != null ? f.ge : '...') + ' to ' + (f.le != null ? f.le : '...'));
+            if (f.ge != null || f.le != null) meta.push('allowed ' + (f.ge != null ? f.ge : '...') + ' to ' + (f.le != null ? f.le : '...') + (f.unit ? ' ' + f.unit : ''));
             if (!f.secret && f.default != null && f.default !== '' && f.widget !== 'schedule') {
-                meta.push('default ' + (Array.isArray(f.default) ? (f.default.join(', ') || 'none') : f.default));
+                meta.push('normal value ' + (Array.isArray(f.default) ? (f.default.join(', ') || 'none') : f.default) + (f.unit && f.widget !== 'size_mb' ? ' ' + f.unit : ''));
             }
             meta.push(f.effect_text);
-            return '<div class="field" data-level="' + f.level + '" id="row-' + fid(f.key) + '"><div><div class="name">' + esc(f.key) + ' ' + badges.join(' ') +
-                '</div><div class="desc">' + esc(f.description) + '</div><div class="meta">' + esc(meta.join(' · ')) +
-                '</div></div><div>' + editorHtml(f) + '<div class="err" id="err-' + fid(f.key) + '"></div></div></div>';
+            const technical = f.level === 'advanced' && f.description && f.description !== f.help
+                ? '<div class="tech">' + esc(f.description) + '</div>' : '';
+            return '<div class="field" data-level="' + f.level + '" id="row-' + fid(f.key) + '"><div>' +
+                '<div class="label">' + esc(f.label) + ' ' + badges.join(' ') + '</div>' +
+                (f.help ? '<div class="desc">' + esc(f.help) + '</div>' : '') + technical +
+                '<div class="meta">' + esc(meta.join(' · ')) + '</div><div class="name">' + esc(f.key) + '</div>' +
+                '</div><div>' + editorHtml(f) + '<div class="err" id="err-' + fid(f.key) + '"></div></div></div>';
         }).join('');
+        const overview = s.name === 'schedule' ? '<div id="overview" class="overview"></div>' : '';
         return '<details class="section" open><summary>' + esc(s.title) +
-            ' <span class="count" style="color:#6b7280;font-weight:400;font-size:0.8rem"></span></summary>' + rows + '</details>';
+            ' <span class="count" style="color:#6b7280;font-weight:400;font-size:0.8rem"></span></summary>' +
+            overview + rows + '</details>';
     }).join('');
 
     Object.values(fields).forEach(f => {
@@ -299,11 +374,15 @@ function showTab(tab) {
     currentTab = tab;
     ['basic', 'advanced', 'rollover'].forEach(t =>
         document.getElementById('tab-' + t).classList.toggle('active', t === tab));
-    const settingsTab = tab !== 'rollover';
+    const locked = tab === 'advanced' && !isAdmin;       // Advanced needs its own login
+    const settingsTab = tab !== 'rollover' && !locked;
     document.getElementById('sections').style.display = settingsTab ? '' : 'none';
     document.getElementById('savebar').style.display = settingsTab ? '' : 'none';
-    document.getElementById('rollover-panel').style.display = settingsTab ? 'none' : 'block';
-    document.getElementById('advanced-banner').style.display = tab === 'advanced' ? 'block' : 'none';
+    document.getElementById('rollover-panel').style.display = tab === 'rollover' ? 'block' : 'none';
+    document.getElementById('advanced-banner').style.display = tab === 'advanced' && isAdmin ? 'block' : 'none';
+    document.getElementById('admin-login').style.display = locked ? 'block' : 'none';
+    document.getElementById('admin-bar').style.display = tab === 'advanced' && isAdmin ? 'block' : 'none';
+    if (locked) { document.getElementById('admin-password').focus(); return; }
     if (settingsTab) applyTab(); else loadRollover();
 }
 
@@ -362,6 +441,7 @@ async function runRollover() {
 
 function onEdit() {
     collect();
+    renderOverview();
     const c = changes();
     document.querySelectorAll('.field.changed').forEach(el => el.classList.remove('changed'));
     Object.keys(c).forEach(k => { const r = document.getElementById('row-' + fid(k)); if (r) r.classList.add('changed'); });
@@ -455,6 +535,7 @@ async function loadSettings() {
         return;
     }
     authEnabled = !!data.auth_enabled;
+    isAdmin = !!data.admin;
     document.getElementById('readonly-banner').style.display = authEnabled ? 'none' : 'block';
     catalog = data.sections;
     fields = {}; original = {}; values = {}; localErrors = {}; serverOk = true;
@@ -463,7 +544,7 @@ async function loadSettings() {
     }));
     scheduleTz = (fields['schedule.timezone'] || {}).value || TZ;
     render();
-    applyTab();
+    showTab(currentTab);
     // the picker writes crons in one normal form ("00 21" -> "0 21"): that is
     // the baseline, so an untouched schedule never counts as a change
     Object.values(fields).forEach(f => { if (f.widget === 'schedule') original[f.key] = values[f.key]; });
@@ -483,6 +564,42 @@ async function loadHistory() {
 }
 
 function discardChanges() { loadSettings(); }
+
+// ── Advanced login ───────────────────────────────────────────────────────────
+async function adminLogin(ev) {
+    ev.preventDefault();
+    const pw = document.getElementById('admin-password');
+    const resp = await fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw.value }) });
+    const data = await resp.json().catch(() => ({}));
+    pw.value = '';
+    if (!resp.ok) { showToast(data.detail || 'Sign-in failed.', 'error'); return; }
+    adminMinutes = data.session_minutes || adminMinutes;
+    document.getElementById('admin-bar-text').textContent =
+        'Advanced is unlocked (locks itself after ' + adminMinutes + ' minutes).';
+    await loadSettings();
+    showTab('advanced');
+}
+
+async function adminLogout() {
+    await fetch('/api/admin/logout', { method: 'POST' });
+    await loadSettings();
+    showTab('advanced');
+    showToast('Advanced is locked.', 'info');
+}
+
+async function changeAdminPassword(ev) {
+    ev.preventDefault();
+    const body = { current: document.getElementById('pw-current').value,
+                   new: document.getElementById('pw-new').value,
+                   confirm: document.getElementById('pw-confirm').value };
+    const resp = await fetch('/api/admin/password', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body) });
+    const data = await resp.json().catch(() => ({}));
+    ['pw-current', 'pw-new', 'pw-confirm'].forEach(id => { document.getElementById(id).value = ''; });
+    showToast(data.detail || ('HTTP ' + resp.status), resp.ok ? 'success' : 'error');
+    if (resp.ok) { document.getElementById('admin-pw').style.display = 'none'; loadHistory(); }
+}
 
 loadSettings();
 loadHistory();

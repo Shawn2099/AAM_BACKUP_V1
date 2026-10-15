@@ -755,6 +755,25 @@ class DashboardConfig(StrictModel):
         default=7, ge=1, le=90,
         description="Banner + /health turn red when an alert or report email failed to be "
                     "delivered within this many days.")
+    # Owner 2026-10-15: Advanced settings need a second, separate login.
+    admin_password_hash: str = Field(
+        default="",
+        description="Advanced-settings login. Empty = the same as dashboard.api_key. Set it "
+                    "ONLY via 'Change admin password' in Advanced (stores a salted PBKDF2 hash, "
+                    "never the password).")
+    admin_session_minutes: int = Field(
+        default=30, ge=5, le=480,
+        description="The Advanced-settings login expires after this many minutes")
+    admin_password_min_length: int = Field(
+        default=10, ge=8, le=128, description="Minimum length of a new admin password")
+
+    @field_validator("admin_password_hash")
+    @classmethod
+    def _valid_admin_hash(cls, v: str) -> str:
+        if v and not v.startswith("pbkdf2_sha256$"):
+            raise ValueError("admin_password_hash must be empty or a hash written by the "
+                             "dashboard's 'Change admin password' (never a plain password)")
+        return v
 
     @model_validator(mode="after")
     def api_key_required_when_auth_enabled(self) -> "DashboardConfig":
