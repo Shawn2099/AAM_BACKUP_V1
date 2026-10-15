@@ -150,12 +150,12 @@ Owner: the trial box is ours (fresh install OK, old config only as reference; me
 - Box `C:\AAMBackup` = fresh clone of `mvp-hardening` (now `74a905c`); old install kept as
   `C:\AAMBackup_v113`; its config + local edits saved in the session scratchpad (`box_ref/`, NOT in git
   - secrets). Box config: schedule fixed (cloud 02:00, monthly 08:30), LAN target
-  `\10.10.151.53am_nas\FY26-27` (= THIS PC, share `aam_nas` = `C:\AAM_NAS`, folder FY26-27 created),
+  `\\10.10.151.53\aam_nas\FY26-27` (= THIS PC, share `aam_nas` = `C:\AAM_NAS`, folder FY26-27 created),
   `lan.shutdown_after_backup: false`, `wol.enabled: false`. Old config backups next to config.yaml.
 - Account `aambackup` exists on BOTH machines (same password; owner chose it and typed it in chat - it
   equals the box Administrator password -> **owner should change both after testing**, then re-run
   04/06). Box: member of Backup Operators. Services installed by `06_install_services.ps1
-  -ServiceAccount .ambackup -PasswordFile ...`; **AamBackupAgent runs as .ambackup (Running)**,
+  -ServiceAccount .\aambackup -PasswordFile ...`; **AamBackupAgent runs as .\aambackup (Running)**,
   server + watchdog LocalSystem. A readiness-only re-run was in flight when paused - re-run it to
   confirm all green except "Update Active Hours" (owner decision pending).
 - Done on the box with the new code: readiness (all green except Active Hours); cloud backup
