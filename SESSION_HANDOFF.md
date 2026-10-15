@@ -46,7 +46,7 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M4 Operations | **done** (4.1–4.6) — M4 lab 238/1 → W10 stale expectation fixed → **0 red** |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check (2026-10-15, after 4.7 settings page):** `tests/` **1800 passed / 0 failed / 19 skipped**
+**Test status at last check (2026-10-15, after 4.7 settings tabs + FY rollover button):** `tests/` **1832 passed / 0 failed / 19 skipped**
 **M4 milestone audit lab (2026-10-15): 238 passed / 1 failed / 2 skipped (20 min)**; the 1 red was
 W10 `deployment_schedules_fire_when_intended` expecting the old monthly 08:00 / audit 03:00 -
 updated to 08:30 / 10:00, green. W16 schedule collision is green now (local config fixed).
@@ -96,7 +96,11 @@ config.yaml `monthly_cron` changed - DEC-7).
    installer + readiness probe as the service account; 4.6 config.example.yaml complete - plan §13).
    **4.7 settings page DONE (DEC-9, owner 2026-10-15)**: `/settings` on the dashboard edits every key
    except lock-out keys (risky ones need a typed phrase); E2E-tested on a real uvicorn server; the
-   owner has not looked at it in a browser yet - do that first in M5.
+   Owner reviewed it in a demo 2026-10-15 -> feedback built: one box per email (+/x), email
+   validation server-side, schedules as day/time picker (IST), live server validation (Save only
+   when valid), every client-facing time in IST, tabs Settings (29 basic keys) / Advanced /
+   FY rollover ("Run FY rollover now" = the normal check, only when due; blocked -> approval card;
+   clock behind never forceable). **Open owner question:** separate admin key for Advanced?
    **NEXT: M5 acceptance** - 5.1 full suite + audit lab green + diff review; 5.2 on-box WP17
    checklist (needs owner OK + the service account); 5.3 seven truthful nights.
    Still deferred (plan §13 M3 note): tool_runner migration of cloud_verify / cloud_reporter /

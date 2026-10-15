@@ -129,6 +129,31 @@ def classify_rollover(configured_fy: str, computed_fy: str) -> str:
     return JUMP if diff < 50 else CLOCK_BEHIND
 
 
+def manual_run_state(configured: str | None, current: str) -> dict:
+    """What the dashboard's "Run FY rollover now" button may do (owner 2026-10-15).
+
+    The button never bypasses a rule: it starts the same rollover check the
+    06:00 schedule runs. It is offered only when a rollover is due; a blocked
+    rollover is forced only through its approval (typed phrase); a clock that
+    is behind is never forceable - that would roll the backups backwards.
+    """
+    if configured is None:
+        return {"kind": None, "can_run": False,
+                "message": "The source / NAS folders do not end in an FY folder (e.g. FY26-27), "
+                           "so there is no automatic FY rollover."}
+    kind = classify_rollover(configured, current)
+    messages = {
+        NONE: f"Not due: the backups already use {configured}, which is the current FY.",
+        FORWARD: f"Due: the backups still use {configured}, but the current FY is {current}. "
+                 "Running it does the final backup of the old FY, then switches to the new one.",
+        JUMP: f"Due, but unusual: {configured} to {current} skips at least one FY. Running it "
+              "will stop and ask for your approval on the dashboard.",
+        CLOCK_BEHIND: f"Refused: the server clock says {current}, which is EARLIER than {configured}. "
+                      "Correct the server date/time - a rollover never goes backwards.",
+    }
+    return {"kind": kind, "can_run": kind in (FORWARD, JUMP), "message": messages[kind]}
+
+
 def effective_fy_prefix(source_drive: str) -> str:
     """The FY the backups use: the source folder's FY leaf when it is one,
     else the calendar FY. Shared by the cloud prefix and the dashboard so the

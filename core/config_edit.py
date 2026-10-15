@@ -74,6 +74,22 @@ _SECTION_TITLES = {
 
 _WRITE_LOCK = threading.Lock()
 
+# Owner 2026-10-15: the settings page opens on these - what a client may
+# reasonably change. Everything else is under "Advanced" (support team).
+BASIC_KEYS = frozenset({
+    "firm_name",
+    "schedule.lan_cron", "schedule.cloud_cron", "schedule.weekly_cron",
+    "schedule.monthly_cron", "schedule.audit_cron",
+    "notifications.recipients", "notifications.sender", "notifications.smtp_host",
+    "notifications.smtp_port", "notifications.smtp_username", "notifications.smtp_password",
+    "notifications.smtp_security", "notifications.send_on_failure",
+    "notifications.weekly_enabled", "notifications.monthly_enabled",
+    "lan.enabled", "cloud.enabled", "paths.source_drive", "paths.lan_destination",
+    "lan.shutdown_after_backup", "wol.enabled", "wol.mac_address", "wol.server_ip",
+    "budget.lan_max_hours", "budget.cloud_max_hours", "budget.audit_max_hours",
+    "cloud.bandwidth_limit", "dashboard.public_url",
+})
+
 # Values the models only accept from a fixed set (enforced by a validator, so
 # the catalog cannot read them from a pattern): shown as a drop-down.
 _FIXED_CHOICES = {
@@ -167,6 +183,7 @@ def _field_entry(key: str, info, value) -> dict:
         "risky": is_risky(key), "secret": secret, "locked": key in LOCKED,
         "effect": effect_of(key), "effect_text": EFFECT_TEXT[effect_of(key)],
         "widget": _widget(key, kind),
+        "level": "basic" if key in BASIC_KEYS else "advanced",
         **_bounds_and_choices(info),
     }
     if key in _FIXED_CHOICES:

@@ -149,3 +149,104 @@ class TestBrowserCode:
         fn = _js_function(ROOT / "static" / "js" / "dashboard.js", "formatFullDate")
         out = _node(fn + "\nconsole.log(formatFullDate('2026-10-15T15:35:00Z'));")
         assert out == "15 Oct 2026 at 9:05 PM IST"
+
+
+# ── owner feedback 2: basic / advanced split + "Run FY rollover now" ─────────
+
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import AsyncMock  # noqa: E402
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+import ui  # noqa: E402
+from core import fy_rollover  # noqa: E402
+from core.manifest import ManifestDB  # noqa: E402
+
+
+def test_basic_tab_holds_what_a_client_changes_the_rest_is_advanced(tmp_path):
+    f = {x["key"]: x for s in ce.catalog(load_config(str(_write_config(tmp_path))))
+         for x in s["fields"]}
+    for key in ("notifications.recipients", "schedule.lan_cron", "budget.cloud_max_hours",
+                "paths.lan_destination", "wol.mac_address", "firm_name"):
+        assert f[key]["level"] == "basic", key
+    for key in ("guards.max_delete_percent", "watchdog.failure_threshold", "cloud.verify_timeout_seconds",
+                "maintenance.sqlite_synchronous", "schedule.timezone", "dashboard.api_key"):
+        assert f[key]["level"] == "advanced", key
+    assert all(k in f for k in ce.BASIC_KEYS)        # no typo in the basic list
+
+
+class TestManualRollover:
+    @pytest.mark.parametrize("configured,current,kind,can_run", [
+        ("FY26-27", "FY26-27", fy_rollover.NONE, False),
+        ("FY26-27", "FY27-28", fy_rollover.FORWARD, True),
+        ("FY25-26", "FY27-28", fy_rollover.JUMP, True),          # runs, then asks for approval
+        ("FY27-28", "FY26-27", fy_rollover.CLOCK_BEHIND, False),  # never forceable
+    ])
+    def test_rules(self, configured, current, kind, can_run):
+        s = fy_rollover.manual_run_state(configured, current)
+        assert (s["kind"], s["can_run"]) == (kind, can_run)
+
+    def test_no_fy_folder_means_no_rollover(self):
+        assert fy_rollover.manual_run_state(None, "FY26-27")["can_run"] is False
+
+
+@pytest.fixture
+def rollover_rig(monkeypatch, tmp_path):
+    db = ManifestDB(str(tmp_path / "m.db"))
+    cfg = SimpleNamespace(
+        dashboard=SimpleNamespace(auth_enabled=True, api_key="k"),
+        paths=SimpleNamespace(source_drive="E:\DATA\FY26-27",
+                              lan_destination="\\nas\share\FY26-27"))
+    calls = []
+
+    async def fake_arun_deployment(name, parameters=None, timeout=None):
+        calls.append(name)
+        return SimpleNamespace(id="fr-1", state=None)
+
+    monkeypatch.setattr(ui, "_cfg", lambda: cfg)
+    monkeypatch.setattr(ui, "get_db", lambda: db)
+    monkeypatch.setattr(ui, "_check_rate_limit", lambda key, max_attempts: True)
+    monkeypatch.setattr(ui, "_is_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(ui, "arun_deployment", fake_arun_deployment)
+    yield SimpleNamespace(client=TestClient(ui.app, raise_server_exceptions=False), calls=calls,
+                          db=db, monkeypatch=monkeypatch)
+    db.close()
+
+
+H = {"X-API-Key": "k"}
+
+
+class TestRolloverEndpoints:
+    def test_not_due_is_refused(self, rollover_rig):
+        rollover_rig.monkeypatch.setattr(ui, "get_fy_prefix", lambda: "FY26-27")
+        assert rollover_rig.client.get("/api/rollover", headers=H).json()["can_run"] is False
+        r = rollover_rig.client.post("/api/rollover/run?wait=false", headers=H)
+        assert r.status_code == 409 and "Not due" in r.json()["detail"]
+        assert rollover_rig.calls == []
+
+    def test_due_starts_the_normal_rollover_check(self, rollover_rig):
+        rollover_rig.monkeypatch.setattr(ui, "get_fy_prefix", lambda: "FY27-28")
+        status = rollover_rig.client.get("/api/rollover", headers=H).json()
+        assert status["can_run"] is True and status["configured_fy"] == "FY26-27"
+        r = rollover_rig.client.post("/api/rollover/run?wait=false", headers=H)
+        assert r.status_code == 202 and r.json()["status"] == "running", r.text   # started
+        assert rollover_rig.calls == ["rollover-check/rollover-check"]
+
+    def test_clock_behind_is_never_started(self, rollover_rig):
+        rollover_rig.monkeypatch.setattr(ui, "get_fy_prefix", lambda: "FY25-26")
+        r = rollover_rig.client.post("/api/rollover/run?wait=false", headers=H)
+        assert r.status_code == 409 and "backwards" in r.json()["detail"]
+
+    def test_already_running_is_refused(self, rollover_rig):
+        rollover_rig.monkeypatch.setattr(ui, "get_fy_prefix", lambda: "FY27-28")
+        rollover_rig.monkeypatch.setattr(ui, "_is_running", AsyncMock(return_value=True))
+        r = rollover_rig.client.post("/api/rollover/run?wait=false", headers=H)
+        assert r.status_code == 409 and rollover_rig.calls == []
+
+    def test_last_attempt_is_shown_in_ist(self, rollover_rig):
+        rollover_rig.monkeypatch.setattr(ui, "get_fy_prefix", lambda: "FY27-28")
+        rollover_rig.db.insert_run({"run_id": "r1", "mode": "rollover",
+                                    "started_at": "2027-04-01T00:30:00+00:00",
+                                    "status": "ROLLOVER_BLOCKED", "error_message": "final LAN backup failed"})
+        last = rollover_rig.client.get("/api/rollover", headers=H).json()["last_attempt"]
+        assert last["when"] == "2027-04-01 06:00 IST" and "final LAN backup failed" in last["error"]

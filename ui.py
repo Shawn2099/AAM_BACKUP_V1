@@ -918,6 +918,56 @@ async def validate_settings(request: Request):
     return config_edit.validate_changes(_settings_config_path(), body.get("changes") or {})
 
 
+@app.get("/api/rollover")
+async def rollover_status(request: Request):
+    """FY rollover panel: the backups' FY, today's FY, the last attempt, and
+    whether "Run FY rollover now" is allowed (fy_rollover.manual_run_state)."""
+    _require_auth(request)
+    cfg = _cfg()
+    configured = fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
+    current = get_fy_prefix()
+    state = fy_rollover.manual_run_state(configured, current)
+    last = get_db().last_run("rollover")
+    approval = next((a for a in get_db().open_approvals() if a["leg"] == "rollover"), None)
+    return {
+        "configured_fy": configured, "current_fy": current, **state,
+        "last_attempt": None if last is None else {
+            "status": last.get("status"),
+            "label": statuses.label(last.get("status")),
+            "when": format_ist(last.get("started_at")),
+            "error": last.get("error_message"),
+        },
+        "approval_pending": approval is not None,
+        "running": await _is_running("rollover"),
+    }
+
+
+@app.post("/api/rollover/run")
+async def run_rollover_now(request: Request):
+    """Start the normal rollover check now (e.g. the automatic one failed or the
+    server was off on April 1). Same rules as the 06:00 run - never a bypass."""
+    _require_settings_rights(request)
+    cfg = _cfg()
+    configured = fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
+    state = fy_rollover.manual_run_state(configured, get_fy_prefix())
+    if not state["can_run"]:
+        raise HTTPException(status_code=409, detail=state["message"])
+    running = await _is_running("rollover")
+    if running is None:
+        raise HTTPException(status_code=503, detail="Prefect API unavailable - cannot check "
+                                                    "for a running rollover; nothing was started.")
+    if running:
+        raise HTTPException(status_code=409, detail="A rollover check is already running.")
+    try:
+        flow_run = await arun_deployment(name="rollover-check/rollover-check",
+                                         timeout=_trigger_timeout(request))
+    except Exception as e:
+        logger.error(f"Manual rollover run could not be started: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not start the rollover check: {e}") from e
+    logger.warning(f"FY rollover check started manually by {_approval_actor(request)}")
+    return _trigger_result("FY rollover", flow_run, noun="check")
+
+
 @app.get("/api/settings/history")
 def settings_history(request: Request):
     _require_auth(request)

@@ -20,6 +20,7 @@ let authEnabled = false;
 let validateTimer = null;
 let validateSeq = 0;
 let scheduleTz = TZ;
+let currentTab = 'basic';
 
 function esc(text) {
     return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -222,12 +223,12 @@ function render() {
                 meta.push('default ' + (Array.isArray(f.default) ? (f.default.join(', ') || 'none') : f.default));
             }
             meta.push(f.effect_text);
-            return '<div class="field" id="row-' + fid(f.key) + '"><div><div class="name">' + esc(f.key) + ' ' + badges.join(' ') +
+            return '<div class="field" data-level="' + f.level + '" id="row-' + fid(f.key) + '"><div><div class="name">' + esc(f.key) + ' ' + badges.join(' ') +
                 '</div><div class="desc">' + esc(f.description) + '</div><div class="meta">' + esc(meta.join(' · ')) +
                 '</div></div><div>' + editorHtml(f) + '<div class="err" id="err-' + fid(f.key) + '"></div></div></div>';
         }).join('');
-        return '<details class="section"' + (i < 3 ? ' open' : '') + '><summary>' + esc(s.title) +
-            ' <span style="color:#6b7280;font-weight:400;font-size:0.8rem">(' + s.fields.length + ')</span></summary>' + rows + '</details>';
+        return '<details class="section" open><summary>' + esc(s.title) +
+            ' <span class="count" style="color:#6b7280;font-weight:400;font-size:0.8rem"></span></summary>' + rows + '</details>';
     }).join('');
 
     Object.values(fields).forEach(f => {
@@ -287,7 +288,76 @@ function showErrors(errs, general) {
             row.closest('details').open = true;
         }
     });
-    document.getElementById('general-error').textContent = general || '';
+    const elsewhere = Object.keys(errs).filter(k => fields[k] && fields[k].level !== currentTab);
+    const note = elsewhere.length ? 'Also fix on the ' + (currentTab === 'basic' ? 'Advanced' : 'Settings') +
+        ' tab: ' + elsewhere.join(', ') : '';
+    document.getElementById('general-error').textContent = [general, note].filter(x => x).join('\n');
+}
+
+// ── tabs ─────────────────────────────────────────────────────────────────────
+function showTab(tab) {
+    currentTab = tab;
+    ['basic', 'advanced', 'rollover'].forEach(t =>
+        document.getElementById('tab-' + t).classList.toggle('active', t === tab));
+    const settingsTab = tab !== 'rollover';
+    document.getElementById('sections').style.display = settingsTab ? '' : 'none';
+    document.getElementById('savebar').style.display = settingsTab ? '' : 'none';
+    document.getElementById('rollover-panel').style.display = settingsTab ? 'none' : 'block';
+    document.getElementById('advanced-banner').style.display = tab === 'advanced' ? 'block' : 'none';
+    if (settingsTab) applyTab(); else loadRollover();
+}
+
+function applyTab() {
+    document.querySelectorAll('#sections details.section').forEach(sec => {
+        let n = 0;
+        sec.querySelectorAll('.field').forEach(row => {
+            const show = row.dataset.level === currentTab;
+            row.style.display = show ? '' : 'none';
+            if (show) n++;
+        });
+        sec.style.display = n ? '' : 'none';
+        sec.querySelector('.count').textContent = '(' + n + ')';
+        sec.open = currentTab === 'basic';
+    });
+}
+
+// ── FY rollover panel ────────────────────────────────────────────────────────
+let rolloverState = null;
+
+async function loadRollover() {
+    const resp = await fetch('/api/rollover');
+    if (resp.status === 401) { window.location.href = '/login'; return; }
+    const d = await resp.json();
+    if (!resp.ok) { document.getElementById('ro-message').textContent = d.detail || 'Could not load the FY status.'; return; }
+    rolloverState = d;
+    document.getElementById('ro-configured').textContent = d.configured_fy || '(no FY folder)';
+    document.getElementById('ro-current').textContent = d.current_fy;
+    const last = d.last_attempt;
+    document.getElementById('ro-last').textContent = last
+        ? last.label + ' - ' + last.when + (last.error ? ' - ' + last.error : '') : 'never';
+    document.getElementById('ro-message').textContent = d.running
+        ? 'A rollover check is running right now.'
+        : d.message + (d.running === null && d.can_run
+            ? ' (The scheduler (Prefect) is not reachable, so it cannot be started right now.)' : '');
+    document.getElementById('ro-approval').style.display = d.approval_pending ? 'block' : 'none';
+    document.getElementById('btn-rollover').disabled = !authEnabled || !d.can_run || d.running || d.running === null;
+}
+
+async function runRollover() {
+    const d = rolloverState;
+    if (!d) return;
+    if (!window.confirm('Start the FY rollover check now?\n\n' + d.message +
+        '\n\nIt follows the same safety rules as the automatic run.')) return;
+    const btn = document.getElementById('btn-rollover');
+    btn.disabled = true;
+    try {
+        const resp = await fetch('/api/rollover/run?wait=false', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        showToast(data.detail || ('HTTP ' + resp.status), resp.ok ? 'success' : 'error');
+    } catch (e) {
+        showToast('Could not start the rollover check: ' + e, 'error');
+    }
+    loadRollover();
 }
 
 function onEdit() {
@@ -393,6 +463,7 @@ async function loadSettings() {
     }));
     scheduleTz = (fields['schedule.timezone'] || {}).value || TZ;
     render();
+    applyTab();
     // the picker writes crons in one normal form ("00 21" -> "0 21"): that is
     // the baseline, so an untouched schedule never counts as a change
     Object.values(fields).forEach(f => { if (f.widget === 'schedule') original[f.key] = values[f.key]; });
