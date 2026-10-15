@@ -36,7 +36,7 @@ from prefect.deployments import arun_deployment
 from core import approvals, config_edit, fy_rollover, statuses
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
-from core.time_utils import IST, cron_to_human, get_fy_prefix, now_iso
+from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
 
 # In-memory rate limiter for trigger and auth endpoints.
 # Tracks attempts per IP per window. Cleans up expired entries on access.
@@ -523,7 +523,7 @@ async def status(request: Request):
             "mode": r.get("mode", "?"),
             "status": r.get("status", "?"),
             **_status_fields(r),
-            "started_at": (r.get("started_at") or "-")[:19].replace("T", " "),
+            "started_at": format_ist(r.get("started_at")),
             "files": r.get("files_copied", 0),
             "files_failed": r.get("files_failed", 0),
             "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
@@ -553,7 +553,7 @@ async def status(request: Request):
             "enabled": cfg.cloud.enabled,
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
-            "last_run_formatted": (cloud_last_run["started_at"] or "-")[:19].replace("T", " ") if cloud_last_run else "No data",
+            "last_run_formatted": format_ist(cloud_last_run["started_at"]) if cloud_last_run else "No data",
             # Integrity status is a SEPARATE fact from the backup result:
             # VERIFIED only after a passing audit; NOT_VERIFIED when no
             # audit has run; VERIFICATION_FAILED on divergence. A COMPLETE
@@ -565,7 +565,7 @@ async def status(request: Request):
             "enabled": cfg.lan.enabled,
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
-            "last_run_formatted": (lan_last_run["started_at"] or "-")[:19].replace("T", " ") if lan_last_run else "No data",
+            "last_run_formatted": format_ist(lan_last_run["started_at"]) if lan_last_run else "No data",
             "integrity": _integrity_summary(db, "lan"),
         },
         "manifest": {
@@ -905,6 +905,17 @@ async def save_settings(request: Request):
                        f"{', '.join(c['key'] for c in result.changed)} (backup {result.backup})")
     return {"status": "saved" if result.changed else "unchanged", "changed": result.changed,
             "effects": result.effects, "backup": result.backup}
+
+
+@app.post("/api/settings/validate")
+async def validate_settings(request: Request):
+    """Live check while editing: the exact verdict a save would give, nothing written."""
+    _require_auth(request)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    return config_edit.validate_changes(_settings_config_path(), body.get("changes") or {})
 
 
 @app.get("/api/settings/history")

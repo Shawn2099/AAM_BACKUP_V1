@@ -36,6 +36,21 @@ def now_iso() -> str:
     return pendulum.now(IST).isoformat()
 
 
+def format_ist(iso_ts: str | None, fmt: str = "YYYY-MM-DD HH:mm") -> str:
+    """Any ISO timestamp as IST for people to read: "2026-10-15 21:05 IST".
+
+    Every client-facing time (emails, reports, dashboard) goes through this,
+    so a value stored with another offset can never be shown as if it were
+    IST. Unparseable input is returned unchanged; missing input as "-".
+    """
+    if not iso_ts:
+        return "-"
+    try:
+        return pendulum.parse(str(iso_ts)).in_timezone(IST).format(fmt) + " IST"
+    except Exception:  # noqa: BLE001 - display helper: never raise
+        return str(iso_ts)
+
+
 def now_formatted(fmt: str = "YYYY-MM-DD HH:mm z") -> str:
     """Current IST time as a human-readable string with timezone label.
 

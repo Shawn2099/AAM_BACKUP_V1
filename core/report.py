@@ -15,7 +15,7 @@ from loguru import logger
 from core import statuses
 from core.manifest import ManifestDB
 from core.notify import SENT, send_email
-from core.time_utils import now_formatted
+from core.time_utils import format_ist, now_formatted
 from models.config import NotificationConfig
 
 
@@ -53,7 +53,7 @@ def send_failure_alert(
     mode = (run_data.get("mode") or "unknown").upper()
     subject = f"Backup Failure Alert - {firm_name} ({mode})"
 
-    ts_display = f"<p><strong>Time:</strong> {html.escape(timestamp[:19].replace('T', ' '))}</p>" if timestamp else ""
+    ts_display = f"<p><strong>Time:</strong> {html.escape(format_ist(timestamp))}</p>" if timestamp else ""
     status_code = html.escape(str(run_data.get("status") or ""))
     exit_code = run_data.get("exit_code")
     exit_code_display = html.escape(str(exit_code)) if exit_code is not None else "-"
@@ -188,7 +188,7 @@ def generate_report_html(
     rows = ""
     row_count = 0
     for r in runs[:10]:
-        start = (r.get("started_at") or "-")[:19].replace("T", " ")
+        start = format_ist(r.get("started_at"))
         mode = (r.get("mode") or "unknown").upper()
         status = statuses.label(r.get("status"))
         files = r.get("files_copied") or 0
@@ -219,7 +219,7 @@ def generate_report_html(
             if status_text == "AUDIT_INCOMPLETE":
                 # WP7: "could not run" (network/TLS/DNS/process) is never divergence
                 status_text = "AUDIT COULD NOT RUN"
-            checked = (audit.get("ended_at") or audit.get("started_at") or "-")[:19].replace("T", " ")
+            checked = format_ist(audit.get("ended_at") or audit.get("started_at"))
             detail = html.escape(str(audit.get("detail") or "-"))
         integrity_rows += (
             f"<tr><td style=\"padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;width:180px\">"

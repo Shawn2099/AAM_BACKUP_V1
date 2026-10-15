@@ -26,6 +26,10 @@ CONFIG_PATH = str(
 # They are dropped with a WARNING instead of failing the strict
 # (extra="forbid") validation, so an older client config still loads.
 # Anything not listed here is rejected loudly.
+# name@domain.tld, no spaces - deliberately simple (no new dependency); the
+# SMTP server is the final judge, this catches typos before they cost an alert.
+_EMAIL = re.compile(r"[^@\s,;]+@[^@\s,;]+\.[A-Za-z]{2,}")
+
 DEPRECATED_KEYS: dict[str, frozenset[str]] = {
     # F12: no code path ever read it; success emails were removed.
     "notifications": frozenset({"send_on_success"}),
@@ -394,6 +398,27 @@ class NotificationConfig(StrictModel):
         if not 1 <= v <= 65535:
             raise ValueError(f"Invalid SMTP port: {v}")
         return v
+
+    # DEC-9 follow-up: an address typo meant alerts silently went nowhere.
+    @field_validator("sender")
+    @classmethod
+    def valid_sender(cls, v: str) -> str:
+        if v and not _EMAIL.fullmatch(v):
+            raise ValueError(f"'{v}' is not an email address (expected name@domain.tld)")
+        return v
+
+    @field_validator("recipients")
+    @classmethod
+    def valid_recipients(cls, v: list[str]) -> list[str]:
+        cleaned = [r.strip() for r in v]
+        bad = [r for r in cleaned if not _EMAIL.fullmatch(r)]
+        if bad:
+            raise ValueError("not an email address (expected name@domain.tld): "
+                             + ", ".join(repr(b) for b in bad))
+        dupes = sorted({r for r in cleaned if cleaned.count(r) > 1})
+        if dupes:
+            raise ValueError(f"listed more than once: {', '.join(dupes)}")
+        return cleaned
 
     def __repr__(self) -> str:
         return (

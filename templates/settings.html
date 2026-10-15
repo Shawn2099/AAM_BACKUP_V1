@@ -25,6 +25,18 @@ details.section > summary { cursor:pointer; padding:0.6rem 0; font-weight:600; }
 .badge-locked { background:#374151; color:#9ca3af; }
 #savebar { position:sticky; bottom:0; background:#111827; padding:0.75rem 0; border-top:1px solid #374151;
            display:flex; gap:0.75rem; align-items:center; }
+.list-row { display:flex; gap:0.4rem; margin-bottom:0.35rem; }
+.list-row input { flex:1; }
+.field input.bad { border-color:#ef4444; }
+.btn-small { background:#374151; color:#e5e7eb; border:1px solid #4b5563; border-radius:0.375rem;
+             padding:0.25rem 0.6rem; font-size:0.8rem; cursor:pointer; }
+.btn-small:hover { background:#4b5563; }
+.btn-x { color:#fca5a5; font-size:1rem; line-height:1; }
+.sched select, .sched input[type=time] { width:auto; display:inline-block; margin:0.15rem 0.2rem 0.15rem 0; }
+.sched input[type=text] { margin-top:0.25rem; }
+.sched .tz { font-size:0.75rem; color:#9ca3af; }
+.toggle { display:inline-flex; gap:0.4rem; align-items:center; cursor:pointer; font-size:0.85rem; }
+#general-error { color:#fca5a5; font-size:0.8rem; white-space:pre-line; }
 #readonly-banner { display:none; background:#78350f; color:#fde68a; padding:0.75rem 1rem;
                    border-radius:0.5rem; margin-bottom:1rem; font-size:0.875rem; }
 </style>
@@ -33,13 +45,13 @@ details.section > summary { cursor:pointer; padding:0.6rem 0; font-weight:600; }
 <div id="toast-container" style="position: fixed; top: 1.5rem; right: 1.5rem; z-index: 10000; display: flex; flex-direction: column; gap: 0.75rem; max-width: 380px;"></div>
 <div class="container">
 <h1>Settings</h1>
-<p class="subtitle"><a href="/" style="color:#60a5fa">&larr; Dashboard</a> &middot; Changes are checked exactly like a service start before anything is saved; config.yaml is backed up first.</p>
+<p class="subtitle"><a href="/" style="color:#60a5fa">&larr; Dashboard</a> &middot; Every value is checked by the server while you type, exactly like a service start; Save only works when everything is valid. config.yaml is backed up first. All times are IST.</p>
 <div id="readonly-banner">Read-only: saving settings needs dashboard sign-in (set <code>dashboard.auth_enabled: true</code> with an <code>api_key</code> in config.yaml on the server).</div>
 <div id="sections"><p style="color:#9ca3af">Loading settings...</p></div>
 <div id="savebar">
     <button class="btn-trigger" id="btn-save" disabled onclick="saveSettings()">No changes</button>
-    <button class="btn-trigger" id="btn-reset" style="background:#374151" onclick="loadSettings()">Discard changes</button>
-    <span id="save-note" style="font-size:0.8rem;color:#9ca3af"></span>
+    <button class="btn-trigger" id="btn-reset" style="background:#374151" onclick="discardChanges()">Discard changes</button>
+    <div><div id="save-note" style="font-size:0.8rem;color:#9ca3af"></div><div id="general-error"></div></div>
 </div>
 <h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Change history</h2>
 <table>

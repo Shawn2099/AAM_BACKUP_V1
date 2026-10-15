@@ -74,6 +74,27 @@ _SECTION_TITLES = {
 
 _WRITE_LOCK = threading.Lock()
 
+# Values the models only accept from a fixed set (enforced by a validator, so
+# the catalog cannot read them from a pattern): shown as a drop-down.
+_FIXED_CHOICES = {
+    "cloud.storage_class": ["STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE"],
+}
+# How the page should draw a field (the server still validates every value).
+_WIDGETS = {
+    "notifications.recipients": "email_list",
+    "notifications.sender": "email",
+    "audit.network_error_patterns": "text_list",
+    "schedule.timezone": "timezone",
+}
+
+
+def _widget(key: str, kind: str) -> str:
+    if key in _WIDGETS:
+        return _WIDGETS[key]
+    if key.startswith("schedule.") and key.endswith("_cron"):
+        return "schedule"
+    return {"bool": "toggle", "list": "text_list"}.get(kind, kind)
+
 
 class ConfigEditError(RuntimeError):
     """A change request that cannot be applied; `status` is the HTTP code."""
@@ -145,8 +166,14 @@ def _field_entry(key: str, info, value) -> dict:
         else default,
         "risky": is_risky(key), "secret": secret, "locked": key in LOCKED,
         "effect": effect_of(key), "effect_text": EFFECT_TEXT[effect_of(key)],
+        "widget": _widget(key, kind),
         **_bounds_and_choices(info),
     }
+    if key in _FIXED_CHOICES:
+        entry["choices"] = _FIXED_CHOICES[key]
+    if entry["widget"] == "timezone":
+        import zoneinfo
+        entry["choices"] = sorted(zoneinfo.available_timezones())
     if secret:
         entry["value"] = None
         entry["is_set"] = bool(value)
@@ -231,13 +258,10 @@ class SaveResult:
     effects: list[str] = field(default_factory=list)
 
 
-def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor: str,
-                  lock_busy, db=None, now_iso=None) -> SaveResult:
-    """Validate, confirm, back up and write `changes` ({dotted key: value}).
-
-    lock_busy: callable -> str | None; a reason when a backup/rollover holds
-    the backup lock (then nothing is written).
-    """
+def _prepare(config_path: str, changes: dict):
+    """(current config, {key: typed new value}) - raises ConfigEditError when the
+    request is not allowed or the resulting config would not load. Shared by
+    the live check and the save, so both always give the same verdict."""
     from models.config import load_config
 
     if not isinstance(changes, dict) or not changes:
@@ -250,24 +274,48 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
     if locked:
         raise ConfigEditError(403, f"{', '.join(locked)} can only be changed in config.yaml on "
                                    "the server (a mistake here could lock everyone out).")
+    current = load_config(config_path)
+    # an empty secret field means "keep the stored one"
+    wanted = {k: v for k, v in changes.items()
+              if not (k in SECRET and (v is None or v == ""))
+              and not (k not in SECRET and _current_value(current, k) == v)}
+    if not wanted:
+        return current, {}
+    try:
+        candidate = _load_candidate(config_path, wanted)
+    except ValidationError as e:
+        raise ConfigEditError(400, "Not saved - the new settings are not valid.",
+                              errors=_validation_messages(e)) from e
+    # the typed values the services will actually see ("3" -> 3)
+    typed = {k: _current_value(candidate, k) for k in wanted}
+    return current, {k: v for k, v in typed.items()
+                     if k in SECRET or v != _current_value(current, k)}
+
+
+def validate_changes(config_path: str, changes: dict) -> dict:
+    """Live check for the settings page: the same verdict a save would give,
+    without writing anything (and without the lock / phrase steps)."""
+    try:
+        _, typed = _prepare(config_path, changes)
+    except ConfigEditError as e:
+        return {"ok": False, "detail": str(e), "errors": e.extra.get("errors")
+                or [{"key": None, "message": str(e)}]}
+    risky = sorted(k for k in typed if is_risky(k))
+    return {"ok": True, "changes": len(typed), "risky": risky,
+            "confirm_phrase": confirmation_phrase(risky) if risky else None}
+
+
+def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor: str,
+                  lock_busy, db=None, now_iso=None) -> SaveResult:
+    """Validate, confirm, back up and write `changes` ({dotted key: value}).
+
+    lock_busy: callable -> str | None; a reason when a backup/rollover holds
+    the backup lock (then nothing is written).
+    """
+    from models.config import load_config
 
     with _WRITE_LOCK:
-        current = load_config(config_path)
-        # an empty secret field means "keep the stored one"
-        wanted = {k: v for k, v in changes.items()
-                  if not (k in SECRET and (v is None or v == ""))
-                  and not (k not in SECRET and _current_value(current, k) == v)}
-        if not wanted:
-            return SaveResult()
-        try:
-            candidate = _load_candidate(config_path, wanted)
-        except ValidationError as e:
-            raise ConfigEditError(400, "Not saved - the new settings are not valid.",
-                                  errors=_validation_messages(e)) from e
-        # the typed values the services will actually see ("3" -> 3)
-        typed = {k: _current_value(candidate, k) for k in wanted}
-        typed = {k: v for k, v in typed.items()
-                 if k in SECRET or v != _current_value(current, k)}
+        current, typed = _prepare(config_path, changes)
         if not typed:
             return SaveResult()
 

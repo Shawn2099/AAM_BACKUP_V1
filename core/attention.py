@@ -16,7 +16,7 @@ import json
 
 import pendulum
 
-from core.time_utils import IST
+from core.time_utils import IST, format_ist
 
 RED = "red"
 AMBER = "amber"
@@ -99,7 +99,7 @@ def compute_attention(db, config, now=None) -> list[dict]:
     if watchdog and watchdog.get("kind") == "ACTION_REQUIRED":
         items.append(_item(RED, "watchdog",
                            f"Service watchdog: {watchdog.get('subject') or watchdog.get('event_key')} "
-                           f"({str(watchdog.get('created_at') or '')[:16].replace('T', ' ')})."))
+                           f"({format_ist(watchdog.get('created_at'))})."))
 
     failed = db.notification_failures_since(window)
     if failed:

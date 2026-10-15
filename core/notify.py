@@ -28,7 +28,7 @@ from email.mime.text import MIMEText
 
 from loguru import logger
 
-from core.time_utils import now_iso
+from core.time_utils import format_ist, now_iso
 
 SENT = "SENT"
 FAILED = "FAILED"
@@ -213,7 +213,7 @@ def render_alert(config, event: AlertEvent) -> tuple[str, str, list[dict]]:
     rows = [("Firm", firm), ("Pipeline", event.mode.upper()),
             ("Status", event.status or "-"),
             ("Exit code", "-" if event.exit_code is None else str(event.exit_code)),
-            ("Time", event.occurred_at[:19].replace("T", " "))]
+            ("Time", format_ist(event.occurred_at))]
     rows += [(str(k), str(v)) for k, v in event.details.items()]
     cells = "".join(
         f"<tr><td style='padding:6px 10px;border:1px solid #e5e7eb;background:#f9fafb;"

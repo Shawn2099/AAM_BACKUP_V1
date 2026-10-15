@@ -41,15 +41,18 @@ async function triggerBackup(event, mode) {
 var _KNOWN_CATEGORIES = ['success', 'no-changes', 'partial', 'failed', 'blocked', 'running', 'skipped', 'unknown'];
 function safeCategory(cat) { return _KNOWN_CATEGORIES.indexOf(cat) >= 0 ? cat : 'unknown'; }
 
+// Every client-facing time is IST, whatever timezone the viewing PC is set to
+// (getHours() would use the browser's own zone).
 function formatFullDate(isoStr) {
     if (!isoStr) return '-';
     var d = new Date(isoStr);
     if (isNaN(d.getTime())) return isoStr;
-    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    var hours = d.getHours(), ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12; if (hours === 0) hours = 12;
-    var mins = d.getMinutes(); if (mins < 10) mins = '0' + mins;
-    return d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear() + ' at ' + hours + ':' + mins + ' ' + ampm;
+    var p = {};
+    new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short',
+        year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+        .formatToParts(d).forEach(function(x) { p[x.type] = x.value; });
+    return p.day + ' ' + p.month + ' ' + p.year + ' at ' + p.hour + ':' + p.minute + ' ' +
+        String(p.dayPeriod || '').toUpperCase() + ' IST';
 }
 
 var _lastStatusErr = 0;
