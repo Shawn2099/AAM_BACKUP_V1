@@ -150,8 +150,12 @@ with _backup_slot(config):
 │   ├─ lan_snapshot_after_task (walk failure → metrics skipped, run not failed)
 │   ├─ lan_record_task → file_entries
 │   ├─ files/bytes copied = snapshot diff
-│   ├─ LAN_COMPLETE → lan_shutdown_task → core/shutdown.shutdown_server()
-│   │                  (only if lan.shutdown_after_backup AND wol.enabled)
+│   ├─ LAN_COMPLETE → lan_shutdown_task → core/shutdown.shutdown_from_config()
+│   │                  (only if lan.shutdown_after_backup AND wol.enabled; WP10: exit
+│   │                  0/1190 = accepted, then port 445 must stay closed within
+│   │                  wol.shutdown_verify_timeout_seconds, slot still held →
+│   │                  VERIFIED | NOT_VERIFIED | FAILED in extended_metrics.nas_shutdown;
+│   │                  not VERIFIED = WARNING email + amber banner, status unchanged)
 │   ├─ LAN_PARTIAL  → partial alert; shutdown only if shutdown_on_all_retries_exhausted
 │   └─ terminal policy: not LAN_COMPLETE → raise PartialRun
 │
@@ -282,7 +286,7 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `lan_sync.py` | robocopy build/run/parse/decide | `lan_sync_task`, `fy_rollover` |
 | `lan_manifest.py` | walk destination, snapshot diff | LAN snapshot tasks |
 | `wol.py` | magic packet + wait for 445 | `wol_check_task`, rollover, audit |
-| `shutdown.py` | `shutdown /s /m \\ip /t 300 /f` | `lan_shutdown_task`, rollover |
+| `shutdown.py` | `shutdown /s /m \\ip /t <wol.shutdown_delay_seconds> /f` via run_tool, then port-445 verification | `lan_shutdown_task` (LAN pipeline, LAN audit) |
 | `integrity.py` | weekly hash audit | `integrity_audit_flow` |
 | `fy_rollover.py` | FY boundary handling | `rollover_check_flow`, `launch` |
 | `manifest.py` | SQLite: file_entries, run_history, integrity_audits, notifications | everything |
@@ -328,7 +332,7 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 |---|---|---|
 | `paths` | source, NAS destination, runtime dir, GCS key | everything |
 | `lan` | robocopy retries/wait/threads/timeout, flow retries, shutdown policy, `log_tail_kb`, dry-run timeout, `use_backup_mode` (/ZB), `min_free_dest_gb`, `privilege_check_timeout_seconds` | lan_sync, lan_preflight, permissions, flow |
-| `wol` | enable, MAC, NAS IP, broadcast, wake timing | wol (→ smb_ready in M2) |
+| `wol` | enable, MAC, NAS IP, broadcast, wake timing, `shutdown_*` (delay, command timeout, verify window, closed probes) | wol, smb_ready, shutdown |
 | `cloud` | bucket/project/class, bandwidth, transfers/checkers, all rclone timeouts, flow retries, `error_tail_lines`, `dry_run_timeout_seconds`, `write_probe_enabled` | cloud_*, permissions |
 | `schedule` | 6 cron expressions + timezone | serve.py |
 | `notifications` | SMTP host/port/security/auth/timeout/retries, recipients, enable flags | report, notify |
@@ -435,7 +439,7 @@ exception in the verify/post steps can still leave a success status in the row �
 | LS5 | FAILED/SUSPECT retried by Prefect `lan.max_attempts - 1` times, `lan.retry_delay_seconds` apart; hard timeout `lan.subprocess_timeout_seconds` | `flow`, `run_lan_sync` |
 | LS6 | Final status is `LAN_COMPLETE` | terminal policy D5 |
 | — | Post-sync snapshot / DB record failure does **not** fail the run (metrics skipped, logged CRITICAL) | `lan_snapshot_after_task` |
-| — | NAS shutdown only after `LAN_COMPLETE` **and** `lan.shutdown_after_backup` **and** `wol.enabled` (or after PARTIAL/FAILED if `lan.shutdown_on_all_retries_exhausted`) | D9 |
+| — | NAS shutdown only after `LAN_COMPLETE` **and** `lan.shutdown_after_backup` **and** `wol.enabled` (or after PARTIAL/FAILED if `lan.shutdown_on_all_retries_exhausted`); the result is verified (port 445 closed) and recorded, never assumed | D9 |
 
 There is **no separate daily LAN verification step** today: LAN success rests on robocopy's
 own completed summary; content verification is the weekly audit (V3).

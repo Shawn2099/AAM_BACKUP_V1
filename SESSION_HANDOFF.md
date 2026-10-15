@@ -43,10 +43,11 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
 | M2 Data safety | **done** (2.1–2.6) |
 | M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
-| M4 Operations | not started |
+| M4 Operations | in progress — 4.1 done |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check (2026-10-15, end of M3):** `tests/` **1698 passed / 0 failed / 19 skipped**.
+**Test status at last check (2026-10-15, after M4 4.1):** `tests/` **1709 passed / 0 failed / 19 skipped**
+(full audit lab not re-run since M3; the changed W16 shutdown-contract test passes on its own).
 Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
 config.yaml `monthly_cron` changed - DEC-7).
 
@@ -88,7 +89,10 @@ config.yaml `monthly_cron` changed - DEC-7).
    schedule == config) both read the owner's local config.yaml and turn green with:
    Owner action: change `schedule.monthly_cron` to `"30 8 1 * *"` in the local and the
    production config.yaml (code default + example already changed) - lab W16 then turns green.
-5. **NEXT: M4 (plan §13)** - 4.1 shutdown result verification (WP10), 4.2 clock tri-state +
+5. **M4 4.1 DONE** (shutdown verified, see plan §13). **NEXT: 4.2.** The audit's LAN shutdown has
+   no run row: a non-VERIFIED audit shutdown is the WARNING email only (the banner reads the last
+   LAN *run* row).
+6. **M4 (plan §13)** - 4.1 shutdown result verification (WP10), 4.2 clock tri-state +
    w32tm fallback (WP12), 4.3 watchdog restart order / STOP_PENDING / config / own log (WP13),
    4.4 schedule/time-budget validator with cronsim (WP14), 4.5 installer `uv run --frozen
    --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
@@ -112,6 +116,13 @@ config.yaml `monthly_cron` changed - DEC-7).
 - **rclone `--max-delete N`**: deletes up to N, then fatal error, **exit 7** (→ CLOUD_FAILED), log "failed to delete K files".
 - **Missing source**: robocopy `/MIR` exit 16 ("ERROR 2 Accessing Source Directory"), rclone sync exit 3 ("not deleting files as there were IO errors"); destination untouched in both.
 - `rclone size <local dir> --json` → `{"count":N,...}` = what `rclone sync` sees.
+- **shutdown.exe** (Win 11 + trial box WS2016, owner-authorised 2026-10-15): exit = Win32 error, text on
+  **stderr** as `<host>: <text>(<code>)`, stdout empty. `/s /m` 0 = accepted, **1190** = already
+  scheduled, **5** = access denied (this PC → trial box, workgroup), **1707** = invalid address;
+  `/a` 0 = aborted, **1116** = nothing to abort. Real `/t 60` on the trial box: port 445 closed at
+  **t+107 s** (~47 s after the delay) and stayed closed (no flapping).
+- Sending `\\host` through `ssh ... 'shutdown ...'` mangles the backslashes (got 1707); pipe a Python
+  script written with the Write tool instead.
 
 ## 5. Gotchas learned (save time)
 
@@ -135,6 +146,8 @@ config.yaml `monthly_cron` changed - DEC-7).
 - rclone v1.74.3, robocopy 10.0.14393. Config: LAN 21:00, cloud 22:00, LAN target `\\10.10.151.53\aam_test\CHAOS01\FY26-27` (test leftover), demo bucket. Both NAS IPs do not answer on 445.
 - Production `config.yaml` passes the new strict validation (only deprecated `notifications.send_on_success`, dropped with a warning).
 - DB: 59 legacy `*_SKIPPED` rows are really preflight failures (display as failures, never rewrite history).
+- 2026-10-15 ~11:56 IST: the box was **shut down by our 4.1 test** with the owner's permission (owner
+  restarts it by hand). It had no backup running at the time; the services restart with it.
 
 ## 7. Housekeeping
 

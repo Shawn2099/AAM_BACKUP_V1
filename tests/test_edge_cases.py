@@ -212,24 +212,6 @@ class TestGetCloudDiffEdgeCases:
             assert "file1.txt" in result["added"]
 
 
-class TestShutdownEdgeCases:
-    def test_shutdown_whitespace_ip(self):
-        """IP with spaces is passed through."""
-        from core.shutdown import shutdown_server
-        with patch("core.shutdown.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            result = shutdown_server(" 192.168.10.10 ")
-            assert result["server_ip"] == " 192.168.10.10 "
-
-    def test_shutdown_empty_ip(self):
-        """Empty IP is handled."""
-        from core.shutdown import shutdown_server
-        with patch("core.shutdown.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
-            result = shutdown_server("")
-            assert result["shutdown_initiated"] is False
-
-
 class TestFailedFileCountEdgeCases:
     def test_summary_with_3digit_thousands(self):
         """Summary with comma-separated thousands."""

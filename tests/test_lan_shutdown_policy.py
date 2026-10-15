@@ -112,7 +112,8 @@ class TestLanShutdownPolicy:
         assert "scheduled for shutdown" in alert_msg
 
         # Shutdown IS called
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
 
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
@@ -139,7 +140,8 @@ class TestLanShutdownPolicy:
             flow._run_lan_pipeline(cfg, "run-option-b-failed", "2026-09-07T01:00:00")
 
         # Shutdown IS called
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
 
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
@@ -166,11 +168,12 @@ class TestLanShutdownPolicy:
 
         res = flow._run_lan_pipeline(cfg, "run-complete", "2026-09-07T01:00:00")
         assert res["status"] == "LAN_COMPLETE"
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
         mock_alert.assert_not_called()
 
     @patch("flow.notify")
-    @patch("flow.shutdown_server")
+    @patch("flow.shutdown_from_config")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
@@ -186,7 +189,7 @@ class TestLanShutdownPolicy:
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
         mock_before, mock_after, mock_record_task, mock_artifact, mock_server_shutdown, mock_alert,
     ):
-        """If shutdown_after_backup=False, shutdown_server is never called even if Option B is on."""
+        """If shutdown_after_backup=False, the shutdown is never called even if Option B is on."""
         mock_sync.with_options.return_value.return_value = {
             "status": "LAN_PARTIAL", "exit_code": 9,
             "error": "robocopy tail: 1 file FAILED",
@@ -199,5 +202,5 @@ class TestLanShutdownPolicy:
         with pytest.raises(flow.PartialRun):
             flow._run_lan_pipeline(cfg, "run-disabled-override", "2026-09-07T01:00:00")
 
-        # shutdown_server must not be invoked because lan_shutdown_task honors global toggle
+        # the shutdown must not be invoked because lan_shutdown_task honors global toggle
         mock_server_shutdown.assert_not_called()

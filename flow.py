@@ -45,7 +45,8 @@ from core.notify import SENT, AlertEvent, notify, send_email
 from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
-from core.shutdown import shutdown_server
+from core.shutdown import FAILED as SHUTDOWN_FAILED
+from core.shutdown import ShutdownResult, shutdown_from_config
 from core.time_utils import get_fy_prefix, now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
@@ -970,16 +971,35 @@ def lan_record_task(
 
 
 @task(name="lan-shutdown")
-def lan_shutdown_task(config):
-    """Shut down backup server after successful LAN sync."""
+def lan_shutdown_task(config, artefacts_dir: str | None = None) -> dict | None:
+    """Shut the NAS down and verify it went down (WP10).
+
+    Returns the result as metrics (None when shutdown is disabled). Never
+    raises: the backup's own status stays truthful and separate; a shutdown
+    that is not verified is a WARNING email + a dashboard flag.
+    """
     if not config.lan.shutdown_after_backup or not config.wol.enabled:
         logger.info("LAN shutdown disabled, skipping")
-        return
-    logger.info(f"Shutting down backup server {config.wol.server_ip}")
+        return None
+    server_ip = config.wol.server_ip
+    logger.info(f"Shutting down backup server {server_ip}")
     try:
-        shutdown_server(config.wol.server_ip)
-    except Exception as e:
-        logger.warning(f"Server shutdown failed (non-critical): {e}")
+        artefacts = (RunArtefacts.open(artefacts_dir) if artefacts_dir
+                     else RunArtefacts.ephemeral("nas-shutdown"))
+        result = shutdown_from_config(config, artefacts)
+    except Exception as e:  # noqa: BLE001 - recorded, never raised
+        logger.error(f"NAS shutdown could not be carried out: {e}")
+        result = ShutdownResult(SHUTDOWN_FAILED, server_ip, None,
+                                f"shutdown could not be carried out: {e}", 0.0)
+    if not result.verified:
+        notify(config, AlertEvent(
+            key=f"nas_shutdown:{server_ip}", kind="WARNING", mode="lan",
+            title=f"NAS shutdown {result.outcome.replace('_', ' ').lower()}",
+            message=(f"The NAS {server_ip} was not confirmed powered off after the backup: "
+                     f"{result.detail}. The backup result itself is unaffected."),
+            status=f"NAS_SHUTDOWN_{result.outcome}", exit_code=result.exit_code,
+        ))
+    return result.to_metrics()
 
 
 @task(name="cloud-publish-artifact")
@@ -1406,6 +1426,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         phase = "pre"
         guard_record = None
         alert_sent = False   # WP8: exactly one alert per failed run
+        nas_shutdown = None  # WP10: verified shutdown result, if one was attempted
 
         try:
             health_check_task(config, "lan", artefacts_dir)
@@ -1483,7 +1504,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             # powering off the NAS now strands them until the next WoL, and the
             # partial state must be reported, not silent.
             if status == "LAN_COMPLETE":
-                lan_shutdown_task(config)
+                nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             elif status == "LAN_PARTIAL":
                 shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
                 nas_msg = (
@@ -1505,7 +1526,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 alert_sent = True
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
-                    lan_shutdown_task(config)
+                    nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             else:
                 logger.info(f"LAN shutdown skipped - status is {status}")
             # Terminal-state policy (single authoritative decision point):
@@ -1540,7 +1561,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 logger.info(
                     f"shutdown_on_all_retries_exhausted enabled: powering down NAS after {status} failure alert"
                 )
-                lan_shutdown_task(config)
+                nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             if extended_metrics is None:
                 extended_metrics = _failure_telemetry(stage_seconds, phase)
             if phase == "post":
@@ -1550,6 +1571,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
+            if nas_shutdown is not None:
+                extended_metrics = _merge_metrics(extended_metrics, nas_shutdown=nas_shutdown)
             extended_metrics = _with_guards(extended_metrics, guard_record)
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:
@@ -1937,7 +1960,9 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                     )
                 finally:
                     if config.lan.shutdown_after_backup and config.wol.enabled:
-                        lan_shutdown_task(config)
+                        audit_artefacts = _open_run_artefacts(config, audit_id)
+                        lan_shutdown_task(config, str(audit_artefacts.dir) if audit_artefacts else None)
+                        _finalize_run_artefacts(config, audit_artefacts)
                 try:
                     db.record_audit({
                         "audit_id": audit_id, "mode": "lan", "scope": result["scope"],

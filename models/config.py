@@ -186,6 +186,20 @@ class WolConfig(StrictModel):
         default=5, ge=1, le=20, description="Magic-packet rounds sent per wake attempt")
     wake_retry_interval_seconds: int = Field(
         default=10, ge=1, le=120, description="Seconds between magic-packet rounds")
+    # WP10: the shutdown result is verified, not assumed.
+    shutdown_delay_seconds: int = Field(
+        default=300, ge=0, le=3600,
+        description="shutdown.exe /t delay; staff can cancel with `shutdown /a` on the NAS meanwhile")
+    shutdown_command_timeout_seconds: int = Field(
+        default=120, ge=5, le=600, description="Max seconds for shutdown.exe itself to return")
+    shutdown_verify_timeout_seconds: int = Field(
+        default=600, ge=60, le=7200,
+        description=("Seconds (from the command) within which the NAS must stop answering on "
+                     "port 445; must be longer than shutdown_delay_seconds. The backup slot is "
+                     "held meanwhile, so a queued job never starts against a NAS about to power off"))
+    shutdown_verify_closed_probes: int = Field(
+        default=2, ge=1, le=10,
+        description="Consecutive closed-port probes (ping_interval_seconds apart) that count as 'off'")
 
     @field_validator("mac_address")
     @classmethod
@@ -200,6 +214,15 @@ class WolConfig(StrictModel):
     def _mac_required_when_enabled(self) -> "WolConfig":
         if self.enabled and not self.mac_address:
             raise ValueError("wol.mac_address is required when wol.enabled is true")
+        return self
+
+    @model_validator(mode="after")
+    def _verify_window_outlasts_delay(self) -> "WolConfig":
+        if self.shutdown_verify_timeout_seconds <= self.shutdown_delay_seconds:
+            raise ValueError(
+                f"wol.shutdown_verify_timeout_seconds ({self.shutdown_verify_timeout_seconds}) "
+                f"must be longer than wol.shutdown_delay_seconds ({self.shutdown_delay_seconds}): "
+                "the NAS only powers off after the delay")
         return self
 
     @field_validator("server_ip")

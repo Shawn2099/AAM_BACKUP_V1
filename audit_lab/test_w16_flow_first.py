@@ -783,60 +783,63 @@ def test_w16_hashing_md5_matches_rclone():
         assert verify_checksum(p, PENDING_CHECKSUM) is False
 
 
-def test_w16_shutdown_command_contract(monkeypatch):
-    """core/shutdown.py: the REAL shutdown_server() must return the documented
-    dict, never raise, and build exactly `shutdown /s /m \\<ip> /t 300 /f` —
-    including when shutdown.exe is missing."""
-    import subprocess
+def test_w16_shutdown_command_contract(monkeypatch, tmp_path):
+    """core/shutdown.py (WP10): the REAL shutdown_server() never raises, builds
+    exactly `shutdown /s /m \\\\<ip> /t <delay> /f`, and reports a refused
+    command or a missing binary as FAILED with the tool's own text - it never
+    polls the NAS after a failed command."""
     import types
 
     import core.shutdown as sh
+    import core.tool_runner as tr
+    from core.run_artefacts import RunArtefacts
 
     # labconf.build_config() force-patches shutdown_server to raise (the lab
     # must never shut a machine down), so the real function is pulled back out
-    # under _LAB_ORIG_SHUTDOWN and called with subprocess.run FAKED: no
-    # shutdown.exe can execute from the lab. Both production branches are
-    # exercised: a failed command (nonzero exit) and a missing binary.
+    # under _LAB_ORIG_SHUTDOWN and run through the real run_tool with Popen
+    # FAKED: no shutdown.exe can execute from the lab.
     real = getattr(sh, "_LAB_ORIG_SHUTDOWN", None) or sh.shutdown_server
     captured = {}
+    probes = []
 
-    def fake_run(cmd, **kw):
+    def fake_popen(cmd, stdout=None, stderr=None, **kw):
         captured["cmd"] = list(cmd)
-        return types.SimpleNamespace(returncode=5, stderr="Access is denied.", stdout="")
+        stderr.write(b"127.0.0.1: Access is denied.(5)\n")
+        return types.SimpleNamespace(pid=0, wait=lambda timeout=None: 5)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    result = real("127.0.0.1")
+    def no_probe(host, port, timeout_s):
+        probes.append(host)
+        return True, "tcp open"
 
-    def fake_missing(cmd, **kw):
-        raise FileNotFoundError()
+    kw = dict(delay_s=300, command_timeout_s=30, verify_timeout_s=600, poll_interval_s=1,
+              connect_timeout_s=1, closed_probes=2, tcp_probe=no_probe)
+    monkeypatch.setattr(tr.subprocess, "Popen", fake_popen)
+    result = real("127.0.0.1", artefacts=RunArtefacts(tmp_path, "w16-sd", day="d"), **kw)
 
-    monkeypatch.setattr(subprocess, "run", fake_missing)
-    result_missing = real("127.0.0.1")
+    def fake_missing(cmd, **k):
+        raise FileNotFoundError("shutdown")
 
+    monkeypatch.setattr(tr.subprocess, "Popen", fake_missing)
+    result_missing = real("127.0.0.1", artefacts=RunArtefacts(tmp_path, "w16-sd2", day="d"), **kw)
+
+    expected_cmd = ["shutdown", "/s", "/m", "\\\\127.0.0.1", "/t", "300", "/f"]
+    ok = (result.outcome == sh.FAILED and result.exit_code == 5
+          and "Access is denied.(5)" in result.detail
+          and result_missing.outcome == sh.FAILED and result_missing.exit_code is None
+          and captured.get("cmd") == expected_cmd and probes == [])
     L.record("W16.shutdown_contract",
-             "shutdown_server() returns the documented dict shape, never raises, "
-             "and builds the exact command `shutdown /s /m \\\\<ip> /t 300 /f`",
-             f"failed-run result={result} cmd={captured.get('cmd')} | "
-             f"missing-binary result={result_missing}",
-             "OK — documented dict + exact command; both branches safe"
-             if (isinstance(result, dict)
-                 and isinstance(result_missing, dict)
-                 and captured.get("cmd") == ["shutdown", "/s", "/m",
-                                             "\\\\127.0.0.1", "/t", "300", "/f"])
-             else f"ISSUE — result={result} cmd={captured.get('cmd')} "
-                  f"missing={result_missing}")
-    assert isinstance(result, dict)
-    assert "shutdown_initiated" in result
-    assert "server_ip" in result
-    assert "error" in result
-    assert captured["cmd"] == ["shutdown", "/s", "/m", "\\\\127.0.0.1",
-                               "/t", "300", "/f"], captured["cmd"]
-    assert result["shutdown_initiated"] is False
-    assert result["error"] == "Access is denied."
-    # shutdown.exe missing: still a dict, never raised
-    assert isinstance(result_missing, dict)
-    assert result_missing["shutdown_initiated"] is False
-    assert result_missing["error"] == "shutdown.exe not found", result_missing
+             "shutdown_server() never raises, builds `shutdown /s /m \\\\<ip> /t <delay> /f`, "
+             "and reports refused/missing as FAILED without polling the NAS",
+             f"refused={result} cmd={captured.get('cmd')} | missing={result_missing} | "
+             f"probes={probes}",
+             "OK - exact command; both failure branches FAILED with the cause"
+             if ok else "ISSUE - see evidence")
+    assert captured["cmd"] == expected_cmd, captured["cmd"]
+    assert result.outcome == sh.FAILED and result.exit_code == 5
+    assert "Access is denied.(5)" in result.detail
+    assert result_missing.outcome == sh.FAILED and result_missing.exit_code is None
+    assert "FileNotFoundError" in result_missing.detail
+    assert probes == []
 
 
 def _drop_loguru_sinks():

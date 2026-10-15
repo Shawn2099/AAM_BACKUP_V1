@@ -166,7 +166,8 @@ class TestBug02And03AuditOrchestration:
         assert call.args == (cfg.paths.source_drive, cfg.paths.lan_destination)
         assert call.kwargs["timeout"] == cfg.lan.subprocess_timeout_seconds
         # 4. LAN shutdown task called in finally
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
         # 5. BUG-08/F-T4-3: unknown counts persist as NULL (never a
         # false zero); legacy negative sentinels still clamp to 0.
         lan_record_call = [

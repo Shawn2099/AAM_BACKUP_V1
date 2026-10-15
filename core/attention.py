@@ -58,13 +58,19 @@ def compute_attention(db, config, now=None) -> list[dict]:
         run = db.last_run(leg)
         if run and run.get("extended_metrics"):
             try:
-                degraded = json.loads(run["extended_metrics"]).get("artefacts_degraded")
-            except (ValueError, AttributeError):
-                degraded = False
-            if degraded:
+                metrics = json.loads(run["extended_metrics"])
+                metrics = metrics if isinstance(metrics, dict) else {}
+            except ValueError:
+                metrics = {}
+            if metrics.get("artefacts_degraded"):
                 items.append(_item(AMBER, f"run_logs:{leg}",
                                    f"{name}: the full tool logs of the last run could not be "
                                    "stored completely (check free disk space)."))
+            shutdown = metrics.get("nas_shutdown")
+            if isinstance(shutdown, dict) and shutdown.get("outcome") != "VERIFIED":
+                items.append(_item(AMBER, "nas_shutdown",
+                                   "NAS was not confirmed powered off after the last LAN backup - "
+                                   f"{shutdown.get('detail') or shutdown.get('outcome')}."))
 
         audit = db.latest_audit(leg)
         if audit and audit.get("status") == "VERIFICATION_FAILED":

@@ -245,22 +245,23 @@ class TestLanShutdownTask:
         config = MagicMock()
         config.lan.shutdown_after_backup = False
         config.wol.enabled = True
-        lan_shutdown_task.fn(config)  # Should not raise
+        assert lan_shutdown_task.fn(config) is None
 
     def test_skips_when_wol_disabled(self):
         config = MagicMock()
         config.lan.shutdown_after_backup = True
         config.wol.enabled = False
-        lan_shutdown_task.fn(config)  # Should not raise
+        assert lan_shutdown_task.fn(config) is None
 
-    @patch("flow.shutdown_server")
+    @patch("flow.shutdown_from_config")
     def test_shutdowns_when_enabled(self, mock_shutdown):
         config = MagicMock()
         config.lan.shutdown_after_backup = True
         config.wol.enabled = True
         config.wol.server_ip = "192.168.10.10"
         lan_shutdown_task.fn(config)
-        mock_shutdown.assert_called_once_with("192.168.10.10")
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is config
 
 
 # ═══════════════════════════════════════════════════════════════

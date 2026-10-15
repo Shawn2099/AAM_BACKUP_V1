@@ -75,6 +75,18 @@ wol:
   ping_interval_seconds: 15
   # Extra seconds to wait after SMB responds (allows services to fully start)
   stability_wait_seconds: 30
+  # NAS shutdown after a complete LAN backup (shutdown /s /m \\<server_ip> /t <delay> /f).
+  # Staff can cancel during the delay with `shutdown /a` on the NAS.
+  shutdown_delay_seconds: 300
+  # Max seconds for shutdown.exe itself to return
+  shutdown_command_timeout_seconds: 120
+  # The NAS must stop answering on port 445 within this many seconds of the command
+  # (must be longer than shutdown_delay_seconds). Otherwise the shutdown is reported
+  # NOT_VERIFIED (WARNING email + dashboard flag). The backup slot is held meanwhile.
+  # Measured 2026-10-15 on Windows Server 2016: port closed ~47 s after the delay ended.
+  shutdown_verify_timeout_seconds: 600
+  # Consecutive closed-port probes (ping_interval_seconds apart) that count as "off"
+  shutdown_verify_closed_probes: 2
 
 # ═══════════════════════════════════════════════════
 # CLOUD BACKUP (rclone sync → Google Cloud Storage)
