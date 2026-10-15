@@ -1,6 +1,6 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-15 (session 2: M2 and M3 done; next M4)
+**Last updated:** 2026-10-16 (unattended session: box review, 3 fixes - see §4b)
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -142,6 +142,46 @@ config.yaml `monthly_cron` changed - DEC-7).
    --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
    Deferred from M3 (plan §13 note): tool_runner migration of cloud_verify / cloud_reporter /
    integrity `subprocess.run` calls.
+
+## 4b. Session 2026-10-16 (unattended, owner away) - box review + code audit
+
+**Box (read-only this session - the auto-mode classifier refused writes/approvals on the box):**
+- 21:00 LAN run 2026-10-15: `LAN_BLOCKED` (G5: marker missing on the EMPTY destination
+  `\\10.10.151.53\aam_nas\FY26-27`) + exactly ONE `ACTION_REQUIRED` email - correct by design.
+  **Owner action:** approve it on the dashboard (phrase `INITIALISE DESTINATION`, approval
+  `0b14b56b...`) to get the first full LAN copy; then continue the §4a scenario list.
+- Prefect server log: sporadic `sqlite3.OperationalError: database is locked` (a few/day since July,
+  mostly `mark_deployments_ready`, once "error during state validation" 2026-09-01). Prefect 3.7.2
+  already sets `busy_timeout=60s`; failures in 0-30 ms = SQLite WAL read->write upgrade conflict
+  (busy handler skipped by design) inside Prefect's own services. Retried by Prefect; no night lost
+  (every scheduled night has its row). Proper fix = Postgres (new dependency -> owner decision).
+  The new stale-leg email (below) now reports it if it ever costs a night.
+- Watchdog `Traceback ... KeyboardInterrupt` in watchdog_svc logs = NSSM Ctrl+C on stop (benign).
+
+**Fixed + committed (test-first, full suite 1873 passed / 0 failed; lab W16+W17 49/49):**
+- ce18fc3 `smb_ready` failure reason said "within 0s" after 4 min of probing (LAN preflight uses
+  max_wait_s=0 + min_attempts) - now states the time really spent.
+- 34cbc28 **Abandoned runs**: a RUNNING row became ABANDONED only at agent start and only when
+  > 24 h old -> a reboot during the 02:00 cloud run (Windows Update!) left it "Running" with NO
+  alert; a flow-run crash while the agent stayed up was never swept. Now the RUNNING row records
+  its owner `pid:create_time`; `backup_repository.sweep_abandoned_runs` (agent start + every
+  pipeline start) marks dead-owner rows ABANDONED at once + one FAILURE email; live owner never
+  touched; unreadable owner keeps the 24 h backstop. Real-process kill test.
+- eb87fc5 **Stale-leg email** (plan §2 rule 11, approved but never built): the watchdog checks
+  every `watchdog.stale_check_interval_seconds` (1800) - also while the API is down - and emails
+  `stale:<leg>` (ACTION_REQUIRED, cooldown-repeated) using the banner's `core.attention`
+  evaluation. Catches runs that never start (scheduler, import crash after a bad deploy).
+  **On deploy the box will email "LAN overdue" at once - truthful (LAN has not succeeded since
+  the fresh install).**
+- 117327e **Weekly audit silent failures**: an exception in a leg (NAS not waking = WolTimeout, GCS
+  key missing, helper raising) or the slot not obtained escaped with NO email and NO audit row
+  (a cloud exception also skipped LAN). Now: per-leg AUDIT_INCOMPLETE "could not run" row, other
+  leg still runs, one audit alert. Full lab (before this change) 238/0; W6+W12 after it 13/13.
+- **Owner asked me to approve + deploy (2026-10-16); the auto-mode classifier refused every box
+  write even then** -> owner approves on the dashboard and deploys by hand, or adds a Bash
+  permission rule for `ssh innoviztawinserver2016` so the next session can.
+- **Not deployed to the box yet** (box at 74a905c): `git pull` in `C:\AAMBackup`, restart the 3
+  services (or re-run `06_install_services.ps1 -ServiceAccount .\aambackup`).
 
 ## 4a. M5 on the trial box - where we paused (2026-10-15)
 
