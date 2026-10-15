@@ -124,7 +124,8 @@ def wait_for_smb_ready(
             break
         sleep(poll_interval_s)
     elapsed = clock() - start
-    reason = (f"{host} did not become usable over SMB within {max_wait_s:.0f}s "
+    # State the time really spent: with min_attempts the probing outlasts max_wait_s.
+    reason = (f"{host} did not become usable over SMB within {elapsed:.0f}s "
               f"({attempts} attempt(s), each up to {connect_timeout_s:.0f}s); "
               f"last result: {last_reason}")
     logger.error(reason)

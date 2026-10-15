@@ -51,7 +51,16 @@ def test_never_answers_fails_after_max_wait_with_reason():
     res, clock = _run([False] * 1000, max_wait_s=300)
     assert not res.ready
     assert 300 <= res.elapsed_s < 300 + 15 + 2
-    assert "within 300s" in res.reason and "TimeoutError" in res.reason
+    assert f"within {res.elapsed_s:.0f}s" in res.reason and "TimeoutError" in res.reason
+
+
+def test_failure_reason_states_the_time_really_spent():
+    # The LAN preflight uses max_wait_s=0 + min_attempts=8 (15s apart): the reason
+    # must not claim "within 0s" after ~2 minutes of probing (trial box log 2026-10-15).
+    res, _ = _run([False] * 8, max_wait_s=0, min_attempts=8, stability_wait_s=0)
+    assert not res.ready and res.attempts == 8
+    assert "within 0s" not in res.reason
+    assert f"within {res.elapsed_s:.0f}s" in res.reason
 
 
 def test_tcp_open_but_smb_not_serving_is_not_ready():
