@@ -37,6 +37,42 @@ def _get_create_time(pid: int) -> float | None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def process_token() -> str:
+    """This process's identity 'PID:create_time' (the lock-file format).
+
+    Falls back to the bare PID if our own create_time cannot be read
+    (extremely unlikely).
+    """
+    pid = os.getpid()
+    ct = _get_create_time(pid)
+    return str(pid) if ct is None else f"{pid}:{ct:.6f}"
+
+
+def token_alive(token) -> bool | None:
+    """Is the exact process named by a 'PID:create_time' token still running?
+
+    True  -> that process is running.
+    False -> provably not: the PID is gone, or reused by another process.
+    None  -> cannot tell (malformed or PID-only token, access denied) - the
+             caller must not treat this as "dead".
+    """
+    try:
+        pid_str, ct_str = str(token).split(":", 1)
+        pid, written_ct = int(pid_str), float(ct_str)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    try:
+        current_ct = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, ValueError, OverflowError):
+        return None
+    # Same 0.1 s tolerance as read_lock_alive.
+    return abs(current_ct - written_ct) < 0.1
+
+
 def write_lock(lock_path: Path) -> None:
     """Atomically write 'PID:create_time' to *lock_path*.
 
@@ -45,14 +81,7 @@ def write_lock(lock_path: Path) -> None:
 
     Raises OSError if the write fails (caller logs and continues without lock).
     """
-    pid = os.getpid()
-    ct = _get_create_time(pid)
-    if ct is None:
-        # Extremely unlikely — our own process should always be queryable.
-        # Fall back to PID-only so the lock is still written.
-        content = str(pid)
-    else:
-        content = f"{pid}:{ct:.6f}"
+    content = process_token()
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(lock_path.parent), prefix=".backup.lock.", suffix=".tmp")
@@ -149,9 +178,7 @@ def acquire_lock(lock_path: Path) -> bool:
     Raises OSError on genuine I/O failure (caller decides: warn and continue
     without a lock, as before). Never raises merely because a live owner exists.
     """
-    pid = os.getpid()
-    ct = _get_create_time(pid)
-    content = str(pid) if ct is None else f"{pid}:{ct:.6f}"
+    content = process_token()
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:

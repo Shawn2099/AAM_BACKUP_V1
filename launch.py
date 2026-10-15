@@ -121,17 +121,18 @@ def _ensure_concurrency_limit():
 
 
 def _mark_abandoned_runs():
-    """Plan WP5: a run still RUNNING after maintenance.abandon_running_after_hours
-    died without an outcome (agent restart/crash) - record it as ABANDONED so
-    the history and the dashboard stay truthful. Never blocks startup."""
+    """Plan WP5: a RUNNING run whose process is gone (agent restart, reboot,
+    crash) is recorded as ABANDONED and alerted, so the history and the
+    dashboard stay truthful. Never blocks startup."""
     try:
+        from core.backup_repository import sweep_abandoned_runs
         from core.manifest import ManifestDB
         from models.config import CONFIG_PATH, load_config
 
         cfg = load_config(CONFIG_PATH)
         db = ManifestDB.from_config(cfg)
         try:
-            n = db.mark_abandoned_runs(older_than_hours=cfg.maintenance.abandon_running_after_hours)
+            n = len(sweep_abandoned_runs(cfg, db))
         finally:
             db.close()
         if n:

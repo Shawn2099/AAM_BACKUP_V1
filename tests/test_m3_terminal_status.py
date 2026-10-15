@@ -207,7 +207,9 @@ def test_stale_running_rows_become_abandoned(tmp_path):
         ):
             db.insert_run({"run_id": run_id, "mode": mode, "started_at": started,
                            "status": status})
-        assert db.mark_abandoned_runs(older_than_hours=24) == 2
+        # rows without an owner process (written before owners were recorded):
+        # the age backstop decides (owner liveness: tests/test_m5_abandoned_runs.py)
+        assert len(db.abandon_dead_runs(lambda token: None, older_than_hours=24)) == 2
         rows = {r["run_id"]: r for r in db.get_recent_runs(10)}
         assert rows["a"]["status"] == "LAN_ABANDONED" and rows["a"]["error_message"]
         assert rows["b"]["status"] == "CLOUD_ABANDONED"
@@ -230,7 +232,7 @@ def test_launch_marks_abandoned_runs_at_start():
     cfg = MagicMock()
     cfg.maintenance.abandon_running_after_hours = 24
     with patch("models.config.load_config", return_value=cfg), \
-         patch("core.manifest.ManifestDB.from_config") as mdb:
-        mdb.return_value.mark_abandoned_runs.return_value = 3
+         patch("core.manifest.ManifestDB.from_config") as mdb, \
+         patch("core.backup_repository.sweep_abandoned_runs", return_value=[{}] * 3) as sweep:
         launch._mark_abandoned_runs()
-    mdb.return_value.mark_abandoned_runs.assert_called_once_with(older_than_hours=24)
+    sweep.assert_called_once_with(cfg, mdb.return_value)

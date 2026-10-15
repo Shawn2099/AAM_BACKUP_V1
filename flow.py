@@ -23,7 +23,12 @@ from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
 from core import approvals, fy_rollover, guards, permissions, report, statuses
-from core.backup_repository import record_run_history, record_sync_results
+from core.backup_repository import (
+    record_run_history,
+    record_sync_results,
+    start_run_row,
+    sweep_abandoned_runs,
+)
 from core.cloud_preflight import run_cloud_dry_run
 from core.cloud_reporter import (
     CloudReporterError,
@@ -346,13 +351,18 @@ def _merge_metrics(extended_metrics: str | None, **fields) -> str | None:
 
 def _record_running(config, leg: str, run_id: str, started_at: str) -> None:
     """Write the *_RUNNING row BEFORE the slot is requested (plan WP5), so a
-    run that never gets the slot - or dies - is still visible. Never blocks
+    run that never gets the slot - or dies - is still visible. First records
+    earlier runs whose process died meanwhile as ABANDONED (a flow-run crash
+    while the agent kept running is otherwise never swept). Never blocks
     the backup."""
     try:
         db = ManifestDB.from_config(config)
         try:
-            db.insert_run({"run_id": run_id, "mode": leg, "started_at": started_at,
-                           "status": f"{leg.upper()}_RUNNING"})
+            try:
+                sweep_abandoned_runs(config, db)
+            except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup
+                logger.error(f"Could not check for abandoned runs before {leg} run {run_id}: {e}")
+            start_run_row(db, run_id=run_id, mode=leg, started_at=started_at)
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup

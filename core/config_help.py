@@ -174,7 +174,10 @@ HELP: dict[str, tuple[str, str]] = {
     "maintenance.sqlite_busy_timeout_ms": ("Database wait time", ""),
     "maintenance.sqlite_vacuum_freelist_threshold": ("Database clean-up threshold", ""),
     "maintenance.config_backups_keep": ("Settings backups to keep", "A copy of the settings is saved before every change."),
-    "maintenance.abandon_running_after_hours": ("Mark a stuck backup as abandoned after", ""),
+    "maintenance.abandon_running_after_hours": (
+        "Mark a stuck backup as abandoned after",
+        "A backup whose process has stopped is marked abandoned (with an email) at once; this "
+        "limit only applies when that cannot be checked."),
     "health.max_clock_skew_seconds": ("Allowed clock difference", "Google refuses uploads if the server clock is far off."),
     "health.clock_check_timeout_seconds": ("Time for the clock check", ""),
     "health.clock_unverified_policy": ("If the clock cannot be checked",

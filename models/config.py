@@ -499,8 +499,9 @@ class MaintenanceConfig(StrictModel):
                     "or FY rollover); older ones are deleted after a successful settings save")
     abandon_running_after_hours: float = Field(
         default=24, ge=1, le=168,
-        description="At agent start, a run still marked RUNNING after this many hours is "
-                    "recorded as ABANDONED (the process died without an outcome).",
+        description="A run whose process is gone is recorded ABANDONED (with a failure email) "
+                    "at the next agent or backup start; only when the process cannot be read "
+                    "does a run still RUNNING after this many hours count as ABANDONED.",
     )
 
 

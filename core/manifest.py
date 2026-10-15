@@ -1017,31 +1017,62 @@ class ManifestDB:
             conn = self._get_conn()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-    def mark_abandoned_runs(self, older_than_hours: float) -> int:
-        """*_RUNNING rows older than the threshold -> *_ABANDONED (plan WP5).
+    def abandon_dead_runs(self, owner_alive, older_than_hours: float) -> list[dict]:
+        """*_RUNNING rows whose run can no longer finish -> *_ABANDONED (plan WP5).
 
-        Called at agent start: such a run's process is gone without writing
-        an outcome. Truthful history instead of a run that looks in progress
-        forever. Returns the number of rows changed.
+        A RUNNING row carries its owner process in extended_metrics["owner"]
+        ('PID:create_time'). owner_alive(token) -> True / False / None:
+          * False (the process is provably gone) -> ABANDONED at once, whatever
+            the age (agent restart, reboot or crash minutes after the start);
+          * True -> never touched (the run is really in progress);
+          * None or no owner (unknown, rows written before owners were
+            recorded) -> ABANDONED only after `older_than_hours`.
+        Returns the changed rows ({run_id, mode, status, started_at, error_message}).
         """
         import pendulum
 
         from core.time_utils import IST
 
-        cutoff = pendulum.now(IST).subtract(hours=older_than_hours).isoformat()
+        cutoff = pendulum.now(IST).subtract(hours=older_than_hours)
         with self._lock:
             conn = self._get_conn()
-            with conn:
-                cur = conn.execute(
-                    "UPDATE run_history SET status = REPLACE(status, '_RUNNING', '_ABANDONED'), "
-                    "ended_at = COALESCE(ended_at, ?), "
-                    "error_message = COALESCE(error_message, ?) "
-                    "WHERE status IN ('CLOUD_RUNNING', 'LAN_RUNNING') AND started_at < ?",
-                    (now_iso(),
-                     f"The run stopped without recording an outcome (agent restart or crash); "
-                     f"still RUNNING after {older_than_hours}h.",
-                     cutoff))
-                return cur.rowcount
+            rows = conn.execute(
+                "SELECT run_id, mode, status, started_at, extended_metrics FROM run_history "
+                "WHERE status IN ('CLOUD_RUNNING', 'LAN_RUNNING')").fetchall()
+        changed = []
+        for run_id, mode, status, started_at, metrics in rows:
+            try:
+                owner = (json.loads(metrics) or {}).get("owner") if metrics else None
+            except (ValueError, AttributeError):
+                owner = None
+            alive = owner_alive(owner) if owner else None
+            if alive is True:
+                continue
+            if alive is False:
+                reason = ("The run's process ended without recording an outcome (service "
+                          "stop, reboot or crash) - this backup did not finish.")
+            else:
+                try:
+                    stale = pendulum.parse(started_at) < cutoff
+                except Exception:  # noqa: BLE001 - unparsable start = treat as stale
+                    stale = True
+                if not stale:
+                    continue
+                reason = (f"The run stopped without recording an outcome; still RUNNING "
+                          f"after {older_than_hours}h - this backup did not finish.")
+            new_status = status.replace("_RUNNING", "_ABANDONED")
+            with self._lock:
+                conn = self._get_conn()
+                with conn:
+                    cur = conn.execute(
+                        "UPDATE run_history SET status = ?, ended_at = COALESCE(ended_at, ?), "
+                        "error_message = COALESCE(error_message, ?) "
+                        "WHERE run_id = ? AND status = ?",
+                        (new_status, now_iso(), reason, run_id, status))
+            if cur.rowcount == 1:   # the run did not finish meanwhile
+                changed.append({"run_id": run_id, "mode": mode, "status": new_status,
+                                "started_at": started_at, "error_message": reason})
+        return changed
 
     def purge_old_runs(self, retention_days: int = 90):
         """Delete run_history entries older than retention_days.

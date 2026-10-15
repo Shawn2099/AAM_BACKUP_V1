@@ -4,11 +4,14 @@ Extracts duplicated ManifestDB interaction from flow.py tasks.
 Centralizes file entry upserts, run history recording, and maintenance.
 """
 
+import json
 from pathlib import PureWindowsPath
 
 from loguru import logger
 
 from core.manifest import ManifestDB
+from core.notify import AlertEvent, notify
+from core.process import process_token, token_alive
 
 
 def _clean_path(raw_path: str | None) -> str:
@@ -114,3 +117,28 @@ def record_run_history(
     except Exception as e:
         logger.error(f"Failed to record run history: {e}")
         return False
+
+
+def start_run_row(db: ManifestDB, *, run_id: str, mode: str, started_at: str) -> None:
+    """The *_RUNNING row of a run, owned by THIS process (plan WP5): if the
+    process dies before recording an outcome, sweep_abandoned_runs can prove it."""
+    db.insert_run({"run_id": run_id, "mode": mode, "started_at": started_at,
+                   "status": f"{mode.upper()}_RUNNING",
+                   "extended_metrics": json.dumps({"owner": process_token()})})
+
+
+def sweep_abandoned_runs(config, db: ManifestDB) -> list[dict]:
+    """Record runs whose process died without an outcome as *_ABANDONED and
+    send each one's FAILURE alert (the run never reached its own alert).
+    Runs at agent start and at every pipeline start."""
+    rows = db.abandon_dead_runs(token_alive, config.maintenance.abandon_running_after_hours)
+    for row in rows:
+        leg = row["mode"]
+        logger.error(f"{leg} run {row['run_id']} (started {row['started_at']}) recorded as "
+                     f"{row['status']}: {row['error_message']}")
+        notify(config, AlertEvent(
+            key=f"backup:{leg}:{row['status']}", kind="FAILURE", mode=leg,
+            title=f"{leg.upper()} backup abandoned",
+            message=f"{row['error_message']} The next scheduled run copies what is missing.",
+            status=row["status"], occurred_at=row["started_at"]), db=db)
+    return rows

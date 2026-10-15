@@ -389,6 +389,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | C2 | Requested leg is enabled (`mode=cloud` with `cloud.enabled=false` is refused) | yes | — |
 | C3 | Backup slot free: Prefect limit `aam-backup` obtained within `maintenance.concurrency_wait_seconds` (default 3600 s) | yes | timeout recorded as `*_SLOT_TIMEOUT` row (WP5; today no row is written) |
 | C4 | `backup.lock` not held by another **live** process (a dead/reused PID is taken over) | yes | — |
+| C5 | Earlier runs whose process died (`*_RUNNING` row, owner `pid:create_time` gone): recorded `*_ABANDONED` + one FAILURE email - at agent start and at every pipeline start (`backup_repository.sweep_abandoned_runs`); an unreadable owner falls back to `maintenance.abandon_running_after_hours` | yes (M5) | — |
 
 ### 10.2 Cloud leg — must pass to START the sync
 
