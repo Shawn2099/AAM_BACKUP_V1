@@ -186,3 +186,9 @@ def test_venv_is_built_with_copies_not_hard_links():
     profile; a hard link shares that file's permissions, so the service account got
     'Permission denied' and the agent did not start. The readiness probe caught it."""
     assert "sync --frozen --link-mode copy" in READINESS
+
+
+def test_runtime_rights_reach_existing_files_on_an_upgrade():
+    """Trial box 2026-10-15: logs/DB created earlier by LocalSystem kept their old rights,
+    NSSM (as the account) could not open agent_svc.log and the agent did not start."""
+    assert '(OI)(CI)M" /T /C /Q' in INSTALLER

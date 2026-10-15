@@ -184,7 +184,14 @@ if ($ServiceAccount) {
     }
     # The agent writes the DB, logs, run logs, lock and Prefect home under the
     # runtime folder, and (FY rollover) config.yaml + its backup next to it.
-    icacls $RuntimeDir /grant "${ServiceAccount}:(OI)(CI)M" | Out-Null
+    # /T: also the files that ALREADY exist (an upgrade: logs and the DB were
+    # created by LocalSystem; without it NSSM could not open agent_svc.log as
+    # the account and the agent did not start - trial box 2026-10-15).
+    icacls $RuntimeDir /grant "${ServiceAccount}:(OI)(CI)M" /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ERROR: could not give $ServiceAccount Modify on $RuntimeDir. Services were NOT changed." -ForegroundColor Red
+        exit 1
+    }
     icacls $ProjectDir /grant "${ServiceAccount}:M" | Out-Null
     icacls $ConfigFile /grant "${ServiceAccount}:M" | Out-Null
     Write-Host "[OK]   $ServiceAccount granted Modify on $RuntimeDir, and on $ConfigFile + its folder"

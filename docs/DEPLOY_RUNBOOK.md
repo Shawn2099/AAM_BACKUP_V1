@@ -23,7 +23,9 @@ Verified 2026-10-15 on the trial server (Windows Server 2016, PowerShell
    name `aambackup`, strong password, *Password never expires* ticked,
    *User must change password* unticked.
 2. **Same account on the NAS** — same name, **same password**, with *write*
-   (modify) on the backup share. (The server is in a WORKGROUP: Windows logs on
+   (modify) on the backup share. **Create the current FY folder on the share**
+   (e.g. `\\NAS\backup\FY26-27`): the readiness check writes a test file into
+   exactly the configured folder and fails if it does not exist. (The server is in a WORKGROUP: Windows logs on
    to the NAS with this name + password. This is the fix for the "Access is
    denied" nights.)
 3. **Backup right** (only if `lan.use_backup_mode: true`, the default) —
