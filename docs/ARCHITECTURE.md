@@ -89,7 +89,7 @@ with _backup_slot(config):                     concurrency slot + backup.lock (a
 ├─ phase "pre"
 │   ├─ health_check_task   → core/health.pre_backup_health()
 │   │      source exists & has a top-level entry · rclone binary · GCS key file ·
-│   │      clock skew vs Google (UNREACHABLE = passes today, see §8)
+│   │      clock vs Google, else w32tm → OK | SKEWED (fail) | UNVERIFIED (policy warn|block)
 │   └─ cloud_preflight_task (1 retry, 30 s) → core/cloud_preflight.run_cloud_dry_run()
 │          Probe A: source readable · Probe B: rclone lsjson --max-depth 0 (auth/bucket/net)
 │
@@ -339,7 +339,7 @@ every 60 s: GET http://127.0.0.1:4200/api/health
 | `alerts` | cooldown, body/attachment size | notify |
 | `dashboard` | auth, api key, bind, port, `public_url` (used in emails) | ui, notify |
 | `maintenance` | DB retention, log retention, SQLite busy/vacuum/sync, slot wait | manifest, flow |
-| `health` | clock skew limit/timeout, min free source GB, rollover gcloud timeouts | health, fy_rollover |
+| `health` | clock skew limit/timeout, `ntp_server`, `w32tm_timeout_seconds`, `clock_unverified_policy`, min free source GB, rollover gcloud timeouts | health, fy_rollover |
 | `run_logs` | full-log folder, retention 90 d, compression, min free GB, service-log retention | run_artefacts, flow |
 | `guards` | `max_delete_files` 500, `max_delete_percent` 10, `max_source_shrink_percent` 20, `forbid_local_destination` true (+ `cloud.dry_run_timeout_seconds` 1800) | flow `lan-guards` / `cloud-guards` |
 | *(M2)* `approvals`, more `lan` keys (WP4) | added with their consumers | approvals, lan_preflight |
@@ -386,7 +386,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | CL4 | Free space on the **source** drive >= `health.min_free_source_gb` | same | yes *(skipped if unmeasurable)* | — |
 | CL5 | rclone binary found (`deploy\bin` first, then PATH) | `health.pre_backup_health` | yes | — |
 | CL6 | GCS key file exists and is not empty | same | yes | — |
-| CL7 | Clock within `health.max_clock_skew_seconds` of Google time | `health.check_clock_skew` | yes, **but passes if Google is unreachable or TLS-intercepted** | tri-state OK / SKEWED / UNVERIFIED + `w32tm` fallback; UNVERIFIED = warn + dashboard flag (WP12) |
+| CL7 | Clock within `health.max_clock_skew_seconds` of Google time, else of `w32tm /stripchart` against `health.ntp_server` | `health.check_clock` | SKEWED: yes. UNVERIFIED (no source answered): per `health.clock_unverified_policy` - `warn` (default) runs, `block` fails | **done (WP12):** verdict in `extended_metrics.clock`; UNVERIFIED = amber dashboard item. w32tm exit 0 is not trusted without a sample line |
 | CL8 | Preflight probe A: source exists and can be listed | `cloud_preflight` | yes *(empty = warn only)*; task retried once after 30 s | — |
 | CL9 | Preflight probe B: `rclone lsjson --max-depth 0 aam_gcs:<bucket>/<FY>` exits 0 within `cloud.preflight_timeout_seconds` (proves key valid, bucket exists, network + DNS + TLS OK) | `cloud_preflight` | yes | the network/TLS/DNS cause is named in the error (`rclone_errors`, WP7) |
 | CL10 | Builder re-checks the source has a real file | `guards.require_source_files` in `build_rclone_sync_command` | yes (2.2, same G1 rule; an unlistable source is left to rclone, which then deletes nothing — exit 3) | — |

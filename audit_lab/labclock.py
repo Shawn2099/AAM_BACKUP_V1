@@ -6,7 +6,7 @@ Why this is safe and sufficient:
   through a module-level ``import pendulum``:
       core/time_utils.py  -> pendulum.now(IST)          (now_iso, cutoff_iso,
                                                         now_formatted, get_fy_prefix)
-      core/health.py      -> pendulum.now("UTC")        (check_clock_skew)
+      core/health.py      -> pendulum.now("UTC")        (check_clock)
 * Everything else in the system reaches time through those helpers
   (``flow`` imports ``now_iso``/``get_fy_prefix``, ``core/manifest.py`` imports
   ``cutoff_iso``/``now_iso``, ``core/fy_rollover.py`` imports
@@ -149,13 +149,13 @@ def iso_now() -> str:
 
 
 def install_google_date(monkeypatch, skew_seconds: float = 0.0) -> None:
-    """Make core.health.check_clock_skew() see a Date header from the frozen clock.
+    """Make core.health.check_clock() see a Date header from the frozen clock.
 
-    Without this, check_clock_skew() performs a REAL HTTPS call to
+    Without this, check_clock() performs a REAL HTTPS call to
     www.googleapis.com and compares Google's time with our frozen clock - which
     legitimately fails with "System clock skew detected" and aborts the flow.
     Simulating "Google agrees with our clock" keeps the production check running
-    for real (no monkeypatched check_clock_skew) while making it deterministic.
+    for real (no monkeypatched check_clock) while making it deterministic.
 
     Pass skew_seconds to simulate a genuinely skewed server (+/- seconds).
     """

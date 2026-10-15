@@ -43,11 +43,11 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M1 Foundations | **done** (1.1–1.8, see plan §13) |
 | M2 Data safety | **done** (2.1–2.6) |
 | M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
-| M4 Operations | in progress — 4.1 done |
+| M4 Operations | in progress — 4.1, 4.2 done |
 | M5 Acceptance (on-box) | not started |
 
-**Test status at last check (2026-10-15, after M4 4.1):** `tests/` **1709 passed / 0 failed / 19 skipped**
-(full audit lab not re-run since M3; the changed W16 shutdown-contract test passes on its own).
+**Test status at last check (2026-10-15, after M4 4.2):** `tests/` **1720 passed / 0 failed / 19 skipped**
+(full audit lab not re-run since M3; the changed W16 shutdown, W12.5 and W11 clock lab tests pass on their own).
 Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
 config.yaml `monthly_cron` changed - DEC-7).
 
@@ -89,7 +89,9 @@ config.yaml `monthly_cron` changed - DEC-7).
    schedule == config) both read the owner's local config.yaml and turn green with:
    Owner action: change `schedule.monthly_cron` to `"30 8 1 * *"` in the local and the
    production config.yaml (code default + example already changed) - lab W16 then turns green.
-5. **M4 4.1 DONE** (shutdown verified, see plan §13). **NEXT: 4.2.** The audit's LAN shutdown has
+5. **M4 4.1 + 4.2 DONE** (shutdown verified; clock tri-state - see plan §13). **NEXT: 4.3 watchdog.**
+   4.2 note: `block` policy = cloud FAILED (not an approval); owner may want it as G7 BLOCKED + approval
+   later - ask if it matters. The audit's LAN shutdown has
    no run row: a non-VERIFIED audit shutdown is the WARNING email only (the banner reads the last
    LAN *run* row).
 6. **M4 (plan §13)** - 4.1 shutdown result verification (WP10), 4.2 clock tri-state +
@@ -126,6 +128,9 @@ config.yaml `monthly_cron` changed - DEC-7).
   (`net use \\<ip>\IPC$ /user:Administrator *`): NOT_VERIFIED (accepted, cancelled with `shutdown /a`
   after 10 s, still reachable after 90 s) and VERIFIED (`/t 30`: port 445 closed after 56 s).
   The IPC$ session also shows the fix for production: credentials the NAS accepts.
+- **w32tm /stripchart /computer:X /samples:1 /dataonly** (Win 11 **and trial box WS2016**, identical, 2026-10-15): ok = rc 0, last line
+  `12:10:52, +00.9227616s`; NTP server not answering = **rc 0** with `12:10:52, error: 0x800705B4`;
+  unknown host = rc 2147953401, `The following error occurred: No such host is known. (0x80072AF9)`.
 - Sending `\\host` through `ssh ... 'shutdown ...'` mangles the backslashes (got 1707); pipe a Python
   script written with the Write tool instead.
 

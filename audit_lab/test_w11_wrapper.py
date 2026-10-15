@@ -432,20 +432,23 @@ def test_w11_gate_failure_messages_attribute_the_real_cause():
     assert exit_msgs[0] is None  # exit 0 = no error
 
 
-def test_w11_clock_skew_check_fails_open_when_google_unreachable():
-    """Document (not fix) the fail-open behaviour of check_clock_skew: if the
-    Google Date header cannot be fetched, the check passes."""
-    from core.health import check_clock_skew
+def test_w11_clock_check_never_fails_open(tmp_path):
+    """WP12 (was: documented fail-open of check_clock_skew): the REAL check
+    against Google, then w32tm. Whatever this machine's network allows, the
+    verdict is OK/SKEWED with a named source, or UNVERIFIED with both reasons -
+    never OK without a source."""
+    from core.health import CLOCK_UNVERIFIED, check_clock
+    from core.run_artefacts import RunArtefacts
 
-    ok, reason = check_clock_skew(max_skew_seconds=600, connection_timeout=2)
+    r = check_clock(max_skew_seconds=600, connection_timeout=2, ntp_server="time.windows.com",
+                    w32tm_timeout_s=30, artefacts=RunArtefacts(tmp_path, "w11-clock", day="d"))
+    truthful = (r.state == CLOCK_UNVERIFIED and r.source is None and r.reason) or \
+               (r.state != CLOCK_UNVERIFIED and r.source and r.skew_s is not None)
     L.record("W11.clock_skew_fail_open",
-             "check_clock_skew() fails OPEN when the Google Date header cannot be "
-             "fetched (network unavailable) — the health gate still passes",
-             f"check_clock_skew(timeout=2) -> ok={ok} reason={reason!r}",
-             "DOCUMENTED BEHAVIOUR (fail-open): an unreachable network means the "
-             "clock check passes, so clock skew — which breaks GCS JWT auth — is "
-             "invisible exactly when the network is flapping. Decide deliberately "
-             "whether that is the intended trade-off."
-             if ok else "fail-closed in this environment")
-    print(f"[W11.2e] ok={ok} reason={reason!r}")
-    assert isinstance(ok, bool)
+             "check_clock() never reports OK without a measured time source",
+             f"check_clock(timeout=2) -> {r}",
+             "OK - verdict names its source (or UNVERIFIED with both reasons)"
+             if truthful else "ISSUE - verdict without a source")
+    print(f"[W11.2e] {r}")
+    assert truthful, r
+

@@ -122,34 +122,6 @@ class _FakeConn:
         pass
 
 
-class TestCheckClockSkew:
-    """Finding H-2: unreachable Google => (True, "") i.e. 'healthy' (skip)."""
-
-    def _patch_conn(self, resp=None, exc=None):
-        fake = _FakeConn(resp=resp, exc=exc)
-        return patch.object(http.client, "HTTPSConnection", return_value=fake)
-
-    def test_network_error_reports_healthy(self):
-        with self._patch_conn(exc=OSError("no network")):
-            ok, reason = health.check_clock_skew()
-        assert ok is True and reason == ""
-
-    def test_missing_date_header(self):
-        with self._patch_conn(resp=_FakeResp(None)):
-            ok, reason = health.check_clock_skew()
-        assert ok is False and "Date header" in reason
-
-    def test_large_skew_refused(self):
-        with self._patch_conn(resp=_FakeResp("Wed, 01 Jan 2000 00:00:00 GMT")):
-            ok, reason = health.check_clock_skew(max_skew_seconds=600)
-        assert ok is False and "skew" in reason
-
-    def test_unparsable_date_reports_healthy(self):
-        with self._patch_conn(resp=_FakeResp("not-a-date")):
-            ok, reason = health.check_clock_skew()
-        assert ok is True and reason == ""
-
-
 class TestPreBackupHealth:
     """Finding H-3: the second `if gcs_key_path:` guard is always True.
 
@@ -179,14 +151,14 @@ class TestPreBackupHealth:
     def test_cloud_always_validates_gcs_key(self):
         with patch("core.health.check_binary_exists", return_value=True), \
              patch("core.health.check_gcs_key", return_value=(True, "")) as m_key, \
-             patch("core.health.check_clock_skew", return_value=(True, "")):
+             patch("core.health.check_clock", return_value=health.ClockResult("OK", 0.0, "google", "")):
             health.pre_backup_health("E:\\", "cloud", gcs_key_path="C:\\k.json")
         assert m_key.call_count == 1  # guard is redundant -> always runs
 
     def test_cloud_bad_key_propagates(self):
         with patch("core.health.check_binary_exists", return_value=True), \
              patch("core.health.check_gcs_key", return_value=(False, "empty")), \
-             patch("core.health.check_clock_skew", return_value=(True, "")):
+             patch("core.health.check_clock", return_value=health.ClockResult("OK", 0.0, "google", "")):
             with pytest.raises(health.HealthError):
                 health.pre_backup_health("E:\\", "cloud", gcs_key_path="C:\\k.json")
 
@@ -203,7 +175,7 @@ class TestPreBackupHealth:
     def test_all_good_passes(self):
         with patch("core.health.check_binary_exists", return_value=True), \
              patch("core.health.check_gcs_key", return_value=(True, "")), \
-             patch("core.health.check_clock_skew", return_value=(True, "")):
+             patch("core.health.check_clock", return_value=health.ClockResult("OK", 0.0, "google", "")):
             health.pre_backup_health("E:\\", "all", gcs_key_path="C:\\k.json")
 
 

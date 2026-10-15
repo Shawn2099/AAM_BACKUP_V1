@@ -1,7 +1,9 @@
 """Pre-backup health checks — source drive, binaries, disk space, clock, GCS key."""
 
 import http.client
+import re
 import shutil
+from dataclasses import asdict, dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
@@ -9,6 +11,8 @@ import pendulum
 from loguru import logger
 
 from core.process import resolve_binary
+from core.run_artefacts import RunArtefacts
+from core.tool_runner import run_tool
 
 
 class HealthError(RuntimeError):
@@ -71,47 +75,101 @@ def check_gcs_key(key_path: str) -> tuple[bool, str]:
     return True, ""
 
 
-def check_clock_skew(
-    max_skew_seconds: int = 600,
-    connection_timeout: int = 10,
-) -> tuple[bool, str]:
-    """Verify system clock is within acceptable skew for GCS JWT auth.
+CLOCK_OK = "OK"
+CLOCK_SKEWED = "SKEWED"
+CLOCK_UNVERIFIED = "UNVERIFIED"
 
-    Compares local UTC time against Google's HTTP Date header.
-    GCS OAuth JWT tokens are rejected if clock skew >10 minutes.
+# `12:10:52, +00.9227616s` - the time token is locale-formatted, the offset is not
+_W32TM_SAMPLE = re.compile(r",\s*([+-]?\d+[.,]\d+)s\s*$")
 
-    Args:
-        max_skew_seconds: Override via config.health.max_clock_skew_seconds.
-        connection_timeout: Override via config.health.clock_check_timeout_seconds.
-    """
+
+@dataclass
+class ClockResult:
+    """Clock check verdict (plan WP12): never OK unless a source was measured."""
+
+    state: str
+    skew_s: float | None
+    source: str | None
+    reason: str
+
+    def to_metrics(self) -> dict:
+        return asdict(self)
+
+
+def _google_offset(connection_timeout: float) -> tuple[float | None, str]:
+    """Seconds between local UTC and Google's HTTP Date header, or (None, why)."""
     try:
         conn = http.client.HTTPSConnection("www.googleapis.com", timeout=connection_timeout)
-        conn.request("HEAD", "/")
-        resp = conn.getresponse()
-        google_date_str = resp.getheader("Date")
-        conn.close()
-
-        if not google_date_str:
-            return False, "Could not retrieve Date header from Google"
-
-        google_time = parsedate_to_datetime(google_date_str)
-        local_utc = pendulum.now("UTC")
-        difference = abs((local_utc - google_time).total_seconds())
-
-        if difference > max_skew_seconds:
-            return False, (
-                f"System clock skew detected: {difference:.0f}s difference from Google time "
-                f"(max allowed: {max_skew_seconds}s). Run 'w32tm /resync'."
-            )
-
-        logger.debug(f"Clock OK: {difference:.1f}s skew from Google (limit: {max_skew_seconds}s)")
-        return True, ""
+        try:
+            conn.request("HEAD", "/")
+            google_date_str = conn.getresponse().getheader("Date")
+        finally:
+            conn.close()
     except OSError as e:
-        logger.warning(f"Could not verify clock skew (Google not reachable): {e} - skipping")
-        return True, ""
-    except ValueError as e:
-        logger.warning(f"Could not parse Google Date header: {e} - skipping")
-        return True, ""
+        return None, f"Google not reachable: {type(e).__name__}: {e}"
+    if not google_date_str:
+        return None, "Google sent no Date header"
+    try:
+        google_time = parsedate_to_datetime(google_date_str)
+    except (TypeError, ValueError) as e:
+        return None, f"unparseable Google Date header {google_date_str!r}: {e}"
+    return (pendulum.now("UTC") - google_time).total_seconds(), "google"
+
+
+def _w32tm_offset(ntp_server: str, timeout_s: float,
+                  artefacts: RunArtefacts) -> tuple[float | None, str]:
+    """Offset from one `w32tm /stripchart` sample, or (None, why).
+
+    w32tm exits 0 even when the server never answers (`error: 0x800705B4`),
+    so only a parsed sample line counts.
+    """
+    res = run_tool("w32tm", ["w32tm", "/stripchart", f"/computer:{ntp_server}",
+                             "/samples:1", "/dataonly"],
+                   timeout_s=timeout_s, artefacts=artefacts)
+    if not res.completed:
+        return None, f"w32tm: {res.describe_failure()}"
+    text = res.stdout_text().strip()
+    for line in reversed(text.splitlines()):
+        m = _W32TM_SAMPLE.search(line)
+        if m:
+            return float(m.group(1).replace(",", ".")), f"w32tm:{ntp_server}"
+    last = text.splitlines()[-1] if text else "no output"
+    return None, f"w32tm {ntp_server} (exit {res.exit_code}): {last}"
+
+
+def check_clock(
+    *,
+    max_skew_seconds: int,
+    connection_timeout: float,
+    ntp_server: str,
+    w32tm_timeout_s: float,
+    artefacts: RunArtefacts,
+) -> ClockResult:
+    """OK | SKEWED | UNVERIFIED (plan WP12).
+
+    GCS rejects OAuth JWTs when the clock is off by more than ~10 min. Google's
+    Date header is tried first; if it cannot be read (Sophos TLS inspection,
+    DNS), one w32tm sample from `ntp_server`. Only when neither source answers
+    is the clock UNVERIFIED - never silently OK.
+    """
+    offset, google_why = _google_offset(connection_timeout)
+    source = "google"
+    if offset is None:
+        logger.warning(f"Clock check: {google_why} - trying w32tm against {ntp_server}")
+        offset, w32_why = _w32tm_offset(ntp_server, w32tm_timeout_s, artefacts)
+        if offset is None:
+            reason = f"{google_why}; {w32_why}"
+            logger.warning(f"Clock UNVERIFIED: {reason}")
+            return ClockResult(CLOCK_UNVERIFIED, None, None, reason)
+        source = w32_why
+    skew = abs(offset)
+    if skew > max_skew_seconds:
+        reason = (f"System clock skew detected: {skew:.0f}s difference from {source} "
+                  f"(max allowed: {max_skew_seconds}s). Run 'w32tm /resync'.")
+        logger.error(reason)
+        return ClockResult(CLOCK_SKEWED, round(skew, 3), source, reason)
+    logger.debug(f"Clock OK: {skew:.1f}s skew from {source} (limit: {max_skew_seconds}s)")
+    return ClockResult(CLOCK_OK, round(skew, 3), source, "")
 
 
 def pre_backup_health(
@@ -121,7 +179,11 @@ def pre_backup_health(
     min_free_source_gb: int = 1,
     max_clock_skew_seconds: int = 600,
     clock_check_timeout_seconds: int = 10,
-) -> None:
+    clock_unverified_policy: str = "warn",
+    ntp_server: str = "time.windows.com",
+    w32tm_timeout_seconds: int = 30,
+    artefacts: RunArtefacts | None = None,
+) -> ClockResult | None:
     """Run all pre-backup health checks. Raises HealthError on failure.
 
     Args:
@@ -131,11 +193,18 @@ def pre_backup_health(
         min_free_source_gb: Override via config.health.min_free_source_gb.
         max_clock_skew_seconds: Override via config.health.max_clock_skew_seconds.
         clock_check_timeout_seconds: Override via config.health.clock_check_timeout_seconds.
+        clock_unverified_policy / ntp_server / w32tm_timeout_seconds: config.health.*.
+        artefacts: where the w32tm fallback output is kept.
+
+    Returns:
+        The clock verdict (cloud/all modes; None for lan) for the run row.
 
     Raises:
-        HealthError: If any critical check fails — key missing, clock skewed,
-            rclone/robocopy not found, or source drive inaccessible.
+        HealthError: If any critical check fails — key missing, clock skewed
+            (or unverified under policy "block"), rclone/robocopy not found,
+            or source drive inaccessible.
     """
+    clock = None
     valid_modes = {"cloud", "lan", "all"}
     if mode not in valid_modes:
         raise HealthError(f"Invalid mode '{mode}' - expected one of: {', '.join(sorted(valid_modes))}")
@@ -153,16 +222,27 @@ def pre_backup_health(
             ok, reason = check_gcs_key(gcs_key_path)
             if not ok:
                 raise HealthError(reason)
-        clock_ok, clock_reason = check_clock_skew(
+        clock = check_clock(
             max_skew_seconds=max_clock_skew_seconds,
             connection_timeout=clock_check_timeout_seconds,
+            ntp_server=ntp_server,
+            w32tm_timeout_s=w32tm_timeout_seconds,
+            artefacts=artefacts or RunArtefacts.ephemeral("clock"),
         )
-        if not clock_ok:
+        if clock.state == CLOCK_SKEWED:
             # Clock skew >10 min causes GCS JWT authentication to be rejected
-            raise HealthError(f"Clock skew exceeds limit: {clock_reason}")
+            raise HealthError(f"Clock skew exceeds limit: {clock.reason}")
+        if clock.state == CLOCK_UNVERIFIED:
+            if clock_unverified_policy == "block":
+                raise HealthError(
+                    f"Clock could not be verified (health.clock_unverified_policy: block): "
+                    f"{clock.reason}. Allow HTTPS to www.googleapis.com or NTP to {ntp_server}.")
+            logger.warning(f"Clock could not be verified - continuing "
+                           f"(health.clock_unverified_policy: warn): {clock.reason}")
 
     if mode in ("lan", "all"):
         if not check_binary_exists("robocopy"):
             raise HealthError("robocopy not found in PATH")
 
     logger.info(f"Pre-backup health check passed (mode={mode})")
+    return clock

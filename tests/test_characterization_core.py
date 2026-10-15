@@ -148,14 +148,6 @@ class TestHealthCharacterization:
         with patch("core.health.check_binary_exists", return_value=True):
             pre_backup_health(str(tmp_path), mode="lan")
 
-    def test_check_clock_skew_network_error_is_non_fatal(self):
-        from core.health import check_clock_skew
-
-        with patch("core.health.http.client.HTTPSConnection") as m:
-            m.side_effect = OSError("no network")
-            ok, reason = check_clock_skew()
-            assert ok is True and reason == ""
-
 
 # ══════════════════════════════════════════════════════════════════════════
 # process — lock file round-trip, PID reuse, binary resolution

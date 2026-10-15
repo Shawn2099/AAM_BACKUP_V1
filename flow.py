@@ -393,19 +393,25 @@ def health_check_task(config, mode: str, artefacts_dir: str | None = None):
     before the slow dry-run (plan WP4, DEC-8).
     """
     logger.info(f"Running health checks (mode={mode})")
-    pre_backup_health(
+    artefacts = RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("health")
+    clock = pre_backup_health(
         config.paths.source_drive,
         mode,
         config.paths.gcs_key_path,
         min_free_source_gb=config.health.min_free_source_gb,
         max_clock_skew_seconds=config.health.max_clock_skew_seconds,
         clock_check_timeout_seconds=config.health.clock_check_timeout_seconds,
+        clock_unverified_policy=config.health.clock_unverified_policy,
+        ntp_server=config.health.ntp_server,
+        w32tm_timeout_seconds=config.health.w32tm_timeout_seconds,
+        artefacts=artefacts,
     )
     if mode == "lan" and config.lan.use_backup_mode:
         permissions.check_backup_privilege(
-            RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("health"),
-            timeout_s=config.lan.privilege_check_timeout_seconds,
+            artefacts, timeout_s=config.lan.privilege_check_timeout_seconds,
         )
+    # WP12: the clock verdict goes on the run row (dashboard: "clock unverified")
+    return clock.to_metrics() if clock is not None else None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1210,9 +1216,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         phase = "pre"
         guard_record = None
         alert_sent = False   # WP8: exactly one alert per failed run
+        clock = None         # WP12: clock verdict from the health check
 
         try:
-            health_check_task(config, "cloud", artefacts_dir)
+            clock = health_check_task(config, "cloud", artefacts_dir)
             preflight(config, fy_prefix)
             guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
                                              approval_id=approval_id, run_id=run_id)
@@ -1369,6 +1376,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             raise
         finally:
             _finalize_run_artefacts(config, artefacts)
+            if clock is not None:
+                extended_metrics = _merge_metrics(extended_metrics, clock=clock)
             extended_metrics = _with_guards(extended_metrics, guard_record)
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:

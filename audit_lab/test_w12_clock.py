@@ -13,7 +13,7 @@ W12.1  FY boundary          : 1 April 00:00 IST, and the UTC-vs-IST trap
 W12.2  rollover boundary    : detect_rollover() flips exactly at the boundary
 W12.3  rollover flow        : the real 1-April event through flow.rollover_check_flow
 W12.4  FY divergence        : M-4 - the agent is down on 1 April, the legs split
-W12.5  clock skew           : branch-exhaustive check_clock_skew()
+W12.5  clock skew           : branch-exhaustive check_clock() (WP12 tri-state)
 W12.6  retention purge      : purge_old_runs() boundaries under a frozen clock
 W12.7  seven-day cycle      : 7 nights + the 1-April boundary, ALL through the
                               production Prefect flows (flow.backup, and the
@@ -129,7 +129,7 @@ def w12_rig(sandbox, monkeypatch):
     cleaned: list[int] = []
     monkeypatch.setattr(flow, "cleanup_orphaned_robocopy_logs",
                         lambda *a, **k: cleaned.append(1) or 0)
-    # flow.backup() runs core.health.check_clock_skew(), which would otherwise
+    # flow.backup() runs core.health.check_clock(), which would otherwise
     # make a REAL HTTPS call and legitimately fail ("skew" between Google's time
     # and our frozen 2027 clock). Simulate "Google agrees with our clock" so the
     # production check still runs, deterministically.
@@ -352,14 +352,17 @@ def test_w12_fy_divergence_fixed_by_effective_prefix(w12_rig):
 
 
 # ------------------------------------------------------------------------------
-# W12.5 - branch-exhaustive check_clock_skew() (0 direct tests before this wave)
+# W12.5 - branch-exhaustive check_clock() (WP12 tri-state + w32tm fallback)
 # ------------------------------------------------------------------------------
-def test_w12_clock_skew_branches(monkeypatch):
-    """Every branch of check_clock_skew(): within limit, over limit (both signs),
-    missing header, unparseable header, and the fail-open network error."""
+def test_w12_clock_skew_branches(monkeypatch, tmp_path):
+    """Every branch of check_clock() (WP12): within limit, over limit (both
+    signs), and every way Google can fail (missing / unparseable header,
+    network error) - each falls back to w32tm, and only when that fails too
+    is the clock UNVERIFIED (never silently OK, the old fail-open)."""
     import email.utils
 
     import core.health as health
+    from core.run_artefacts import RunArtefacts
 
     frozen = pendulum.datetime(2026, 10, 10, 12, 0, tz="UTC")
 
@@ -390,70 +393,62 @@ def test_w12_clock_skew_branches(monkeypatch):
 
     _Conn.header_value = None
     _Conn.raise_exc = _NO_EXC
+    w32 = {"result": (None, "lab: w32tm unavailable")}
+    monkeypatch.setattr(health, "_w32tm_offset", lambda *a, **k: w32["result"])
 
-    def _install(header_value=None, exc=None):
+    def _install(header_value=None, exc=None, w32tm=(None, "lab: w32tm unavailable")):
         _Conn.header_value = header_value
         _Conn.raise_exc = _NO_EXC if exc is None else exc
+        w32["result"] = w32tm
         monkeypatch.setattr(health.http.client, "HTTPSConnection", _Conn)
 
-    rows, problems = [], []
-    cases = [
-        ("exact match", 0, True),
-        ("+599 s (inside the 600 s limit)", 599, True),
-        ("+600 s (exactly at the limit)", 600, True),
-        ("+601 s (1 s over)", 601, False),
-        ("-900 s (clock behind)", -900, False),
-        ("-3600 s (an hour behind)", -3600, False),
-    ]
-    for label, offset, expect_ok in cases:
-        at = frozen.add(seconds=offset)
-        header = email.utils.formatdate(at.int_timestamp, usegmt=True)
-        _install(header_value=header)
+    def _check():
         with labclock.fake_clock(frozen):
-            ok, reason = health.check_clock_skew(max_skew_seconds=600, connection_timeout=2)
-        rows.append(f"{label:34} -> ok={ok} reason={reason[:70]!r}")
-        if ok is not expect_ok:
-            problems.append(f"{label}: ok={ok}, expected {expect_ok}")
+            return health.check_clock(max_skew_seconds=600, connection_timeout=2,
+                                      ntp_server="time.windows.com", w32tm_timeout_s=5,
+                                      artefacts=RunArtefacts(tmp_path, "w12-clock", day="d"))
 
-    # no Date header at all -> fail closed (cannot prove the clock is right)
-    _install(header_value=None)
-    with labclock.fake_clock(frozen):
-        ok, reason = health.check_clock_skew(max_skew_seconds=600, connection_timeout=2)
-    rows.append(f"{'no Date header':34} -> ok={ok} reason={reason[:70]!r}")
-    if ok is not False:
-        problems.append("a missing Date header passed the clock check")
+    rows, problems = [], []
 
-    # unparseable header -> fail OPEN (documented design note)
-    _install(header_value="not-a-date")
-    with labclock.fake_clock(frozen):
-        ok, reason = health.check_clock_skew(max_skew_seconds=600, connection_timeout=2)
-    rows.append(f"{'unparseable Date header':34} -> ok={ok} reason={reason[:70]!r}")
-    if ok is not True:
-        problems.append("an unparseable Date header no longer fails open")
+    def _expect(label, expected):
+        r = _check()
+        rows.append(f"{label:40} -> {r.state} via {r.source} reason={r.reason[:60]!r}")
+        if r.state != expected:
+            problems.append(f"{label}: {r.state}, expected {expected}")
 
-    # network unreachable -> fail OPEN (the documented trade-off: skew is
-    # invisible exactly when the network is flapping)
-    _install(exc=OSError("no route to host"))
-    with labclock.fake_clock(frozen):
-        ok, reason = health.check_clock_skew(max_skew_seconds=600, connection_timeout=2)
-    rows.append(f"{'Google unreachable (OSError)':34} -> ok={ok} reason={reason[:70]!r}")
-    if ok is not True:
-        problems.append("an unreachable network no longer fails open")
+    cases = [
+        ("exact match", 0, health.CLOCK_OK),
+        ("+599 s (inside the 600 s limit)", 599, health.CLOCK_OK),
+        ("+600 s (exactly at the limit)", 600, health.CLOCK_OK),
+        ("+601 s (1 s over)", 601, health.CLOCK_SKEWED),
+        ("-900 s (clock behind)", -900, health.CLOCK_SKEWED),
+        ("-3600 s (an hour behind)", -3600, health.CLOCK_SKEWED),
+    ]
+    for label, offset, expected in cases:
+        _install(header_value=email.utils.formatdate(frozen.add(seconds=offset).int_timestamp,
+                                                     usegmt=True))
+        _expect(label, expected)
 
-    # and a value error on the parse path
-    _install(header_value="Thu, 99 Zzz 9999 99:99:99 GMT")
-    with labclock.fake_clock(frozen):
-        ok, reason = health.check_clock_skew(max_skew_seconds=600, connection_timeout=2)
-    rows.append(f"{'garbage numeric Date header':34} -> ok={ok} reason={reason[:70]!r}")
+    for label, kw in [("no Date header", {"header_value": None}),
+                      ("unparseable Date header", {"header_value": "not-a-date"}),
+                      ("garbage numeric Date header",
+                       {"header_value": "Thu, 99 Zzz 9999 99:99:99 GMT"}),
+                      ("Google unreachable (OSError)", {"exc": OSError("no route to host")})]:
+        _install(**kw)
+        _expect(f"{label}, w32tm fails", health.CLOCK_UNVERIFIED)
+        _install(**kw, w32tm=(0.9, "w32tm:time.windows.com"))
+        _expect(f"{label}, w32tm +0.9 s", health.CLOCK_OK)
+        _install(**kw, w32tm=(-900.5, "w32tm:time.windows.com"))
+        _expect(f"{label}, w32tm -900.5 s", health.CLOCK_SKEWED)
 
     L.record("W12.clock_skew",
-              "check_clock_skew() branch coverage: within limit, +601 s, -900 s, "
-              "-3600 s, missing header, unparseable header, network unreachable",
-              "\n".join(rows),
-              "OK - fails closed on real skew, fails open on a missing/unreachable "
-              "network (documented trade-off) - all branches now covered"
-              if not problems else f"ISSUE - {problems[:3]}")
-    print(f"[W12.5]\n" + "\n".join(rows))
+             "check_clock() branch coverage: within limit, +601 s, -900 s, -3600 s; missing / "
+             "unparseable header and network error each x w32tm (fails / OK / skewed)",
+             "\n".join(rows),
+             "OK - real skew fails closed; an unreadable Google falls back to w32tm; with no "
+             "time source the clock is UNVERIFIED (never silently OK)"
+             if not problems else f"ISSUE - {problems[:3]}")
+    print("[W12.5]\n" + "\n".join(rows))
     assert not problems, problems
 
 

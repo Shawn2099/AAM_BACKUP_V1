@@ -609,6 +609,18 @@ class HealthConfig(StrictModel):
         le=60,
         description="Timeout for the HTTPS connection to googleapis.com during clock skew check (seconds)",
     )
+    # WP12 / DEC-6: an unverifiable clock is reported, never silently OK.
+    clock_unverified_policy: str = Field(
+        default="warn", pattern="^(warn|block)$",
+        description=("When neither Google nor ntp_server can tell the time: 'warn' = the cloud "
+                     "backup runs and the run row + dashboard show 'clock unverified'; "
+                     "'block' = the cloud backup fails with the reason"),
+    )
+    ntp_server: str = Field(
+        default="time.windows.com", min_length=1,
+        description="NTP server for the w32tm fallback when Google's Date header cannot be read")
+    w32tm_timeout_seconds: int = Field(
+        default=30, ge=5, le=120, description="Max seconds for one `w32tm /stripchart` sample")
     min_free_source_gb: int = Field(
         default=1,
         ge=1,

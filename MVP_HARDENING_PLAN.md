@@ -524,7 +524,7 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 
 ### M4 — Operations
 - [x] 4.1 Shutdown result verification (WP10): `core/shutdown.py` on run_tool; 0/1190 = accepted, then port 445 must stay closed (`wol.shutdown_verify_closed_probes`) within `wol.shutdown_verify_timeout_seconds` (> delay, validated) while the slot is held → `VERIFIED | NOT_VERIFIED | FAILED` in `extended_metrics.nas_shutdown`; not VERIFIED = one WARNING email (`nas_shutdown:<ip>`) + amber banner; backup status unchanged. LAN audit shutdown output kept under the audit's run_logs. Real shutdown.exe codes verified on the trial box (owner-authorised 2026-10-15). **4.4 must count the verify window in the LAN job's slot time.**
-- [ ] 4.2 Clock tri-state + `w32tm` fallback (WP12)
+- [x] 4.2 Clock tri-state + `w32tm` fallback (WP12): `health.check_clock` → `OK | SKEWED | UNVERIFIED` (Google Date header, then one `w32tm /stripchart` sample from `health.ntp_server` via run_tool; w32tm exits 0 when the server never answers, so only a parsed sample line counts). SKEWED fails; UNVERIFIED per `health.clock_unverified_policy` (`warn` default per DEC-6, `block` = cloud FAILED with the reason - not an approval, the fix is the network). Verdict in `extended_metrics.clock`; amber dashboard item. Old fail-open `check_clock_skew` removed (finding H-2 tests superseded).
 - [ ] 4.3 Watchdog restart order, STOP_PENDING escalation, config, own log file (WP13)
 - [ ] 4.4 Schedule/time-budget validator with cronsim (WP14)
 - [ ] 4.5 Installer: `uv run --frozen --no-sync`, `AAM_CONFIG`; readiness script verifies rights (WP16)

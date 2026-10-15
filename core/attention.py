@@ -66,6 +66,11 @@ def compute_attention(db, config, now=None) -> list[dict]:
                 items.append(_item(AMBER, f"run_logs:{leg}",
                                    f"{name}: the full tool logs of the last run could not be "
                                    "stored completely (check free disk space)."))
+            clock = metrics.get("clock")
+            if isinstance(clock, dict) and clock.get("state") == "UNVERIFIED":
+                items.append(_item(AMBER, "clock",
+                                   "The server clock could not be verified on the last cloud "
+                                   f"backup - {clock.get('reason') or 'no time source answered'}."))
             shutdown = metrics.get("nas_shutdown")
             if isinstance(shutdown, dict) and shutdown.get("outcome") != "VERIFIED":
                 items.append(_item(AMBER, "nas_shutdown",
