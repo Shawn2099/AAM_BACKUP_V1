@@ -736,6 +736,11 @@ class WatchdogConfig(StrictModel):
         default=10, ge=1, le=1000,
         description="Rotate the watchdog's own log (watchdog_app.log) at this size; kept "
                     "run_logs.service_log_retention_days")
+    stale_check_interval_seconds: int = Field(
+        default=1800, ge=60, le=86_400,
+        description="How often the watchdog checks that every enabled leg had a successful "
+                    "backup within dashboard.stale_after_hours; a stale leg is emailed "
+                    "(repeated per alerts.repeat_cooldown_hours while it stays stale)")
 
 
 class DashboardConfig(StrictModel):

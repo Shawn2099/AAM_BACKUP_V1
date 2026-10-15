@@ -226,6 +226,10 @@ HELP: dict[str, tuple[str, str]] = {
     "watchdog.service_poll_seconds": ("Service check interval", ""),
     "watchdog.sc_timeout_seconds": ("Time per service command", ""),
     "watchdog.log_rotation_mb": ("Start a new watchdog log at", ""),
+    "watchdog.stale_check_interval_seconds": (
+        "Check for overdue backups every",
+        "An email is sent when a backup has not succeeded for longer than the "
+        "'last good backup' limit."),
 }
 
 

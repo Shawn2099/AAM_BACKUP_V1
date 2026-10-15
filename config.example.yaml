@@ -452,3 +452,7 @@ watchdog:
   sc_timeout_seconds: 30
   # The watchdog's own log: logs\watchdog_app.log (NSSM keeps watchdog_svc.log)
   log_rotation_mb: 10
+  # Every this many seconds the watchdog checks that each enabled leg had a
+  # successful backup within dashboard.stale_after_hours; a stale leg is emailed
+  # (again every alerts.repeat_cooldown_hours while it stays stale). 60–86400
+  stale_check_interval_seconds: 1800
