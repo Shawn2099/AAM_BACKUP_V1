@@ -24,7 +24,9 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 # machine - nobody else can decrypt it. It is deleted as soon as it is read.
 function Read-PasswordFile([string]$Path) {
     try {
-        $sec = Get-Content -Path $Path -Raw -ErrorAction Stop | ConvertTo-SecureString -ErrorAction Stop
+        # Set-Content ends the file with a line break, which ConvertTo-SecureString
+        # rejects ("Input string was not in a correct format") - trim it
+        $sec = (Get-Content -Path $Path -Raw -ErrorAction Stop).Trim() | ConvertTo-SecureString -ErrorAction Stop
     } finally {
         Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
     }
@@ -170,11 +172,20 @@ if ($ah -and $ah.Start -eq 12 -and $ah.End -eq 6) {
 }
 
 # 9. Check Ports
-$p4200 = netstat -an | Select-String ":4200 " | Select-String "LISTENING"
-if ($p4200) { Check-Item "Port 4200" "In use! (Must be free for Prefect)" $true } else { Check-Item "Port 4200" "Available" $false }
-
-$p8080 = netstat -an | Select-String ":8080 " | Select-String "LISTENING"
-if ($p8080) { Check-Item "Port 8080" "In use! (Must be free for Dashboard)" $true } else { Check-Item "Port 8080" "Available" $false }
+# A port held by our OWN running service is fine (re-install / upgrade); only a
+# foreign program on it is a problem.
+foreach ($pp in @(@(4200, "AamPrefectServer", "Prefect"), @(8080, "AamBackupAgent", "Dashboard"))) {
+    $port, $svcName, $what = $pp
+    $listen = netstat -an | Select-String ":$port " | Select-String "LISTENING"
+    $ours = Get-Service $svcName -ErrorAction SilentlyContinue
+    if (-not $listen) {
+        Check-Item "Port $port" "Available" $false
+    } elseif ($ours -and $ours.Status -eq "Running") {
+        Check-Item "Port $port" "In use by $svcName (already installed - fine for a re-install)" $false
+    } else {
+        Check-Item "Port $port" "In use by another program! (Must be free for $what)" $true
+    }
+}
 
 # 10. Pending Reboot Check
 $reboot1 = Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"
@@ -282,13 +293,34 @@ if ($ServiceAccount) {
         Check-Item "Service account" "$ServiceAccount not found or disabled (create it: lusrmgr.msc)" $true
     }
     if ($local -and (Test-Path $venvPy)) {
-        $cred = if ($PasswordFile) { New-Object System.Management.Automation.PSCredential($ServiceAccount, (Read-PasswordFile $PasswordFile)) }
-                else { Get-Credential -UserName $ServiceAccount -Message "Password of $ServiceAccount (probe runs as this account)" }
+        try {
+            $cred = if ($PasswordFile) { New-Object System.Management.Automation.PSCredential($ServiceAccount, (Read-PasswordFile $PasswordFile)) }
+                    else { Get-Credential -UserName $ServiceAccount -Message "Password of $ServiceAccount (probe runs as this account)" }
+        } catch {
+            $cred = $null
+        }
         $resultFile = Join-Path $env:SystemRoot ("Temp\aam_account_probe_" + [guid]::NewGuid().ToString("N") + ".txt")
         $probe = Join-Path $ScriptDir "probe_service_account.py"
+        $taskName = "AAM_readiness_probe_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+        # Run the probe as a short-lived scheduled task under the account: a
+        # non-interactive logon like the service's own. (Start-Process -Credential
+        # fails with 0xC0000142 from SSH / any session without a desktop - trial box.)
         try {
-            $p = Start-Process -FilePath $venvPy -ArgumentList "`"$probe`" `"$cfg`" `"$resultFile`"" `
-                 -Credential $cred -WorkingDirectory $ProjectDir -Wait -PassThru -WindowStyle Hidden
+            if (-not $cred) { throw "no password for $ServiceAccount could be read" }
+            $taskUser = if ($ServiceAccount.StartsWith(".\")) { "$env:COMPUTERNAME\" + $ServiceAccount.Substring(2) } else { $ServiceAccount }
+            $action = New-ScheduledTaskAction -Execute $venvPy -WorkingDirectory $ProjectDir `
+                      -Argument "`"$probe`" `"$cfg`" `"$resultFile`""
+            Register-ScheduledTask -TaskName $taskName -Action $action -User $taskUser `
+                -Password $cred.GetNetworkCredential().Password -RunLevel Limited -ErrorAction Stop | Out-Null
+            $started = Get-Date
+            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+            $deadline = $started.AddMinutes(10)
+            do {
+                Start-Sleep -Seconds 2
+                $state = (Get-ScheduledTask -TaskName $taskName).State
+                $info = Get-ScheduledTaskInfo -TaskName $taskName
+            } while (($state -eq "Running" -or $info.LastRunTime -lt $started) -and (Get-Date) -lt $deadline)
+            $p = [pscustomobject]@{ ExitCode = $info.LastTaskResult }
             if (Test-Path $resultFile) {
                 foreach ($line in Get-Content $resultFile) {
                     $parts = $line -split ' ', 2
@@ -306,7 +338,10 @@ if ($ServiceAccount) {
                     "folder / Python") $true
             }
         } catch {
-            Check-Item "as $ServiceAccount" "could not start the probe as the account: $_" $true
+            Check-Item "as $ServiceAccount" ("could not run the probe as the account: $_ (wrong password, " +
+                "or the account lacks 'Log on as a batch job' - Backup Operators have it)") $true
+        } finally {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         }
     }
 } else {

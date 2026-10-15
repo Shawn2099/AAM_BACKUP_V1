@@ -26,7 +26,9 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 # machine - nobody else can decrypt it. It is deleted as soon as it is read.
 function Read-PasswordFile([string]$Path) {
     try {
-        $sec = Get-Content -Path $Path -Raw -ErrorAction Stop | ConvertTo-SecureString -ErrorAction Stop
+        # Set-Content ends the file with a line break, which ConvertTo-SecureString
+        # rejects ("Input string was not in a correct format") - trim it
+        $sec = (Get-Content -Path $Path -Raw -ErrorAction Stop).Trim() | ConvertTo-SecureString -ErrorAction Stop
     } finally {
         Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue
     }
@@ -169,9 +171,17 @@ if ($cfgExit -ne 0) {
 # which a plain account cannot) stay LocalSystem.
 $AgentPassword = $null
 if ($ServiceAccount) {
-    $sec = if ($PasswordFile) { Read-PasswordFile $PasswordFile } else { Read-Host -AsSecureString "Password for $ServiceAccount" }
-    $AgentPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+    try {
+        $sec = if ($PasswordFile) { Read-PasswordFile $PasswordFile } else { Read-Host -AsSecureString "Password for $ServiceAccount" }
+        $AgentPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+    } catch {
+        $AgentPassword = $null
+    }
+    if (-not $AgentPassword) {
+        Write-Host "  ERROR: no password for $ServiceAccount could be read. Services were NOT changed." -ForegroundColor Red
+        exit 1
+    }
     # The agent writes the DB, logs, run logs, lock and Prefect home under the
     # runtime folder, and (FY rollover) config.yaml + its backup next to it.
     icacls $RuntimeDir /grant "${ServiceAccount}:(OI)(CI)M" | Out-Null
@@ -300,7 +310,17 @@ if ($ServiceAccount) {
     # NSSM grants the account "Log on as a service" when it sets ObjectName
     & $NSSM set $SVC_AGENT ObjectName $ServiceAccount $AgentPassword
     $AgentPassword = $null
-    Write-Host "[OK]   $SVC_AGENT runs as $ServiceAccount"
+    # Read it back from Windows - never report an account that was not applied
+    # (trial box 2026-10-15: a bad password left the agent on LocalSystem while
+    # the old code printed [OK]).
+    $actual = (Get-CimInstance Win32_Service -Filter "Name='$SVC_AGENT'").StartName
+    $wanted = ($ServiceAccount -split '\\')[-1]
+    if (-not $actual -or $actual -notmatch ('(^|\\)' + [regex]::Escape($wanted) + '$')) {
+        Write-Host "  ERROR: $SVC_AGENT still runs as '$actual', not $ServiceAccount (wrong password?)." -ForegroundColor Red
+        Write-Host "  Services were installed but NOT started. Fix the password and re-run this installer." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[OK]   $SVC_AGENT runs as $actual (checked with Windows)"
 }
 
 sc.exe failure $SVC_AGENT reset= 86400 actions= restart/60000/restart/90000/restart/120000 2>$null

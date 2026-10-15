@@ -133,7 +133,10 @@ class TestInstallerContract:
 
     def test_readiness_syncs_frozen_and_probes_as_the_account(self):
         assert "sync --frozen" in READINESS
-        assert "-Credential $cred" in READINESS and "probe_service_account.py" in READINESS
+        # the probe runs as the account via a short-lived scheduled task (non-interactive
+        # logon like the service); Start-Process -Credential fails without a desktop
+        assert "Register-ScheduledTask" in READINESS and "probe_service_account.py" in READINESS
+        assert "Unregister-ScheduledTask" in READINESS.split("finally", 1)[-1]
         assert "load_config(r'$cfg')" in READINESS
 
     @pytest.mark.skipif(shutil.which("powershell") is None, reason="needs Windows PowerShell")
@@ -158,3 +161,21 @@ def test_unattended_password_file_is_dpapi_only_and_always_deleted():
         assert "ConvertTo-SecureString -ErrorAction Stop" in helper      # DPAPI, no -AsPlainText
         assert "-AsPlainText" not in helper
         assert "finally" in helper and "Remove-Item -Path $Path" in helper
+
+
+def test_installer_checks_the_account_windows_actually_applied():
+    """Trial box 2026-10-15: an unreadable password left the agent on LocalSystem while the
+    installer printed [OK]. It now reads the account back and stops before starting services."""
+    assert "Get-CimInstance Win32_Service" in INSTALLER and ".StartName" in INSTALLER
+    check = INSTALLER.index(".StartName")
+    assert check < INSTALLER.index("net start $SVC_SERVER")
+    assert "Services were installed but NOT started" in INSTALLER
+
+
+def test_password_file_is_trimmed_before_decrypting():
+    for script in (INSTALLER, READINESS):
+        assert "-Raw -ErrorAction Stop).Trim() | ConvertTo-SecureString" in script
+
+
+def test_our_own_services_on_the_ports_are_not_a_failure():
+    assert "already installed - fine for a re-install" in READINESS
