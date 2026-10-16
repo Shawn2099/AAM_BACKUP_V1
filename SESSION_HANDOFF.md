@@ -1,6 +1,6 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-16 (unattended session: box review, 3 fixes - see §4b)
+**Last updated:** 2026-10-16 (box review, 4 fixes, deployed to the box - see §4b)
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -180,8 +180,18 @@ config.yaml `monthly_cron` changed - DEC-7).
 - **Owner asked me to approve + deploy (2026-10-16); the auto-mode classifier refused every box
   write even then** -> owner approves on the dashboard and deploys by hand, or adds a Bash
   permission rule for `ssh innoviztawinserver2016` so the next session can.
-- **Not deployed to the box yet** (box at 74a905c): `git pull` in `C:\AAMBackup`, restart the 3
-  services (or re-run `06_install_services.ps1 -ServiceAccount .\aambackup`).
+- **Deployed 2026-10-16 07:48** (box at c48a600): `git pull --ff-only`, services restarted
+  (watchdog/agent stopped, server restarted, agent + watchdog started); config loads, all 6
+  deployments served, API healthy. Owner approved `0b14b56b...` at 07:41 -> first LAN run
+  `LAN_COMPLETE` (marker `.AAM_TARGET_MOUNTED` written, 580 files) -> no "LAN overdue" email.
+- Settings: `.claude/settings.json` allows `Bash(ssh innoviztawinserver2016:*)` and
+  `PowerShell(ssh innoviztawinserver2016:*)`.
+- **Open: /code-review of these 4 commits -> 10 findings, NOT yet verified/fixed**: audit alert key
+  `audit:{mode}` lacks status (MISMATCH suppressed by an earlier INCOMPLETE); live-but-hung RUNNING
+  row never abandoned (age backstop dropped); abandoned alert key lacks run_id (2nd crash
+  suppressed); sweep only at agent/pipeline start (watchdog should sweep); synchronous SMTP in
+  launch / pipeline start / watchdog loop; fresh install emails "overdue" at once (owner decision:
+  grace period?); duplicated run-alert format; unused `audit_id` + duplicated incomplete dict.
 
 ## 4a. M5 on the trial box - where we paused (2026-10-15)
 
