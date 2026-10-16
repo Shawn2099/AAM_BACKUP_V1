@@ -388,7 +388,10 @@ class TestCloudSyncCharacterization:
 
         with patch("core.cloud_sync.temp_rclone_config", fake_cfg), \
              patch("core.cloud_sync.build_rclone_sync_command", return_value=["rclone"]), \
-             fake_run_tool("core.cloud_sync", exit_code=9):
+             fake_run_tool("core.cloud_sync", exit_code=9, log=(
+                 # XR-3: "no changes" needs rclone's final stats to prove it
+                 '{"level":"info","msg":"stats","stats":{"transfers":0,"deletes":0,'
+                 '"deletedDirs":0,"renames":0,"errors":0}}')):
             result = run_cloud_sync(
                 source=str(tmp_path), bucket="b", fy_prefix="FY26-27",
                 gcs_key_path="/k", project_number="1", storage_class="STANDARD",

@@ -4,6 +4,7 @@ Reference: AAM_BACKUP_V2/core/rclone.py — proven classification and temp confi
 """
 
 import json
+import re
 
 from loguru import logger
 
@@ -20,33 +21,125 @@ _LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 
 # rclone issue #6038). These plaintext markers are treated as error signals.
 _FATAL_PLAINTEXT_MARKERS = ("failed to", "notices: failed", "notice: failed")
 
+# rclone v1.74.3 lib/exitcode (XR F1; 1 and 2 were documented swapped before).
+RCLONE_EXIT_MEANING = {
+    0: "success",
+    1: "error not otherwise categorised",
+    2: "syntax or usage error",
+    3: "directory not found",
+    4: "file not found",
+    5: "temporary error (a retry may fix it)",
+    6: "less serious error (no retry)",
+    7: "fatal error (a retry will not fix it)",
+    8: "--max-transfer limit reached",
+    9: "no files transferred (--error-on-no-transfer)",
+    10: "--max-duration limit reached",
+}
+# XR-6: exit codes a whole new sync can change, when rclone's own final
+# stats do not mark the error fatal (F5). Everything else is final.
+_RETRYABLE_EXITS = frozenset({1, 4, 5})
+# rclone's own --retries loop (cmd/cmd.go Run) logs these at ERROR level,
+# the success notice included (F4). Errors up to the last "failed" marker
+# belong to attempts rclone already retried.
+_ATTEMPT_FAILED = re.compile(r"^Attempt \d+/\d+ failed\b")
+_ATTEMPT_SUCCEEDED = re.compile(r"^Attempt \d+/\d+ succeeded$")
+# fs/accounting/stats.go errMaxDelete (XR-1): the --max-delete backstop tripped.
+_MAX_DELETE_MSG = "--max-delete threshold reached"
+# Stats fields that change the destination (XR-3): any non-zero is a change.
+_CHANGE_STATS = ("transfers", "deletes", "deletedDirs", "renames")
 
-def scan_rclone_log_for_errors(log_text: str, max_lines: int = model_default(CloudConfig, "error_tail_lines")) -> tuple[bool, str]:
-    """Scan rclone's --use-json-log stream for ERROR/CRITICAL signals.
 
-    Returns (has_error_signal, error_tail). A line counts as an error signal if:
-      * it parses as JSON and its "level" is ERROR or CRITICAL, OR
-      * it does not parse as JSON and carries a known fatal marker
-        ("Failed to ...") - the documented escape hatch of the JSON logger.
-
-    The tail returned for flagged logs contains the offending lines so the
-    operator sees WHY an exit-9 was reclassified instead of trusting it.
-    """
-    bad_lines: list[str] = []
+def _json_entries(log_text: str):
+    """(raw line, parsed dict or None) for every non-empty log line."""
     for raw_line in (log_text or "").splitlines():
         line = raw_line.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-            level = str(entry.get("level", "")).upper()
-            if _LOG_LEVELS.get(level, 0) >= _LOG_LEVELS["ERROR"]:
-                bad_lines.append(line)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
+            entry = None
+        yield line, entry if isinstance(entry, dict) else None
+
+
+def count_failed_attempts(log_text: str) -> int:
+    """How many of rclone's own --retries attempts failed in this process."""
+    return sum(1 for _, e in _json_entries(log_text)
+               if e is not None and _ATTEMPT_FAILED.match(str(e.get("msg", ""))))
+
+
+def scan_rclone_log_for_errors(log_text: str, max_lines: int = model_default(CloudConfig, "error_tail_lines")) -> tuple[bool, str]:
+    """Scan rclone's --use-json-log stream for ERROR/CRITICAL signals of the
+    FINAL attempt (XR-4).
+
+    Returns (has_error_signal, error_tail). A line counts as an error signal if:
+      * it parses as JSON, its "level" is ERROR or CRITICAL, it comes after
+        rclone's last "Attempt k/N failed" line (earlier errors belong to
+        attempts rclone itself retried) and it is not rclone's own
+        "Attempt k/N succeeded" notice, OR
+      * it does not parse as JSON and carries a known fatal marker
+        ("Failed to ...") - the documented escape hatch of the JSON logger.
+        These are kept wherever they appear.
+
+    When every attempt failed, the last "failed" line itself is the final
+    attempt's verdict and is kept with that attempt's errors.
+    """
+    entries = list(_json_entries(log_text))
+    last_failed = max((i for i, (_, e) in enumerate(entries)
+                       if e is not None and _ATTEMPT_FAILED.match(str(e.get("msg", "")))),
+                      default=None)
+    # The final attempt starts after the PREVIOUS failed marker, if any.
+    earlier_failed = None
+    if last_failed is not None:
+        succeeded_after = any(
+            e is not None and _ATTEMPT_SUCCEEDED.match(str(e.get("msg", "")))
+            for _, e in entries[last_failed + 1:])
+        if succeeded_after:
+            earlier_failed = last_failed
+        else:
+            earlier_failed = max((i for i, (_, e) in enumerate(entries[:last_failed])
+                                  if e is not None
+                                  and _ATTEMPT_FAILED.match(str(e.get("msg", "")))),
+                                 default=None)
+    start = -1 if earlier_failed is None else earlier_failed
+    bad_lines: list[str] = []
+    for i, (line, entry) in enumerate(entries):
+        if entry is None:
             lowered = line.lower()
             if any(marker in lowered for marker in _FATAL_PLAINTEXT_MARKERS):
                 bad_lines.append(line)
+            continue
+        if i <= start:
+            continue
+        level = str(entry.get("level", "")).upper()
+        msg = str(entry.get("msg", ""))
+        if _LOG_LEVELS.get(level, 0) >= _LOG_LEVELS["ERROR"] and not _ATTEMPT_SUCCEEDED.match(msg):
+            bad_lines.append(line)
     return bool(bad_lines), "\n".join(bad_lines[-max_lines:] if max_lines > 0 else [])
+
+
+def max_delete_reached(log_text: str) -> bool:
+    """True when rclone stopped deleting at the --max-delete backstop (XR-1)."""
+    return any(e is not None and _MAX_DELETE_MSG in str(e.get("msg", ""))
+               for _, e in _json_entries(log_text))
+
+
+def rclone_retryable(code: int, stats: dict | None, *, max_delete_reached: bool) -> bool:
+    """XR-6: can a whole new `rclone sync` change this failed outcome?
+
+    Only exits 1/4/5 that rclone itself did not mark fatal. Never after the
+    --max-delete backstop (a human decides, XR-1) and never when the final
+    stats are missing - the deletions of the attempt are then unknown, so
+    a repeat could not be bounded (fail closed).
+    """
+    if max_delete_reached or not isinstance(stats, dict):
+        return False
+    return type(code) is int and code in _RETRYABLE_EXITS and stats.get("fatalError") is not True
+
+
+def stats_prove_no_changes(stats: dict | None) -> bool:
+    """XR-3: exit 9 means no uploads; "no changes" needs every change count 0."""
+    return isinstance(stats, dict) and all(stats.get(k) == 0 for k in _CHANGE_STATS)
 
 
 def count_planned_deletes(log_text: str) -> int:
@@ -89,11 +182,11 @@ def final_stats(log_text: str) -> dict | None:
 
 
 def classify_rclone_exit(code: int) -> str:
-    """Classify rclone exit code per official documentation.
+    """Classify rclone exit code (meanings: RCLONE_EXIT_MEANING).
 
     0  → CLOUD_COMPLETE  (all files synced)
-    1  → CLOUD_FAILED     (syntax/usage)
-    2  → CLOUD_FAILED     (error not otherwise categorised)
+    1  → CLOUD_FAILED     (error not otherwise categorised)
+    2  → CLOUD_FAILED     (syntax/usage)
     3  → CLOUD_FAILED     (directory not found)
     4  → CLOUD_PARTIAL    (file not found — transient)
     5  → CLOUD_PARTIAL    (temporary — network, retryable)
@@ -285,7 +378,8 @@ def run_cloud_sync(
         result = run_tool(step, cmd, timeout_s=timeout,
                           artefacts=artefacts, log_path=log_path)
 
-    base = {"suspect_reason": None, "log_path": str(log_path), "stats": None}
+    base = {"suspect_reason": None, "log_path": str(log_path), "stats": None,
+            "rclone_failed_attempts": 0, "max_delete_reached": False, "retryable": False}
     if dry_run:
         base["planned_deletes"] = None  # set below only for a clean, completed dry-run
     if result.spawn_error:
@@ -294,8 +388,10 @@ def run_cloud_sync(
                 "error": "rclone not found" if missing else result.spawn_error}
     if result.timed_out:
         # G7: a timeout is an interruption, not a data event — rclone sync
-        # is resumable.
-        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "timed_out": True, "error": (
+        # is resumable. Not retried (XR-6): rclone overran its own
+        # --max-duration, and its deletions are unknown.
+        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "timed_out": True,
+                "stats": final_stats(result.log_text()), "error": (
             f"Timeout after {timeout}s — rclone sync is resumable; progress is "
             "preserved and the next run continues from where this one left off"
         )}
@@ -306,6 +402,20 @@ def run_cloud_sync(
     # file opened (fatal config/flag errors) lands on stderr. Scan both.
     log_text = "\n".join(t for t in (result.log_text(), result.stderr_text()) if t)
     has_error, error_tail = scan_rclone_log_for_errors(log_text, max_lines=error_tail_lines)
+    stats = final_stats(result.log_text())
+    base["stats"] = stats
+    base["rclone_failed_attempts"] = count_failed_attempts(log_text)
+    base["max_delete_reached"] = max_delete_reached(log_text)
+    if base["rclone_failed_attempts"]:
+        logger.warning(f"rclone retried internally: {base['rclone_failed_attempts']} "
+                       f"attempt(s) failed (full log: {log_path})")
+    # XR-4: rclone resets its error count between its own attempts, so a
+    # non-zero final count is an error of the attempt whose result counts.
+    stats_errors = stats.get("errors") if isinstance(stats, dict) else None
+    if type(stats_errors) is int and stats_errors > 0 and code in (0, 9):
+        has_error = True
+        error_tail = "\n".join(t for t in (
+            error_tail, f"rclone final stats report {stats_errors} error(s)") if t)
 
     error_msg = None
     suspect_reason = None
@@ -331,6 +441,13 @@ def run_cloud_sync(
                 f"CLOUD_NO_CHANGES_COMPLETE -> CLOUD_FAILED:\n{error_tail}"
             )
             logger.error(error_msg)
+        elif not stats_prove_no_changes(stats):
+            # XR-3: exit 9 = nothing uploaded; deletions do not change it (F3).
+            status = "CLOUD_COMPLETE"
+            logger.info(f"Cloud {'dry-run' if dry_run else 'sync'}: nothing uploaded, but rclone's "
+                        "stats do not prove an unchanged destination "
+                        f"({ {k: (stats or {}).get(k) for k in _CHANGE_STATS} }) - "
+                        "recorded as complete, not 'no changes'")
         else:
             logger.info("Cloud sync: no changes to transfer")
     elif code != 0:
@@ -341,8 +458,11 @@ def run_cloud_sync(
         )
         logger.error(f"rclone error (exit {code}); full log: {log_path}\n{detail}")
 
-    logger.info(f"Cloud {'dry-run' if dry_run else 'sync'} exit {code} -> {status}")
-    base["stats"] = final_stats(result.log_text())
+    if status == "CLOUD_FAILED":
+        base["retryable"] = rclone_retryable(code, stats,
+                                             max_delete_reached=base["max_delete_reached"])
+    logger.info(f"Cloud {'dry-run' if dry_run else 'sync'} exit {code} "
+                f"({RCLONE_EXIT_MEANING.get(code, 'unknown exit code')}) -> {status}")
     if dry_run and status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"):
         # exit 0 = copies planned, 9 = none planned (--error-on-no-transfer);
         # planned deletions do not change the exit code (verified v1.74.3).

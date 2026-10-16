@@ -378,6 +378,8 @@ class _SyncHarness:
 
 _ERR = '{"level":"error","msg":"Failed to copy: googleapi: Error 403: forbidden","source":"x"}'
 _INFO = '{"level":"info","msg":"Copied (new)","object":"a.txt"}'
+_ZERO_STATS = ('{"level":"info","msg":"stats","stats":{"transfers":0,"deletes":0,'
+               '"deletedDirs":0,"renames":0,"errors":0,"fatalError":false}}')
 
 
 class TestRunCloudSyncExitCodes(_SyncHarness):
@@ -387,7 +389,8 @@ class TestRunCloudSyncExitCodes(_SyncHarness):
         (1, "CLOUD_FAILED"), (7, "CLOUD_FAILED"),
     ])
     def test_exit_code_mapping(self, code, status):
-        result = self.sync(exit_code=code, log=_INFO)
+        # XR-3: "no changes" needs rclone's final stats to prove it
+        result = self.sync(exit_code=code, log=_INFO + "\n" + _ZERO_STATS)
         assert result["status"] == status
         assert result["exit_code"] == code
 
@@ -414,7 +417,7 @@ class TestRunCloudSyncLogEvidence(_SyncHarness):
         assert result["error"] == "rclone exit 2 (no log output)"
 
     def test_exit_9_clean_log_stays_no_changes(self):
-        result = self.sync(exit_code=9, log=_INFO)
+        result = self.sync(exit_code=9, log=_INFO + "\n" + _ZERO_STATS)
         assert result["status"] == "CLOUD_NO_CHANGES_COMPLETE"
         assert result["error"] is None
 
@@ -466,7 +469,9 @@ class TestRunCloudSyncFullLog(_SyncHarness):
     def test_return_structure(self):
         result = self.sync(exit_code=0, log=_INFO)
         assert set(result) == {"status", "exit_code", "error", "suspect_reason", "log_path",
-                               "stats"}          # WP6: rclone's final stats
+                               "stats",          # WP6: rclone's final stats
+                               # XR-1/4/6: evidence for the attempt loop
+                               "rclone_failed_attempts", "max_delete_reached", "retryable"}
 
 
 class TestRunCloudSyncPassthrough(_SyncHarness):
