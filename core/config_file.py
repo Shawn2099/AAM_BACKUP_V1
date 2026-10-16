@@ -80,11 +80,3 @@ def write_atomic(config_path: str, yaml, doc, *, tmp_prefix: str) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
         raise
-
-
-def write_config_values(config_path: str, values: dict, *, tmp_prefix: str = ".config_edit_") -> None:
-    """Atomically set several dotted keys, keeping every comment."""
-    yaml, doc = load_round_trip(config_path)
-    for dotted, value in values.items():
-        set_dotted(doc, dotted, value)
-    write_atomic(config_path, yaml, doc, tmp_prefix=tmp_prefix)

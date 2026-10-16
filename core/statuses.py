@@ -139,10 +139,6 @@ def is_success(status) -> bool:
     return _norm(status) in SUCCESS_STATUSES
 
 
-def is_no_changes(status) -> bool:
-    return _norm(status) in NO_CHANGES_STATUSES
-
-
 def category(status) -> str:
     """Return the display/reporting category (also the CSS class)."""
     s = _norm(status)

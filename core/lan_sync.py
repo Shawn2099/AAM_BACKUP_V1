@@ -38,11 +38,6 @@ _FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
 _EXTRA_FILE_LINE = re.compile(r"^\s*\*EXTRA File\b", re.MULTILINE)
 
 
-def count_extra_file_lines(listing: str) -> int:
-    """Files a `robocopy /L /MIR` run would delete (guard G3 input)."""
-    return len(_EXTRA_FILE_LINE.findall(listing or ""))
-
-
 def is_extra_file_line(line: str) -> bool:
     """One destination file `robocopy /MIR` deletes (streaming form)."""
     return bool(_EXTRA_FILE_LINE.match(line))

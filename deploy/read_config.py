@@ -78,22 +78,6 @@ def _read_yaml_fallback(config_path: str, dotpath: str, default: str | None = No
     return default
 
 
-def read_section(config_path: str, section: str) -> dict:
-    """Read an entire section as a dict."""
-    try:
-        import yaml
-    except ImportError:
-        return {}
-
-    with open(config_path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    if isinstance(data, dict) and section in data:
-        result = data[section]
-        return result if isinstance(result, dict) else {}
-    return {}
-
-
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print(f"Usage: {sys.argv[0]} <config.yaml> <dot.path> [--default VALUE]", file=sys.stderr)
