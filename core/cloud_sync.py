@@ -149,6 +149,9 @@ def build_rclone_sync_command(
     transfers: int = model_default(CloudConfig, "transfers"),
     checkers: int = model_default(CloudConfig, "checkers"),
     buffer_size: str = model_default(CloudConfig, "buffer_size"),
+    modify_window_seconds: int = model_default(CloudConfig, "modify_window_seconds"),
+    retries_sleep_seconds: int = model_default(CloudConfig, "sync_retries_sleep_seconds"),
+    stats_interval_seconds: int = model_default(CloudConfig, "stats_interval_seconds"),
     max_duration_seconds: int | None = None,
     max_delete: int | None = None,
 ) -> list[str]:
@@ -174,14 +177,14 @@ def build_rclone_sync_command(
         "--gcs-no-check-bucket",
         "--gcs-storage-class", storage_class,
         "--error-on-no-transfer",
-        "--modify-window", "2s",    # NTFS mtime granularity is 2 seconds.
+        "--modify-window", f"{int(modify_window_seconds)}s",  # NTFS mtime granularity is 2 s.
                                      # Prevents false-positive re-uploads when a file
                                      # is saved twice within the same NTFS tick.
         "--bwlimit", bwlimit,
         "--transfers", str(transfers),
         "--checkers", str(checkers),
         "--retries", str(retries),
-        "--retries-sleep", "30s",
+        "--retries-sleep", f"{int(retries_sleep_seconds)}s",
         "--check-first",            # Finish all stat/hash checks before any upload starts.
                                      # Separates random-seek metadata phase from sequential
                                      # read-for-upload phase — critical for HDD head efficiency.
@@ -191,12 +194,13 @@ def build_rclone_sync_command(
                                        # --use-mmap removed — documented as unstable on Windows.)
         "--use-json-log",
         "--log-level", "INFO",
-        "--stats", "60s",
+        "--stats", f"{int(stats_interval_seconds)}s",
     ]
 
     # C-A: graceful self-termination inside the window. SOFT cutoff lets the
     # in-flight transfer finish and preserves .partial state; retries-sleep
-    # is pinned above so a retry cannot silently reset the deadline.
+    # is set explicitly above (cloud.sync_retries_sleep_seconds) so a retry
+    # cannot silently reset the deadline.
     if max_duration_seconds:
         cmd.extend([
             "--max-duration", f"{int(max_duration_seconds)}s",
@@ -221,6 +225,9 @@ def run_cloud_sync(
     transfers: int = model_default(CloudConfig, "transfers"),
     checkers: int = model_default(CloudConfig, "checkers"),
     buffer_size: str = model_default(CloudConfig, "buffer_size"),
+    modify_window_seconds: int = model_default(CloudConfig, "modify_window_seconds"),
+    retries_sleep_seconds: int = model_default(CloudConfig, "sync_retries_sleep_seconds"),
+    stats_interval_seconds: int = model_default(CloudConfig, "stats_interval_seconds"),
     timeout: int = model_default(CloudConfig, "subprocess_timeout_seconds"),
     max_duration_seconds: int | None = None,
     artefacts: RunArtefacts | None = None,
@@ -261,6 +268,9 @@ def run_cloud_sync(
             source, bucket, fy_prefix, config_path, storage_class,
             bwlimit, retries, transfers, checkers,
             buffer_size=buffer_size,
+            modify_window_seconds=modify_window_seconds,
+            retries_sleep_seconds=retries_sleep_seconds,
+            stats_interval_seconds=stats_interval_seconds,
             max_duration_seconds=effective_max_duration,
             max_delete=None if dry_run else max_delete,
         )

@@ -76,3 +76,29 @@ def test_orphan_log_cleanup_age_comes_from_config():
         except Exception:  # noqa: BLE001 - only the cleanup argument matters here
             pass
     cleanup.assert_called_once_with(max_age_hours=7)
+
+
+def test_sync_command_flags_come_from_the_parameters(tmp_path):
+    (tmp_path / "a.txt").write_text("x")              # G1: the source must hold files
+    cmd = cloud_sync.build_rclone_sync_command(
+        str(tmp_path), "bkt", "FY26-27", "rc.conf", "STANDARD",
+        modify_window_seconds=3, retries_sleep_seconds=45, stats_interval_seconds=120)
+    assert cmd[cmd.index("--modify-window") + 1] == "3s"
+    assert cmd[cmd.index("--retries-sleep") + 1] == "45s"
+    assert cmd[cmd.index("--stats") + 1] == "120s"
+
+
+def test_sync_flag_defaults_are_the_model_defaults():
+    params = inspect.signature(cloud_sync.run_cloud_sync).parameters
+    assert params["modify_window_seconds"].default == model_default(CloudConfig, "modify_window_seconds") == 2
+    assert params["retries_sleep_seconds"].default == model_default(CloudConfig, "sync_retries_sleep_seconds") == 30
+    assert params["stats_interval_seconds"].default == model_default(CloudConfig, "stats_interval_seconds") == 60
+
+
+def test_flow_passes_the_sync_flag_keys():
+    src = inspect.getsource(__import__("flow"))
+    # the guard dry-run and the real sync (+ verify and diff for modify-window)
+    for key, n in (("modify_window_seconds=config.cloud.modify_window_seconds", 4),
+                   ("retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds", 2),
+                   ("stats_interval_seconds=config.cloud.stats_interval_seconds", 2)):
+        assert src.count(key) == n, key

@@ -169,9 +169,13 @@ cloud:
   transfers: 2
   # rclone --checkers: concurrent file comparison workers
   checkers: 4
-  # rclone --modify-window (seconds) for the after-upload check and the difference
-  # report: file times closer than this count as equal (2 = NTFS granularity)
+  # rclone --modify-window (seconds) for the upload, the after-upload check and the
+  # difference report: file times closer than this count as equal (2 = NTFS granularity)
   modify_window_seconds: 2
+  # rclone --retries-sleep (seconds) for the upload and its dry-run (1-600)
+  sync_retries_sleep_seconds: 30
+  # rclone --stats: a progress line in the upload log every N seconds (1-3600)
+  stats_interval_seconds: 60
   # rclone --retries-sleep (seconds) for the difference report; its --retries is retry_count
   retries_sleep_seconds: 10
   # rclone --buffer-size: upload read buffer per transfer slot

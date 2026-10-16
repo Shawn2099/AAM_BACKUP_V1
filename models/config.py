@@ -347,8 +347,16 @@ class CloudConfig(StrictModel):
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
     modify_window_seconds: int = Field(
         default=2, ge=0, le=3600,
-        description="rclone --modify-window for the after-upload check and the difference "
-                    "report (seconds); 2 = NTFS modification-time granularity")
+        description="rclone --modify-window for the upload, the after-upload check and the "
+                    "difference report (seconds); 2 = NTFS modification-time granularity")
+    sync_retries_sleep_seconds: int = Field(
+        default=30, ge=1, le=600,
+        description="rclone --retries-sleep for the upload and its dry-run (seconds); set "
+                    "explicitly so a retry cannot reset the --max-duration deadline")
+    stats_interval_seconds: int = Field(
+        default=60, ge=1, le=3600,
+        description="rclone --stats: progress lines in the upload log every N seconds "
+                    "(the final totals line is written regardless)")
     retries_sleep_seconds: int = Field(
         default=10, ge=0, le=600,
         description="rclone --retries-sleep for the difference report (seconds); its "

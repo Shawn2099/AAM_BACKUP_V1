@@ -149,6 +149,8 @@ HELP: dict[str, tuple[str, str]] = {
     "cloud.modify_window_seconds": ("Time difference treated as equal",
                                     "File times closer than this count as the same."),
     "cloud.retries_sleep_seconds": ("Wait between network retries in the difference report", ""),
+    "cloud.sync_retries_sleep_seconds": ("Wait between network retries in the upload", ""),
+    "cloud.stats_interval_seconds": ("Progress line in the upload log every", ""),
     "cloud.buffer_size": ("Memory per upload", ""),
     "cloud.error_tail_lines": ("Error lines in alerts", ""),
 
