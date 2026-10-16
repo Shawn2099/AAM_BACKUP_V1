@@ -48,6 +48,10 @@ lan:
   max_attempts: 2
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 600
+  # Extra tries of the LAN preflight (robocopy /L dry-run) after a failure (0-5)
+  preflight_retries: 1
+  # Seconds between LAN preflight tries (5-3600)
+  preflight_retry_delay_seconds: 30
   # Robocopy /MT — parallel copy threads
   mt_threads: 4
   # Robocopy /ZB backup mode: also copies files the account cannot open normally.
@@ -137,6 +141,14 @@ cloud:
   max_attempts: 3
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 300
+  # Extra tries of the cloud preflight (source + GCS access probe) after a failure (0-5)
+  preflight_retries: 1
+  # Seconds between cloud preflight tries (5-3600)
+  preflight_retry_delay_seconds: 30
+  # Extra tries of the after-upload check + report step after a failure (0-5)
+  verify_retries: 1
+  # Seconds between after-upload check tries (5-3600)
+  verify_retry_delay_seconds: 60
   # Timeout for post-sync rclone check/verify step (seconds). 18000 = 5 hours (conservative initial limit)
   verify_timeout_seconds: 18000
   # Timeout for pre-sync rclone check dry-run (seconds)

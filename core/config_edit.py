@@ -112,6 +112,8 @@ _UNITS = {
     "lan.retry_count": "times", "lan.max_attempts": "times", "cloud.retry_count": "times",
     "cloud.max_attempts": "times", "audit.retries": "times", "notifications.retry_attempts": "times",
     "lan.preflight_smb_attempts": "times", "wol.wake_retry_count": "times",
+    "lan.preflight_retries": "times", "cloud.preflight_retries": "times",
+    "cloud.verify_retries": "times",
     "wol.shutdown_verify_closed_probes": "checks in a row", "watchdog.failure_threshold": "checks in a row",
     "watchdog.max_deferrals": "times", "watchdog.max_transfer_deferrals": "times",
     "watchdog.max_starts_per_window": "starts", "lan.mt_threads": "threads",

@@ -1258,14 +1258,16 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = cloud_preflight_task.with_options(
-            retries=1, retry_delay_seconds=30,
+            retries=config.cloud.preflight_retries,
+            retry_delay_seconds=config.cloud.preflight_retry_delay_seconds,
         )
         sync = cloud_sync_task.with_options(
             retries=config.cloud.max_attempts - 1,
             retry_delay_seconds=config.cloud.retry_delay_seconds,
         )
         verify_report = cloud_verify_and_report_task.with_options(
-            retries=1, retry_delay_seconds=60,
+            retries=config.cloud.verify_retries,
+            retry_delay_seconds=config.cloud.verify_retry_delay_seconds,
         )
 
         # Fetch database state before sync to calculate differential transfers
@@ -1517,7 +1519,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = lan_preflight_task.with_options(
-            retries=1, retry_delay_seconds=30,
+            retries=config.lan.preflight_retries,
+            retry_delay_seconds=config.lan.preflight_retry_delay_seconds,
         )
         sync = lan_sync_task.with_options(
             retries=config.lan.max_attempts - 1,

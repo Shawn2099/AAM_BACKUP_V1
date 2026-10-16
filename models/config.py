@@ -125,6 +125,11 @@ class LanConfig(StrictModel):
     )
     max_attempts: int = Field(default=2, ge=1, le=10, description="Flow-level retry attempts for LAN backup orchestration")
     retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
+    preflight_retries: int = Field(
+        default=1, ge=0, le=5,
+        description="Extra tries of the LAN preflight (robocopy /L dry-run) after a failure")
+    preflight_retry_delay_seconds: int = Field(
+        default=30, ge=5, le=3600, description="Seconds between LAN preflight tries")
     mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
     log_tail_kb: int = Field(default=100, ge=4, le=10240, description="Size of the robocopy log tail (KB) used for the result decision and carried into alerts/DB; the full log is always kept in run_logs")
     # F8: the preflight /L walk scales with dataset size (1M files ~= 5-10 min
@@ -294,6 +299,16 @@ class CloudConfig(StrictModel):
     subprocess_timeout_seconds: int = Field(default=18000, ge=3600)
     max_attempts: int = Field(default=3, ge=1, le=10, description="Flow-level retry attempts for cloud backup orchestration")
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
+    preflight_retries: int = Field(
+        default=1, ge=0, le=5,
+        description="Extra tries of the cloud preflight (source + GCS access probe) after a failure")
+    preflight_retry_delay_seconds: int = Field(
+        default=30, ge=5, le=3600, description="Seconds between cloud preflight tries")
+    verify_retries: int = Field(
+        default=1, ge=0, le=5,
+        description="Extra tries of the after-upload check and report step after a failure")
+    verify_retry_delay_seconds: int = Field(
+        default=60, ge=5, le=3600, description="Seconds between after-upload check tries")
     verify_timeout_seconds: int = Field(default=18000, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
     dry_run_timeout_seconds: int = Field(
