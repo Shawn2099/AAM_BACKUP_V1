@@ -165,6 +165,54 @@ def test_sweep_failure_never_blocks_the_running_row(tmp_path):
         db.close()
 
 
+def _closed_port() -> int:
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()                       # nothing listens: every SMTP connect is refused
+    return port
+
+
+def test_mail_server_down_never_stops_the_backup_and_the_failed_alert_is_recorded(tmp_path):
+    """Code review 2026-10-16 (verification): the sweep emails inline at every
+    pipeline start. With the mail server down, the backup must still get its
+    RUNNING row, and the undelivered alert must be recorded (FAILED) so the
+    dashboard's undelivered-alerts banner shows it."""
+    from models.config import AppConfig
+
+    cfg = AppConfig(
+        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\backup\\FY26-27",
+               "runtime_dir": str(tmp_path / "rt"), "gcs_key_path": str(tmp_path / "key.json")},
+        wol={"enabled": False}, cloud={"enabled": False},
+        dashboard={"auth_enabled": False},
+        notifications={"smtp_host": "127.0.0.1", "smtp_port": _closed_port(),
+                       "sender": "b@test.local", "recipients": ["ops@test.local"],
+                       "smtp_security": "none", "smtp_auth": False, "retry_attempts": 3,
+                       "retry_base_seconds": 0.01, "smtp_timeout_seconds": 2,
+                       "send_on_failure": True},
+    )
+    db = ManifestDB.from_config(cfg)
+    try:
+        db.insert_run({"run_id": "crashed", "mode": "lan", "started_at": now_iso(),
+                       "status": "LAN_RUNNING",
+                       "extended_metrics": json.dumps({"owner": _dead_token()})})
+    finally:
+        db.close()
+
+    flow._record_running(cfg, "lan", "new-run", now_iso())
+
+    db = ManifestDB.from_config(cfg)
+    try:
+        rows = _rows(db)
+        alert = db.last_notification("backup:lan:LAN_ABANDONED")
+    finally:
+        db.close()
+    assert rows["crashed"]["status"] == "LAN_ABANDONED"
+    assert rows["new-run"]["status"] == "LAN_RUNNING"          # the backup goes ahead
+    assert alert["status"] == "FAILED" and alert["attempts"] == 3
+
+
 def test_real_killed_run_is_abandoned_at_agent_start(tmp_path):
     """End to end with a real process: it writes its RUNNING row exactly as a
     pipeline does, then dies without an outcome (os._exit = killed/reboot).
