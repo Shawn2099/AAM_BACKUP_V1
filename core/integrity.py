@@ -34,7 +34,6 @@ Concurrency is NEVER raised to shorten the audit.
 
 import os
 import re
-import subprocess
 import tempfile
 import time
 import uuid
@@ -44,6 +43,13 @@ from loguru import logger
 
 from core.process import resolve_binary
 from core.rclone_errors import DEFAULT_PATTERNS, find_transport_failure
+from core.run_artefacts import RunArtefacts
+from core.tool_runner import run_tool
+from models.config import AuditConfig, CloudConfig, LanConfig
+
+# Fallbacks for direct callers come from the config model itself - the one
+# place a default lives (owner rule); production always passes config.audit.
+_AUDIT = {k: f.default for k, f in AuditConfig.model_fields.items() if f.default_factory is None}
 
 # Completion evidence (F-08 class): rclone check's own final verdict line
 # ("N differences found"). The --combined diff file is pre-created by
@@ -167,11 +173,13 @@ def _run_rclone_check(
     extra_args: list[str] | None = None,
     size_only: bool = False,
     capability: str | None = None,
-    checkers: int = 1,
-    retries: int = 3,
-    retries_sleep_seconds: int = 10,
-    detail_max_paths: int = 100,
+    checkers: int = _AUDIT["checkers"],
+    retries: int = _AUDIT["retries"],
+    retries_sleep_seconds: int = _AUDIT["retries_sleep_seconds"],
+    detail_max_paths: int = _AUDIT["detail_max_paths"],
     network_error_patterns: tuple[str, ...] | list[str] = (),
+    modify_window_seconds: int = _AUDIT["modify_window_seconds"],
+    artefacts: RunArtefacts | None = None,
 ) -> dict:
     """Run one read-only `rclone check --combined` and classify the result.
 
@@ -203,7 +211,7 @@ def _run_rclone_check(
             source, dest,
             "--combined", diff_file,
             "--fast-list",
-            "--modify-window", "2s",
+            "--modify-window", f"{int(modify_window_seconds)}s",
             "--checkers", str(int(checkers)),
             "--retries", str(int(retries)),
             "--retries-sleep", f"{int(retries_sleep_seconds)}s",
@@ -213,13 +221,21 @@ def _run_rclone_check(
         if extra_args:
             cmd.extend(extra_args)
         logger.info(f"Integrity audit ({scope}): rclone check {source} <-> {dest}")
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
-        )
+        # plan 5.1: output streams to the run folder; a timeout kills the
+        # process tree and is reported as such (never parsed as a verdict).
+        result = run_tool(f"rclone-audit-{scope.split('/')[0]}", cmd, timeout_s=timeout,
+                          artefacts=artefacts or RunArtefacts.ephemeral("integrity-audit"))
+        if not result.completed:
+            reason = result.describe_failure()
+            logger.error(f"Integrity audit ({scope}) could not run: {reason}")
+            return _incomplete(scope, capability,
+                               f"capability={capability} audit could not run - execution failed: "
+                               f"{reason}", time.monotonic() - started)
+        returncode = result.exit_code
+        stderr_text = result.stderr_text()
         added, removed, modified, unchanged, errors, present = _parse_combined_file(diff_file)
         elapsed = time.monotonic() - started
-        log_text = f"{result.stderr or ''}\n{result.stdout or ''}"
+        log_text = f"{stderr_text}\n{result.stdout_text()}"
         summaries = _SUMMARY_RE.findall(log_text)
         error_log_lines = [ln for ln in log_text.splitlines() if _ERROR_LINE_RE.match(ln)]
         io_error_lines = [ln for ln in error_log_lines if _IO_ERROR_LINE_RE.search(ln)]
@@ -271,7 +287,7 @@ def _run_rclone_check(
 
         termination = (
             "normal"
-            if summaries and result.returncode in (0, 1) and present
+            if summaries and returncode in (0, 1) and present
             else "abnormal"
         )
         # WP7 classification order: (1) the audit could not run - transport
@@ -287,9 +303,9 @@ def _run_rclone_check(
                       f"{transport.hint} Evidence: {transport.evidence}")
             logger.warning(f"Integrity audit ({scope}) AUDIT_INCOMPLETE: {detail}")
             return _incomplete(scope, capability, detail, elapsed)
-        if result.returncode >= 2 or not present:
+        if returncode >= 2 or not present:
             detail = (f"capability={capability} audit could not run - process error "
-                      f"(exit {result.returncode}): {(result.stderr or '').strip()[:2000]}")
+                      f"(exit {returncode}): {stderr_text.strip()[:2000]}")
             logger.warning(f"Integrity audit ({scope}) AUDIT_INCOMPLETE: {detail}")
             return _incomplete(scope, capability, detail, elapsed)
         if not summaries:
@@ -297,7 +313,7 @@ def _run_rclone_check(
             # (killed/crashed/truncated - the pre-created diff file may
             # still exist but proves nothing on its own).
             detail = (f"capability={capability} audit could not run - no completion summary "
-                      f"(exit {result.returncode}, termination={termination}): interrupted "
+                      f"(exit {returncode}, termination={termination}): interrupted "
                       "before rclone reported a verdict")
             logger.warning(f"Integrity audit ({scope}) AUDIT_INCOMPLETE: {detail}")
             return _incomplete(scope, capability, detail, elapsed)
@@ -310,7 +326,7 @@ def _run_rclone_check(
             mismatches = len(added) + len(modified) + len(removed) + len(errors)
             detail = (
                 f"capability={capability} file read or check errors occurred during audit "
-                f"(error_files={len(errors)}: {errors[:detail_max_paths]}, exit {result.returncode})"
+                f"(error_files={len(errors)}: {errors[:detail_max_paths]}, exit {returncode})"
             )
         elif size_only:
             # §11/acceptance-15: a size-only comparison is NOT deep
@@ -388,7 +404,7 @@ def _run_rclone_check(
             "canary_excluded_paths": canary_excluded[:detail_max_paths],
             "detail": detail, "elapsed_s": round(elapsed, 1),
         }
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except OSError as e:
         logger.error(f"Integrity audit ({scope}) could not run: {e}")
         return _incomplete(scope, capability,
                            f"capability={capability} audit could not run - execution failed: {e}",
@@ -405,7 +421,7 @@ def audit_lan(
     source: str,
     dest: str,
     scope_prefixes: list[str] | None = None,
-    timeout: int = 14400,
+    timeout: int = LanConfig.model_fields["subprocess_timeout_seconds"].default,
     **settings,
 ) -> dict:
     """Read-only LAN audit via `rclone check` (local backend, hash-aware).
@@ -438,7 +454,7 @@ def audit_cloud(
     bucket: str,
     fy_prefix: str,
     config_path: str,
-    timeout: int = 18000,
+    timeout: int = CloudConfig.model_fields["verify_timeout_seconds"].default,
     **settings,
 ) -> dict:
     """Read-only cloud audit: hash-aware `rclone check` (NOT --size-only).

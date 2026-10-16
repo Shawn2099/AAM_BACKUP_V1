@@ -16,6 +16,7 @@ import pytest
 from core import integrity
 from core.manifest import ManifestDB
 from models.config import AppConfig, AuditConfig
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 class _Done:
@@ -31,7 +32,7 @@ def _check(monkeypatch, *, rc, stderr="", rows=(), patterns=()):
         return _Done(rc, "", stderr)
 
     monkeypatch.setattr(integrity, "resolve_binary", lambda n: "rclone")
-    monkeypatch.setattr(integrity.subprocess, "run", fake_run)
+    monkeypatch.setattr(integrity, "run_tool", SubprocessStyleRunTool(side_effect=fake_run))
     return integrity._run_rclone_check("SRC", "DST", "lan/full", 60,
                                        network_error_patterns=tuple(patterns))
 
@@ -71,7 +72,7 @@ def test_process_failure_is_audit_incomplete(monkeypatch, rc, stderr, present):
 def test_timeout_and_spawn_failure_are_audit_incomplete(monkeypatch):
     monkeypatch.setattr(integrity, "resolve_binary", lambda n: "rclone")
     for exc in (subprocess.TimeoutExpired(cmd="rclone", timeout=60), OSError("no rclone")):
-        monkeypatch.setattr(integrity.subprocess, "run", MagicMock(side_effect=exc))
+        monkeypatch.setattr(integrity, "run_tool", SubprocessStyleRunTool(side_effect=exc))
         res = integrity._run_rclone_check("S", "D", "lan/full", 60)
         assert res["status"] == "AUDIT_INCOMPLETE"
 
@@ -106,7 +107,7 @@ def test_cloud_capability_label_is_decided_before_logging(monkeypatch):
         open(cmd[idx + 1], "w", encoding="utf-8").close()
         return _Done(0, "", "0 differences found\n")
 
-    monkeypatch.setattr(integrity.subprocess, "run", fake_run)
+    monkeypatch.setattr(integrity, "run_tool", SubprocessStyleRunTool(side_effect=fake_run))
     res = _check_cloud("S", "bkt", "FY26-27", "/c", timeout=60)
     assert res["capability"] == integrity.CAPABILITY_HASH_GCS
     verdict_lines = [m for m in logged if "VERIFIED" in m]

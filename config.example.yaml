@@ -430,6 +430,9 @@ audit:
   # rclone check --retries / --retries-sleep (seconds)
   retries: 3
   retries_sleep_seconds: 10
+  # rclone check --modify-window (seconds): file times closer than this count as
+  # equal (2 = NTFS granularity)
+  modify_window_seconds: 2
   # Most file paths listed in an audit result (the counts are always complete)
   detail_max_paths: 100
   # Extra error texts (regular expressions) that mean "the audit could not run",

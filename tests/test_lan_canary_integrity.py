@@ -37,6 +37,7 @@ import pytest
 
 from core import integrity
 from core.health import HealthError
+from test_support.fake_tools import SubprocessStyleRunTool
 
 MARKER = ".AAM_TARGET_MOUNTED"
 
@@ -81,7 +82,7 @@ def _invoke_check(monkeypatch, diff_rows, *, returncode=None, summary=None):
         return _FakeCompleted(returncode, "", f"{summary} differences found")
 
     monkeypatch.setattr(integrity, "resolve_binary", lambda _name: "rclone")
-    monkeypatch.setattr(integrity.subprocess, "run", fake_run)
+    monkeypatch.setattr(integrity, "run_tool", SubprocessStyleRunTool(side_effect=fake_run))
     return integrity._run_rclone_check("SRC", "DST", "lan/full", 60)
 
 

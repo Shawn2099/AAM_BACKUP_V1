@@ -781,7 +781,7 @@ class TestRunRcloneCheck:
     def _call(self, parse, run_result, size_only=False):
         # mkstemp must return a real fd so os.close() works.
         with patch("core.integrity.resolve_binary", return_value="rclone"), \
-             patch("core.integrity.subprocess.run", return_value=run_result), \
+             patch("core.integrity.run_tool", new_callable=SubprocessStyleRunTool, return_value=run_result), \
              patch("core.integrity._parse_combined_file", return_value=parse):
             return integrity._run_rclone_check("src", "dst", "test", 5, size_only=size_only)
 
@@ -830,7 +830,7 @@ class TestRunRcloneCheck:
 
     def test_timeout_returns_full_schema(self):
         with patch("core.integrity.resolve_binary", return_value="rclone"), \
-             patch("core.integrity.subprocess.run",
+             patch("core.integrity.run_tool", new_callable=SubprocessStyleRunTool,
                    side_effect=subprocess.TimeoutExpired("rclone", 1)):
             r = integrity._run_rclone_check("src", "dst", "test", 5)
         for key in ("raw_missing", "raw_extra", "raw_changed",

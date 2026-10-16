@@ -271,8 +271,9 @@ class TestWeeklyAuditCompletionContract:
         from core import integrity as integ_mod
 
         with patch.object(
-            integ_mod.subprocess,
-            "run",
+            integ_mod,
+            "run_tool",
+            new_callable=SubprocessStyleRunTool,
             return_value=_mock_run(0, stdout="", stderr=""),
         ):
             result = integ_mod._run_rclone_check("/src", "/dst", "test", timeout=60)
@@ -288,7 +289,7 @@ class TestWeeklyAuditCompletionContract:
             Path(cmd[idx + 1]).write_text("+ ghost.txt\n", encoding="utf-8")
             return _mock_run(0, stderr=CLEAN_STDERR)
 
-        with patch.object(integ_mod.subprocess, "run", side_effect=fake_run):
+        with patch.object(integ_mod, "run_tool", new_callable=SubprocessStyleRunTool, side_effect=fake_run):
             result = integ_mod._run_rclone_check("/src", "/dst", "test", timeout=60)
         assert result["status"] == "VERIFICATION_FAILED"
         assert "contradictory" in result["detail"]
@@ -297,8 +298,9 @@ class TestWeeklyAuditCompletionContract:
         from core import integrity as integ_mod
 
         with patch.object(
-            integ_mod.subprocess,
-            "run",
+            integ_mod,
+            "run_tool",
+            new_callable=SubprocessStyleRunTool,
             side_effect=subprocess.TimeoutExpired(cmd="rclone", timeout=60),
         ):
             result = integ_mod._run_rclone_check("/src", "/dst", "test", timeout=60)

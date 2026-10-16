@@ -24,6 +24,7 @@ from core import integrity as integ_mod
 from core.integrity import _parse_combined_file, _run_rclone_check
 from core.lan_sync import decide_lan_result
 from flow import _cloud_gate_failure_message, _nullable_audit_count
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 def _mock_proc(returncode=1, stdout="", stderr=""):
@@ -40,7 +41,7 @@ def _run_with_combined(combined_text, proc):
         idx = list(cmd).index("--combined")
         Path(cmd[idx + 1]).write_text(combined_text, encoding="utf-8")
         return proc
-    with patch.object(integ_mod.subprocess, "run", side_effect=fake_run):
+    with patch.object(integ_mod, "run_tool", new_callable=SubprocessStyleRunTool, side_effect=fake_run):
         return _run_rclone_check("/src", "/dst", "test", timeout=60)
 
 

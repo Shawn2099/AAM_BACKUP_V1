@@ -21,6 +21,7 @@ from core.integrity import (
 from core.lan_sync import decide_lan_result
 import flow
 from flow import _run_cloud_pipeline, integrity_audit_flow
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 def _make_mock_config(tmp_path=None):
@@ -204,7 +205,7 @@ class TestBug04AuditFileReadErrors:
         assert modified == ["modified.txt"]
         assert unchanged == ["clean.txt"]
 
-    @patch("core.integrity.subprocess.run")
+    @patch("core.integrity.run_tool", new_callable=SubprocessStyleRunTool)
     def test_run_rclone_check_fails_on_read_errors(self, mock_run, tmp_path):
         # rclone reports 0 differences found, but 1 error while checking (exit 1)
         mock_res = MagicMock()
@@ -214,15 +215,15 @@ class TestBug04AuditFileReadErrors:
             "2026/09/07 10:00:00 ERROR : locked.xlsx: permission denied\n"
             "2026/09/07 10:00:00 NOTICE: 1 errors while checking\n"
         )
-        mock_run.return_value = mock_res
 
-        with patch("core.integrity.tempfile.mkstemp") as mock_mkstemp:
-            mock_diff = tmp_path / "diff.txt"
-            mock_diff.write_text("! locked.xlsx\n", encoding="utf-8")
-            import os
-            fd = os.open(str(mock_diff), os.O_RDONLY)
-            mock_mkstemp.return_value = (fd, str(mock_diff))
+        def _rclone_writes_combined(cmd, **_kw):
+            # rclone writes the diff where --combined points (real mkstemp file;
+            # patching mkstemp is global and breaks run_tool's artefact writes)
+            Path(cmd[cmd.index("--combined") + 1]).write_text("! locked.xlsx\n", encoding="utf-8")
+            return mock_res
 
+        mock_run.side_effect = _rclone_writes_combined
+        if True:
             result = _run_rclone_check("C:\\src", "\\\\nas\\dst", "test", timeout=60)
             assert result["status"] == "VERIFICATION_FAILED"
             assert "file read or check errors occurred" in result["detail"]

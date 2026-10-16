@@ -217,6 +217,8 @@ HELP: dict[str, tuple[str, str]] = {
     "audit.checkers": ("Files checked at the same time", ""),
     "audit.retries": ("Retries", ""),
     "audit.retries_sleep_seconds": ("Wait between retries", ""),
+    "audit.modify_window_seconds": ("Time difference treated as equal",
+                                    "File times closer than this count as the same."),
     "audit.detail_max_paths": ("File names listed in a result", ""),
     "audit.network_error_patterns": ("Extra 'could not run' messages", "For the support team."),
 

@@ -162,19 +162,19 @@ class TestDataIntegrityConditions:
 
             # Faithful rclone check simulation: exit 1 (differences), the
             # combined diff marking file.txt as modified, and the summary.
-            diff_fd, diff_path = _tf.mkstemp(suffix=".txt")
-            with _os.fdopen(diff_fd, "w") as fh:
-                fh.write("* file.txt\n")
-
-            with patch("core.integrity.subprocess.run") as mock_run, \
-                 patch("core.integrity.tempfile.mkstemp", return_value=(0, diff_path)), \
-                 patch("core.integrity.os.close"), \
-                 patch("core.integrity.resolve_binary", return_value="rclone"):
-                mock_run.return_value = MagicMock(
+            def _rclone_writes_combined(cmd, **_kw):
+                # rclone writes the diff where --combined points (the real mkstemp
+                # file; patching mkstemp/os.close is global and breaks run_tool)
+                Path(cmd[cmd.index("--combined") + 1]).write_text("* file.txt\n")
+                return MagicMock(
                     returncode=1,
                     stdout="",
                     stderr="2026/01/01 00:00:00 NOTICE : 1 differences found\n",
                 )
+
+            with patch("core.integrity.run_tool", new_callable=SubprocessStyleRunTool) as mock_run, \
+                 patch("core.integrity.resolve_binary", return_value="rclone"):
+                mock_run.side_effect = _rclone_writes_combined
                 result = audit_lan(
                     source=str(source),
                     dest=str(Path(tmp) / "dest"),
@@ -182,9 +182,6 @@ class TestDataIntegrityConditions:
                 assert result is not None
                 assert result["status"] == "VERIFICATION_FAILED"
                 assert result["mismatches"] == 1
-            # _run_rclone_check unlinks the diff file it was given; tolerate that.
-            with contextlib.suppress(FileNotFoundError):
-                _os.unlink(diff_path)
 
     def test_large_file_handling(self):
         """Large file doesn't crash hashing."""

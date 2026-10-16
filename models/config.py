@@ -615,6 +615,10 @@ class AuditConfig(StrictModel):
     retries: int = Field(default=3, ge=0, le=10, description="rclone check --retries")
     retries_sleep_seconds: int = Field(default=10, ge=0, le=600,
                                        description="rclone check --retries-sleep (seconds)")
+    modify_window_seconds: int = Field(
+        default=2, ge=0, le=3600,
+        description="rclone check --modify-window (seconds); 2 = NTFS modification-time "
+                    "granularity")
     detail_max_paths: int = Field(default=100, ge=1, le=10_000,
                                   description="Max divergent paths listed in the audit detail "
                                               "(counts are always complete)")

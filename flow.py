@@ -1177,6 +1177,7 @@ def _audit_settings(config) -> dict:
     a = config.audit
     return {"checkers": a.checkers, "retries": a.retries,
             "retries_sleep_seconds": a.retries_sleep_seconds,
+            "modify_window_seconds": a.modify_window_seconds,
             "detail_max_paths": a.detail_max_paths,
             "network_error_patterns": tuple(a.network_error_patterns)}
 
@@ -2104,18 +2105,22 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             cloud_timeout = int(budget.cap(config.cloud.verify_timeout_seconds))
         except BudgetExceeded as e:
             return _audit_budget_incomplete(e)
-        with temp_rclone_config(
-            config.paths.gcs_key_path,
-            config.cloud.location,
-            config.cloud.project_number,
-            config.cloud.storage_class,
-        ) as rclone_cfg:
-            return audit_cloud(
-                config.paths.source_drive, config.cloud.bucket,
-                _effective_fy_prefix(config), rclone_cfg,
-                timeout=cloud_timeout,
-                **_audit_settings(config),
-            )
+        audit_artefacts = _open_run_artefacts(config, audit_id)
+        try:
+            with temp_rclone_config(
+                config.paths.gcs_key_path,
+                config.cloud.location,
+                config.cloud.project_number,
+                config.cloud.storage_class,
+            ) as rclone_cfg:
+                return audit_cloud(
+                    config.paths.source_drive, config.cloud.bucket,
+                    _effective_fy_prefix(config), rclone_cfg,
+                    timeout=cloud_timeout, artefacts=audit_artefacts,
+                    **_audit_settings(config),
+                )
+        finally:
+            _finalize_run_artefacts(config, audit_artefacts)
 
     def _audit_lan_leg(audit_id: str) -> dict:
         try:
@@ -2124,21 +2129,21 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         except BudgetExceeded as e:
             return _audit_budget_incomplete(e)   # NAS not woken: nothing to do
         wol_check_task(config)
+        audit_artefacts = _open_run_artefacts(config, audit_id)
         try:
             return audit_lan(
                 config.paths.source_drive, config.paths.lan_destination,
-                timeout=lan_timeout, **_audit_settings(config),
+                timeout=lan_timeout, artefacts=audit_artefacts, **_audit_settings(config),
             )
         finally:
             # Only after a successful wake; a failed shutdown never replaces the verdict.
             if config.lan.shutdown_after_backup and config.wol.enabled:
                 try:
-                    audit_artefacts = _open_run_artefacts(config, audit_id)
                     lan_shutdown_task(config, str(audit_artefacts.dir)
                                       if audit_artefacts else None)
-                    _finalize_run_artefacts(config, audit_artefacts)
                 except Exception as e:  # noqa: BLE001
                     logger.error(f"NAS shutdown after the LAN audit failed: {e}")
+            _finalize_run_artefacts(config, audit_artefacts)
 
     try:
         try:
