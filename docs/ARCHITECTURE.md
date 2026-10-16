@@ -94,12 +94,14 @@ with _backup_slot(config):                     concurrency slot + backup.lock (a
 │          Probe A: source readable · Probe B: rclone lsjson --max-depth 0 (auth/bucket/net)
 │
 ├─ phase "sync"
-│   └─ cloud_sync_task (retries = cloud.max_attempts-1, delay cloud.retry_delay_seconds)
+│   └─ _sync_with_retries → cloud_sync_task (no Prefect retries; XR, see CS4)
 │        → core/cloud_sync.run_cloud_sync()
 │            build_rclone_sync_command()  (refuses an "appears empty" source)
 │            core/tool_runner.run_tool("rclone-sync", … --log-file <artefact>)
 │            exit code → classify_rclone_exit() → STATUS  (+ log scan, see D2)
-│        task raises on CLOUD_FAILED / CLOUD_SUSPECT  ⇒ Prefect retries the task
+│        task raises SyncFailed on CLOUD_FAILED / CLOUD_SUSPECT ⇒ attempt loop decides:
+│        retry only if retryable, deletions known, budget fits, guards re-measured
+│        (cumulative G3, --max-delete = what is left); --max-delete stop ⇒ BLOCKED
 │
 ├─ phase "verify"
 │   └─ cloud_verify_and_report_task (1 retry, 60 s)
@@ -137,14 +139,15 @@ with _backup_slot(config):
 │   └─ lan_snapshot_before_task → core/lan_manifest.walk_lan_destination()
 │
 ├─ phase "sync"
-│   └─ lan_sync_task (retries = lan.max_attempts-1, delay lan.retry_delay_seconds)
+│   └─ _sync_with_retries → lan_sync_task (no Prefect retries; XR, see LS5)
 │        → core/lan_sync.run_lan_sync()
 │            build_robocopy_command()  /MIR /Z /ZB /XJ /MT /R /W /V /TS /FP …
 │                                      /XF .AAM_TARGET_MOUNTED  /XD SysVolInfo $RECYCLE.BIN
 │            core/tool_runner.run_tool("robocopy", … /UNILOG:<artefact>)
 │            tail = _read_log_tail(UTF-16, lan.log_tail_kb)
 │            decide_lan_result(exit, tail) → STATUS  (D4)
-│        task raises on LAN_FAILED / LAN_SUSPECT ⇒ Prefect retries
+│        task raises SyncFailed on LAN_FAILED / LAN_SUSPECT ⇒ attempt loop decides:
+│        repeat /MIR only after robocopy /L + G1-G5 + access again (cumulative G3)
 │
 ├─ phase "post"
 │   ├─ lan_snapshot_after_task (walk failure → metrics skipped, run not failed)
@@ -170,7 +173,7 @@ with _backup_slot(config):
 | ID | Decision | Code | Inputs | Output |
 |---|---|---|---|---|
 | D1 | Source looks empty? | `core/health.check_source_drive` | top-level entries minus system names | HealthError → `*_FAILED` |
-| D2 | rclone result | `core/cloud_sync.classify_rclone_exit` + `scan_rclone_log_for_errors` | exit code + ERROR lines | 0 COMPLETE · 9 NO_CHANGES (FAILED if errors logged) · 4/5/10 PARTIAL · else FAILED · 0+errors → SUSPECT |
+| D2 | rclone result | `core/cloud_sync.classify_rclone_exit` + `scan_rclone_log_for_errors` + final stats | exit code + ERROR lines of the **final** attempt + final `stats` | 0 COMPLETE · 9 NO_CHANGES only if stats prove 0 transfers/deletes/deletedDirs/renames, else COMPLETE (FAILED if errors) · 4/5 PARTIAL · 10 PARTIAL time-limit stop (verify skipped) · else FAILED · 0+final-attempt errors or stats.errors>0 → SUSPECT (XR-3/4/5) |
 | D3 | Cloud evidence gate | `flow._run_cloud_pipeline` (`evidence_ok`) | verified + normal termination + diff has no missing/modified + manifest/size ok | fail → `CLOUD_VERIFY_FAILED` |
 | D3a | Size check verdict | `core/cloud_verify.decide_cloud_verify_result` | exit + "N differences found" summary | verified / abnormal |
 | D4 | robocopy result | `core/lan_sync.decide_lan_result` | exit bitmask + completed job summary in log | bit16 FAILED · no summary SUSPECT · bit8 PARTIAL · 0-7 COMPLETE (failed>0 → SUSPECT) |
@@ -407,7 +410,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | CL9 | Preflight probe B: `rclone lsjson --max-depth 0 aam_gcs:<bucket>/<FY>` exits 0 within `cloud.preflight_timeout_seconds` (proves key valid, bucket exists, network + DNS + TLS OK) | `cloud_preflight` | yes | the network/TLS/DNS cause is named in the error (`rclone_errors`, WP7) |
 | CL10 | Builder re-checks the source has a real file | `guards.require_source_files` in `build_rclone_sync_command` | yes (2.2, same G1 rule; an unlistable source is left to rclone, which then deletes nothing — exit 3) | — |
 | CL11 | Source (`rclone size`) not shrunk more than `guards.max_source_shrink_percent` vs last success of the same FY | `cloud-guards` **G2** | yes (2.2) | — |
-| CL12 | Planned deletions (`rclone sync --dry-run`, within `cloud.dry_run_timeout_seconds`) <= `guards.max_delete_files` and <= `guards.max_delete_percent` of the destination (`rclone size`) | `cloud-guards` **G3** | yes (2.2); real sync gets `--max-delete` (rclone stops with exit 7 → FAILED) | — |
+| CL12 | Planned deletions (`rclone sync --dry-run`, within `cloud.dry_run_timeout_seconds`) <= `guards.max_delete_files` and <= `guards.max_delete_percent` of the destination (`rclone size`); on a retry the deletions of earlier attempts count too | `cloud-guards` **G3** | yes (2.2); real sync gets `--max-delete` = what is left of the run's allowance; rclone stopping there (exit 7) → re-measure → **CLOUD_BLOCKED** + approval, never retried (XR-1) | — |
 | CL13 | Cloud write permission: `rclone touch` + `rclone deletefile` of `<bucket>/_aam_preflight/probe_<run_id>` (outside every FY prefix; cause named via `rclone_errors`) if `cloud.write_probe_enabled` | `cloud-access` | yes (2.4) → `CLOUD_FAILED` | — |
 | CL12a | Bucket/prefix unchanged since last success of the same FY | `cloud-guards` **G4** | yes (2.2) | — |
 | — | Any G-check blocks: `CLOUD_BLOCKED` row with the guard record, nothing transferred, ONE approval request + ONE "ACTION REQUIRED - open the dashboard" email (`core.notify`, key `blocked:cloud`, cooldown); approve once on the dashboard re-runs with `approval_id` | `flow`, `ui` | yes (2.2, 2.3) | — |
@@ -416,10 +419,10 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 
 | # | Condition | Code |
 |---|---|---|
-| CS1 | rclone exit 0 gives `CLOUD_COMPLETE`, exit 9 gives `CLOUD_NO_CHANGES_COMPLETE` | `classify_rclone_exit` |
-| CS2 | No ERROR/CRITICAL lines (or plaintext "Failed to ...") in the rclone log; otherwise exit 0 becomes `CLOUD_SUSPECT` and exit 9 becomes `CLOUD_FAILED` | `scan_rclone_log_for_errors` |
-| CS3 | Exit 4/5/10 gives `CLOUD_PARTIAL` (alert, run FAILED, resumes next night); 1/2/3/6/7/8/other, timeout or spawn error gives `CLOUD_FAILED` | same |
-| CS4 | Sync FAILED/SUSPECT is retried by Prefect `cloud.max_attempts - 1` times, `cloud.retry_delay_seconds` apart | `flow` |
+| CS1 | rclone exit 0 gives `CLOUD_COMPLETE`; exit 9 gives `CLOUD_NO_CHANGES_COMPLETE` only when the final stats show 0 transfers, deletes, deleted dirs and renames (a deletes-only sync also exits 9), else `CLOUD_COMPLETE` (XR-3) | `classify_rclone_exit`, `stats_prove_no_changes` |
+| CS2 | No ERROR/CRITICAL lines in the **final** attempt (after rclone's last `Attempt k/N failed`; its `Attempt k/N succeeded` notice excluded), no plaintext "Failed to ...", and final `stats.errors` = 0; otherwise exit 0 becomes `CLOUD_SUSPECT` and exit 9 becomes `CLOUD_FAILED`. Failed internal attempts are logged (XR-4) | `scan_rclone_log_for_errors` |
+| CS3 | Exit 4/5 gives `CLOUD_PARTIAL`; exit 10 (rclone `--max-duration`, run budget or config cap) gives `CLOUD_PARTIAL` with verify skipped (XR-5); 1/2/3/6/7/8/other, timeout or spawn error gives `CLOUD_FAILED` | same, `cloud_sync_task` |
+| CS4 | Up to `cloud.max_attempts` attempts, `cloud.retry_delay_seconds` apart, **only** for exit 1/4/5 not marked fatal in rclone's final stats, with known deletions, a delay that fits the budget, and guards re-measured (cumulative G3) first. SUSPECT, timeouts and exits 2/3/6/7/8 run once. Run row keeps the real exit code + `sync_attempts` (XR-1/XR-6) | `flow._sync_with_retries`, `rclone_retryable` |
 | CS5 | **Size check** passes (see 10.6 V1) | evidence gate D3 |
 | CS6 | Post-sync diff (`rclone check --combined --size-only`) completed (exit < 2) and shows **0 missing** and **0 size-changed** files | `cloud_reporter.get_cloud_diff` |
 | CS7 | Bucket listing (`rclone lsjson -R`) and size query (`rclone size`) both succeeded | `get_cloud_manifest`, `get_cloud_size` |
@@ -452,7 +455,7 @@ exception in the verify/post steps can still leave a success status in the row �
 | LS2 | Exit code has no bit 16 (fatal, else `LAN_FAILED`) and no bit 8 (copy errors, else `LAN_PARTIAL`) | same |
 | LS3 | Exit 0-7 **and** summary FAILED column = 0 **and** no `** FAILED:` lines gives `LAN_COMPLETE` (4-7 = mismatches/extras: complete, logged as an anomaly) | same |
 | LS4 | Exit code is a real integer (bool / None / timeout gives `LAN_FAILED`) | same (M1 1.8) |
-| LS5 | FAILED/SUSPECT retried by Prefect `lan.max_attempts - 1` times, `lan.retry_delay_seconds` apart; hard timeout `lan.subprocess_timeout_seconds` | `flow`, `run_lan_sync` |
+| LS5 | Up to `lan.max_attempts` attempts, `lan.retry_delay_seconds` apart, only for LAN_FAILED that is not a timeout, with a known deletion count (`*EXTRA File` lines) and a delay that fits the budget; before a repeat the robocopy /L listing, destination count, G1-G5 (cumulative G3) and access probes run again. SUSPECT runs once. Hard timeout `lan.subprocess_timeout_seconds` (XR-2/XR-6) | `flow._sync_with_retries`, `run_lan_sync` |
 | LS6 | Final status is `LAN_COMPLETE` | terminal policy D5 |
 | — | Post-sync snapshot / DB record failure does **not** fail the run (metrics skipped, logged CRITICAL) | `lan_snapshot_after_task` |
 | — | NAS shutdown only after `LAN_COMPLETE` **and** `lan.shutdown_after_backup` **and** `wol.enabled` (or after PARTIAL/FAILED if `lan.shutdown_on_all_retries_exhausted`); the result is verified (port 445 closed) and recorded, never assumed | D9 |

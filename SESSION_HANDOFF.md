@@ -1,7 +1,8 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-16 (GitNexus scan, tool_runner migration, no-literals sweep - see §4d;
-box review + deploy - §4b). **Box not redeployed with §4d** (owner decides).
+**Last updated:** 2026-10-16 (rclone exit codes + bounded sync retries XR-1..6 - see §4e;
+GitNexus scan, tool_runner migration, no-literals sweep - §4d; box review + deploy - §4b).
+**Box not redeployed with §4d / §4e** (owner decides).
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -142,6 +143,36 @@ config.yaml `monthly_cron` changed - DEC-7).
    4.4 schedule/time-budget validator with cronsim (WP14), 4.5 installer `uv run --frozen
    --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
    (M3 deferral - tool_runner migration of the check tools - DONE 2026-10-16, §4d.)
+
+## 4e. Session 2026-10-16 (rclone exit codes, sync retries - XR-1..XR-6)
+
+Owner asked for the best fix (not patches) after research. Research, options and decisions:
+**`docs/audit/EXIT_CODES_AND_RETRIES_2026-10-16.md`** (rclone v1.74.3 source + real-binary
+experiments; real logs in `test_support/rclone_logs/`). Commits fe5855e, 7a2dc09.
+- **XR-1 (data loss, fixed):** Prefect task retries re-ran `rclone sync` with a fresh
+  `--max-delete N` each attempt - 3 runs x `--max-delete 2` deleted all 6 files (real binary).
+  Now `flow._sync_with_retries` (both legs): guards re-measured before every retry with this
+  run's deletions counted (G3 cumulative), `--max-delete` = what is left
+  (`guards.remaining_delete_allowance`), and a `--max-delete` stop is never retried ->
+  re-measure -> `CLOUD_BLOCKED` + approval (`guards.backstop_blocked`).
+- **XR-2 (data loss, fixed):** robocopy `/MIR` repeat after 10 min without re-checking -> now
+  robocopy /L + destination count + G1-G5 + access run again first; unknown deletions = no repeat.
+- **XR-3:** a deletes-only sync exits 9 -> NO_CHANGES only when rclone's stats prove 0 changes.
+- **XR-4:** rclone logs its own retried attempts (even "Attempt 2/3 succeeded") at ERROR level
+  -> only the final attempt + final `stats.errors` decide SUSPECT.
+- **XR-5:** exit 10 from rclone's own `--max-duration` -> PARTIAL, verify skipped (was VERIFY_FAILED).
+- **XR-6:** retries only for rclone 1/4/5 not marked fatal / LAN_FAILED not a timeout, delay must
+  fit the budget. The run row now keeps a failed sync's real exit code + FAILED/SUSPECT
+  (was exit -1) and `sync_attempts`. An approval also covers its own run's retries.
+- No new config keys (`*.max_attempts` / `*.retry_delay_seconds` keep their meaning).
+- Not done / post-MVP: LAN leg on rclone (`--max-delete`, `--backup-dir`) evaluated and
+  rejected for MVP (loses `/ZB`, ACL copy, the verified robocopy guard parsing). The audit lab
+  runs with `max_attempts: 1`, so retries are proven by unit tests, not on the real tools.
+- Tests: `tests/` 2030 passed / 0 failed / 19 skipped. Full audit lab (at 7a2dc09, 21 min):
+  237 passed / 1 failed / 3 skipped - the 1 red was the W10 line-coverage floor for
+  `cloud_sync.py` (82% < 85%: the new failure-only branches are not taken on a clean night);
+  floor set to 80 with the reason in the test, re-run green. No behaviour red.
+- Owner decision open: none new. Deploy to the box when you choose (same runbook).
 
 ## 4d. Session 2026-10-16 (GitNexus scan + "no hard-coded values" sweep)
 

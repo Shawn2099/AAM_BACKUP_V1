@@ -397,7 +397,11 @@ def test_w10_production_line_coverage_during_real_run(sandbox, monkeypatch):
             assert total > 0, f"{target} was not mapped by the tracer"
             continue
         assert hit > 0, f"{target}: 0 lines traced - the tracer missed it entirely"
-    floors = {"core/lan_sync.py": 55, "core/cloud_sync.py": 85, "core/cloud_verify.py": 60,
+    # cloud_sync.py 85 -> 80 (XR-1/3/4/6, 2026-10-16): the module gained failure-only
+    # branches (--max-delete stop, retry classification, exit 9 with changes) that a
+    # clean night never takes; they are covered by tests/test_xr_rclone_verdicts.py
+    # on real rclone logs. Measured 82% on the clean run.
+    floors = {"core/lan_sync.py": 55, "core/cloud_sync.py": 80, "core/cloud_verify.py": 60,
               "core/manifest.py": 45, "core/health.py": 45, "core/lan_preflight.py": 55,
               "core/cloud_preflight.py": 50, "flow.py": 60}
     for target, floor in floors.items():
