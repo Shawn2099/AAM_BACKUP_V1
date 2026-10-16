@@ -186,12 +186,20 @@ config.yaml `monthly_cron` changed - DEC-7).
   `LAN_COMPLETE` (marker `.AAM_TARGET_MOUNTED` written, 580 files) -> no "LAN overdue" email.
 - Settings: `.claude/settings.json` allows `Bash(ssh innoviztawinserver2016:*)` and
   `PowerShell(ssh innoviztawinserver2016:*)`.
-- **Open: /code-review of these 4 commits -> 10 findings, NOT yet verified/fixed**: audit alert key
-  `audit:{mode}` lacks status (MISMATCH suppressed by an earlier INCOMPLETE); live-but-hung RUNNING
-  row never abandoned (age backstop dropped); abandoned alert key lacks run_id (2nd crash
-  suppressed); sweep only at agent/pipeline start (watchdog should sweep); synchronous SMTP in
-  launch / pipeline start / watchdog loop; fresh install emails "overdue" at once (owner decision:
-  grace period?); duplicated run-alert format; unused `audit_id` + duplicated incomplete dict.
+- **/code-review of these 4 commits -> 10 findings, triaged with owner (MVP: pipelines must run;
+  dig only where an alert goes silent or email can stop a backup):**
+  - FIXED c2e8386: audit alert key `audit:{mode}` -> `audit:{mode}:<leg>=<status>,...` (a real
+    MISMATCH is no longer suppressed by an earlier "could not run" alert).
+  - VERIFIED ab4dd4d: SMTP down never stops a backup (notify never raises, callers wrapped; test
+    with a refused port). Delay bound: retry_attempts x smtp_timeout + backoff (~2.5 min per email
+    with defaults), only when an abandoned run is pending. Accepted for MVP.
+  - BY DESIGN: abandoned key `backup:{leg}:{status}` = same scheme as every run failure; nightly
+    runs are 24 h apart > 12 h cooldown, so only a manual retry inside 12 h is suppressed.
+  - COVERED: live-but-hung RUNNING row / late sweep -> the next run cannot get the slot
+    (`*_SLOT_TIMEOUT` + "could not start" email) and the watchdog's stale-leg email follows.
+  - DEFERRED post-MVP: fresh install emails "overdue" at once (owner: note for install day);
+    duplicated run-alert format in `sweep_abandoned_runs`; unused `audit_id` param + duplicated
+    "could not run" dict in `integrity_audit_flow`.
 
 ## 4a. M5 on the trial box - where we paused (2026-10-15)
 
