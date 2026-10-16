@@ -38,3 +38,6 @@ htmlcov/
 MagicMock/
 audit_lab/raw/*.err
 audit_lab/raw/*_report.txt
+
+# Worker-agent runs (AGENT_TASKS.md): claims, full logs, reports stay local
+agent_runs/
