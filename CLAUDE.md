@@ -10,6 +10,8 @@ Active work is the MVP hardening on branch `mvp-hardening`. Before doing anythin
 2. `MVP_HARDENING_PLAN.md` — the owner-approved plan: rules (§2), work packages (§7), config keys (§8), decisions DEC-1..8 (§11), checklist (§13). Do not re-plan.
 3. `docs/ARCHITECTURE.md` — processes, flow step-by-step, decision points, file map, and §10 "gates" (every check each leg must pass).
 
+**Worker agents** (asked to run tests/checks, not to build): follow `AGENT_TASKS.md` only. You never edit tracked files, and the trial box is read-only for you; your logs and reports go to `agent_runs/`.
+
 `HANDOVER.md` and the many `*_REPORT*.md` / `AUDIT_*.md` files at the root are historical audit material, not current state.
 
 ## What this is
