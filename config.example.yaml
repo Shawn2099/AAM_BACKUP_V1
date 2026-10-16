@@ -170,7 +170,8 @@ cloud:
   # rclone --checkers: concurrent file comparison workers
   checkers: 4
   # rclone --modify-window (seconds) for the upload, the after-upload check and the
-  # difference report: file times closer than this count as equal (2 = NTFS granularity)
+  # difference report: file times closer than this count as equal (2 = NTFS granularity;
+  # 0-10 - a wider window would make the upload skip same-size edits)
   modify_window_seconds: 2
   # rclone --retries-sleep (seconds) for the upload and its dry-run (1-600)
   sync_retries_sleep_seconds: 30
@@ -438,7 +439,7 @@ audit:
   retries: 3
   retries_sleep_seconds: 10
   # rclone check --modify-window (seconds): file times closer than this count as
-  # equal (2 = NTFS granularity)
+  # equal (2 = NTFS granularity; 0-10)
   modify_window_seconds: 2
   # Most file paths listed in an audit result (the counts are always complete)
   detail_max_paths: 100

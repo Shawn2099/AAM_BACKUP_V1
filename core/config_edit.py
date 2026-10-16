@@ -50,6 +50,8 @@ _RISKY_KEYS = frozenset({
     "cloud.storage_class", "lan.enabled", "rollover.source_placeholder_name",
     # data safety
     "lan.use_backup_mode", "health.clock_unverified_policy", "cloud.write_probe_enabled",
+    # what counts as "unchanged": a wide window skips same-size edits
+    "cloud.modify_window_seconds", "audit.modify_window_seconds",
     # NAS power
     "wol.enabled", "wol.server_ip", "wol.mac_address", "wol.broadcast_address",
     "lan.shutdown_after_backup", "lan.shutdown_on_all_retries_exhausted",

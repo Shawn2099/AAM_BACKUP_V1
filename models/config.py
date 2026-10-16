@@ -346,8 +346,8 @@ class CloudConfig(StrictModel):
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
     modify_window_seconds: int = Field(
-        default=2, ge=0, le=3600,
-        description="rclone --modify-window for the upload, the after-upload check and the "
+        default=2, ge=0, le=10,
+        description="(max 10: a wide window makes the upload skip same-size edits) rclone --modify-window for the upload, the after-upload check and the "
                     "difference report (seconds); 2 = NTFS modification-time granularity")
     sync_retries_sleep_seconds: int = Field(
         default=30, ge=1, le=600,
@@ -643,7 +643,7 @@ class AuditConfig(StrictModel):
     retries_sleep_seconds: int = Field(default=10, ge=0, le=600,
                                        description="rclone check --retries-sleep (seconds)")
     modify_window_seconds: int = Field(
-        default=2, ge=0, le=3600,
+        default=2, ge=0, le=10,
         description="rclone check --modify-window (seconds); 2 = NTFS modification-time "
                     "granularity")
     detail_max_paths: int = Field(default=100, ge=1, le=10_000,

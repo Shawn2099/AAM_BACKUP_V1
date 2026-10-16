@@ -102,3 +102,23 @@ def test_flow_passes_the_sync_flag_keys():
                    ("retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds", 2),
                    ("stats_interval_seconds=config.cloud.stats_interval_seconds", 2)):
         assert src.count(key) == n, key
+
+
+# Code review 2026-10-16: --modify-window now also drives the nightly upload.
+# rclone sync treats a same-size file whose time is within the window as
+# unchanged, so a wide window can silently skip a real edit (data loss).
+@pytest.mark.parametrize("model,field", [(CloudConfig, "modify_window_seconds"),
+                                         (__import__("models.config", fromlist=["AuditConfig"]).AuditConfig,
+                                          "modify_window_seconds")])
+def test_modify_window_is_bounded_to_a_safe_range(model, field):
+    from pydantic import ValidationError
+    extra = {"bucket": "aam-test-bucket", "project_number": "123456"} if model is CloudConfig else {}
+    model(**extra, **{field: 10})
+    with pytest.raises(ValidationError):
+        model(**extra, **{field: 11})
+
+
+def test_modify_window_changes_need_the_typed_confirmation():
+    from core.config_edit import is_risky
+    assert is_risky("cloud.modify_window_seconds")
+    assert is_risky("audit.modify_window_seconds")
