@@ -10,7 +10,7 @@ from loguru import logger
 from wakeonlan import send_magic_packet as wol_send
 
 from core.smb_ready import wait_for_smb_ready
-from models.config import AppConfig
+from models.config import AppConfig, WolConfig, model_default
 
 CANARY_NAME = ".AAM_TARGET_MOUNTED"
 
@@ -19,7 +19,7 @@ class WolTimeout(RuntimeError):
     """Server did not respond within wake timeout."""
 
 
-def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 15.0) -> bool:
+def _smb_port_open(server_ip: str, port: int = 445, timeout: float = model_default(WolConfig, "smb_connect_timeout_seconds")) -> bool:
     """TCP connect to SMB port. More reliable than ping.
 
     P1-WOL: ports outside the valid range are rejected by the clamp guard
@@ -40,8 +40,8 @@ def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 15.0) -> bo
 def _send_magic_packet(
     mac_address: str,
     subnet_broadcast: str,
-    repeat: int = 3,
-    interval: int = 5,
+    repeat: int = model_default(WolConfig, "wake_retry_count"),
+    interval: int = model_default(WolConfig, "wake_retry_interval_seconds"),
 ) -> None:
     """Send WoL magic packet to both global and subnet-directed broadcast.
 
@@ -101,7 +101,7 @@ def wait_for_server(
     stability_wait: int,
     *,
     probe_path: str | None = None,
-    connect_timeout: float = 15.0,
+    connect_timeout: float = model_default(WolConfig, "smb_connect_timeout_seconds"),
 ) -> None:
     """Wait until the NAS is genuinely usable over SMB (core.smb_ready).
 

@@ -5,12 +5,10 @@ before committing to a multi-hour copy.
 """
 
 import socket
+import time
 from pathlib import Path
 
 from loguru import logger
-import time
-
-from core.smb_ready import wait_for_smb_ready
 
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
 from core.lan_sync import (
@@ -22,7 +20,9 @@ from core.lan_sync import (
 from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
+from core.smb_ready import wait_for_smb_ready
 from core.tool_runner import run_tool
+from models.config import LanConfig, WolConfig, model_default
 
 
 def _extract_unc_host(path_str: str) -> str | None:
@@ -48,9 +48,9 @@ def _tcp_probe(host: str, port: int, timeout_s: float) -> tuple[bool, str]:
 def _is_smb_reachable(
     host: str,
     port: int = 445,
-    timeout: float = 15.0,
-    attempts: int = 8,
-    wait_s: float = 15.0,
+    timeout: float = model_default(WolConfig, "smb_connect_timeout_seconds"),
+    attempts: int = model_default(LanConfig, "preflight_smb_attempts"),
+    wait_s: float = model_default(LanConfig, "preflight_smb_wait_seconds"),
 ) -> bool:
     """SMB port reachability with `attempts` tries `wait_s` apart (WP10).
 
@@ -69,12 +69,12 @@ def _is_smb_reachable(
 def run_lan_dry_run(
     source: str,
     dest: str,
-    timeout: int = 900,
-    smb_attempts: int = 8,
-    smb_wait_seconds: float = 15.0,
-    smb_connect_timeout_seconds: float = 15.0,
+    timeout: int = model_default(LanConfig, "dry_run_timeout_seconds"),
+    smb_attempts: int = model_default(LanConfig, "preflight_smb_attempts"),
+    smb_wait_seconds: float = model_default(LanConfig, "preflight_smb_wait_seconds"),
+    smb_connect_timeout_seconds: float = model_default(WolConfig, "smb_connect_timeout_seconds"),
     artefacts: RunArtefacts | None = None,
-    log_tail_kb: int = 100,
+    log_tail_kb: int = model_default(LanConfig, "log_tail_kb"),
 ) -> dict:
     """Run robocopy in list-only mode to validate paths and permissions.
 

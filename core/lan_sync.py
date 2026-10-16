@@ -15,7 +15,7 @@ from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool
-from models.config import LanConfig
+from models.config import LanConfig, MaintenanceConfig, model_default
 
 # ═══════════════════════════════════════════════════════════════
 # Flag validation — /NC is FORBIDDEN
@@ -358,7 +358,7 @@ def classify_exit_code(code: int) -> str:
 ROBOCOPY_LOG_PREFIX = "robocopy_sync_"
 
 
-def cleanup_orphaned_robocopy_logs(max_age_hours: int = 24) -> int:
+def cleanup_orphaned_robocopy_logs(max_age_hours: int = model_default(MaintenanceConfig, "orphan_robocopy_log_max_age_hours")) -> int:
     """Delete orphaned robocopy temp logs older than max_age_hours.
 
     Returns the number of files removed. Never raises — cleanup is

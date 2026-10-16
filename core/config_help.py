@@ -182,6 +182,8 @@ HELP: dict[str, tuple[str, str]] = {
     "maintenance.sqlite_synchronous": ("Database safety level", ""),
     "maintenance.db_retention_days": ("Keep backup history for", ""),
     "maintenance.log_retention_days": ("Keep program logs for", ""),
+    "maintenance.orphan_robocopy_log_max_age_hours": ("Delete leftover copy logs after",
+                                                      "Logs left behind by a stopped copy."),
     "maintenance.sqlite_busy_timeout_ms": ("Database wait time", ""),
     "maintenance.sqlite_vacuum_freelist_threshold": ("Database clean-up threshold", ""),
     "maintenance.config_backups_keep": ("Settings backups to keep", "A copy of the settings is saved before every change."),

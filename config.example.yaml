@@ -297,6 +297,9 @@ maintenance:
   # Days of application log files to keep (1–365). 90 = the 3-month log
   # retention the owner asked for (R8)
   log_retention_days: 90
+  # Robocopy temp logs left in %TEMP% by a killed run are deleted once older than
+  # this many hours (1-720); the age gate protects a running backup's own log
+  orphan_robocopy_log_max_age_hours: 24
   # How long a backup waits for another backup job to finish before it gives up
   # as *_SLOT_TIMEOUT (seconds). The schedule check (see `schedule:`) uses it.
   concurrency_wait_seconds: 3600

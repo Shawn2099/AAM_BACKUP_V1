@@ -2236,10 +2236,11 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
 
     # G8: clean up orphaned robocopy temp logs left behind by hard-killed
     # processes (SCM stop, timeout kill, crash). Normal runs delete their own
-    # log in a finally block; only killed runs strand them in %TEMP%. The 24h
-    # age gate protects a concurrently running pipeline's active log.
+    # log in a finally block; only killed runs strand them in %TEMP%. The age
+    # gate protects a concurrently running pipeline's active log.
     try:
-        cleanup_orphaned_robocopy_logs(max_age_hours=24)
+        cleanup_orphaned_robocopy_logs(
+            max_age_hours=config.maintenance.orphan_robocopy_log_max_age_hours)
     except Exception as e:
         logger.warning(f"Orphaned robocopy log cleanup failed (non-fatal): {e}")
 

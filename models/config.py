@@ -46,6 +46,18 @@ class StrictModel(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+
+def model_default(model: type[BaseModel], field: str):
+    """The default of `model.field`, for a function's fallback parameter.
+
+    Owner rule: a tunable's default lives only in this module. Functions that
+    keep a fallback for direct callers (tests, tools) read it from here
+    instead of repeating a literal that can drift (it did: ManifestDB's
+    vacuum threshold said 1000 while the model said 10000).
+    """
+    return model.model_fields[field].get_default(call_default_factory=True)
+
+
 _DEFAULT_RUNTIME_DIR = os.environ.get(
     "AAM_RUNTIME_DIR",
     r"C:\BackupAgent",
@@ -509,6 +521,13 @@ class MaintenanceConfig(StrictModel):
         ge=1,
         le=365,
         description="Days of log files to retain before Loguru auto-deletion (1–365)",
+    )
+    orphan_robocopy_log_max_age_hours: int = Field(
+        default=24,
+        ge=1,
+        le=720,
+        description="G8: robocopy temp logs left in %TEMP% by a killed run are deleted once "
+                    "older than this (hours); the age gate protects a running backup's log",
     )
     sqlite_busy_timeout_ms: int = Field(
         default=30000,

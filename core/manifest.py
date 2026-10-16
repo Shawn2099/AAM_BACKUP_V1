@@ -13,6 +13,7 @@ from pathlib import Path
 from loguru import logger
 
 from core.time_utils import cutoff_iso, now_iso
+from models.config import MaintenanceConfig, model_default
 
 # Critical-6: version gate for schema migrations. Bump when DDL or the
 # legacy-migration steps below change. Fresh databases are stamped straight
@@ -175,9 +176,9 @@ class ManifestDB:
     def __init__(
         self,
         db_path: str | Path,
-        busy_timeout_ms: int = 30000,
-        vacuum_freelist_threshold: int = 1000,
-        synchronous: str = "normal",
+        busy_timeout_ms: int = model_default(MaintenanceConfig, "sqlite_busy_timeout_ms"),
+        vacuum_freelist_threshold: int = model_default(MaintenanceConfig, "sqlite_vacuum_freelist_threshold"),
+        synchronous: str = model_default(MaintenanceConfig, "sqlite_synchronous"),
     ):
         """Create or open the manifest database.
 
@@ -1074,7 +1075,7 @@ class ManifestDB:
                                 "started_at": started_at, "error_message": reason})
         return changed
 
-    def purge_old_runs(self, retention_days: int = 90):
+    def purge_old_runs(self, retention_days: int = model_default(MaintenanceConfig, "db_retention_days")):
         """Delete run_history entries older than retention_days.
 
         Keeps file_entries intact — only purges the run log to prevent

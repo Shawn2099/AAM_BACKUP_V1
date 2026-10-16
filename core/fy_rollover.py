@@ -19,10 +19,15 @@ from pathlib import Path
 
 from loguru import logger
 
-from core.config_file import backup_config_file, load_round_trip, write_atomic  # noqa: F401 - backup_config_file is part of this module's API
+from core.config_file import (  # noqa: F401 - backup_config_file is part of this module's API
+    backup_config_file,
+    load_round_trip,
+    write_atomic,
+)
 from core.run_artefacts import RunArtefacts
 from core.time_utils import get_fy_prefix
 from core.tool_runner import run_tool
+from models.config import HealthConfig, model_default
 
 FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
 
@@ -263,8 +268,8 @@ def run_archive_transition(
     bucket: str,
     old_fy: str,
     gcs_key_path: str,
-    auth_timeout: int = 30,       # config.health.rollover_auth_timeout_seconds
-    archive_timeout: int = 600,   # config.health.rollover_archive_timeout_seconds
+    auth_timeout: int = model_default(HealthConfig, "rollover_auth_timeout_seconds"),       # config.health.rollover_auth_timeout_seconds
+    archive_timeout: int = model_default(HealthConfig, "rollover_archive_timeout_seconds"),   # config.health.rollover_archive_timeout_seconds
     artefacts: RunArtefacts | None = None,
 ) -> bool:
     """Transition all GCS objects under old_fy/ to ARCHIVE storage class.

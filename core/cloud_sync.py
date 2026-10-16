@@ -12,7 +12,7 @@ from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool, tail_lines
-
+from models.config import CloudConfig, model_default
 
 # P1-EXIT9: severity floor that disqualifies an exit-9 from "no changes".
 _LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
@@ -21,7 +21,7 @@ _LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 
 _FATAL_PLAINTEXT_MARKERS = ("failed to", "notices: failed", "notice: failed")
 
 
-def scan_rclone_log_for_errors(log_text: str, max_lines: int = 10) -> tuple[bool, str]:
+def scan_rclone_log_for_errors(log_text: str, max_lines: int = model_default(CloudConfig, "error_tail_lines")) -> tuple[bool, str]:
     """Scan rclone's --use-json-log stream for ERROR/CRITICAL signals.
 
     Returns (has_error_signal, error_tail). A line counts as an error signal if:
@@ -144,11 +144,11 @@ def build_rclone_sync_command(
     fy_prefix: str,
     config_path: str,
     storage_class: str,
-    bwlimit: str = "10M",
-    retries: int = 3,
-    transfers: int = 2,
-    checkers: int = 4,
-    buffer_size: str = "64M",
+    bwlimit: str = model_default(CloudConfig, "bandwidth_limit"),
+    retries: int = model_default(CloudConfig, "retry_count"),
+    transfers: int = model_default(CloudConfig, "transfers"),
+    checkers: int = model_default(CloudConfig, "checkers"),
+    buffer_size: str = model_default(CloudConfig, "buffer_size"),
     max_duration_seconds: int | None = None,
     max_delete: int | None = None,
 ) -> list[str]:
@@ -215,16 +215,16 @@ def run_cloud_sync(
     gcs_key_path: str,
     project_number: str,
     storage_class: str,
-    location: str = "asia-south1",
-    bwlimit: str = "10M",
-    retries: int = 3,
-    transfers: int = 2,
-    checkers: int = 4,
-    buffer_size: str = "64M",
-    timeout: int = 18000,
+    location: str = model_default(CloudConfig, "location"),
+    bwlimit: str = model_default(CloudConfig, "bandwidth_limit"),
+    retries: int = model_default(CloudConfig, "retry_count"),
+    transfers: int = model_default(CloudConfig, "transfers"),
+    checkers: int = model_default(CloudConfig, "checkers"),
+    buffer_size: str = model_default(CloudConfig, "buffer_size"),
+    timeout: int = model_default(CloudConfig, "subprocess_timeout_seconds"),
     max_duration_seconds: int | None = None,
     artefacts: RunArtefacts | None = None,
-    error_tail_lines: int = 100,
+    error_tail_lines: int = model_default(CloudConfig, "error_tail_lines"),
     dry_run: bool = False,
     max_delete: int | None = None,
 ) -> dict:

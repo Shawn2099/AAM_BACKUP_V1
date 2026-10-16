@@ -13,13 +13,14 @@ from loguru import logger
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool
+from models.config import HealthConfig, model_default
 
 
 class HealthError(RuntimeError):
     """Raised when a pre-backup health check fails."""
 
 
-def check_source_drive(source_path: str, min_free_gb: int = 1) -> tuple[bool, str]:
+def check_source_drive(source_path: str, min_free_gb: int = model_default(HealthConfig, "min_free_source_gb")) -> tuple[bool, str]:
     """Verify source drive exists, can be listed, and has free space.
 
     Whether the source holds any files is NOT judged here: that is guard G1
@@ -176,12 +177,12 @@ def pre_backup_health(
     source_path: str,
     mode: str,
     gcs_key_path: str | None = None,
-    min_free_source_gb: int = 1,
-    max_clock_skew_seconds: int = 600,
-    clock_check_timeout_seconds: int = 10,
-    clock_unverified_policy: str = "warn",
-    ntp_server: str = "time.windows.com",
-    w32tm_timeout_seconds: int = 30,
+    min_free_source_gb: int = model_default(HealthConfig, "min_free_source_gb"),
+    max_clock_skew_seconds: int = model_default(HealthConfig, "max_clock_skew_seconds"),
+    clock_check_timeout_seconds: int = model_default(HealthConfig, "clock_check_timeout_seconds"),
+    clock_unverified_policy: str = model_default(HealthConfig, "clock_unverified_policy"),
+    ntp_server: str = model_default(HealthConfig, "ntp_server"),
+    w32tm_timeout_seconds: int = model_default(HealthConfig, "w32tm_timeout_seconds"),
     artefacts: RunArtefacts | None = None,
 ) -> ClockResult | None:
     """Run all pre-backup health checks. Raises HealthError on failure.
