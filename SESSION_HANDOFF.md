@@ -143,6 +143,24 @@ config.yaml `monthly_cron` changed - DEC-7).
    Deferred from M3 (plan §13 note): tool_runner migration of cloud_verify / cloud_reporter /
    integrity `subprocess.run` calls.
 
+## 4c. Session 2026-10-16 (later) - dev tooling + calendar simulation
+
+- Dev group now locks pytest-timeout, pytest-cov, ruff, hypothesis, time-machine (all were
+  ad hoc or missing; `uv sync` would have dropped them). Owner approved.
+- MCP servers registered locally (`claude mcp list`): gitnexus (`node .gitnexus/run.cjs mcp`,
+  avoids the npm 11 npx crash) and context7 (live library docs).
+- `tests/test_calendar_simulation.py`: real nights via cronsim + `pendulum.travel_to`
+  (time-machine) - rollover once on April 1, server off over April 1, clock wrongly in April,
+  clock falling back, IST midnight, stale boundary, run-log retention. Verified against 7
+  planted bugs (all caught). Limits: child processes, the Prefect scheduler and
+  `time.monotonic` keep real time.
+- OPEN (owner decision): `uv audit` reports 36 advisories, all transitive via Prefect
+  (anyio, cryptography, urllib3 < 2.8.0, h2, mako, fsspec, apprise...). Fix = targeted
+  `uv lock --upgrade-package` + full suite + audit lab. Also: `04_check_readiness.ps1` runs
+  `uv sync --frozen` without `--no-dev` (dev tools land on the box; harmless).
+- Pre-existing noise: a Prefect "Logging error / Stopping temporary server" at suite exit
+  (also without the new test/time-machine).
+
 ## 4b. Session 2026-10-16 (unattended, owner away) - box review + code audit
 
 **Box (read-only this session - the auto-mode classifier refused writes/approvals on the box):**
