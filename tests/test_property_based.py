@@ -12,6 +12,7 @@ from core.hashing import PENDING_CHECKSUM, compute_md5, verify_checksum
 from core.lan_sync import classify_exit_code, count_failed_lines, decide_lan_result, failed_file_count, log_shows_completed_summary
 from core.lan_manifest import diff_snapshots
 from core.cloud_reporter import get_cloud_diff
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 # ── diff_snapshots properties ──────────────────────────────────────────
@@ -323,31 +324,25 @@ class TestGetCloudDiffProperties:
             path = paths[i % len(paths)] if paths else f"file_{i}.txt"
             lines.append(f"{marker} {path}")
 
-        # Write with an explicit encoding so non-ASCII paths never trip the
-        # platform default codec (cp1252 on Windows).
-        import tempfile as _tempfile
-        fd, diff_file = _tempfile.mkstemp(suffix=".txt")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+        def _rclone_writes_combined(cmd, **_kw):
+            # Emulate rclone: write the diff where --combined points (explicit
+            # utf-8 so non-ASCII paths never trip the cp1252 default codec).
+            Path(cmd[cmd.index("--combined") + 1]).write_text("\n".join(lines), encoding="utf-8")
+            return MagicMock(returncode=0, stdout="", stderr="")
 
-        try:
-            # get_cloud_diff owns and unlinks the temp file it is handed, so
-            # hand it a freshly-created one inside the patch and never unlink
-            # it ourselves (the finally block in the function removes it).
-            with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-                 patch("core.cloud_reporter.subprocess.run") as mock_run, \
-                 patch("core.cloud_reporter.tempfile.mkstemp", return_value=(0, diff_file)), \
-                 patch("core.cloud_reporter.os.close"):
-                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-                result = get_cloud_diff(
-                    source="E:\\",
-                    bucket="bucket",
-                    fy_prefix="FY26-27",
-                    config_path="/tmp/config",
-                )
-                assert isinstance(result["added"], list)
-                assert isinstance(result["removed"], list)
-                assert isinstance(result["modified"], list)
-                assert isinstance(result["unchanged"], list)
-        finally:
-            Path(diff_file).unlink(missing_ok=True)
+        # get_cloud_diff owns its real temp file (mkstemp + unlink in finally);
+        # never patch mkstemp/os.close - both are global and break run_tool.
+        with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as mock_run:
+            mock_run.side_effect = _rclone_writes_combined
+            result = get_cloud_diff(
+                source="E:\\",
+                bucket="bucket",
+                fy_prefix="FY26-27",
+                config_path="/tmp/config", timeout=18000, checkers=4, modify_window_seconds=2,
+                retries=3, retries_sleep_seconds=10,
+            )
+            assert isinstance(result["added"], list)
+            assert isinstance(result["removed"], list)
+            assert isinstance(result["modified"], list)
+            assert isinstance(result["unchanged"], list)

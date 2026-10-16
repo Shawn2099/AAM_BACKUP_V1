@@ -667,6 +667,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
         size = get_cloud_size(
             config.cloud.bucket, fy_prefix, rclone_cfg,
             timeout=limit(config.cloud.cloud_size_timeout_seconds),
+            artefacts=artefacts,
         )
         size_s = time.monotonic() - _t_size
         # M6: a failed manifest query must never look like an empty bucket.
@@ -677,6 +678,7 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
             manifest = get_cloud_manifest(
                 config.cloud.bucket, fy_prefix, rclone_cfg,
                 timeout=limit(config.cloud.manifest_timeout_seconds),
+                artefacts=artefacts,
             )
         except Exception as e:
             logger.warning(
@@ -691,6 +693,11 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
             fy_prefix,
             rclone_cfg,
             timeout=limit(config.cloud.diff_timeout_seconds),
+            checkers=config.cloud.checkers,
+            modify_window_seconds=config.cloud.modify_window_seconds,
+            retries=config.cloud.retry_count,
+            retries_sleep_seconds=config.cloud.retries_sleep_seconds,
+            artefacts=artefacts,
         )
         diff_s = time.monotonic() - _t_diff
         stage_seconds = {

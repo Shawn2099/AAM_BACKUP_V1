@@ -78,8 +78,10 @@ class SubprocessStyleRunTool:
     stdout/stderr written to the artefact files the module reads back.
     """
 
-    def __init__(self):
-        object.__setattr__(self, "_mock", MagicMock())
+    def __init__(self, **configure):
+        # patch(..., new_callable=SubprocessStyleRunTool, side_effect=...) passes
+        # its keyword arguments here, as it would to MagicMock.
+        object.__setattr__(self, "_mock", MagicMock(**configure))
 
     def __getattr__(self, item):
         return getattr(self._mock, item)

@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from models.config import NotificationConfig, PathsConfig
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -424,35 +425,35 @@ class TestCloudReporterCharacterization:
     def test_get_cloud_size_parses_json(self):
         from core.cloud_reporter import get_cloud_size
 
-        with patch("core.cloud_reporter.subprocess.run") as m:
+        with patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.return_value = MagicMock(
                 returncode=0, stdout='{"count": 7, "bytes": 4096}', stderr=""
             )
-            result = get_cloud_size("bucket", "FY26-27", "/cfg")
+            result = get_cloud_size("bucket", "FY26-27", "/cfg", timeout=300)
         assert result["count"] == 7
         assert result["bytes"] == 4096
 
     def test_get_cloud_size_nonzero_exit_reports_error(self):
         from core.cloud_reporter import get_cloud_size
 
-        with patch("core.cloud_reporter.subprocess.run") as m:
+        with patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.return_value = MagicMock(returncode=1, stdout="", stderr="boom")
-            result = get_cloud_size("bucket", "FY26-27", "/cfg")
+            result = get_cloud_size("bucket", "FY26-27", "/cfg", timeout=300)
         assert result["count"] == 0
         assert "exited 1" in result["_error"]
 
     def test_get_cloud_size_unparsable_json(self):
         from core.cloud_reporter import get_cloud_size
 
-        with patch("core.cloud_reporter.subprocess.run") as m:
+        with patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.return_value = MagicMock(returncode=0, stdout="not json", stderr="")
-            result = get_cloud_size("bucket", "FY26-27", "/cfg")
+            result = get_cloud_size("bucket", "FY26-27", "/cfg", timeout=300)
         assert "_error" in result
 
     def test_get_cloud_size_timeout(self):
         from core.cloud_reporter import get_cloud_size
 
-        with patch("core.cloud_reporter.subprocess.run") as m:
+        with patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=1)
             result = get_cloud_size("bucket", "FY26-27", "/cfg", timeout=1)
         assert result["count"] == 0 and "_error" in result
@@ -464,23 +465,23 @@ class TestCloudReporterCharacterization:
             '[{"Path":"a.txt","Size":1,"IsDir":false},'
             ' {"Path":"sub","Size":0,"IsDir":true}]'
         )
-        with patch("core.cloud_reporter.subprocess.run") as m:
+        with patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.return_value = MagicMock(returncode=0, stdout=payload, stderr="")
-            files = get_cloud_manifest("bucket", "FY26-27", "/cfg")
+            files = get_cloud_manifest("bucket", "FY26-27", "/cfg", timeout=18000)
         assert [f["Path"] for f in files] == ["a.txt"]
 
     def test_get_cloud_manifest_raises_on_failure(self):
         from core.cloud_reporter import CloudReporterError, get_cloud_manifest
 
-        with patch("core.cloud_reporter.subprocess.run") as m:
+        with patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.return_value = MagicMock(returncode=3, stdout="", stderr="dir not found")
             with pytest.raises(CloudReporterError, match="exited 3"):
-                get_cloud_manifest("bucket", "FY26-27", "/cfg")
+                get_cloud_manifest("bucket", "FY26-27", "/cfg", timeout=18000)
 
     def test_get_cloud_manifest_raises_on_timeout(self):
         from core.cloud_reporter import CloudReporterError, get_cloud_manifest
 
-        with patch("core.cloud_reporter.subprocess.run") as m:
+        with patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=1)
             with pytest.raises(CloudReporterError, match="timed out"):
                 get_cloud_manifest("bucket", "FY26-27", "/cfg", timeout=1)
@@ -497,11 +498,11 @@ class TestCloudReporterCharacterization:
             return fd, path
 
         with patch.object(cloud_reporter.tempfile, "mkstemp", side_effect=fake_mkstemp), \
-             patch("core.cloud_reporter.subprocess.run") as m:
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.return_value = MagicMock(returncode=0, stdout="", stderr="")
             return cloud_reporter.get_cloud_diff(
                 source="E:\\", bucket="bucket", fy_prefix="FY26-27",
-                config_path="/cfg",
+                config_path="/cfg", timeout=18000, checkers=4, modify_window_seconds=2, retries=3, retries_sleep_seconds=10
             )
 
     def test_get_cloud_diff_parses_all_prefixes(self):
@@ -528,10 +529,10 @@ class TestCloudReporterCharacterization:
             return fd, path
 
         with patch.object(cloud_reporter.tempfile, "mkstemp", side_effect=fake_mkstemp), \
-             patch("core.cloud_reporter.subprocess.run") as m:
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as m:
             m.return_value = MagicMock(returncode=2, stdout="", stderr="checks failed")
             result = cloud_reporter.get_cloud_diff(
-                source="E:\\", bucket="bucket", fy_prefix="FY26-27", config_path="/cfg",
+                source="E:\\", bucket="bucket", fy_prefix="FY26-27", config_path="/cfg", timeout=18000, checkers=4, modify_window_seconds=2, retries=3, retries_sleep_seconds=10
             )
         assert result["_partial"] is True
         assert "exited 2" in result["_error"]

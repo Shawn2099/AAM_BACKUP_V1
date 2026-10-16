@@ -1343,7 +1343,7 @@ def test_w13_cloud_reporter_against_local_backend(sandbox):
         if size.get("count") != 2 or size.get("bytes") != 30:
             problems.append(f"cloud size reported {size}")
 
-        diff_clean = crep.get_cloud_diff(str(src), "lab-bucket", "FY26-26", rc, timeout=60)
+        diff_clean = crep.get_cloud_diff(str(src), "lab-bucket", "FY26-26", rc, timeout=60, checkers=4, modify_window_seconds=2, retries=3, retries_sleep_seconds=10)
         rows.append(f"get_cloud_diff(clean)      -> {diff_clean}")
         if diff_clean.get("added") or diff_clean.get("removed") or diff_clean.get("modified"):
             problems.append(f"a clean pair reported a diff: {diff_clean}")
@@ -1351,7 +1351,7 @@ def test_w13_cloud_reporter_against_local_backend(sandbox):
             problems.append(f"unchanged list was {diff_clean.get('unchanged')}")
 
         (bucket_root / "lab-bucket" / "FY26-26" / "Clients" / "b.txt").unlink()
-        diff_missing = crep.get_cloud_diff(str(src), "lab-bucket", "FY26-26", rc, timeout=60)
+        diff_missing = crep.get_cloud_diff(str(src), "lab-bucket", "FY26-26", rc, timeout=60, checkers=4, modify_window_seconds=2, retries=3, retries_sleep_seconds=10)
         rows.append(f"get_cloud_diff(1 missing)  -> added={diff_missing.get('added')}")
         if diff_missing.get("added") != ["Clients/b.txt"]:
             problems.append(f"the missing file was not reported as added: {diff_missing}")

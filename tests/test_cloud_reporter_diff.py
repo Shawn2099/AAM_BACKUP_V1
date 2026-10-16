@@ -30,6 +30,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from core.cloud_reporter import get_cloud_diff
+from test_support.fake_tools import SubprocessStyleRunTool
 
 SOURCE = "E:\\"
 BUCKET = "bucket"
@@ -54,7 +55,7 @@ def _mock_rclone_check(
     or raises `exception` before touching the file.
     """
     with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-         patch("core.cloud_reporter.subprocess.run") as mock_run:
+         patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as mock_run:
         def _side_effect(cmd, *args, **kwargs):
             diff_path = Path(cmd[cmd.index("--combined") + 1])
             if exception is not None:
@@ -78,6 +79,9 @@ def _call_diff(**kwargs):
         bucket=BUCKET,
         fy_prefix=FY_PREFIX,
         config_path=CONFIG_PATH,
+        # rclone tunables at the cloud.* config defaults
+        timeout=18000, checkers=4, modify_window_seconds=2,
+        retries=3, retries_sleep_seconds=10,
     )
     params.update(kwargs)
     return get_cloud_diff(**params)
@@ -271,7 +275,7 @@ class TestGetCloudDiffCommand:
             raise subprocess.TimeoutExpired(cmd="rclone", timeout=100)
 
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run") as mock_run:
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as mock_run:
             mock_run.side_effect = _side_effect
             result = _call_diff(timeout=100)
 

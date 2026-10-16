@@ -30,6 +30,7 @@ from hypothesis import strategies as st
 # ═══════════════════════════════════════════════════════════════════════════
 
 from core import health
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 class TestCheckSourceDrive:
@@ -651,47 +652,47 @@ class TestCloudReporterErrors:
 
     def test_size_nonzero_exit_reports_error(self):
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run",
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool,
                    return_value=self._run(returncode=1, stdout="", stderr="boom")):
-            out = cloud_reporter.get_cloud_size("b", "FY26-27", "cfg")
+            out = cloud_reporter.get_cloud_size("b", "FY26-27", "cfg", timeout=300)
         assert out["count"] == 0 and "_error" in out
 
     def test_size_timeout_reports_error(self):
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run",
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool,
                    side_effect=subprocess.TimeoutExpired("rclone", 1)):
-            out = cloud_reporter.get_cloud_size("b", "FY26-27", "cfg")
+            out = cloud_reporter.get_cloud_size("b", "FY26-27", "cfg", timeout=300)
         assert out["count"] == 0 and "_error" in out
 
     def test_manifest_nonzero_raises(self):
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run",
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool,
                    return_value=self._run(returncode=1, stdout="", stderr="boom")):
             with pytest.raises(cloud_reporter.CloudReporterError):
-                cloud_reporter.get_cloud_manifest("b", "FY26-27", "cfg")
+                cloud_reporter.get_cloud_manifest("b", "FY26-27", "cfg", timeout=18000)
 
     def test_manifest_unparsable_raises(self):
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run",
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool,
                    return_value=self._run(returncode=0, stdout="{not json", stderr="")):
             with pytest.raises(cloud_reporter.CloudReporterError):
-                cloud_reporter.get_cloud_manifest("b", "FY26-27", "cfg")
+                cloud_reporter.get_cloud_manifest("b", "FY26-27", "cfg", timeout=18000)
 
     def test_manifest_timeout_raises(self):
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run",
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool,
                    side_effect=subprocess.TimeoutExpired("rclone", 1)):
             with pytest.raises(cloud_reporter.CloudReporterError):
-                cloud_reporter.get_cloud_manifest("b", "FY26-27", "cfg")
+                cloud_reporter.get_cloud_manifest("b", "FY26-27", "cfg", timeout=18000)
 
     def test_diff_partial_has_heterogeneous_extra_keys(self):
         """Finding C-1: get_cloud_diff returns a dict whose values are
         lists for added/removed/modified/unchanged but bool/str for the
         _partial/_error keys — a mixed-type mapping consumers must guard."""
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run",
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool,
                    return_value=self._run(returncode=2, stdout="", stderr="boom")):
-            diff = cloud_reporter.get_cloud_diff("src", "b", "FY26-27", "cfg")
+            diff = cloud_reporter.get_cloud_diff("src", "b", "FY26-27", "cfg", timeout=18000, checkers=4, modify_window_seconds=2, retries=3, retries_sleep_seconds=10)
         assert diff["_partial"] is True
         assert isinstance(diff["_error"], str)
         for k in ("added", "removed", "modified", "unchanged"):
@@ -699,9 +700,9 @@ class TestCloudReporterErrors:
 
     def test_diff_timeout_partial(self):
         with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_reporter.subprocess.run",
+             patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool,
                    side_effect=subprocess.TimeoutExpired("rclone", 1)):
-            diff = cloud_reporter.get_cloud_diff("src", "b", "FY26-27", "cfg")
+            diff = cloud_reporter.get_cloud_diff("src", "b", "FY26-27", "cfg", timeout=18000, checkers=4, modify_window_seconds=2, retries=3, retries_sleep_seconds=10)
         assert diff["_partial"] is True
 
 

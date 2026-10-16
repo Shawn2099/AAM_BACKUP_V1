@@ -14,6 +14,7 @@ from core.lan_manifest import diff_snapshots
 from core.lan_sync import classify_exit_code, decide_lan_result, failed_file_count
 from core.cloud_reporter import get_cloud_diff
 from core.cloud_preflight import run_cloud_dry_run
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 @contextmanager
@@ -27,7 +28,7 @@ def _mock_rclone_check(diff_content=None, *, exit_code=0):
     EBADF on the second call) and push the call onto its _partial path.
     """
     with patch("core.cloud_reporter.resolve_binary", return_value="rclone"), \
-         patch("core.cloud_reporter.subprocess.run") as mock_run:
+         patch("core.cloud_reporter.run_tool", new_callable=SubprocessStyleRunTool) as mock_run:
         def _side_effect(cmd, *args, **kwargs):
             diff_path = Path(cmd[cmd.index("--combined") + 1])
             if diff_content is not None:
@@ -175,6 +176,9 @@ class TestGetCloudDiffEdgeCases:
             bucket="bucket",
             fy_prefix="FY26-27",
             config_path="/tmp/config",
+            # rclone tunables at the cloud.* config defaults
+            timeout=18000, checkers=4, modify_window_seconds=2,
+            retries=3, retries_sleep_seconds=10,
         )
         params.update(kwargs)
         return get_cloud_diff(**params)

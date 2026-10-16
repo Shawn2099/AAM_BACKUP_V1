@@ -6,7 +6,6 @@ Rclone IS the source of truth for GCS state.
 
 import json
 import os
-import subprocess
 import tempfile
 from pathlib import Path, PureWindowsPath
 
@@ -60,50 +59,39 @@ def count_objects(target: str, config_path: str, timeout: int, artefacts: RunArt
     return count
 
 
-def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int = 300) -> dict:
+def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, *, timeout: int,
+                   artefacts: RunArtefacts | None = None) -> dict:
     """rclone size --json → {"count": int, "bytes": int, "sizeless": str}.
 
     Instant — GCS returns pre-computed object counts. No file traversal.
+    Any failure is returned as data under "_error" (reporting only).
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
     rclone_exe = resolve_binary("rclone") or "rclone"
     cmd = [rclone_exe, "size", dest, "--json", *_base_args(config_path)]
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as e:
-        logger.warning(f"Cloud size query failed: {e}")
-        return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
-    except FileNotFoundError as e:
-        # M6: missing binary is data, not a crash — callers see _error
-        logger.warning(f"Cloud size query failed: rclone not found: {e}")
-        return {"count": 0, "bytes": 0, "sizeless": "0", "_error": f"rclone not found: {e}"}
-    if result.returncode != 0:
-        stderr_output = result.stderr.strip() if result.stderr else "no stderr"
-        logger.warning(f"Cloud size rclone exited {result.returncode}: {stderr_output}")
-        data = None
-    else:
-        try:
-            data = json.loads(result.stdout.strip())
-        except json.JSONDecodeError as e:
-            logger.warning(f"Cloud size query returned unparsable output: {e}")
-            return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
-    if data is None:
+    result = run_tool("rclone-size-report", cmd, timeout_s=timeout,
+                      artefacts=artefacts or RunArtefacts.ephemeral("cloud-size"))
+    if not result.completed:
+        # M6: a missing binary / timeout is data, not a crash — callers see _error
+        reason = result.describe_failure()
+        logger.warning(f"Cloud size query failed: {reason}")
+        return {"count": 0, "bytes": 0, "sizeless": "0", "_error": reason}
+    if result.exit_code != 0:
         # Non-zero exit: do NOT parse stdout — report the failure honestly
+        stderr_output = result.stderr_text().strip() or "no stderr"
+        logger.warning(f"Cloud size rclone exited {result.exit_code}: {stderr_output}")
         return {
             "count": 0,
             "bytes": 0,
             "sizeless": "0",
-            "_error": f"rclone size exited {result.returncode}: "
-                      f"{(result.stderr or '').strip() or 'no stderr'}",
+            "_error": f"rclone size exited {result.exit_code}: {stderr_output}",
         }
+    try:
+        data = json.loads(result.stdout_text().strip())
+    except json.JSONDecodeError as e:
+        logger.warning(f"Cloud size query returned unparsable output: {e}")
+        return {"count": 0, "bytes": 0, "sizeless": "0", "_error": str(e)}
     # Use .get() so a malformed-but-valid JSON response (e.g. {}) doesn't escape as KeyError
     count = data.get("count", 0)
     size_bytes = data.get("bytes", 0)
@@ -111,7 +99,8 @@ def get_cloud_size(bucket: str, fy_prefix: str, config_path: str, timeout: int =
     return data
 
 
-def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: int = 18000) -> list[dict]:
+def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, *, timeout: int,
+                       artefacts: RunArtefacts | None = None) -> list[dict]:
     """rclone lsjson -R -> [{Path, Size, ModTime, MimeType, IsDir}, ...].
 
     Files only — directory entries filtered out. No file content read,
@@ -126,32 +115,26 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, timeout: i
     rclone_exe = resolve_binary("rclone") or "rclone"
     cmd = [rclone_exe, "lsjson", dest, "-R", *_base_args(config_path)]
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as e:
+    result = run_tool("rclone-manifest", cmd, timeout_s=timeout,
+                      artefacts=artefacts or RunArtefacts.ephemeral("cloud-manifest"))
+    if result.timed_out:
         raise CloudReporterError(
-            f"cloud manifest listing timed out after {timeout}s for {dest}"
-        ) from e
-    except FileNotFoundError as e:
-        raise CloudReporterError(f"rclone not found while listing manifest: {e}") from e
-    except OSError as e:
-        raise CloudReporterError(f"cloud manifest listing failed for {dest}: {e}") from e
+            f"cloud manifest listing timed out after {timeout}s for {dest}")
+    if result.spawn_error:
+        if "FileNotFoundError" in result.spawn_error:
+            raise CloudReporterError(
+                f"rclone not found while listing manifest: {result.spawn_error}")
+        raise CloudReporterError(
+            f"cloud manifest listing failed for {dest}: {result.spawn_error}")
 
-    if result.returncode != 0:
-        stderr_output = (result.stderr or "").strip() or "no stderr"
+    if result.exit_code != 0:
+        stderr_output = result.stderr_text().strip() or "no stderr"
         raise CloudReporterError(
-            f"rclone lsjson exited {result.returncode} for {dest}: {stderr_output}"
+            f"rclone lsjson exited {result.exit_code} for {dest}: {stderr_output}"
         )
 
     try:
-        data = json.loads(result.stdout)
+        data = json.loads(result.stdout_text())
     except json.JSONDecodeError as e:
         raise CloudReporterError(
             f"unparsable lsjson output for {dest}: {e}"
@@ -167,7 +150,13 @@ def get_cloud_diff(
     bucket: str,
     fy_prefix: str,
     config_path: str,
-    timeout: int = 18000,  # override via config.cloud.diff_timeout_seconds
+    *,
+    timeout: int,
+    checkers: int,
+    modify_window_seconds: int,
+    retries: int,
+    retries_sleep_seconds: int,
+    artefacts: RunArtefacts | None = None,
 ) -> dict:
     """rclone check --combined --size-only → {added, removed, modified, unchanged}.
 
@@ -176,7 +165,10 @@ def get_cloud_diff(
     sufficient for accounting documents — content changes almost always
     change file size.
 
-    Writes diff to temp file, parses +/-/*/= prefixes, cleans up in finally.
+    Writes diff to temp file, parses +/-/*/= prefixes, cleans up in finally
+    (the combined listing names every unchanged file too; it is not kept).
+    Tunables come from config: cloud.diff_timeout_seconds, cloud.checkers,
+    cloud.modify_window_seconds, cloud.retry_count, cloud.retries_sleep_seconds.
 
     Returns:
         {"added": [...], "removed": [...], "modified": [...], "unchanged": [...]}
@@ -194,29 +186,31 @@ def get_cloud_diff(
             source, dest,
             "--combined", diff_file,   # Write unified diff to file (not stderr)
             "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
-            "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
-            "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits
-            "--retries", "3",          # Retry transient network errors
-            "--retries-sleep", "10s",  # Back off between retries
+            "--modify-window", f"{int(modify_window_seconds)}s",  # NTFS mtime granularity
+            "--checkers", str(int(checkers)),        # Concurrent metadata checkers (GCS rate limits)
+            "--retries", str(int(retries)),          # Retry transient network errors
+            "--retries-sleep", f"{int(retries_sleep_seconds)}s",  # Back off between retries
             *_base_args(config_path),
         ]
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        result = run_tool("rclone-diff", cmd, timeout_s=timeout,
+                          artefacts=artefacts or RunArtefacts.ephemeral("cloud-diff"))
+        if not result.completed:
+            # M6: a timed-out/failed scan must be distinguishable from "no changes"
+            reason = result.describe_failure()
+            logger.warning(f"Cloud diff query failed: {reason}")
+            return {
+                "added": [], "removed": [], "modified": [], "unchanged": [],
+                "_partial": True, "_error": reason,
+            }
 
         partial = False
         error_msg = None
-        if result.returncode >= 2:
+        if result.exit_code >= 2:
             partial = True
-            stderr_output = result.stderr.strip() if result.stderr else "no stderr"
-            error_msg = f"rclone check exited {result.returncode}: {stderr_output}"
-            logger.warning(f"Cloud diff rclone failed (exit {result.returncode}): {stderr_output}")
+            stderr_output = result.stderr_text().strip() or "no stderr"
+            error_msg = f"rclone check exited {result.exit_code}: {stderr_output}"
+            logger.warning(f"Cloud diff rclone failed (exit {result.exit_code}): {stderr_output}")
 
         diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
 
@@ -258,8 +252,8 @@ def get_cloud_diff(
         )
         return diff
 
-    except (subprocess.TimeoutExpired, OSError) as e:
-        # M6: a timed-out/failed scan must be distinguishable from "no changes"
+    except OSError as e:
+        # M6: a failed scan (e.g. temp diff file) must be distinguishable from "no changes"
         logger.warning(f"Cloud diff query failed: {e}")
         return {
             "added": [], "removed": [], "modified": [], "unchanged": [],

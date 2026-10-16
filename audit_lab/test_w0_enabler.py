@@ -69,7 +69,7 @@ def test_w0_cloud_pipeline_runs_on_local_backend(sandbox, monkeypatch):
             size = get_cloud_size("lab-bucket", "FY26-27", rc_path, timeout=30)
             assert size["count"] == 2, size
 
-            diff = get_cloud_diff(str(src), "lab-bucket", "FY26-27", rc_path, timeout=60)
+            diff = get_cloud_diff(str(src), "lab-bucket", "FY26-27", rc_path, timeout=60, checkers=4, modify_window_seconds=2, retries=3, retries_sleep_seconds=10)
             assert diff["added"] == [] and diff["removed"] == [] and diff["modified"] == [], diff
             assert len(diff["unchanged"]) == 2, diff
 

@@ -68,8 +68,11 @@ def test_a_fallbacks_match_model():
     assert inspect.signature(cs.run_cloud_sync).parameters["timeout"].default == 18000
     # no literal default: the verify timeout always comes from cloud.verify_timeout_seconds
     assert inspect.signature(cv.verify_cloud_integrity).parameters["timeout"].default is inspect.Parameter.empty
-    assert inspect.signature(cr.get_cloud_manifest).parameters["timeout"].default == CloudConfig.model_fields["manifest_timeout_seconds"].default == 18000
-    assert inspect.signature(cr.get_cloud_diff).parameters["timeout"].default == CloudConfig.model_fields["diff_timeout_seconds"].default == 18000
+    # no literal defaults: manifest/diff timeouts come from cloud.manifest_/diff_timeout_seconds
+    assert inspect.signature(cr.get_cloud_manifest).parameters["timeout"].default is inspect.Parameter.empty
+    assert inspect.signature(cr.get_cloud_diff).parameters["timeout"].default is inspect.Parameter.empty
+    assert CloudConfig.model_fields["manifest_timeout_seconds"].default == 18000
+    assert CloudConfig.model_fields["diff_timeout_seconds"].default == 18000
     assert inspect.signature(integ.audit_cloud).parameters["timeout"].default == 18000
 
 
@@ -81,7 +84,8 @@ def test_a_untouched_timeouts_stable():
     # The probe timeout has no literal default: it always comes from
     # cloud.preflight_timeout_seconds (owner rule: every tunable is config).
     assert inspect.signature(cp.run_cloud_dry_run).parameters["timeout"].default is inspect.Parameter.empty
-    assert inspect.signature(cr.get_cloud_size).parameters["timeout"].default == 300
+    assert inspect.signature(cr.get_cloud_size).parameters["timeout"].default is inspect.Parameter.empty
+    assert CloudConfig.model_fields["cloud_size_timeout_seconds"].default == 300
     assert inspect.signature(lp.run_lan_dry_run).parameters["timeout"].default == 900
     assert CloudConfig.model_fields["preflight_timeout_seconds"].default == 300
     assert LanConfig.model_fields["dry_run_timeout_seconds"].default == 900

@@ -158,7 +158,11 @@ def test_k_fallbacks_match_model():
     from core import cloud_reporter as cr
     from core import lan_preflight as lp
     from models.config import CloudConfig, LanConfig
-    assert inspect.signature(cr.get_cloud_size).parameters["timeout"].default == CloudConfig.model_fields["cloud_size_timeout_seconds"].default == 300
-    assert inspect.signature(cr.get_cloud_manifest).parameters["timeout"].default == CloudConfig.model_fields["manifest_timeout_seconds"].default == 18000
-    assert inspect.signature(cr.get_cloud_diff).parameters["timeout"].default == CloudConfig.model_fields["diff_timeout_seconds"].default == 18000
+    # Stronger than "fallback == model default": the reporter has no fallback,
+    # the timeout always comes from config (plan 5.1 migration).
+    for fn in (cr.get_cloud_size, cr.get_cloud_manifest, cr.get_cloud_diff):
+        assert inspect.signature(fn).parameters["timeout"].default is inspect.Parameter.empty
+    assert CloudConfig.model_fields["cloud_size_timeout_seconds"].default == 300
+    assert CloudConfig.model_fields["manifest_timeout_seconds"].default == 18000
+    assert CloudConfig.model_fields["diff_timeout_seconds"].default == 18000
     assert inspect.signature(lp.run_lan_dry_run).parameters["timeout"].default == LanConfig.model_fields["dry_run_timeout_seconds"].default == 900

@@ -337,6 +337,10 @@ class CloudConfig(StrictModel):
         default=2, ge=0, le=3600,
         description="rclone --modify-window for the after-upload check and the difference "
                     "report (seconds); 2 = NTFS modification-time granularity")
+    retries_sleep_seconds: int = Field(
+        default=10, ge=0, le=600,
+        description="rclone --retries-sleep for the difference report (seconds); its "
+                    "--retries is cloud.retry_count")
     buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
     error_tail_lines: int = Field(default=100, ge=1, le=10000, description="Max rclone error lines carried into alerts/DB/dashboard; the full log is always kept in run_logs")
     write_probe_enabled: bool = Field(
