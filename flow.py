@@ -2060,6 +2060,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             if mode in (leg, "all") and getattr(config, leg).enabled]
     recorded: set[str] = set()
     excs = []
+    outcomes: list[str] = []   # "<leg>=<status>" of each non-VERIFIED leg: part of the alert key
 
     def _record(leg: str, audit_id: str, started_at: str, result: dict) -> None:
         # A VERIFIED verdict is durable only once persisted: a failed DB
@@ -2080,8 +2081,10 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             })
         except Exception as e:
             excs.append(RuntimeError(f"{name} audit persistence failed: {e}"))
+            outcomes.append(f"{leg}=NOT_RECORDED")
         if result["status"] != "VERIFIED":
             excs.append(RuntimeError(_audit_outcome_text(name, result)))
+            outcomes.append(f"{leg}={result['status']}")
 
     def _audit_cloud_leg(audit_id: str) -> dict:
         try:
@@ -2152,8 +2155,10 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         if excs:
             error_summary = '; '.join(str(e) for e in excs)
             logger.error(f"Integrity audit failed: {error_summary}")
+            # The key carries each leg's outcome: a "could not run" alert must
+            # never put a real mismatch inside its cooldown (code review 2026-10-16).
             notify(config, AlertEvent(
-                key=f"audit:{mode}", kind="FAILURE", mode="audit",
+                key=f"audit:{mode}:{','.join(sorted(outcomes))}", kind="FAILURE", mode="audit",
                 title="Integrity audit did not verify", message=error_summary,
                 status="NOT_VERIFIED"))
             raise ExceptionGroup("Integrity audit did not verify", excs)

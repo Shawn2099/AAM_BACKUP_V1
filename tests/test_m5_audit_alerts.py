@@ -111,6 +111,37 @@ def test_shutdown_failure_never_replaces_the_lan_verdict(monkeypatch):
     m["shutdown"].assert_called_once()
 
 
+MISMATCH = {"status": "VERIFICATION_FAILED", "scope": "full", "files_checked": 10,
+            "bytes_checked": None, "mismatches": 3, "detail": "3 files differ"}
+
+
+def _alert_key(monkeypatch, *, cloud_result=None, lan_result=None, slot_error=None):
+    _, _, m = _setup(monkeypatch)
+    if cloud_result is not None:
+        m["audit_cloud"].return_value = dict(cloud_result)
+    if lan_result is not None:
+        m["audit_lan"].return_value = dict(lan_result)
+    if slot_error is not None:
+        flow._backup_slot.side_effect = slot_error
+    with pytest.raises(Exception):
+        flow.integrity_audit_flow.fn("x.yaml", "all")
+    return _one_alert(m).key
+
+
+def test_real_mismatch_is_not_suppressed_by_an_earlier_could_not_run_alert(monkeypatch):
+    # Code review 2026-10-16: the key was audit:{mode} for every outcome, so a
+    # "could not run" alert put a real MISMATCH found by a rerun inside its
+    # cooldown -> notify() SUPPRESSED the mismatch email.
+    could_not_run = _alert_key(monkeypatch, slot_error=TimeoutError("slot timed out"))
+    mismatch = _alert_key(monkeypatch, lan_result=MISMATCH)
+    assert could_not_run != mismatch
+    assert "VERIFICATION_FAILED" in mismatch
+
+
+def test_the_same_audit_failure_keeps_one_key_so_the_cooldown_still_limits_repeats(monkeypatch):
+    assert _alert_key(monkeypatch, lan_result=MISMATCH) == _alert_key(monkeypatch, lan_result=MISMATCH)
+
+
 def test_clean_audit_sends_nothing(monkeypatch):
     _, recorded, m = _setup(monkeypatch)
     flow.integrity_audit_flow.fn("x.yaml", "all")
