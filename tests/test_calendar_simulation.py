@@ -128,7 +128,7 @@ class Calendar:
             self.backups.append({"when": pendulum.now(IST), "leg": leg, "run_id": run_id,
                                  "source": config.paths.source_drive,
                                  "lan": config.paths.lan_destination, "status": status})
-            flow._record_run(config.paths.database_path, run_id, leg, started_at, status,
+            flow._record_run(config, run_id, leg, started_at, status,
                              0 if status in statuses.SUCCESS_STATUSES else 1, None)
             if status not in statuses.SUCCESS_STATUSES:
                 raise RuntimeError(f"{leg} ended {status}")

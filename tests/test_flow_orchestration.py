@@ -151,12 +151,16 @@ class TestCloudRecordTask:
     @patch("flow.record_sync_results")
     def test_records_to_db(self, mock_record, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
+        mock_db_cls.from_config.return_value = mock_db
+        config = MagicMock()
         verify_data = {
             "manifest": [{"Path": "a.txt", "Size": 100, "ModTime": 1.0}],
             "diff": {"removed": ["old.txt"]},
         }
-        cloud_record_task.fn("/tmp/test.db", verify_data, {"status": "CLOUD_COMPLETE"})
+        cloud_record_task.fn(config, verify_data, {"status": "CLOUD_COMPLETE"})
+        # plan 5.4: the DB is opened only through from_config (settings from config)
+        mock_db_cls.from_config.assert_called_once_with(config)
+        mock_db_cls.assert_not_called()
         mock_record.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -231,11 +235,14 @@ class TestLanRecordTask:
     @patch("flow.diff_snapshots", return_value={"added": {}, "removed": {}, "modified": {}})
     def test_records_with_after_dict(self, mock_diff, mock_record, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
+        mock_db_cls.from_config.return_value = mock_db
+        config = MagicMock()
         # snapshot_to_dict returns {path: (size, mtime)} tuples
         before = {"old.txt": (100, 1.0)}
         after = {"new.txt": (200, 2.0)}
-        lan_record_task.fn("/tmp/test.db", {"status": "LAN_COMPLETE"}, before, after)
+        lan_record_task.fn(config, {"status": "LAN_COMPLETE"}, before, after)
+        mock_db_cls.from_config.assert_called_once_with(config)
+        mock_db_cls.assert_not_called()
         mock_record.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -273,9 +280,12 @@ class TestRecordRun:
     @patch("flow.record_run_history")
     def test_records_run(self, mock_record, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
-        _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
-                     "CLOUD_COMPLETE", 0, None)
+        mock_db_cls.from_config.return_value = mock_db
+        config = MagicMock()
+        _record_run(config, "run-1", "cloud", "2026-01-01T00:00:00Z",
+                    "CLOUD_COMPLETE", 0, None)
+        mock_db_cls.from_config.assert_called_once_with(config)
+        mock_db_cls.assert_not_called()
         mock_record.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -284,8 +294,8 @@ class TestRecordRun:
     @patch("flow.record_run_history", return_value=False)
     def test_logs_critical_when_run_history_not_persisted(self, mock_record, mock_logger, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
-        _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
+        mock_db_cls.from_config.return_value = mock_db
+        _record_run(MagicMock(), "run-1", "cloud", "2026-01-01T00:00:00Z",
                     "CLOUD_COMPLETE", 0, None)
         mock_logger.critical.assert_called_once()
         mock_db.close.assert_called_once()

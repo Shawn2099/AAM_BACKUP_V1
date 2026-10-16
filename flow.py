@@ -384,11 +384,8 @@ def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
             logger.error(f"{leg} run {run_id} could not start: {e}")
             try:
                 _record_run(
-                    config.paths.database_path, run_id, leg, started_at, status, -1,
+                    config, run_id, leg, started_at, status, -1,
                     f"Backup could not start: {e}",
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
                     monotonic_start=monotonic_start,
                 )
             except Exception as rec_err:  # noqa: BLE001
@@ -725,20 +722,12 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
 
 @task(name="cloud-record")
 def cloud_record_task(
-    db_path: str,
+    config,
     verify_data: dict,
     sync_result: dict,
-    busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 10000,
-    synchronous: str = "normal",
 ):
     """Record cloud sync results to ManifestDB."""
-    db = ManifestDB(
-        db_path,
-        busy_timeout_ms=busy_timeout_ms,
-        vacuum_freelist_threshold=vacuum_freelist_threshold,
-        synchronous=synchronous,
-    )
+    db = ManifestDB.from_config(config)
     try:
         manifest = verify_data.get("manifest", [])
         removed = verify_data.get("diff", {}).get("removed", [])
@@ -1028,23 +1017,15 @@ def lan_sync_task(config, artefacts_dir: str | None = None, budget: RunBudget | 
 
 @task(name="lan-record")
 def lan_record_task(
-    db_path: str,
+    config,
     sync_result: dict,
     before_dict: dict,
     after_dict: dict,
-    busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 10000,
-    synchronous: str = "normal",
 ):
     """Compute diff from before/after snapshots, record to ManifestDB."""
     diff = diff_snapshots(before_dict, after_dict)
 
-    db = ManifestDB(
-        db_path,
-        busy_timeout_ms=busy_timeout_ms,
-        vacuum_freelist_threshold=vacuum_freelist_threshold,
-        synchronous=synchronous,
-    )
+    db = ManifestDB.from_config(config)
     try:
         # snapshot_to_dict returns {path: (size, mtime)} tuples
         files_list = [{"path": k, "size": v[0], "mtime": v[1]}
@@ -1273,7 +1254,6 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         (budget_hours if budget_hours is not None else config.budget.cloud_max_hours) * 3600,
         monotonic_start if monotonic_start is not None else time.monotonic())
     with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start):
-        db_path = config.paths.database_path
         fy_prefix = _effective_fy_prefix(config)
 
         # Apply config-driven retries to tasks that benefit from retrying
@@ -1398,10 +1378,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 )
             else:
                 cloud_record_task(
-                    db_path, verify_data, sync_result,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
+                    config, verify_data, sync_result,
                 )
 
             # WP6: the numbers are rclone's OWN accounting (final stats line).
@@ -1507,15 +1484,12 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:
                 _record_run(
-                    db_path, run_id, "cloud", started_at, status,
+                    config, run_id, "cloud", started_at, status,
                     sync_result.get("exit_code", -1), error_msg,
                     files_copied=files_copied,
                     bytes_copied=bytes_copied,
                     files_failed=0,
                     extended_metrics=extended_metrics,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
                     monotonic_start=monotonic_start,
                 )
             except Exception as rec_err:
@@ -1540,7 +1514,6 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         (budget_hours if budget_hours is not None else config.budget.lan_max_hours) * 3600,
         monotonic_start if monotonic_start is not None else time.monotonic())
     with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start):
-        db_path = config.paths.database_path
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = lan_preflight_task.with_options(
@@ -1600,10 +1573,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             after_dict = lan_snapshot_after_task(config)
             if after_dict is not None:
                 lan_record_task(
-                    db_path, sync_result, before_dict, after_dict,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
+                    config, sync_result, before_dict, after_dict,
                 )
 
                 # Cross-check only: the before/after walk diff vs the tool count.
@@ -1724,15 +1694,12 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             try:
                 _record_run(
-                    db_path, run_id, "lan", started_at, status,
+                    config, run_id, "lan", started_at, status,
                     sync_result.get("exit_code", -1), error_msg,
                     files_copied=files_copied,
                     bytes_copied=bytes_copied,
                     files_failed=files_failed,
                     extended_metrics=extended_metrics,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
                     monotonic_start=monotonic_start,
                 )
             except Exception as rec_err:
@@ -1748,7 +1715,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
 # ═══════════════════════════════════════════════════════════════
 
 def _record_run(
-    db_path: str,
+    config,
     run_id: str,
     mode: str,
     started_at: str,
@@ -1759,9 +1726,6 @@ def _record_run(
     bytes_copied: int = 0,
     files_failed: int = 0,
     extended_metrics: str | None = None,
-    busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 10000,
-    synchronous: str = "normal",
     monotonic_start: float | None = None,
 ):
     """Record run history to ManifestDB."""
@@ -1774,12 +1738,7 @@ def _record_run(
         duration = time.monotonic() - monotonic_start
     else:
         duration = time.time() - pendulum.parse(started_at).timestamp()
-    db = ManifestDB(
-        db_path,
-        busy_timeout_ms=busy_timeout_ms,
-        vacuum_freelist_threshold=vacuum_freelist_threshold,
-        synchronous=synchronous,
-    )
+    db = ManifestDB.from_config(config)
     try:
         if not record_run_history(
             db,
@@ -1945,12 +1904,9 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
 
     def record(status: str, error: str | None, extra: dict) -> None:
         try:
-            _record_run(config.paths.database_path, run_id, "rollover", started_at, status,
+            _record_run(config, run_id, "rollover", started_at, status,
                         0 if status == "ROLLOVER_COMPLETE" else -1, error,
                         extended_metrics=json.dumps({**metrics, **extra}, default=str),
-                        busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                        vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                        synchronous=config.maintenance.sqlite_synchronous,
                         monotonic_start=monotonic_start)
         except Exception as e:  # noqa: BLE001 - the decision itself stands
             logger.critical(f"Failed to record rollover run {run_id}: {e}")
