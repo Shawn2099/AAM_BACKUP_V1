@@ -1091,14 +1091,23 @@ def lan_shutdown_task(config, artefacts_dir: str | None = None) -> dict | None:
     return result.to_metrics()
 
 
+def _summary_counts(files_copied: int | None, bytes_copied: int | None) -> tuple[str, str]:
+    """Run-summary text for tool counts; None (counts unavailable) reads 'unknown'."""
+    files = "unknown" if files_copied is None else str(files_copied)
+    if bytes_copied is None:
+        return files, "unknown"
+    return files, f"{bytes_copied / (1024 * 1024):.2f} MB` (`{bytes_copied}` bytes)"
+
+
 @task(name="cloud-publish-artifact")
-def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copied: int, bytes_copied: int):
+def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
+                                files_copied: int | None, bytes_copied: int | None):
     """Publish a beautiful Markdown summary of the Cloud Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
         status = sync_result.get("status", "UNKNOWN")
         exit_code = sync_result.get("exit_code", -1)
-        size_mb = bytes_copied / (1024 * 1024)
+        files_text, volume_text = _summary_counts(files_copied, bytes_copied)
         total_files = verify_data.get('size', {}).get('count', 0)
         total_space_gb = verify_data.get('size', {}).get('bytes', 0) / (1024 * 1024 * 1024)
         size_check_str = "✅ Passed" if verify_data.get("verified") else "❌ Failed/Skipped"
@@ -1107,8 +1116,8 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copi
             f"# ☁️ AAM Cloud Backup Run Summary\n\n"
             f"## 📊 Performance & Execution Metrics\n"
             f"* **Status:** `{status}` (Exit Code: `{exit_code}`)\n"
-            f"* **Files Transferred:** `{files_copied}` files\n"
-            f"* **Volume Transferred:** `{size_mb:.2f} MB` (`{bytes_copied}` bytes)\n\n"
+            f"* **Files Transferred:** `{files_text}` files\n"
+            f"* **Volume Transferred:** `{volume_text}`\n\n"
             f"## 📁 Storage Metrics (GCS Bucket)\n"
             f"* **Total Tracked Files:** `{total_files}` files\n"
             f"* **Total Space Consumed:** `{total_space_gb:.3f} GB`\n\n"
@@ -1126,7 +1135,8 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copi
 
 
 @task(name="lan-publish-artifact")
-def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, bytes_copied: int, total_files: int):
+def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int | None,
+                              bytes_copied: int | None, total_files: int):
     """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
@@ -1136,14 +1146,14 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
         added = len(diff.get("added", []))
         modified = len(diff.get("modified", []))
         removed = len(diff.get("removed", []))
-        size_mb = bytes_copied / (1024 * 1024)
+        files_text, volume_text = _summary_counts(files_copied, bytes_copied)
         
         markdown_content = (
             f"# 🖥️ AAM LAN Backup Run Summary\n\n"
             f"## 📊 Robocopy Differential Metrics\n"
             f"* **Status:** `{status}` (Exit Code: `{exit_code}`)\n"
-            f"* **Total Differential Changes:** `{files_copied}` files\n"
-            f"* **Volume Transferred:** `{size_mb:.2f} MB` (`{bytes_copied}` bytes)\n\n"
+            f"* **Total Differential Changes:** `{files_text}` files\n"
+            f"* **Volume Transferred:** `{volume_text}`\n\n"
             f"## 📁 File Alterations Detail\n"
             f"* **➕ Files Added:** `{added}` files\n"
             f"* **✏️ Files Modified:** `{modified}` files\n"
@@ -1439,8 +1449,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             })
             try:
                 cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
-            except Exception:
-                pass
+            except Exception as e:
+                # The Prefect summary is cosmetic; the run row is the record.
+                logger.warning(f"Cloud run summary not published to Prefect: {e}")
 
             logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
             if status == "CLOUD_PARTIAL":
@@ -1615,8 +1626,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 })
                 try:
                     lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
-                except Exception:
-                    pass
+                except Exception as e:
+                    # The Prefect summary is cosmetic; the run row is the record.
+                    logger.warning(f"LAN run summary not published to Prefect: {e}")
             else:
                 # G14: walk unavailable - the tool counts are still recorded.
                 extended_metrics = json.dumps({"stage_seconds": dict(stage_seconds),
