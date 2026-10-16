@@ -333,6 +333,10 @@ class CloudConfig(StrictModel):
     cloud_size_timeout_seconds: int = Field(default=300, ge=10, le=3600, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
+    modify_window_seconds: int = Field(
+        default=2, ge=0, le=3600,
+        description="rclone --modify-window for the after-upload check and the difference "
+                    "report (seconds); 2 = NTFS modification-time granularity")
     buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
     error_tail_lines: int = Field(default=100, ge=1, le=10000, description="Max rclone error lines carried into alerts/DB/dashboard; the full log is always kept in run_logs")
     write_probe_enabled: bool = Field(

@@ -21,11 +21,12 @@ Exit codes (rclone check):
 """
 
 import re
-import subprocess
 
 from loguru import logger
 
 from core.process import resolve_binary
+from core.run_artefacts import RunArtefacts
+from core.tool_runner import run_tool
 
 # rclone check exit codes
 _EXIT_VERIFIED = 0
@@ -117,7 +118,11 @@ def verify_cloud_integrity(
     bucket: str,
     fy_prefix: str,
     config_path: str,
-    timeout: int = 18000,
+    *,
+    timeout: int,
+    checkers: int,
+    modify_window_seconds: int,
+    artefacts: RunArtefacts | None = None,
 ) -> dict:
     """Run rclone check --one-way --size-only to verify source matches GCS.
 
@@ -126,7 +131,10 @@ def verify_cloud_integrity(
         bucket: GCS bucket name.
         fy_prefix: Fiscal year folder prefix.
         config_path: Path to rclone config file.
-        timeout: Max seconds for the check (default 14400 — 4 hours for large HDD datasets).
+        timeout: Max seconds for the check (cloud.verify_timeout_seconds).
+        checkers: rclone --checkers (cloud.checkers).
+        modify_window_seconds: rclone --modify-window (cloud.modify_window_seconds).
+        artefacts: Run folder for the check's stdout/stderr (run_tool).
 
     Returns:
         {"verified": bool, "exit_code": int, "error": str | None,
@@ -142,80 +150,74 @@ def verify_cloud_integrity(
         "--one-way",               # Only check source→GCS, not reverse
         "--fast-list",             # Fewer GCS API calls (uses more memory but faster)
         "--size-only",             # Compare sizes only — avoids expensive MD5 re-hashing on HDD
-        "--modify-window", "2s",   # NTFS mtime has 2s granularity; default 1ns causes false positives
+        "--modify-window", f"{int(modify_window_seconds)}s",  # NTFS mtime has 2s granularity
         # NOTE: --check-first and --transfers are intentionally omitted here.
         # rclone check does no file transfers, so both flags are no-ops on this command.
-        "--checkers", "4",         # Concurrent metadata checkers — safe for GCS API rate limits
+        "--checkers", str(int(checkers)),  # Concurrent metadata checkers (GCS API rate limits)
         "--config", config_path,
         "--gcs-no-check-bucket",   # Bucket already verified by preflight; skip redundant check
     ]
 
     logger.info(f"Cloud verify: checking {source} <-> {bucket}/{fy_prefix}")
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+    # plan 5.1: output streams to files in the run folder; a timeout kills
+    # the process tree and is reported as timed_out, never as an exit code.
+    result = run_tool("rclone-verify", cmd, timeout_s=timeout,
+                      artefacts=artefacts or RunArtefacts.ephemeral("cloud-verify"))
 
-        # F-08: the exit code is only interpreted together with the
-        # process's own completion evidence (decide_cloud_verify_result).
-        # A killed check can inherit exit 0 with a truncated log — that is
-        # never VERIFIED, even over clean destination data.
-        decision = decide_cloud_verify_result(result.returncode, result.stderr, result.stdout)
-        verified = decision["verified"]
-        stderr_output = (result.stderr or "").strip() if result.stderr else "no stderr"
-
-        if verified:
-            logger.info("Cloud integrity verified - source matches GCS")
-        else:
-            # Distinguish mismatch (exit 1) from error (exit 2+)
-            if result.returncode == _EXIT_MISMATCH:
-                label = "mismatch"
-            else:
-                label = "error"
-            # Log full stderr — truncating hides the actual error in production
-            logger.warning(f"Cloud verify {label} (exit {result.returncode}): {stderr_output}")
-
-        error = _build_error_message(result.returncode, stderr_output)
-        if not verified and decision["reason"]:
-            error = f"{error} ({decision['reason']})" if error else decision["reason"]
-
-        return {
-            "verified": verified,
-            "exit_code": result.returncode,
-            "error": error,
-            "termination": decision["termination"],
-            "completion": decision["completion"],
-            "differences": decision["differences"],
-            "reason": decision["reason"],
-        }
-
-    except subprocess.TimeoutExpired:
+    if result.timed_out:
         logger.error(f"Cloud verify timed out after {timeout}s")
         return {
             "verified": False, "exit_code": -1, "error": f"Timeout after {timeout}s",
             "termination": "abnormal", "completion": False,
             "differences": None, "reason": "verification timed out — process did not complete",
         }
-    except FileNotFoundError:
-        logger.error("rclone not found")
+    if result.spawn_error:
+        if "FileNotFoundError" in result.spawn_error:
+            logger.error("rclone not found")
+            return {
+                "verified": False, "exit_code": -1, "error": "rclone not found",
+                "termination": "abnormal", "completion": False,
+                "differences": None, "reason": "rclone binary missing — no verification ran",
+            }
+        logger.error(f"Cloud verify error: {result.spawn_error}")
         return {
-            "verified": False, "exit_code": -1, "error": "rclone not found",
+            "verified": False, "exit_code": -1, "error": result.spawn_error,
             "termination": "abnormal", "completion": False,
-            "differences": None, "reason": "rclone binary missing — no verification ran",
+            "differences": None, "reason": f"verification spawn failed: {result.spawn_error}",
         }
-    except OSError as e:
-        logger.error(f"Cloud verify error: {e}")
-        return {
-            "verified": False, "exit_code": -1, "error": str(e),
-            "termination": "abnormal", "completion": False,
-            "differences": None, "reason": f"verification spawn failed: {e}",
-        }
+
+    stderr_text = result.stderr_text()
+    stdout_text = result.stdout_text()
+    # F-08: the exit code is only interpreted together with the
+    # process's own completion evidence (decide_cloud_verify_result).
+    # A killed check can inherit exit 0 with a truncated log — that is
+    # never VERIFIED, even over clean destination data.
+    decision = decide_cloud_verify_result(result.exit_code, stderr_text, stdout_text)
+    verified = decision["verified"]
+    stderr_output = stderr_text.strip() or "no stderr"
+
+    if verified:
+        logger.info("Cloud integrity verified - source matches GCS")
+    else:
+        # Distinguish mismatch (exit 1) from error (exit 2+)
+        label = "mismatch" if result.exit_code == _EXIT_MISMATCH else "error"
+        # Log full stderr — truncating hides the actual error in production
+        logger.warning(f"Cloud verify {label} (exit {result.exit_code}): {stderr_output}")
+
+    error = _build_error_message(result.exit_code, stderr_output)
+    if not verified and decision["reason"]:
+        error = f"{error} ({decision['reason']})" if error else decision["reason"]
+
+    return {
+        "verified": verified,
+        "exit_code": result.exit_code,
+        "error": error,
+        "termination": decision["termination"],
+        "completion": decision["completion"],
+        "differences": decision["differences"],
+        "reason": decision["reason"],
+    }
 
 
 def _build_error_message(exit_code: int, stderr_detail: str = "") -> str | None:

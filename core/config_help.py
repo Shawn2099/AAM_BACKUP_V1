@@ -146,6 +146,8 @@ HELP: dict[str, tuple[str, str]] = {
     "cloud.cloud_size_timeout_seconds": ("Time for the cloud size check", ""),
     "cloud.transfers": ("Files uploaded at the same time", ""),
     "cloud.checkers": ("Files compared at the same time", ""),
+    "cloud.modify_window_seconds": ("Time difference treated as equal",
+                                    "File times closer than this count as the same."),
     "cloud.buffer_size": ("Memory per upload", ""),
     "cloud.error_tail_lines": ("Error lines in alerts", ""),
 

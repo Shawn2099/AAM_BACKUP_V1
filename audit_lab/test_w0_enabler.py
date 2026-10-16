@@ -58,7 +58,7 @@ def test_w0_cloud_pipeline_runs_on_local_backend(sandbox, monkeypatch):
             # verify (size-only, exactly like the daily gate)
             v = verify_cloud_integrity(source=str(src), bucket="lab-bucket",
                                        fy_prefix="FY26-27", config_path=rc_path,
-                                       timeout=120)
+                                       timeout=120, checkers=4, modify_window_seconds=2)
             assert v["verified"] is True, v
             assert v["termination"] == "normal"
 

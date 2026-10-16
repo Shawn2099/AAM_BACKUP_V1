@@ -169,6 +169,9 @@ cloud:
   transfers: 2
   # rclone --checkers: concurrent file comparison workers
   checkers: 4
+  # rclone --modify-window (seconds) for the after-upload check and the difference
+  # report: file times closer than this count as equal (2 = NTFS granularity)
+  modify_window_seconds: 2
   # rclone --buffer-size: upload read buffer per transfer slot
   # 2 transfers × 64M = 128M total. Matches GCS multipart chunk sizing.
   buffer_size: "64M"

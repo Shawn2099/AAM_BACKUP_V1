@@ -66,7 +66,8 @@ def test_a_fallbacks_match_model():
     from core import integrity as integ
     from models.config import CloudConfig
     assert inspect.signature(cs.run_cloud_sync).parameters["timeout"].default == 18000
-    assert inspect.signature(cv.verify_cloud_integrity).parameters["timeout"].default == 18000
+    # no literal default: the verify timeout always comes from cloud.verify_timeout_seconds
+    assert inspect.signature(cv.verify_cloud_integrity).parameters["timeout"].default is inspect.Parameter.empty
     assert inspect.signature(cr.get_cloud_manifest).parameters["timeout"].default == CloudConfig.model_fields["manifest_timeout_seconds"].default == 18000
     assert inspect.signature(cr.get_cloud_diff).parameters["timeout"].default == CloudConfig.model_fields["diff_timeout_seconds"].default == 18000
     assert inspect.signature(integ.audit_cloud).parameters["timeout"].default == 18000
@@ -103,7 +104,9 @@ def test_b_verify_task_reports_stage_seconds(monkeypatch):
         paths=SimpleNamespace(source_drive="E:\\FY26-27", gcs_key_path="k"),
         cloud=SimpleNamespace(bucket="b", location="l", project_number="p", storage_class="s",
                               verify_timeout_seconds=1, cloud_size_timeout_seconds=1,
-                              manifest_timeout_seconds=1, diff_timeout_seconds=1),
+                              manifest_timeout_seconds=1, diff_timeout_seconds=1,
+                              checkers=4, modify_window_seconds=2, retry_count=3,
+                              retries_sleep_seconds=10),
     )
     out = flow.cloud_verify_and_report_task.fn(cfg, "FY26-27")
     stages = out["stage_seconds"]

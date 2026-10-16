@@ -57,7 +57,7 @@ def test_w1b2_pure_size_only_blind_spot(sandbox):
         _os.utime(cloud_copy, (st.st_atime, st.st_mtime))
 
         daily = verify_cloud_integrity(source=str(src), bucket="lab-bucket",
-                                       fy_prefix="FY26-26", config_path=rc_path, timeout=120)
+                                       fy_prefix="FY26-26", config_path=rc_path, timeout=120, checkers=4, modify_window_seconds=2)
         weekly = audit_cloud(str(src), "lab-bucket", "FY26-26", rc_path, timeout=120)
 
         L.record("B2.size_only_blind",

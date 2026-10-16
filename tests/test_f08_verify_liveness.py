@@ -19,7 +19,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.cloud_verify import decide_cloud_verify_result, verify_cloud_integrity
+from core.cloud_verify import decide_cloud_verify_result, verify_cloud_integrity as _verify_cloud_integrity
+import functools
+
+from models.config import CloudConfig as _CloudConfig
+from test_support.fake_tools import SubprocessStyleRunTool
+
+# rclone runs through run_tool (plan 5.1). Required tunables at the production
+# defaults (cloud.* in config); a keyword passed by a test still wins.
+verify_cloud_integrity = functools.partial(
+    _verify_cloud_integrity,
+    timeout=_CloudConfig.model_fields["verify_timeout_seconds"].default,
+    checkers=_CloudConfig.model_fields["checkers"].default,
+    modify_window_seconds=_CloudConfig.model_fields["modify_window_seconds"].default,
+)
 
 RCLONE = shutil.which("rclone")
 needs_rclone = pytest.mark.skipif(not RCLONE, reason="rclone binary not available")
@@ -130,7 +143,7 @@ class TestDecideCloudVerifyResult:
 
 
 class TestVerifyCloudIntegrityF08:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_forged_exit_0_with_truncated_log_not_verified(self, mock_run):
         mock_run.return_value = _mock_run(0, stderr=TRUNCATED_STDERR)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -139,7 +152,7 @@ class TestVerifyCloudIntegrityF08:
         assert result["completion"] is False
         assert result["error"] is not None
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_completed_clean_check_still_verifies(self, mock_run):
         mock_run.return_value = _mock_run(0, stderr=CLEAN_STDERR)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -149,7 +162,7 @@ class TestVerifyCloudIntegrityF08:
         assert result["differences"] == 0
         assert result["error"] is None
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_completed_diverged_check_fails(self, mock_run):
         mock_run.return_value = _mock_run(1, stderr=DIVERGED_STDERR)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")

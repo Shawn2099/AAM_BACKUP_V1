@@ -530,7 +530,7 @@ def test_w13_verify_cloud_integrity_failure_paths(sandbox):
         for label, source, bucket, fy in cases:
             try:
                 res = verify_cloud_integrity(source=source, bucket=bucket, fy_prefix=fy,
-                                             config_path=rc, timeout=60)
+                                             config_path=rc, timeout=60, checkers=4, modify_window_seconds=2)
                 rows.append(f"{label:30} -> verified={res['verified']} "
                             f"exit={res.get('exit_code')} term={res.get('termination')} "
                             f"reason={(res.get('reason') or '')[:60]!r}")
@@ -545,7 +545,7 @@ def test_w13_verify_cloud_integrity_failure_paths(sandbox):
         cver.resolve_binary = lambda name: None
         try:
             res = verify_cloud_integrity(source=str(src), bucket="lab-bucket",
-                                         fy_prefix="FY26-26", config_path=rc, timeout=60)
+                                         fy_prefix="FY26-26", config_path=rc, timeout=60, checkers=4, modify_window_seconds=2)
             rows.append(f"{'rclone binary missing':30} -> verified={res['verified']} "
                         f"exit={res.get('exit_code')}")
             if res["verified"] is not False:

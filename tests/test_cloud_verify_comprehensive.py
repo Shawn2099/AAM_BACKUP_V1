@@ -3,7 +3,20 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from core.cloud_verify import _build_error_message, verify_cloud_integrity
+from core.cloud_verify import _build_error_message, verify_cloud_integrity as _verify_cloud_integrity
+import functools
+
+from models.config import CloudConfig as _CloudConfig
+from test_support.fake_tools import SubprocessStyleRunTool
+
+# rclone runs through run_tool (plan 5.1). Required tunables at the production
+# defaults (cloud.* in config); a keyword passed by a test still wins.
+verify_cloud_integrity = functools.partial(
+    _verify_cloud_integrity,
+    timeout=_CloudConfig.model_fields["verify_timeout_seconds"].default,
+    checkers=_CloudConfig.model_fields["checkers"].default,
+    modify_window_seconds=_CloudConfig.model_fields["modify_window_seconds"].default,
+)
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -26,7 +39,7 @@ def _mock_result(returncode=0, stdout="", stderr=CLEAN_STDERR):
 # ── verify_cloud_integrity — every exit code path ────────────────────────
 
 class TestVerifyExitCodeMapping:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_exit_0_verified(self, mock_run):
         mock_run.return_value = _mock_result(0)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -34,7 +47,7 @@ class TestVerifyExitCodeMapping:
         assert result["exit_code"] == 0
         assert result["error"] is None
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_exit_1_mismatch(self, mock_run):
         mock_run.return_value = _mock_result(1, stderr="files differ")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -42,7 +55,7 @@ class TestVerifyExitCodeMapping:
         assert result["exit_code"] == 1
         assert "Integrity mismatch" in result["error"]
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_exit_2_rclone_error(self, mock_run):
         mock_run.return_value = _mock_result(2, stderr="auth failure")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -50,7 +63,7 @@ class TestVerifyExitCodeMapping:
         assert result["exit_code"] == 2
         assert "exit code 2" in result["error"]
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_exit_3_rclone_error(self, mock_run):
         mock_run.return_value = _mock_result(3, stderr="not found")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -58,7 +71,7 @@ class TestVerifyExitCodeMapping:
         assert result["exit_code"] == 3
         assert "exit code 3" in result["error"]
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_exit_10_rclone_error(self, mock_run):
         mock_run.return_value = _mock_result(10, stderr="limit exceeded")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -69,7 +82,7 @@ class TestVerifyExitCodeMapping:
 
 class TestVerifyResolveBinary:
     @patch("core.cloud_verify.resolve_binary", return_value="/usr/local/bin/rclone")
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_resolved_binary_used(self, mock_run, mock_resolve):
         mock_run.return_value = _mock_result(0)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -78,7 +91,7 @@ class TestVerifyResolveBinary:
         assert cmd[0] == "/usr/local/bin/rclone"
 
     @patch("core.cloud_verify.resolve_binary", return_value=None)
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_fallback_to_rclone_string(self, mock_run, mock_resolve):
         mock_run.return_value = _mock_result(0)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -87,7 +100,7 @@ class TestVerifyResolveBinary:
         assert cmd[0] == "rclone"
 
     @patch("core.cloud_verify.resolve_binary", return_value="/custom/rclone")
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_resolved_path_in_check_command(self, mock_run, mock_resolve):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -97,7 +110,7 @@ class TestVerifyResolveBinary:
 
 
 class TestVerifyCommandFlags:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_modify_window_2s(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -106,28 +119,28 @@ class TestVerifyCommandFlags:
         idx = cmd.index("--modify-window")
         assert cmd[idx + 1] == "2s"
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_one_way_flag(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         cmd = mock_run.call_args[0][0]
         assert "--one-way" in cmd
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_fast_list_flag(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         cmd = mock_run.call_args[0][0]
         assert "--fast-list" in cmd
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_size_only_flag(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         cmd = mock_run.call_args[0][0]
         assert "--size-only" in cmd
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_checkers_4(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -135,7 +148,7 @@ class TestVerifyCommandFlags:
         idx = cmd.index("--checkers")
         assert cmd[idx + 1] == "4"
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_config_flag(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/my/config.conf")
@@ -143,21 +156,21 @@ class TestVerifyCommandFlags:
         idx = cmd.index("--config")
         assert cmd[idx + 1] == "/my/config.conf"
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_gcs_no_check_bucket(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         cmd = mock_run.call_args[0][0]
         assert "--gcs-no-check-bucket" in cmd
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_dest_includes_bucket_and_prefix(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "my-bucket", "FY26-27", "/cfg")
         cmd = mock_run.call_args[0][0]
         assert any("my-bucket/FY26-27" in arg for arg in cmd)
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_no_transfers_flag(self, mock_run):
         """--transfers is a no-op on rclone check — must not be present."""
         mock_run.return_value = _mock_result(0)
@@ -165,7 +178,7 @@ class TestVerifyCommandFlags:
         cmd = mock_run.call_args[0][0]
         assert "--transfers" not in cmd
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_no_check_first_flag(self, mock_run):
         """--check-first is a no-op on rclone check — must not be present."""
         mock_run.return_value = _mock_result(0)
@@ -175,7 +188,7 @@ class TestVerifyCommandFlags:
 
 
 class TestVerifyTempConfig:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_temp_config_used(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/tmp/test.conf")
@@ -185,7 +198,7 @@ class TestVerifyTempConfig:
 
 
 class TestVerifyTimeoutPassthrough:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_default_timeout_matches_config_default(self, mock_run):
         # The function default must equal the config-model default
         # (config is the single source of truth for timeouts).
@@ -195,7 +208,7 @@ class TestVerifyTimeoutPassthrough:
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs["timeout"] == CloudConfig.model_fields["verify_timeout_seconds"].default
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_custom_timeout(self, mock_run):
         mock_run.return_value = _mock_result(0)
         verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg", timeout=3600)
@@ -204,7 +217,7 @@ class TestVerifyTimeoutPassthrough:
 
 
 class TestVerifyExceptions:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_timeout_expired(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=14400)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg", timeout=14400)
@@ -212,7 +225,7 @@ class TestVerifyExceptions:
         assert result["exit_code"] == -1
         assert "Timeout after 14400s" in result["error"]
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_file_not_found(self, mock_run):
         mock_run.side_effect = FileNotFoundError("rclone missing")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -220,7 +233,7 @@ class TestVerifyExceptions:
         assert result["exit_code"] == -1
         assert "rclone not found" in result["error"]
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_os_error(self, mock_run):
         mock_run.side_effect = OSError("Permission denied")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -230,21 +243,21 @@ class TestVerifyExceptions:
 
 
 class TestVerifyReturnStructure:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_return_keys_on_success(self, mock_run):
         mock_run.return_value = _mock_result(0)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         assert {"verified", "exit_code", "error", "termination",
                 "completion", "differences", "reason"} <= set(result.keys())
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_return_keys_on_failure(self, mock_run):
         mock_run.return_value = _mock_result(1, stderr="mismatch")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         assert {"verified", "exit_code", "error", "termination",
                 "completion", "differences", "reason"} <= set(result.keys())
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_return_keys_on_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=600)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -253,13 +266,13 @@ class TestVerifyReturnStructure:
 
 
 class TestVerifyStderrHandling:
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_stderr_present_on_mismatch(self, mock_run):
         mock_run.return_value = _mock_result(1, stderr="some stderr output")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
         assert result["verified"] is False
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_empty_stderr_on_mismatch(self, mock_run):
         mock_run.return_value = _mock_result(1, stderr="")
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")
@@ -267,7 +280,7 @@ class TestVerifyStderrHandling:
         assert result["error"].startswith(
             "Integrity mismatch — source and GCS file counts or sizes differ")
 
-    @patch("core.cloud_verify.subprocess.run")
+    @patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool)
     def test_none_stderr_on_error(self, mock_run):
         mock_run.return_value = _mock_result(2, stderr=None)
         result = verify_cloud_integrity("/src", "bucket", "FY26-27", "/cfg")

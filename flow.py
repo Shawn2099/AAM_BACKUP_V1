@@ -630,13 +630,17 @@ def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
 
 
 @task(name="cloud-verify-and-report")
-def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | None = None):
+def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | None = None,
+                                 artefacts_dir: str | None = None):
     """Verify integrity + gather size/manifest/diff for reporting.
 
     WP14: each check's timeout is capped by what is left of the run budget.
     """
     def limit(timeout_s):
         return int(budget.cap(timeout_s)) if budget is not None else timeout_s
+
+    artefacts = (RunArtefacts.open(artefacts_dir) if artefacts_dir
+                 else RunArtefacts.ephemeral("cloud-verify-report"))
 
     with temp_rclone_config(
         config.paths.gcs_key_path,
@@ -652,6 +656,9 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
             fy_prefix=fy_prefix,
             config_path=rclone_cfg,
             timeout=limit(config.cloud.verify_timeout_seconds),
+            checkers=config.cloud.checkers,
+            modify_window_seconds=config.cloud.modify_window_seconds,
+            artefacts=artefacts,
         )
         verify_s = time.monotonic() - _t_verify
 
@@ -1340,7 +1347,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 raise PartialRun(f"Cloud run ended {status} - {error_msg}")
             phase = "verify"
             _t_verify_report = time.monotonic()
-            verify_data = verify_report(config, fy_prefix, budget=budget)
+            verify_data = verify_report(config, fy_prefix, budget=budget,
+                                        artefacts_dir=artefacts_dir)
             verify_report_seconds = round(time.monotonic() - _t_verify_report, 1)
             stage_seconds.update(verify_data.get("stage_seconds") or {})
             stage_seconds["verify_report_s"] = verify_report_seconds

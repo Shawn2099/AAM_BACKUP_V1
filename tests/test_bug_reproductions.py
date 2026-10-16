@@ -9,7 +9,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.cloud_verify import verify_cloud_integrity
+from core.cloud_verify import verify_cloud_integrity as _verify_cloud_integrity
+import functools
+
+from models.config import CloudConfig as _CloudConfig
+from test_support.fake_tools import SubprocessStyleRunTool
+
+# rclone runs through run_tool (plan 5.1). Required tunables at the production
+# defaults (cloud.* in config); a keyword passed by a test still wins.
+verify_cloud_integrity = functools.partial(
+    _verify_cloud_integrity,
+    timeout=_CloudConfig.model_fields["verify_timeout_seconds"].default,
+    checkers=_CloudConfig.model_fields["checkers"].default,
+    modify_window_seconds=_CloudConfig.model_fields["modify_window_seconds"].default,
+)
 from core.lan_sync import classify_exit_code, decide_lan_result
 
 
@@ -22,7 +35,7 @@ class TestBugTimeoutMismatch:
     def test_verify_cloud_integrity_default_timeout(self):
         """verify_cloud_integrity default timeout is 18000 but docstring says 14400."""
         with patch("core.cloud_verify.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_verify.subprocess.run") as mock_run:
+             patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool) as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             verify_cloud_integrity(
                 source="E:\\",
@@ -200,7 +213,7 @@ class TestBugVerifyTimeoutMessage:
     def test_timeout_message_matches_actual_timeout(self):
         """The timeout error message should match the actual timeout value."""
         with patch("core.cloud_verify.resolve_binary", return_value="rclone"), \
-             patch("core.cloud_verify.subprocess.run") as mock_run:
+             patch("core.cloud_verify.run_tool", new_callable=SubprocessStyleRunTool) as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=18000)
             result = verify_cloud_integrity(
                 source="E:\\",
