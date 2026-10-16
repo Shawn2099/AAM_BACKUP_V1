@@ -1,6 +1,7 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-16 (box review, 4 fixes, deployed to the box - see §4b)
+**Last updated:** 2026-10-16 (GitNexus scan, tool_runner migration, no-literals sweep - see §4d;
+box review + deploy - §4b). **Box not redeployed with §4d** (owner decides).
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -46,7 +47,8 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M4 Operations | **done** (4.1–4.6) — M4 lab 238/1 → W10 stale expectation fixed → **0 red** |
 | M5 Acceptance (on-box) | **in progress on the trial box - PAUSED by owner 2026-10-15 ~16:40** (see §4a) |
 
-**Test status at last check (2026-10-15, after 4.7 admin login + plain language):** `tests/` **1850 passed / 0 failed / 19 skipped**
+**Test status at last check (2026-10-16, §4d, HEAD 9b8ddec):** `tests/` **1970 passed / 0 failed /
+19 skipped**; full audit lab (at 0eac85a) **238 passed / 0 failed / 3 skipped**.
 **M4 milestone audit lab (2026-10-15): 238 passed / 1 failed / 2 skipped (20 min)**; the 1 red was
 W10 `deployment_schedules_fire_when_intended` expecting the old monthly 08:00 / audit 03:00 -
 updated to 08:30 / 10:00, green. W16 schedule collision is green now (local config fixed).
@@ -107,9 +109,8 @@ config.yaml `monthly_cron` changed - DEC-7).
    Idea for later: apply schedule changes without restarting the agent.
    **NEXT: M5 acceptance** - 5.1 full suite + audit lab green + diff review; 5.2 on-box WP17
    checklist (needs owner OK + the service account); 5.3 seven truthful nights.
-   Still deferred (plan §13 M3 note): tool_runner migration of cloud_verify / cloud_reporter /
-   integrity `subprocess.run`; hard-coded task retries (preflight 1x30 s, verify 1x60 s) in flow.py
-   should become config keys.
+   DONE 2026-10-16 (§4d): tool_runner migration of cloud_verify / cloud_reporter / integrity /
+   cloud_preflight; task retries (preflight 1x30 s, verify 1x60 s) are config keys.
    **Owner decision pending (found in 4.5):** `03_setup_system.bat` sets Windows Update Active
    Hours 12:00-06:00, i.e. reboots allowed 06:00-12:00 - with cloud at 02:00 + 6 h budget a
    Windows Update reboot can hit the cloud run until 08:00. Options: Active Hours 20:00-09:00
@@ -140,8 +141,55 @@ config.yaml `monthly_cron` changed - DEC-7).
    w32tm fallback (WP12), 4.3 watchdog restart order / STOP_PENDING / config / own log (WP13),
    4.4 schedule/time-budget validator with cronsim (WP14), 4.5 installer `uv run --frozen
    --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
-   Deferred from M3 (plan §13 note): tool_runner migration of cloud_verify / cloud_reporter /
-   integrity `subprocess.run` calls.
+   (M3 deferral - tool_runner migration of the check tools - DONE 2026-10-16, §4d.)
+
+## 4d. Session 2026-10-16 (GitNexus scan + "no hard-coded values" sweep)
+
+Owner asked: run GitNexus, fix the findings, no hard-coded values anywhere, generous and safe
+defaults. Rule applied: **every default = the value that already ran on the trial box** (no
+behaviour change); a literal that disagreed with the model was a bug and now follows the model.
+Commits (each test-first, GitNexus impact + detect_changes before commit):
+- ee5fe7d dead code: `write_config_values`, `count_extra_file_lines`, `is_no_changes`, `read_section`.
+- 5c1bb82 **bug**: the Prefect run summary was never published when rclone stats were missing
+  (`bytes_copied=None` divided) - now "unknown"; the bare `except: pass` around it now warns.
+- 76bf8f5 `cloud_record_task` / `lan_record_task` / `_record_run` take `config` and open the DB
+  via `ManifestDB.from_config` (plan 5.4); literal 30000/10000/"normal" signature defaults gone.
+- 73a9e24 task retries are config: `cloud.preflight_retries`/`_delay_seconds` (1/30),
+  `cloud.verify_retries`/`_delay_seconds` (1/60), `lan.preflight_retries`/`_delay_seconds` (1/30).
+- 60155c3, 7670f0b, a330db5, e10ad53 **tool_runner migration DONE (M3 deferral)**: cloud_preflight
+  probe, cloud_verify, cloud_reporter size/manifest/diff, integrity `rclone check` all run through
+  `run_tool` - output kept in the run folder (the cloud verify-report task and each audit leg now
+  get `artefacts_dir`), timeouts kill the tree. **No `subprocess.run` outside tool_runner remains
+  in production code.** Verdict functions AST-identical. New keys: `cloud.probe_retries` (2),
+  `cloud.probe_retries_sleep_seconds` (5), `cloud.modify_window_seconds` (2),
+  `cloud.retries_sleep_seconds` (10, diff), `audit.modify_window_seconds` (2). Result dicts keep
+  their shape (incl. `exit_code -1` when rclone did not finish - the flow evidence gate reads it).
+  Test helper: `test_support.fake_tools.SubprocessStyleRunTool` (old subprocess-style mocks ->
+  real ToolResults). Never patch `tempfile.mkstemp` / `os.close` (global; breaks run_tool's
+  artefact writes - the old `(0, path)` stub closed pytest's stdin).
+- 5c17a53 `models.config.model_default(Model, "field")`: 36 function fallbacks in core/ now read
+  the model; 5 had drifted (ManifestDB vacuum 1000 vs 10000, WoL 3x5s vs 5x10s, log retention 30
+  vs 90, rclone error tail 10 vs 100 - only direct callers/tests saw them). New key
+  `maintenance.orphan_robocopy_log_max_age_hours` (24) replaces a call-site literal in flow.
+- 0eac85a upload command: `--modify-window` -> `cloud.modify_window_seconds`, `--retries-sleep`
+  -> new `cloud.sync_retries_sleep_seconds` (30, kept separate: C-A max-duration), `--stats` ->
+  new `cloud.stats_interval_seconds` (60).
+- 9b8ddec manual code review of the session diff: `cloud.`/`audit.modify_window_seconds` capped at
+  0-10 s and made risky (typed confirmation) - a wide window would make the upload skip same-size
+  edits. Review also checked: no caller passes moved parameters positionally (AST scan), artefact
+  text decodes with errors=replace, every not-completed run_tool path fails closed.
+- Disk note for the owner: run_tool keeps stdout, so the nightly `rclone lsjson -R` listing is now
+  kept in run_logs (gzip after the run, 90-day retention, `run_logs.min_free_gb` guard). The
+  diff's `--combined` file (lists every unchanged file) is still a temp file, not kept.
+
+**Still literal on purpose / owner decision (not changed):** process-kill wait 30 s
+(tool_runner x3, services.py), `run_capture` 4000-char cap, ManifestDB schema-migration retry
+3 x 1 s, dashboard page sizes (`get_recent_runs(25)`, `limit=200` x3), launch.py health probe 5 s /
+dashboard supervise 60 s / 0.5 s, SMB port 445 (protocol). `report.send_failure_alert`'s 1000-char
+cut is in the legacy helper nothing calls. Integrity fallbacks are kept (read from the model)
+because ~50 test call sites use them; elsewhere migrated functions have no fallback at all.
+Ephemeral run_tool folders (`aam_tool_*` in %TEMP%, used when no run folder is passed) are never
+deleted - pre-existing convention, only hit outside a pipeline.
 
 ## 4c. Session 2026-10-16 (later) - dev tooling + calendar simulation
 
