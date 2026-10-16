@@ -434,7 +434,7 @@ def health_check_task(config, mode: str, artefacts_dir: str | None = None):
 # ═══════════════════════════════════════════════════════════════
 
 @task(name="cloud-preflight")
-def cloud_preflight_task(config, fy_prefix: str):
+def cloud_preflight_task(config, fy_prefix: str, artefacts_dir: str | None = None):
     """Two-probe preflight: source drive alive + GCS auth/bucket probe.
 
     Probe A (Python): confirms source drive is mounted and readable.
@@ -453,6 +453,9 @@ def cloud_preflight_task(config, fy_prefix: str):
         storage_class=config.cloud.storage_class,
         location=config.cloud.location,
         timeout=config.cloud.preflight_timeout_seconds,
+        retries=config.cloud.probe_retries,
+        retries_sleep_seconds=config.cloud.probe_retries_sleep_seconds,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
     )
     if not result["ok"]:
         raise RuntimeError(f"Cloud preflight failed: {result['error']}")
@@ -1301,7 +1304,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
         try:
             clock = health_check_task(config, "cloud", artefacts_dir)
-            preflight(config, fy_prefix)
+            preflight(config, fy_prefix, artefacts_dir)
             guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
                                              approval_id=approval_id, run_id=run_id)
             cloud_access_task(config, run_id, artefacts_dir)

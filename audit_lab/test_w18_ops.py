@@ -18,7 +18,6 @@ import contextlib
 import json
 import os
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -28,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from audit_lab import labconf as L
+from test_support.fake_tools import fake_run_tool
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -515,9 +515,18 @@ def _rig_cloud(monkeypatch):
     return cf
 
 
+# Tunables are required keyword arguments (they come from config in production).
+_PROBE = {"location": "asia-south1", "timeout": 300, "retries": 2, "retries_sleep_seconds": 5}
+
+
+def _dry(cf, src, **over):
+    return cf.run_cloud_dry_run(str(src), "b", "FY26-27", "k.json", "1", "COLDLINE",
+                                **{**_PROBE, **over})
+
+
 def test_w18_cloud_dry_run_source_missing(monkeypatch, sandbox):
     cf = _rig_cloud(monkeypatch)
-    res = cf.run_cloud_dry_run(str(sandbox / "nope"), "b", "FY26-27", "k.json", "1", "COLDLINE")
+    res = _dry(cf, sandbox / "nope")
     assert res["ok"] is False and res["exit_code"] == -1
     assert "Source drive not accessible" in res["error"]
 
@@ -526,8 +535,8 @@ def test_w18_cloud_dry_run_empty_source_still_probes(monkeypatch, sandbox):
     cf = _rig_cloud(monkeypatch)
     src = sandbox / "empty"
     src.mkdir()
-    monkeypatch.setattr(cf.subprocess, "run", lambda *a, **k: _cp(0, "[]"))
-    res = cf.run_cloud_dry_run(str(src), "b", "FY26-27", "k.json", "1", "COLDLINE")
+    with fake_run_tool("core.cloud_preflight", exit_code=0, stdout="[]"):
+        res = _dry(cf, src)
     assert res["ok"] is True and res["error"] is None       # M8: diagnostic-only
 
 
@@ -535,7 +544,7 @@ def test_w18_cloud_dry_run_unreadable_source(monkeypatch, sandbox):
     cf = _rig_cloud(monkeypatch)
     f = sandbox / "notadir.txt"
     f.write_text("x", encoding="utf-8")                    # exists() but iterdir() fails
-    res = cf.run_cloud_dry_run(str(f), "b", "FY26-27", "k.json", "1", "COLDLINE")
+    res = _dry(cf, f)
     assert res["ok"] is False and "Source drive read error" in res["error"]
 
 
@@ -544,30 +553,27 @@ def test_w18_cloud_dry_run_probe_failures(monkeypatch, sandbox):
     src = sandbox / "src"
     (src / "FY26-27").mkdir(parents=True)
     (src / "FY26-27" / "a.txt").write_text("a", encoding="utf-8")
+    mod = "core.cloud_preflight"
 
-    monkeypatch.setattr(cf.subprocess, "run",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            subprocess.TimeoutExpired(cmd="rclone", timeout=30)))
-    res = cf.run_cloud_dry_run(str(src), "b", "FY26-27", "k.json", "1", "COLDLINE", timeout=5)
+    with fake_run_tool(mod, timed_out=True):
+        res = _dry(cf, src, timeout=5)
     assert res["ok"] is False and "Timeout after 5s" in res["error"]
 
-    monkeypatch.setattr(cf.subprocess, "run",
-                        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
-    res = cf.run_cloud_dry_run(str(src), "b", "FY26-27", "k.json", "1", "COLDLINE")
+    with fake_run_tool(mod, spawn_error="FileNotFoundError: rclone"):
+        res = _dry(cf, src)
     assert res["ok"] is False and res["error"] == "rclone not found"
 
-    monkeypatch.setattr(cf.subprocess, "run",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("pipe")))
-    res = cf.run_cloud_dry_run(str(src), "b", "FY26-27", "k.json", "1", "COLDLINE")
+    with fake_run_tool(mod, spawn_error="OSError: pipe"):
+        res = _dry(cf, src)
     assert res["ok"] is False and "OS error launching rclone" in res["error"]
 
-    monkeypatch.setattr(cf.subprocess, "run", lambda *a, **k: _cp(3, "", "directory not found"))
-    res = cf.run_cloud_dry_run(str(src), "b", "FY26-27", "k.json", "1", "COLDLINE")
+    with fake_run_tool(mod, exit_code=3, stderr="directory not found"):
+        res = _dry(cf, src)
     assert res["ok"] is False and res["exit_code"] == 3
     assert "Exit 3: directory not found" in res["error"]
 
-    monkeypatch.setattr(cf.subprocess, "run", lambda *a, **k: _cp(0, "[]"))
-    res = cf.run_cloud_dry_run(str(src), "b", "FY26-27", "k.json", "1", "COLDLINE")
+    with fake_run_tool(mod, exit_code=0, stdout="[]"):
+        res = _dry(cf, src)
     assert res["ok"] is True and res["exit_code"] == 0
     L.record("W18.cloud_dry_run_branches",
              "run_cloud_dry_run() fails closed on every probe failure and passes "

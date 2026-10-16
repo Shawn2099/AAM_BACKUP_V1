@@ -311,6 +311,12 @@ class CloudConfig(StrictModel):
         default=60, ge=5, le=3600, description="Seconds between after-upload check tries")
     verify_timeout_seconds: int = Field(default=18000, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
+    probe_retries: int = Field(
+        default=2, ge=0, le=10,
+        description="rclone --retries for the preflight GCS access probe (lsjson --max-depth 0)")
+    probe_retries_sleep_seconds: int = Field(
+        default=5, ge=0, le=300,
+        description="rclone --retries-sleep for the preflight GCS access probe (seconds)")
     dry_run_timeout_seconds: int = Field(
         default=1800, ge=60, le=86400,
         description="Timeout (seconds) for each guard measurement before the cloud sync: "

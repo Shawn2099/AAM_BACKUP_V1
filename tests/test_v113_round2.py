@@ -77,7 +77,9 @@ def test_a_untouched_timeouts_stable():
     from core import cloud_reporter as cr
     from core import lan_preflight as lp
     from models.config import CloudConfig, LanConfig
-    assert inspect.signature(cp.run_cloud_dry_run).parameters["timeout"].default == 30
+    # The probe timeout has no literal default: it always comes from
+    # cloud.preflight_timeout_seconds (owner rule: every tunable is config).
+    assert inspect.signature(cp.run_cloud_dry_run).parameters["timeout"].default is inspect.Parameter.empty
     assert inspect.signature(cr.get_cloud_size).parameters["timeout"].default == 300
     assert inspect.signature(lp.run_lan_dry_run).parameters["timeout"].default == 900
     assert CloudConfig.model_fields["preflight_timeout_seconds"].default == 300

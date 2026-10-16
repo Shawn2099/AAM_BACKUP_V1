@@ -153,6 +153,9 @@ cloud:
   verify_timeout_seconds: 18000
   # Timeout for pre-sync rclone check dry-run (seconds)
   preflight_timeout_seconds: 300
+  # rclone --retries / --retries-sleep (seconds) for the preflight GCS access probe
+  probe_retries: 2
+  probe_retries_sleep_seconds: 5
   # Timeout for each guard measurement before the sync: `rclone sync --dry-run`
   # (planned deletions) and `rclone size` of the source (seconds, 60–86400)
   dry_run_timeout_seconds: 1800

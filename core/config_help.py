@@ -138,6 +138,8 @@ HELP: dict[str, tuple[str, str]] = {
     "cloud.max_duration_seconds": ("Stop uploading after", "Empty = automatic."),
     "cloud.verify_timeout_seconds": ("Time for the after-upload check", ""),
     "cloud.preflight_timeout_seconds": ("Time for the cloud access check", ""),
+    "cloud.probe_retries": ("Network retries in the access check", ""),
+    "cloud.probe_retries_sleep_seconds": ("Wait between access check network retries", ""),
     "cloud.dry_run_timeout_seconds": ("Time for the pre-check", ""),
     "cloud.diff_timeout_seconds": ("Time for the difference report", ""),
     "cloud.manifest_timeout_seconds": ("Time for the cloud file list", ""),
