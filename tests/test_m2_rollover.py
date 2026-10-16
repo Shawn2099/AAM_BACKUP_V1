@@ -16,7 +16,8 @@ from core import approvals as ap
 from core import fy_rollover as fr
 from core import guards as g
 from core import statuses
-from models.config import AppConfig, RolloverConfig
+from core.health import CLOCK_OK, CLOCK_SKEWED, CLOCK_UNVERIFIED, ClockResult
+from models.config import AppConfig, HealthConfig, RolloverConfig
 
 
 # ── Pure decisions ────────────────────────────────────────────────────────
@@ -122,15 +123,17 @@ def _cfg():
     cfg.cloud.enabled = True
     cfg.lan.enabled = True
     cfg.rollover = RolloverConfig()
+    cfg.health = HealthConfig()
     return cfg
 
 
 class _Rig:
     def __init__(self, computed="FY27-28", cloud="CLOUD_COMPLETE", lan="LAN_COMPLETE",
-                 approved=False):
+                 approved=False, clock=None):
         self.cfg = _cfg()
         self.order = MagicMock()
         self.patches = [
+            patch("flow.check_clock", return_value=clock or ClockResult(CLOCK_OK, 1.0, "google", "")),
             patch("flow.load_config", return_value=self.cfg),
             patch("flow.log_retention_task"),
             patch("flow.get_fy_prefix", return_value=computed),
@@ -236,6 +239,45 @@ def test_clock_behind_never_rolls_back_and_is_not_approvable():
         event = r.m["notify"].call_args.args[1]
         assert event.kind == "ACTION_REQUIRED" and "clock" in event.message.lower()
         assert r.statuses() == ["ROLLOVER_BLOCKED"]
+
+
+@pytest.mark.parametrize("clock", [
+    ClockResult(CLOCK_SKEWED, 15_552_000.0, "google",
+                "System clock skew detected: 15552000s difference from google"),
+    ClockResult(CLOCK_UNVERIFIED, None, None, "Google unreachable; w32tm: no sample"),
+], ids=["skewed", "unverified"])
+@pytest.mark.parametrize("computed", ["FY27-28", "FY28-29"], ids=["forward", "jump"])
+def test_rollover_never_acts_on_a_clock_that_is_not_proven(clock, computed):
+    # Code review 2026-10-16: the rollover trusted the local clock. A clock
+    # exactly one FY ahead (e.g. 2 Apr 2027 in Oct 2026) rolled over on its
+    # own; the nightly backups then covered only the new, empty FY folder while
+    # staff kept working in FY26-27 - unprotected, and nothing alerted.
+    with _Rig(computed=computed, clock=clock) as r:
+        with pytest.raises(fr.RolloverError, match="clock"):
+            r.run(approval_id="a1")
+        r.m["_run_cloud_pipeline"].assert_not_called()
+        r.m["_run_lan_pipeline"].assert_not_called()
+        r.m["create_new_fy_folders"].assert_not_called()
+        r.m["update_config_yaml"].assert_not_called()
+        r.m["run_archive_transition"].assert_not_called()
+        r.m["_apply_approval"].assert_not_called()       # an unproven date is not approvable
+        r.m["_open_block_request"].assert_not_called()
+        assert r.statuses() == ["ROLLOVER_BLOCKED"]
+        [c] = r.m["notify"].call_args_list
+        event = c.args[1]
+        assert event.kind == "ACTION_REQUIRED" and event.status == "ROLLOVER_BLOCKED"
+        assert clock.reason in event.message and "FY26-27" in event.message
+
+
+def test_rollover_checks_the_clock_only_when_a_rollover_is_due():
+    with _Rig(computed="FY26-27") as r:
+        assert r.run() == "NO_ROLLOVER_NEEDED"
+        r.m["check_clock"].assert_not_called()       # the 364 ordinary days: no network call
+    with _Rig() as r:
+        assert r.run() == "ROLLOVER_COMPLETED"
+        kw = r.m["check_clock"].call_args.kwargs
+        assert kw["max_skew_seconds"] == HealthConfig().max_clock_skew_seconds
+        assert kw["ntp_server"] == HealthConfig().ntp_server
 
 
 def test_disabled_leg_needs_no_final_backup():

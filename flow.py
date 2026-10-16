@@ -40,7 +40,7 @@ from core.cloud_reporter import (
 from core.budget import BudgetExceeded, RunBudget
 from core.cloud_sync import resolve_max_duration_seconds, run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
-from core.health import pre_backup_health
+from core.health import CLOCK_OK, check_clock, pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
@@ -1954,6 +1954,30 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
             key="rollover:clock_behind", kind="ACTION_REQUIRED", mode="rollover",
             title="Server clock is behind - FY rollover refused", message=msg,
             status="ROLLOVER_BLOCKED", occurred_at=started_at))
+        raise fy_rollover.RolloverError(msg)
+
+    # The FY switch is one-way, so the date it acts on must be proven against
+    # Google / NTP first: a clock one FY ahead would otherwise roll over on its
+    # own and leave the real FY unprotected. Not approvable (like CLOCK_BEHIND).
+    clock = check_clock(
+        max_skew_seconds=config.health.max_clock_skew_seconds,
+        connection_timeout=config.health.clock_check_timeout_seconds,
+        ntp_server=config.health.ntp_server,
+        w32tm_timeout_s=config.health.w32tm_timeout_seconds,
+        artefacts=RunArtefacts.ephemeral("rollover-clock"),
+    )
+    metrics["clock"] = clock.to_metrics()
+    if clock.state != CLOCK_OK:
+        msg = (f"FY rollover {from_fy} -> {to_fy} refused: the server clock could not be "
+               f"proven correct ({clock.state}: {clock.reason}). The backups keep using "
+               f"{from_fy}; nothing was changed. Correct the date/time (w32tm /resync) or "
+               "restore internet/NTP access - the check repeats every morning.")
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {})
+        notify(config, AlertEvent(
+            key=f"rollover:clock_{clock.state.lower()}", kind="ACTION_REQUIRED",
+            mode="rollover", title="Server clock not proven - FY rollover refused",
+            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at))
         raise fy_rollover.RolloverError(msg)
 
     logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
