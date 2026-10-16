@@ -115,25 +115,36 @@ def g2_source_shrink(current_files: int | None, baseline_files: int | None,
 # ── G3: planned deletions must stay within limits ──────────────────────────
 
 def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
-                   max_delete_files: int, max_delete_percent: float) -> GuardResult:
+                   max_delete_files: int, max_delete_percent: float,
+                   already_deleted: int = 0) -> GuardResult:
+    """already_deleted (XR-1/XR-2): files an earlier attempt of THIS run
+    deleted. The limits apply to the whole run, so they are added to the
+    planned deletions and to the destination size the run started from."""
     name = "G3_MASS_DELETE"
+    extra = {"already_deleted": already_deleted} if already_deleted else {}
     if planned_deletes is None or destination_files is None:
         return _block(name, "The number of files this backup would delete could not be "
                             "measured - refusing to mirror blindly.",
-                      planned_deletes=planned_deletes, destination_files=destination_files)
+                      planned_deletes=planned_deletes, destination_files=destination_files,
+                      **extra)
+    planned_deletes += already_deleted
+    destination_files += already_deleted
     pct = 100.0 * planned_deletes / destination_files if destination_files > 0 else 0.0
     metrics = dict(planned_deletes=planned_deletes, destination_files=destination_files,
                    delete_percent=round(pct, 2), limit_files=max_delete_files,
-                   limit_percent=max_delete_percent)
+                   limit_percent=max_delete_percent, **extra)
+    earlier = (f" ({already_deleted:,} of them already deleted by an earlier attempt of "
+               "this run)" if already_deleted else "")
     if planned_deletes > max_delete_files or pct > max_delete_percent:
         return _block(
             name,
             f"This backup would delete {planned_deletes:,} of {destination_files:,} "
-            f"backup files ({pct:.1f}%; limits {max_delete_files:,} files / "
+            f"backup files{earlier} ({pct:.1f}%; limits {max_delete_files:,} files / "
             f"{max_delete_percent}%).",
             **metrics,
         )
-    return _pass(name, f"{planned_deletes:,} planned deletion(s) within limits", **metrics)
+    return _pass(name, f"{planned_deletes:,} planned deletion(s) within limits{earlier}",
+                 **metrics)
 
 
 # ── G4: destination must be the expected, off-host destination ─────────────
@@ -300,6 +311,46 @@ def max_delete_allowance(destination_files: int, max_delete_files: int,
     """
     by_percent = math.floor(Fraction(destination_files) * Fraction(max_delete_percent) / 100)
     return max(0, min(max_delete_files, by_percent))
+
+
+def remaining_delete_allowance(destination_files: int, already_deleted: int,
+                               max_delete_files: int, max_delete_percent: float) -> int:
+    """XR-1: the --max-delete for a retry - what is left of the run's allowance.
+
+    `destination_files` is the size now; the allowance is computed on the
+    size the run started from, minus what this run already deleted, so all
+    attempts together never delete more than G3 passes once.
+    """
+    allowance = max_delete_allowance(destination_files + already_deleted,
+                                     max_delete_files, max_delete_percent)
+    return max(0, allowance - already_deleted)
+
+
+def backstop_blocked(leg: str, record: dict, deleted: int) -> GuardBlocked:
+    """XR-1: the tool's own delete cap stopped the sync - always a human decision.
+
+    `record` is the guard re-measure taken after the stop (deletions of this
+    run included). Its G3 numbers are kept for the approval card, but G3 is
+    BLOCK whatever the re-measure said: more files were to be deleted than
+    the guard measured before the sync, so the measurement itself is no
+    longer trusted. A G3 approval the run carried does not cover this.
+    """
+    results = [dict(r) for r in record.get("results", [])]
+    g3 = next((r for r in results if r.get("guard") == "G3_MASS_DELETE"), None)
+    metrics = {**((g3 or {}).get("metrics") or {}), "already_deleted": deleted,
+               "backstop_tripped": True}
+    # The approval phrase names the deletions; at least these are known.
+    metrics["planned_deletes"] = max(metrics.get("planned_deletes") or 0, deleted)
+    reason = (f"The {leg} sync stopped at its delete limit after deleting {deleted:,} "
+              "file(s): it wanted to delete more than the safety check measured just "
+              "before the sync. Nothing more is deleted until a person approves.")
+    blocked = asdict(_block("G3_MASS_DELETE", reason, **metrics))
+    results = [r for r in results if r.get("guard") != "G3_MASS_DELETE"] + [blocked]
+    approved = [a for a in record.get("approved_guards", []) if a != "G3_MASS_DELETE"]
+    new_record = {**record, "results": results, "approved_guards": approved}
+    if not approved:
+        new_record.pop("approved_guards")
+    return GuardBlocked(leg, new_record)
 
 
 # ── Measurement helpers (the only I/O in this module) ─────────────────────

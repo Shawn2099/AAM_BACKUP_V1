@@ -68,6 +68,21 @@ class PartialRun(RuntimeError):
     """
 
 
+class SyncFailed(RuntimeError):
+    """A sync attempt ended FAILED / SUSPECT; `result` is the tool's result.
+
+    Carries the verdict (exit code, status, deletions) to the attempt loop
+    and the run row - a bare RuntimeError lost it (the row said exit -1).
+    """
+
+    def __init__(self, message: str, result: dict):
+        super().__init__(message, result)
+        self.result = result
+
+    def __str__(self) -> str:
+        return str(self.args[0])
+
+
 # Terminal-status policy: Prefect COMPLETED is allowed ONLY for these row
 # statuses. Every other terminal status raises before the pipeline returns,
 # so a non-success backup can never hide behind a successful orchestration
@@ -464,7 +479,8 @@ def cloud_preflight_task(config, fy_prefix: str, artefacts_dir: str | None = Non
 
 @task(name="cloud-guards")
 def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
-                      approval_id: str | None = None, run_id: str | None = None) -> dict:
+                      approval_id: str | None = None, run_id: str | None = None,
+                      already_deleted: int = 0) -> dict:
     """Data-safety guards G1-G4 before rclone sync (plan WP3, M2 2.2).
 
     Measures with rclone itself: `rclone size` of source and destination,
@@ -472,6 +488,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     real sync). A measurement that could not be taken FAILS the run
     (retried next night); a guard verdict BLOCKs it for a human. The
     record's "max_delete" is the --max-delete backstop for the real sync.
+    already_deleted (XR-1): deletions of earlier attempts of this run - G3
+    and the backstop cover the whole run, not each attempt.
     """
     source = config.paths.source_drive
     bucket = config.cloud.bucket
@@ -530,7 +548,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
                 f"cleanly ({dry.get('status')}): {dry.get('error')}")
         results.append(guards.g3_mass_delete(
             dry["planned_deletes"], destination_files,
-            limits.max_delete_files, limits.max_delete_percent))
+            limits.max_delete_files, limits.max_delete_percent,
+            already_deleted=already_deleted))
 
     approved, approval_record = _apply_approval(config, "cloud", approval_id, run_id, results)
     if "G3_MASS_DELETE" in approved:
@@ -538,12 +557,14 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         # approval was just checked against - nothing beyond it.
         max_delete = dry["planned_deletes"]
     else:
-        max_delete = guards.max_delete_allowance(
-            destination_files, limits.max_delete_files, limits.max_delete_percent)
+        max_delete = guards.remaining_delete_allowance(
+            destination_files, already_deleted,
+            limits.max_delete_files, limits.max_delete_percent)
     return guards.enforce(
         "cloud", results, approved_guards=approved, fy=fy_prefix,
         source_file_count=source_files, destination=destination,
         destination_files=destination_files, max_delete=max_delete, **approval_record,
+        **({"already_deleted": already_deleted} if already_deleted else {}),
     )
 
 
@@ -565,6 +586,79 @@ def cloud_access_task(config, run_id: str, artefacts_dir: str | None = None):
             RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-access"),
             error_tail_lines=config.cloud.error_tail_lines,
         )
+
+
+def _sync_with_retries(leg: str, *, run_once, remeasure, deletes_of, retryable,
+                       max_attempts: int, delay_s: int, budget: RunBudget | None,
+                       reserve_s: float, state: dict) -> dict:
+    """XR-1 / XR-2 / XR-6: the ONE retry policy for a mirror (both legs).
+
+    Replaces Prefect task retries, which re-ran the mirror with the same
+    arguments: a fresh --max-delete each time (up to max_attempts x the G3
+    limit deleted) and a robocopy /MIR repeat without re-checking anything.
+
+    run_once() runs one attempt; it returns the result or
+    raises SyncFailed (anything else is not retried). A failed attempt is
+    retried only when
+      * its deletions are known (deletes_of -> int; unknown = fail closed),
+      * the tool did not stop at its delete backstop (-> BLOCKED, a human),
+      * retryable(result) - a repeat can change it,
+      * attempts are left and the delay fits the run budget,
+      * and remeasure(already_deleted) - the same guards as before attempt 1,
+        counting this run's deletions - passes (it raises GuardBlocked or
+        RuntimeError otherwise).
+    state["result"] always holds the latest attempt's result (the run row's
+    exit code / status); state["attempts"] the per-attempt evidence.
+    """
+    attempts = state.setdefault("attempts", [])
+    deleted = 0
+    max_attempts = max(1, int(max_attempts))   # the mirror always runs once
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result, failure = run_once(), None
+        except SyncFailed as e:
+            result, failure = e.result, e
+        state["result"] = result
+        done = deletes_of(result)
+        attempts.append({"attempt": attempt, "status": result.get("status"),
+                         "exit_code": result.get("exit_code"), "deleted": done})
+        if failure is None:
+            return result
+        label = (f"{leg.upper()} sync attempt {attempt}/{max_attempts} ended "
+                 f"{result.get('status')} (exit {result.get('exit_code')})")
+        if result.get("max_delete_reached"):
+            deleted += done or 0
+            logger.error(f"{label} at the delete backstop after {deleted} deletion(s) in "
+                         "this run - not retried; re-measuring for the approval request")
+            try:
+                record = remeasure(deleted)
+            except guards.GuardBlocked:
+                raise
+            except Exception as e:  # noqa: BLE001 - the stop must still reach a human
+                logger.error(f"Re-measure after the delete backstop failed ({e}) - "
+                             "blocking with the known deletions only")
+                record = {"results": []}
+            raise guards.backstop_blocked(leg, record, deleted)
+        if done is None:
+            logger.error(f"{label}; its deletions are unknown - not retried (a repeat "
+                         "could not be bounded)")
+            raise failure
+        deleted += done
+        if not retryable(result):
+            logger.error(f"{label} - not a failure a repeat can change; not retried")
+            raise failure
+        if attempt == max_attempts:
+            logger.error(f"{label} - no attempts left")
+            raise failure
+        if budget is not None and budget.remaining() <= delay_s + reserve_s:
+            logger.error(f"{label} - the {delay_s}s retry delay does not fit the run "
+                         f"budget ({budget.describe()}); not retried")
+            raise failure
+        logger.warning(f"{label}; retrying in {delay_s}s after re-checking the guards "
+                       f"({deleted} file(s) deleted so far in this run)")
+        time.sleep(delay_s)
+        remeasure(deleted)
+    raise AssertionError("unreachable: the loop returns or raises")
 
 
 def _budget_stop_text(budget: RunBudget, what: str) -> str:
@@ -622,16 +716,27 @@ def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         error_tail_lines=config.cloud.error_tail_lines,
         max_delete=max_delete,
     )
-    if limited and (result.get("exit_code") == 10 or result.get("timed_out")):
+    stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
+    if stopped:
         stats = result.get("stats") or {}
         done = (f"{stats.get('transfers', 'unknown')} file(s), "
                 f"{(stats.get('bytes') or 0) / 1024 ** 3:.2f} GB uploaded in this run"
                 if stats else "upload progress unknown (no rclone stats)")
-        logger.warning(f"Cloud upload stopped at the run budget - {done}")
-        return {**result, "status": "CLOUD_PARTIAL", "budget_stopped": True,
-                "error": _budget_stop_text(budget, done)}
+        if limited:
+            logger.warning(f"Cloud upload stopped at the run budget - {done}")
+            return {**result, "status": "CLOUD_PARTIAL", "budget_stopped": True,
+                    "error": _budget_stop_text(budget, done)}
+        # XR-5: rclone's own --max-duration (cloud.max_duration_seconds, or the
+        # subprocess timeout minus its margin) - the same knowingly incomplete
+        # bucket as a budget stop, so the same truthful PARTIAL, never a verify.
+        cap_s = resolve_max_duration_seconds(timeout, max_duration)
+        logger.warning(f"Cloud upload stopped at rclone's --max-duration of {cap_s}s - {done}")
+        return {**result, "status": "CLOUD_PARTIAL", "time_limit_stopped": True, "error": (
+            f"Stopped at rclone's time limit (--max-duration {cap_s}s; config "
+            f"cloud.max_duration_seconds / cloud.subprocess_timeout_seconds): {done}. This is "
+            "not a complete backup; the next run continues where this one stopped.")}
     if result["status"] in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
-        raise RuntimeError(result.get("error", "Cloud sync failed"))
+        raise SyncFailed(result.get("error") or "Cloud sync failed", result)
     return result
 
 
@@ -821,6 +926,8 @@ def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | Non
     Returns (approved guard names, record additions). The approval is
     consumed atomically here - before any transfer - so it can never cover
     a second run. No approval_id (every scheduled run) -> nothing approved.
+    XR-1/XR-2: a retry of the SAME run re-checks the approval it already used
+    (same numbers rule, cumulative deletions) without consuming it again.
     """
     blocked = [r for r in results if not r.passed]
     if not blocked or not approval_id:
@@ -832,10 +939,13 @@ def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | Non
             logger.info(f"Approval {approval_id} is for the {request.get('leg')} leg - "
                         f"not applied to {leg}")
             return frozenset(), {}
+        own_retry = (request is not None and run_id is not None
+                     and request.get("used_by_run_id") == run_id)
         decision = approvals.evaluate_request(
-            request, leg=leg, blocked=blocked, now_iso=now_iso(),
+            {**request, "used_at": None} if own_retry else request,
+            leg=leg, blocked=blocked, now_iso=now_iso(),
             tolerance_percent=config.approvals.tolerance_percent)
-        if decision.allowed and not db.mark_approval_used(
+        if decision.allowed and not own_retry and not db.mark_approval_used(
                 approval_id, run_id=run_id, used_at=now_iso()):
             decision = approvals.ApprovalDecision(
                 False, "approval already used by another run")
@@ -890,7 +1000,8 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
 
 @task(name="lan-guards")
 def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: int | None,
-                    approval_id: str | None = None, run_id: str | None = None) -> dict:
+                    approval_id: str | None = None, run_id: str | None = None,
+                    already_deleted: int = 0) -> dict:
     """Data-safety guards G1-G4 before robocopy /MIR (plan WP3, M2 2.2).
 
     approval_id: dashboard re-run of a blocked run (plan §6.2); used up here
@@ -900,6 +1011,8 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
     A measurement that could not be taken FAILS the run (retried next
     night); a guard verdict BLOCKs it for a human (GuardBlocked). No Prefect
     retries: re-measuring the same state gives the same verdict.
+    already_deleted (XR-2): robocopy deletions of earlier attempts of this
+    run - G3 covers the whole run, not each attempt.
     """
     source = config.paths.source_drive
     dest = config.paths.lan_destination
@@ -938,7 +1051,8 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
             guards.resolve_host(guards.unc_host(dest)), guards.local_addresses(),
             limits.forbid_local_destination),
         guards.g3_mass_delete(planned_deletes, destination_files,
-                              limits.max_delete_files, limits.max_delete_percent),
+                              limits.max_delete_files, limits.max_delete_percent,
+                              already_deleted=already_deleted),
         guards.g5_canary(dry_run.get("canary_present"), destination_files > 0, dest),
     ]
     approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)
@@ -946,6 +1060,7 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
         "lan", results, approved_guards=approved, fy=fy_prefix,
         source_file_count=counts["total"], destination=dest,
         destination_files=destination_files, **approval_record,
+        **({"already_deleted": already_deleted} if already_deleted else {}),
     )
     if "G5_CANARY" in approved:
         marker = os.path.join(dest, guards.MOUNT_MARKER)
@@ -1034,7 +1149,7 @@ def lan_sync_task(config, artefacts_dir: str | None = None, budget: RunBudget | 
                 "error": _budget_stop_text(budget, "robocopy was stopped before the mirror "
                                                    "finished (full log kept)")}
     if result["status"] in ("LAN_FAILED", "LAN_SUSPECT"):
-        raise RuntimeError(result.get("error", "LAN sync failed"))
+        raise SyncFailed(result.get("error") or "LAN sync failed", result)
     return result
 
 
@@ -1285,10 +1400,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             retries=config.cloud.preflight_retries,
             retry_delay_seconds=config.cloud.preflight_retry_delay_seconds,
         )
-        sync = cloud_sync_task.with_options(
-            retries=config.cloud.max_attempts - 1,
-            retry_delay_seconds=config.cloud.retry_delay_seconds,
-        )
+        # XR-1/XR-6: no Prefect retries for the mirror - _sync_with_retries
+        # decides (cloud.max_attempts / retry_delay_seconds), re-measuring the
+        # guards and lowering --max-delete by what earlier attempts deleted.
+        sync = cloud_sync_task.with_options(retries=0)
         verify_report = cloud_verify_and_report_task.with_options(
             retries=config.cloud.verify_retries,
             retry_delay_seconds=config.cloud.verify_retry_delay_seconds,
@@ -1306,6 +1421,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
         status = "CLOUD_SKIPPED"
         sync_result = {"exit_code": -1}
+        sync_state: dict = {}   # XR: the latest attempt's result + per-attempt evidence
         error_msg = None
         files_copied = 0
         bytes_copied = 0
@@ -1331,15 +1447,41 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             cloud_access_task(config, run_id, artefacts_dir)
             phase = "sync"
             _t_sync = time.monotonic()
-            sync_result = sync(config, fy_prefix, artefacts_dir,
-                               max_delete=guard_record["max_delete"], budget=budget)
+            caps = {"max_delete": guard_record["max_delete"]}
+
+            def remeasure(already_deleted: int) -> dict:
+                nonlocal guard_record
+                guard_record = cloud_guards_task(
+                    config, fy_prefix, artefacts_dir, approval_id=approval_id,
+                    run_id=run_id, already_deleted=already_deleted)
+                cloud_access_task(config, run_id, artefacts_dir)
+                caps["max_delete"] = guard_record["max_delete"]
+                return guard_record
+
+            def deletes_of(result: dict) -> int | None:
+                stats = result.get("stats")
+                if isinstance(stats, dict) and type(stats.get("deletes")) is int:
+                    return stats["deletes"]
+                # rclone deletes exactly --max-delete files before it stops (F2)
+                return caps["max_delete"] if result.get("max_delete_reached") else None
+
+            sync_result = _sync_with_retries(
+                "cloud",
+                run_once=lambda: sync(config, fy_prefix, artefacts_dir,
+                                      max_delete=caps["max_delete"], budget=budget),
+                remeasure=remeasure, deletes_of=deletes_of,
+                retryable=lambda r: r.get("retryable") is True,
+                max_attempts=config.cloud.max_attempts,
+                delay_s=config.cloud.retry_delay_seconds, budget=budget,
+                reserve_s=config.budget.cloud_verify_reserve_minutes * 60, state=sync_state)
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
-            if sync_result.get("budget_stopped"):
-                # WP14: the upload stopped at the run budget. Not verified (the
-                # bucket is knowingly incomplete) and not recorded as bucket
-                # state; the next run continues. One PARTIAL alert.
+            if sync_result.get("budget_stopped") or sync_result.get("time_limit_stopped"):
+                # WP14 / XR-5: the upload stopped at the run budget or at rclone's
+                # own --max-duration. Not verified (the bucket is knowingly
+                # incomplete) and not recorded as bucket state; the next run
+                # continues. One PARTIAL alert.
                 phase = "post"
                 error_msg = sync_result["error"]
                 stats = sync_result.get("stats")
@@ -1347,9 +1489,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     files_copied, bytes_copied = stats.get("transfers"), stats.get("bytes")
                 else:
                     files_copied = bytes_copied = None
+                which = "run budget" if sync_result.get("budget_stopped") else "rclone time limit"
                 extended_metrics = json.dumps({
                     "stage_seconds": dict(stage_seconds),
-                    "verify": "skipped - the upload stopped at the run budget",
+                    "verify": f"skipped - the upload stopped at the {which}",
                     "counts_source": "rclone" if isinstance(stats, dict) else "unavailable",
                     "tool_counts": {k: stats.get(k) for k in ("transfers", "bytes", "deletes",
                                                               "errors", "checks")}
@@ -1482,6 +1625,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
         except Exception as e:
             error_msg = str(e)
+            # XR: a failed attempt's own verdict (exit code, FAILED / SUSPECT)
+            sync_result = sync_state.get("result", sync_result)
             current = sync_result.get("status", status) if phase == "sync" else status
             status = statuses.decide_terminal_status("cloud", phase, current, _exception_kind(e))
             if isinstance(e, guards.GuardBlocked):
@@ -1505,6 +1650,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             _finalize_run_artefacts(config, artefacts)
             extended_metrics = _merge_metrics(extended_metrics, budget=_budget_metrics(
                 budget, sync_result))
+            if sync_state.get("attempts"):
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_attempts=sync_state["attempts"])
             if clock is not None:
                 extended_metrics = _merge_metrics(extended_metrics, clock=clock)
             extended_metrics = _with_guards(extended_metrics, guard_record)
@@ -1547,13 +1695,14 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             retries=config.lan.preflight_retries,
             retry_delay_seconds=config.lan.preflight_retry_delay_seconds,
         )
-        sync = lan_sync_task.with_options(
-            retries=config.lan.max_attempts - 1,
-            retry_delay_seconds=config.lan.retry_delay_seconds,
-        )
+        # XR-2/XR-6: no Prefect retries for the mirror - _sync_with_retries
+        # decides (lan.max_attempts / retry_delay_seconds) and re-runs the
+        # robocopy /L measurement + guards before any repeat of /MIR.
+        sync = lan_sync_task.with_options(retries=0)
 
         status = "LAN_SKIPPED"
         sync_result = {"exit_code": -1}
+        sync_state: dict = {}   # XR: the latest attempt's result + per-attempt evidence
         error_msg = None
         files_copied = 0
         bytes_copied = 0
@@ -1582,7 +1731,30 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             lan_access_task(config, dry_run, run_id)
             phase = "sync"
             _t_sync = time.monotonic()
-            sync_result = sync(config, artefacts_dir, budget=budget)
+
+            def remeasure(already_deleted: int) -> dict:
+                nonlocal guard_record
+                fresh = preflight(config, artefacts_dir)
+                listing = lan_snapshot_before_task(config)
+                guard_record = lan_guards_task(
+                    config, _effective_fy_prefix(config), fresh,
+                    None if listing is None else guards.count_backup_files(listing),
+                    approval_id=approval_id, run_id=run_id, already_deleted=already_deleted,
+                )
+                lan_access_task(config, fresh, run_id)
+                return guard_record
+
+            sync_result = _sync_with_retries(
+                "lan",
+                run_once=lambda: sync(config, artefacts_dir, budget=budget),
+                remeasure=remeasure,
+                deletes_of=lambda r: (r.get("files_deleted")
+                                      if type(r.get("files_deleted")) is int else None),
+                retryable=lambda r: (r.get("status") == "LAN_FAILED"
+                                     and not r.get("timed_out")),
+                max_attempts=config.lan.max_attempts,
+                delay_s=config.lan.retry_delay_seconds, budget=budget,
+                reserve_s=config.budget.lan_post_reserve_minutes * 60, state=sync_state)
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
@@ -1684,6 +1856,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
 
         except Exception as e:
             error_msg = str(e)
+            # XR: a failed attempt's own verdict (exit code, FAILED / SUSPECT)
+            sync_result = sync_state.get("result", sync_result)
             current = sync_result.get("status", status) if phase == "sync" else status
             status = statuses.decide_terminal_status("lan", phase, current, _exception_kind(e))
             if isinstance(e, guards.GuardBlocked):
@@ -1716,6 +1890,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             _finalize_run_artefacts(config, artefacts)
             extended_metrics = _merge_metrics(extended_metrics, budget=_budget_metrics(
                 budget, sync_result))
+            if sync_state.get("attempts"):
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_attempts=sync_state["attempts"])
             if nas_shutdown is not None:
                 extended_metrics = _merge_metrics(extended_metrics, nas_shutdown=nas_shutdown)
             extended_metrics = _with_guards(extended_metrics, guard_record)
