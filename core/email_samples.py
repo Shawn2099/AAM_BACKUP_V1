@@ -35,6 +35,47 @@ def _fault_event(code: str, now) -> AlertEvent:
                       run_id="20261018-210000-sample")
 
 
+def _report_samples(config, now) -> list[dict]:
+    """Weekly, monthly and last-30-days reports built from a throwaway database with a typical
+    week: LAN failed once and was fixed, the cloud leg was fine."""
+    import tempfile
+    from pathlib import Path
+
+    from core import report
+    from core.manifest import ManifestDB
+    from core.report_period import ReportPeriod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = ManifestDB(Path(tmp) / "preview.db")
+        try:
+            for d in range(1, 41):
+                day = now.subtract(days=d)
+                for leg, ok, bad in (("cloud", "CLOUD_COMPLETE", "CLOUD_FAILED"),
+                                     ("lan", "LAN_COMPLETE", "LAN_FAILED")):
+                    failed = leg == "lan" and d == 9
+                    started = day.replace(hour=21 if leg == "lan" else 2, minute=0, second=0)
+                    db.insert_run({"run_id": f"preview-{leg}-{d}", "mode": leg,
+                                   "started_at": started.isoformat(),
+                                   "ended_at": started.add(minutes=40).isoformat(),
+                                   "status": bad if failed else ok, "files_copied": 120 + d,
+                                   "bytes_copied": (500 + d) * 1024 * 1024,
+                                   "duration_seconds": 2400.0})
+            legs = tuple(leg for leg in ("cloud", "lan") if getattr(config, leg).enabled) or ("cloud", "lan")
+            out = []
+            for name, rp, label in (
+                    ("weekly report", ReportPeriod.previous_week(now), "Weekly"),
+                    ("monthly report", ReportPeriod.previous_month(now), "Monthly"),
+                    ("last 30 days (dashboard button)", ReportPeriod.last_days(30, now), "Monthly")):
+                subject, body, _att = report.build_summary_email(
+                    db, config.firm_name, 7 if label == "Weekly" else 30, label, legs=legs,
+                    report_period=rp)
+                out.append({"name": name, "subject": subject, "html": body,
+                            "text": "(HTML report)"})
+            return out
+        finally:
+            db.close()
+
+
 def samples(config, db=None, now=None) -> list[dict]:
     """[{"name", "subject", "html", "text"}] for every email kind."""
     now = now or pendulum.now(IST)
@@ -60,4 +101,4 @@ def samples(config, db=None, now=None) -> list[dict]:
             message=f"The {who} password of the backup dashboard was changed by 10.10.151.20 "
                     f"(session) at {now.format('D MMM YYYY, h:mm A')}. If this was not you, "
                     "contact support.", occurred_at=now.isoformat()))
-    return out
+    return out + _report_samples(config, now)
