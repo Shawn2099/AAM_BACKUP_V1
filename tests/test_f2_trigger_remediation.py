@@ -114,7 +114,9 @@ def _body(resp):
 # ── bounded wait constant + ?wait= handling ─────────────────────────────────
 
 def test_trigger_wait_constant_is_180_seconds():
-    assert ui.TRIGGER_WAIT_SECONDS == 180
+    # audit 2026-10-18: a config key now (dashboard.trigger_wait_seconds)
+    from models.config import DashboardConfig
+    assert DashboardConfig(auth_enabled=False).trigger_wait_seconds == 180
 
 
 @pytest.mark.parametrize("query", ["wait=false", "wait=False", "wait=0", "wait=no", "wait=off"])
@@ -124,7 +126,7 @@ def test_trigger_timeout_wait_false_variants_return_zero(query):
 
 @pytest.mark.parametrize("query", ["", "wait=true", "wait=yes", "wait=anything"])
 def test_trigger_timeout_default_is_the_180s_bound(query):
-    assert ui._trigger_timeout(_fake_request(query)) == ui.TRIGGER_WAIT_SECONDS
+    assert ui._trigger_timeout(_fake_request(query)) == ui._cfg().dashboard.trigger_wait_seconds == 180
 
 
 # ── truthful state mapping (_trigger_result) ─────────────────────────────────

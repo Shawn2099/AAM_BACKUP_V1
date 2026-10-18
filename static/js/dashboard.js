@@ -22,7 +22,13 @@ function showToast(message, type = 'info') {
 
 async function triggerBackup(event, mode) {
     event.preventDefault();
-    const confirmMsg = mode === 'cloud' ? 'Start cloud backup now?' : 'Start LAN backup now? Includes WoL + sync + shutdown.';
+    const btnInfo = document.getElementById('btn-' + mode);
+    var lanSteps = [];
+    if (btnInfo && btnInfo.dataset.wol === 'yes') lanSteps.push('wakes the NAS');
+    lanSteps.push('copies the changes');
+    if (btnInfo && btnInfo.dataset.shutdown === 'yes') lanSteps.push('switches the NAS off afterwards');
+    const confirmMsg = mode === 'cloud' ? 'Start the online backup now?'
+        : 'Start the office NAS backup now? It ' + lanSteps.join(', ') + '.';
     if (!confirm(confirmMsg)) return;
     const btn = document.getElementById('btn-' + mode);
     if (!btn) return;
@@ -56,6 +62,31 @@ function formatFullDate(isoStr) {
 }
 
 var _lastStatusErr = 0;
+// Audit 2026-10-18: a dashboard that cannot reach the server must say so - the
+// cards would otherwise keep showing the last (possibly green) state.
+var _lastOk = null;
+function setServerUnreachable(down, why) {
+    var banner = document.getElementById('server-banner');
+    if (!down) {
+        _lastOk = new Date();
+        if (banner) banner.style.display = 'none';
+        var lu = document.getElementById('last-updated');
+        if (lu) lu.textContent = 'Last updated: ' + formatFullDate(_lastOk.toISOString());
+        return;
+    }
+    if (banner) {
+        banner.style.display = 'block';
+        banner.textContent = 'Cannot reach the backup server since ' +
+            (_lastOk ? formatFullDate(_lastOk.toISOString()) : 'this page opened') +
+            ' (' + why + '). The information below may be out of date.';
+    }
+    ['cloud', 'lan'].forEach(function(mode) {
+        var card = document.getElementById('card-' + mode);
+        var badge = document.getElementById('badge-' + mode);
+        if (card) card.className = 'card unknown';
+        if (badge) { badge.innerText = 'Unknown'; badge.className = 'status-badge unknown'; }
+    });
+}
 function setSessionExpired(expired) {
     var banner = document.getElementById('session-banner');
     if (banner) banner.style.display = expired ? 'block' : 'none';
@@ -72,7 +103,7 @@ function setSessionExpired(expired) {
 function integrityText(integrity) {
     if (!integrity || !integrity.status) return 'Integrity: NOT VERIFIED — no audit recorded';
     var s = integrity.status;
-    var when = integrity.checked_at ? ' (checked ' + integrity.checked_at + ')' : '';
+    var when = integrity.checked_at ? ' (checked ' + formatFullDate(integrity.checked_at) + ')' : '';
     if (s === 'VERIFIED') return 'Integrity: VERIFIED' + when;
     if (s === 'VERIFICATION_FAILED') return 'Integrity: VERIFICATION FAILED' + when + ' — see audit detail';
     // WP7: the audit could not reach a verdict (network/TLS/DNS/process) - not divergence
@@ -95,8 +126,9 @@ async function updateStatus() {
     try {
         const response = await fetch('/status');
         if (response.status === 401) { setSessionExpired(true); return; }
-        if (!response.ok) return;
+        if (!response.ok) { setServerUnreachable(true, 'the server answered ' + response.status); return; }
         setSessionExpired(false);
+        setServerUnreachable(false);
         _lastStatusErr = 0;
         const data = await response.json();
         renderAttention(data.attention);
@@ -203,10 +235,12 @@ async function updateStatus() {
             let rowsHtml = '';
             const escapeHtml = function(text) { return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
             data.recent_runs.forEach((r, idx) => {
-                const safeMode = ['cloud', 'lan'].includes(r.mode) ? r.mode : 'unknown';
+                const safeMode = ['cloud', 'lan', 'rollover'].includes(r.mode) ? r.mode : 'unknown';
                 const modeTag = '<span class="tag ' + safeMode + '">' + escapeHtml(safeMode.toUpperCase()) + '</span>';
                 const sTag = '<span class="tag ' + safeCategory(r.status_category) + '" title="' + escapeHtml(r.status) + '">' + escapeHtml(r.status_label || r.status) + '</span>';
-                const errCell = r.error ? '<td style="color:#fca5a5;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.error) + '">' + escapeHtml(r.error) + '</td>' : '<td>-</td>';
+                // plain title + fault code first (audit 2026-10-18); the raw error stays in the tooltip
+                const errText = r.fault_title ? r.fault_title + ' (' + r.fault_code + ')' : r.error;
+                const errCell = errText ? '<td style="color:#fca5a5;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.error || errText) + '">' + escapeHtml(errText) + '</td>' : '<td>-</td>';
                 
                 let expandableClass = '';
                 let expandIcon = '';
@@ -214,24 +248,27 @@ async function updateStatus() {
                 if (r.extended_metrics) {
                     try {
                         const metrics = JSON.parse(r.extended_metrics);
-                        const iconCls = openRows.has(idx) ? ' expand-icon open' : ' expand-icon';
-                        expandIcon = '<span class="' + iconCls + '">\u25B8</span>';
-                        expandableClass = ' class="expandable" onclick="document.getElementById(\'metrics-container-' + idx + '\').classList.toggle(\'open\'); this.querySelector(\'.expand-icon\').classList.toggle(\'open\')"';
                         let badges = '';
-                        if (r.mode === 'lan') {
+                        if (r.mode === 'lan' && 'added' in metrics) {
                             badges += '<span class="metrics-badge added">Added: ' + (metrics.added || 0) + '</span>';
                             badges += '<span class="metrics-badge modified">Modified: ' + (metrics.modified || 0) + '</span>';
                             badges += '<span class="metrics-badge removed">Pruned: ' + (metrics.removed || 0) + '</span>';
                             badges += '<span class="metrics-badge">Active Destination Files: ' + (metrics.total_files || 0) + '</span>';
-                        } else if (r.mode === 'cloud') {
+                        } else if (r.mode === 'cloud' && 'total_files' in metrics) {
                             // WP7: the daily check compares SIZES only - it is a size check, not content verification
                             var sizeOk = ('size_check_passed' in metrics) ? metrics.size_check_passed : metrics.verified;
                             badges += '<span class="metrics-badge verified">' + (sizeOk === undefined ? 'Size check unknown' : (sizeOk ? 'Size check passed' : 'Size check failed')) + '</span>';
                             badges += '<span class="metrics-badge">Total Tracked Files: ' + (metrics.total_files || 0) + '</span>';
                             badges += '<span class="metrics-badge size">Space Consumed: ' + (metrics.total_size_gb || 0).toFixed(3) + ' GB</span>';
                         }
-                        const isOpen = openRows.has(idx) ? ' open' : '';
-                        extraRowHtml = '<tr class="metrics-row"><td colspan="6"><div id="metrics-container-' + idx + '" class="metrics-container' + isOpen + '">' + badges + '</div></td></tr>';
+                        // only runs that measured something are expandable (a blocked run has no counts)
+                        if (badges) {
+                            const iconCls = openRows.has(idx) ? ' expand-icon open' : ' expand-icon';
+                            expandIcon = '<span class="' + iconCls + '">▸</span>';
+                            expandableClass = ' class="expandable" onclick="document.getElementById(\'metrics-container-' + idx + '\').classList.toggle(\'open\'); this.querySelector(\'.expand-icon\').classList.toggle(\'open\')"';
+                            const isOpen = openRows.has(idx) ? ' open' : '';
+                            extraRowHtml = '<tr class="metrics-row"><td colspan="6"><div id="metrics-container-' + idx + '" class="metrics-container' + isOpen + '">' + badges + '</div></td></tr>';
+                        }
                     } catch(e) { }
                 }
 
@@ -242,7 +279,10 @@ async function updateStatus() {
         } else if (tbody && data.recent_runs && data.recent_runs.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" style="color:#6b7280; text-align: center;">No backup runs recorded yet</td></tr>';
         }
-    } catch (err) { var now = Date.now(); if (now - _lastStatusErr > 30000) { console.error('Failed to update status dynamically:', err); _lastStatusErr = now; } }
+    } catch (err) {
+        setServerUnreachable(true, 'no answer');
+        var now = Date.now(); if (now - _lastStatusErr > 30000) { console.error('Failed to update status dynamically:', err); _lastStatusErr = now; }
+    }
 }
 setInterval(updateStatus, 2000);
 window.addEventListener('DOMContentLoaded', updateStatus);

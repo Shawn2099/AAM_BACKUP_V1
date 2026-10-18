@@ -10,6 +10,7 @@ FastAPI server bound to configurable host:port. Safety-first:
 import asyncio
 import hmac
 import html
+import json
 import re
 import secrets
 import shutil
@@ -33,26 +34,32 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import admin_auth, approvals, config_edit, fy_rollover, statuses
+from core import admin_auth, approvals, config_edit, faults, fy_rollover, statuses
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
 
-# In-memory rate limiter for trigger and auth endpoints.
-# Tracks attempts per IP per window. Cleans up expired entries on access.
+# In-memory rate limiter, one bucket per kind of action and address (audit
+# 2026-10-18 item 7: dashboard.rate_limit_* - settings saves must never use up
+# the right to approve a blocked backup). Cleans up expired entries on access.
 _RATE_LIMITS: dict[str, list[float]] = {}
 _RATE_LOCK = threading.Lock()
-_RATE_WINDOW = 300  # 5 minutes
-_RATE_MAX_TRIGGER = 5  # 5 trigger attempts per window
-_RATE_MAX_LOGIN = 10   # 10 login attempts per window
-_RATE_MAX_REPORT = 10  # 10 report downloads per window
+
+
+def _dash(name: str):
+    """A dashboard.* setting; the model default when a partial config lacks it
+    (a loaded config.yaml always has every key)."""
+    from models.config import DashboardConfig, model_default
+
+    return getattr(getattr(_cfg(), "dashboard", None), name,
+                   model_default(DashboardConfig, name))
 
 
 def _check_rate_limit(client_ip: str, max_attempts: int) -> bool:
     """Return True if request is allowed, False if rate limited."""
     with _RATE_LOCK:
         now = time.time()
-        window = _RATE_WINDOW
+        window = _dash("rate_limit_window_seconds")
         entries = _RATE_LIMITS.get(client_ip, [])
         entries = [t for t in entries if now - t < window]
         if not entries:
@@ -72,7 +79,10 @@ templates = Jinja2Templates(directory="templates")
 # ── In-memory session store ──────────────────────────
 
 _sessions: dict[str, dict] = {}
-_SESSION_TTL = timedelta(hours=24)
+
+
+def _session_ttl() -> timedelta:
+    return timedelta(hours=_dash("session_hours"))
 
 
 def _create_session() -> str:
@@ -85,7 +95,7 @@ def _create_session() -> str:
 def _cleanup_expired_sessions() -> None:
     """Remove expired sessions. Called on each new session creation."""
     now = time.time()
-    ttl = _SESSION_TTL.total_seconds()
+    ttl = _session_ttl().total_seconds()
     expired = [t for t, s in _sessions.items() if now - s["created_at"] > ttl]
     for t in expired:
         del _sessions[t]
@@ -97,7 +107,7 @@ def _validate_session(token: str | None) -> bool:
     session = _sessions.get(token)
     if not session:
         return False
-    if time.time() - session["created_at"] > _SESSION_TTL.total_seconds():
+    if time.time() - session["created_at"] > _session_ttl().total_seconds():
         del _sessions[token]
         return False
     return True
@@ -120,12 +130,11 @@ def _check_api_key_header(request: Request) -> bool:
     return hmac.compare_digest(header_key, configured_key)
 
 # ── Lazy config (works on any OS, validates only on use) ─────
-# TTL-based refresh ensures the dashboard picks up config.yaml changes
-# (e.g. FY rollover) within _CONFIG_TTL seconds without a service restart.
+# TTL-based refresh ensures the dashboard picks up config.yaml changes (e.g. FY
+# rollover) within dashboard.config_refresh_seconds without a service restart.
 
 _config = None
 _config_loaded_at: float = 0.0
-_CONFIG_TTL: float = 300.0  # 5 minutes
 
 # F13: uvicorn runs the sync endpoints in a threadpool, so two requests can
 # refresh config / open the DB concurrently. The old code had no lock: one
@@ -142,7 +151,8 @@ def _cfg():
     global _config, _config_loaded_at
     with _CFG_LOCK:
         now = time.time()
-        if _config is None or (now - _config_loaded_at) > _CONFIG_TTL:
+        refresh = getattr(getattr(_config, "dashboard", None), "config_refresh_seconds", 0)
+        if _config is None or (now - _config_loaded_at) > refresh:
             from models.config import CONFIG_PATH, load_config
             new_cfg = load_config(CONFIG_PATH)
             # If the database path changed (e.g. FY rollover), close and evict
@@ -328,22 +338,20 @@ def _run_state_fields(state: bool | None) -> dict:
 # as HTTP 500 — the old fire-and-forget _run_in_background helper is gone.)
 #
 # F2: bounded synchronous wait. arun_deployment is called with a finite
-# timeout (TRIGGER_WAIT_SECONDS) so the HTTP response never hangs for the
+# timeout (dashboard.trigger_wait_seconds) so the HTTP response never hangs for the
 # whole backup (50s-hours) and proxies never 504. Deployment-lookup errors
 # still raise before run creation (G15 preserved: timeout=0/180 only bounds
-# the post-creation poll). The returned FlowRun is mapped truthfully:
+# the post-creation poll; dashboard.trigger_wait_seconds). The returned FlowRun
+# is mapped truthfully:
 # terminal states reported as completed/failed/cancelled; a still-running
 # run after the bound returns 202 + authoritative flow_run_id and keeps
 # running server-side (arun_deployment never cancels on timeout).
-
-TRIGGER_WAIT_SECONDS = 180
-
 
 def _trigger_timeout(request: Request) -> float:
     wait = request.query_params.get("wait", "true").lower()
     if wait in ("false", "0", "no", "off"):
         return 0
-    return TRIGGER_WAIT_SECONDS
+    return _dash("trigger_wait_seconds")
 
 
 def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
@@ -411,7 +419,7 @@ button:hover {{ background: #1d4ed8; }}
 @app.post("/login")
 async def login_submit(request: Request):
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"login:{client_ip}", _RATE_MAX_LOGIN):
+    if not _check_rate_limit(f"login:{client_ip}", _dash("rate_limit_logins")):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
     is_https = request.url.scheme == "https"
     if not _auth_enabled():
@@ -421,7 +429,7 @@ async def login_submit(request: Request):
             key="session", value=token,
             httponly=True, samesite="lax",
             secure=is_https,
-            max_age=int(_SESSION_TTL.total_seconds()),
+            max_age=int(_session_ttl().total_seconds()),
         )
         return resp
     form = await request.form()
@@ -434,7 +442,7 @@ async def login_submit(request: Request):
             key="session", value=token,
             httponly=True, samesite="lax",
             secure=is_https,
-            max_age=int(_SESSION_TTL.total_seconds()),
+            max_age=int(_session_ttl().total_seconds()),
         )
         return resp
     return RedirectResponse("/login?error=Invalid+API+key", status_code=303)
@@ -467,20 +475,9 @@ def _require_auth(request: Request):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, status: str = ""):
+async def dashboard(request: Request):
     _require_auth(request)
     cfg = _cfg()
-
-    flash_map = {
-        "triggered_cloud": ("Cloud backup started. Check back in a few minutes.", "success"),
-        "triggered_lan": ("LAN backup started (WoL + sync + shutdown).", "success"),
-        "already_running_cloud": ("Cloud backup is already in progress.", "warning"),
-        "already_running_lan": ("LAN backup is already in progress.", "warning"),
-    }
-    flash_html = ""
-    if status in flash_map:
-        msg, cls = flash_map[status]
-        flash_html = f'<div class="flash {cls}">{msg}</div>'
 
     cloud_schedule = cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone)
     lan_schedule = cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone)
@@ -488,12 +485,14 @@ async def dashboard(request: Request, status: str = ""):
     context = {
         "request": request,
         "fy_prefix": fy_rollover.effective_fy_prefix(cfg.paths.source_drive),
-        "flash_html": flash_html,
         "auth_enabled": _auth_enabled(),
         "cloud_schedule": cloud_schedule,
         "lan_schedule": lan_schedule,
         "cloud_enabled": cfg.cloud.enabled,
         "lan_enabled": cfg.lan.enabled,
+        # the LAN confirm text says what a manual run really does (audit 2026-10-18)
+        "lan_wol": getattr(getattr(cfg, "wol", None), "enabled", False),
+        "lan_shutdown": getattr(cfg.lan, "shutdown_after_backup", False),
     }
     try:
         # Starlette >= 0.28
@@ -612,7 +611,7 @@ async def health():
 async def trigger_cloud(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+    if not _check_rate_limit(f"trigger:{client_ip}", _dash("rate_limit_triggers")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if not _cfg().cloud.enabled:
         return JSONResponse({"status": "disabled", "detail": "Cloud backup leg is disabled in configuration; not started."}, status_code=409)
@@ -650,7 +649,7 @@ async def trigger_cloud(request: Request):
 async def trigger_lan(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+    if not _check_rate_limit(f"trigger:{client_ip}", _dash("rate_limit_triggers")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     if not _cfg().lan.enabled:
         return JSONResponse({"status": "disabled", "detail": "LAN backup leg is disabled in configuration; not started."}, status_code=409)
@@ -706,7 +705,7 @@ def _require_approval_rights(request: Request) -> None:
             detail="Approving or dismissing a blocked backup needs dashboard sign-in: "
                    "set dashboard.auth_enabled: true (with an api_key) in config.yaml.")
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+    if not _check_rate_limit(f"decision:{client_ip}", _dash("rate_limit_decisions")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
 
@@ -856,7 +855,7 @@ def _require_settings_rights(request: Request) -> None:
             detail="Changing settings needs dashboard sign-in: set dashboard.auth_enabled: true "
                    "(with an api_key) in config.yaml.")
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+    if not _check_rate_limit(f"settings:{client_ip}", _dash("rate_limit_settings")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
 
@@ -892,7 +891,7 @@ def admin_status(request: Request):
 async def admin_login(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"admin_login:{client_ip}", _RATE_MAX_LOGIN):
+    if not _check_rate_limit(f"admin_login:{client_ip}", _dash("rate_limit_logins")):
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
     try:
         password = str((await request.json()).get("password", ""))
@@ -1066,6 +1065,28 @@ async def run_rollover_now(request: Request):
     return _trigger_result("FY rollover", flow_run, noun="check")
 
 
+@app.post("/api/settings/test-email")
+def send_test_email(request: Request):
+    """Send a test email through the real alert path (recorded like every email),
+    so a changed mail setting is proven before a real alert depends on it
+    (audit 2026-10-18 item 4). Not stopped by notifications.send_on_failure."""
+    _require_settings_rights(request)
+    from core.notify import SENT, AlertEvent, notify
+
+    actor = _approval_actor(request)
+    result = notify(_cfg(), AlertEvent(
+        key=f"test:{now_iso()}", kind="INFO", mode="test",
+        title="Test email from your backup system",
+        message=(f"This is a test sent from the dashboard by {actor}. If you can read it, "
+                 "backup emails reach you. Nothing to do.")), db=get_db())
+    recipients = ", ".join(_cfg().notifications.recipients)
+    if result.status == SENT:
+        return {"status": "sent", "detail": f"Test email sent to {recipients}."}
+    return JSONResponse({"status": "failed",
+                         "detail": f"The test email was NOT delivered: {result.error}"},
+                        status_code=502)
+
+
 @app.get("/api/settings/history")
 def settings_history(request: Request):
     _require_auth(request)
@@ -1084,7 +1105,7 @@ def settings_history(request: Request):
 async def trigger_verify(mode: str, request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"trigger:{client_ip}", _RATE_MAX_TRIGGER):
+    if not _check_rate_limit(f"trigger:{client_ip}", _dash("rate_limit_triggers")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     mode = mode.lower()
     if mode not in ("lan", "cloud", "all"):
@@ -1138,7 +1159,7 @@ def report_weekly(request: Request):
     """Generate and download a weekly HTML report."""
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+    if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     return _serve_report(7, "Weekly")
 
@@ -1148,7 +1169,7 @@ def report_monthly(request: Request):
     """Generate and download a monthly HTML report."""
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+    if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     return _serve_report(30, "Monthly")
 
@@ -1164,7 +1185,7 @@ def trigger_weekly_email(request: Request):
     """
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+    if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     cfg = _cfg()
     db = get_db()
@@ -1201,7 +1222,7 @@ def trigger_monthly_email(request: Request):
     """
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(f"report:{client_ip}", _RATE_MAX_REPORT):
+    if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
     cfg = _cfg()
     db = get_db()
@@ -1287,14 +1308,23 @@ def _integrity_summary(db: ManifestDB, mode: str) -> dict:
 
 
 def _status_fields(run: dict) -> dict:
-    """Label/category/description from core.statuses (single source)."""
+    """Label/category/description from core.statuses (single source), plus the
+    run's stored fault code and its plain title (audit 2026-10-18). A row from
+    before fault codes has none - never invented from the status."""
     status = run.get("status")
+    try:
+        metrics = json.loads(run.get("extended_metrics") or "{}")
+    except (TypeError, ValueError):
+        metrics = {}
+    code = metrics.get("fault_code") if isinstance(metrics, dict) else None
     return {
         "status_label": statuses.label(status),
         "status_category": statuses.category(status),
         "status_description": statuses.describe(
             status, run.get("files_copied", 0), run.get("files_failed", 0)
         ),
+        "fault_code": code if code in faults.CATALOG else None,
+        "fault_title": faults.CATALOG[code].title if code in faults.CATALOG else None,
     }
 
 

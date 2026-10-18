@@ -11,11 +11,7 @@
 <div class="container">
 <h1>AAM Backup Dashboard</h1>
 <p class="subtitle">Secure Automated Sequential Multi-Destination Backups</p>
-<div id="flash-container">
-    {% if flash_html %}
-    {{ flash_html | safe }}
-    {% endif %}
-</div>
+<div id="server-banner" style="display:none;background:#7f1d1d;color:#fecaca;padding:0.75rem 1rem;border-radius:0.5rem;margin-bottom:1rem;font-size:0.875rem"></div>
 <div id="session-banner" style="display:none;background:#7f1d1d;color:#fecaca;padding:0.75rem 1rem;border-radius:0.5rem;margin-bottom:1rem;font-size:0.875rem">Session expired — status unavailable. Refresh the page and sign in again to view current backup state.</div>
 <div id="attention-banner"></div>
 <div id="approvals-container"></div>
@@ -51,7 +47,7 @@
         <p style="font-size:0.875rem;color:#fbbf24;margin-top:0.5rem">LAN backup is disabled in configuration — manual runs are rejected by the server.</p>
         {% else %}
         <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'lan')">
-            <button class="btn-trigger btn-lan" id="btn-lan" disabled>Loading...</button>
+            <button class="btn-trigger btn-lan" id="btn-lan" data-wol="{{ 'yes' if lan_wol else 'no' }}" data-shutdown="{{ 'yes' if lan_shutdown else 'no' }}" disabled>Loading...</button>
         </form>
         {% endif %}
     </div>
@@ -69,6 +65,7 @@
 </table>
 <div class="info">
     <p id="health-info">Fetching health info...</p>
+    <p id="last-updated" style="margin-top:0.25rem;color:#6b7280">Last updated: -</p>
     <p style="margin-top:0.25rem">AAM Backup System — Live, updates automatically &middot; <a href='/settings' style='color:#60a5fa'>Settings</a>{% if auth_enabled %} &middot; <a href='/logout' style='color:#60a5fa'>Logout</a>{% endif %}</p>
 </div>
 </div>

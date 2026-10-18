@@ -41,7 +41,7 @@ DISABLED = "DISABLED"
 # Never silenced by notifications.send_on_failure (audit 2026-10-18, item 1):
 # a decision is needed or protection is lost, and RECOVERED closes an alert
 # the reader has already seen. Only routine FAILURE / WARNING emails obey it.
-ALWAYS_SENT_KINDS = frozenset({"ACTION_REQUIRED", "RECOVERED"})
+ALWAYS_SENT_KINDS = frozenset({"ACTION_REQUIRED", "RECOVERED", "INFO"})
 
 def _is_permanent_smtp_error(exc: BaseException) -> bool:
     """True when retrying cannot help (RFC 5321: 5xx = permanent).

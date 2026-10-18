@@ -1048,6 +1048,22 @@ class ManifestDB:
             )
             conn.commit()
 
+    def last_config_change_at(self, key_prefix: str) -> str | None:
+        """When a setting starting with `key_prefix` was last changed on the dashboard."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT MAX(changed_at) FROM config_changes WHERE key LIKE ?",
+                               (key_prefix + "%",)).fetchone()
+        return row[0] if row else None
+
+    def last_sent_at(self, mode: str) -> str | None:
+        """When an email of this mode (e.g. 'test') was last delivered."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT MAX(created_at) FROM notifications WHERE mode = ? "
+                               "AND status = 'SENT'", (mode,)).fetchone()
+        return row[0] if row else None
+
     def config_changes(self, limit: int = 100) -> list[dict]:
         with self._lock:
             conn = self._get_conn()

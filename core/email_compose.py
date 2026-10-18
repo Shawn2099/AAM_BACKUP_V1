@@ -139,7 +139,7 @@ def _data_safety(config, db, now) -> list[str]:
 
 
 def _next_text(config, event, fault, now) -> str:
-    if event.kind == "RECOVERED":
+    if event.kind in ("RECOVERED", "INFO"):
         return "Nothing to do."
     if fault and fault.severity == faults.ACTION and event.status and \
             str(event.status).endswith("_BLOCKED"):

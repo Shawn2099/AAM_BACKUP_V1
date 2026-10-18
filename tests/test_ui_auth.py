@@ -16,7 +16,6 @@ from ui import (
     _get_api_key,
     _is_running,
     _RATE_LIMITS,
-    _RATE_MAX_TRIGGER,
     _run_state_fields,
     _sessions,
     _validate_session,
@@ -60,29 +59,32 @@ class TestSessionManagement:
         assert _validate_session(token) is False
 
 
+_LIMIT = 5   # dashboard.rate_limit_triggers default (audit 2026-10-18)
+
+
 class TestRateLimiter:
     def test_rate_limit_allows_under_limit(self):
         """Requests under limit are allowed."""
         client_ip = "127.0.0.1"
         _RATE_LIMITS.pop(client_ip, None)
-        assert _check_rate_limit(client_ip, _RATE_MAX_TRIGGER) is True
+        assert _check_rate_limit(client_ip, _LIMIT) is True
 
     def test_rate_limit_blocks_over_limit(self):
         """Requests over limit are blocked."""
         client_ip = "127.0.0.2"
         _RATE_LIMITS.pop(client_ip, None)
         # Fill up to limit
-        for _ in range(_RATE_MAX_TRIGGER):
-            _check_rate_limit(client_ip, _RATE_MAX_TRIGGER)
+        for _ in range(_LIMIT):
+            _check_rate_limit(client_ip, _LIMIT)
         # Next one should be blocked
-        assert _check_rate_limit(client_ip, _RATE_MAX_TRIGGER) is False
+        assert _check_rate_limit(client_ip, _LIMIT) is False
 
     def test_rate_limit_cleans_expired(self):
         """Expired entries are cleaned up."""
         client_ip = "127.0.0.3"
         now = time.time()
         _RATE_LIMITS[client_ip] = [now - 400]  # Older than 300s window
-        _check_rate_limit(client_ip, _RATE_MAX_TRIGGER)
+        _check_rate_limit(client_ip, _LIMIT)
         # Should have been cleaned and new entry added
         assert len(_RATE_LIMITS[client_ip]) == 1
 

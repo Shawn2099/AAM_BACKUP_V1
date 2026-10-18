@@ -565,6 +565,25 @@ async function loadHistory() {
 
 function discardChanges() { loadSettings(); }
 
+// Audit 2026-10-18: prove the SAVED mail settings through the real alert path.
+async function sendTestEmail() {
+    if (Object.keys(changes()).length) {
+        showToast('Save your changes first - the test uses the saved mail settings.', 'warning');
+        return;
+    }
+    const btn = document.getElementById('btn-test-email');
+    btn.disabled = true;
+    try {
+        const resp = await fetch('/api/settings/test-email', { method: 'POST' });
+        if (resp.status === 401) { window.location.href = '/login'; return; }
+        const data = await resp.json().catch(() => ({}));
+        showToast(data.detail || ('HTTP ' + resp.status), resp.ok ? 'success' : 'error');
+    } catch (e) {
+        showToast('Send test email failed: ' + e, 'error');
+    }
+    btn.disabled = false;
+}
+
 // ── Advanced login ───────────────────────────────────────────────────────────
 async function adminLogin(ev) {
     ev.preventDefault();

@@ -108,6 +108,15 @@ def compute_attention(db, config, now=None) -> list[dict]:
         items.append(_item(AMBER, "email_link",
                            f"Emails cannot link to this dashboard: {link_problem}."))
 
+    changed = db.last_config_change_at("notifications.")
+    if changed:
+        tested = db.last_sent_at("test")
+        if not tested or pendulum.parse(tested) < pendulum.parse(changed):
+            items.append(_item(AMBER, "email_untested",
+                               "Email settings were changed on "
+                               f"{format_ist(changed)} and not tested yet - press \"Send test "
+                               "email\" in Settings."))
+
     if not config.notifications.send_on_failure:
         items.append(_item(AMBER, "alerts_off",
                            "Failure emails are switched off (Settings > Advanced). Decisions, "

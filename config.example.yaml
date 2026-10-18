@@ -266,6 +266,27 @@ dashboard:
   # LocalSubnet (the server's office subnet), an IP, a CIDR or a range.
   firewall_remote_addresses:
     - "LocalSubnet"
+  # Rate limits per address, each kind of action counted separately, so a few
+  # settings saves never use up the right to approve a blocked backup.
+  # Window in seconds (10-3600):
+  rate_limit_window_seconds: 300
+  # Manual backup / verification / FY-check starts per window (1-100)
+  rate_limit_triggers: 5
+  # Sign-in attempts per window, dashboard and Advanced (1-100)
+  rate_limit_logins: 10
+  # Report downloads / report emails per window (1-100)
+  rate_limit_reports: 10
+  # Settings saves, admin-password changes and test emails per window (1-200)
+  rate_limit_settings: 20
+  # Approve / run / dismiss of blocked backups per window (1-100)
+  rate_limit_decisions: 10
+  # A dashboard sign-in lasts this many hours (1-168)
+  session_hours: 24
+  # The dashboard re-reads config.yaml at most this often, seconds (10-3600)
+  config_refresh_seconds: 300
+  # A manual start waits this long for the run's first result before the page
+  # answers; the run continues afterwards (0-600 seconds)
+  trigger_wait_seconds: 180
 
 # ═══════════════════════════════════════════════════
 # EMAIL NOTIFICATIONS

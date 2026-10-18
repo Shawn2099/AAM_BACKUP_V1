@@ -863,6 +863,34 @@ class DashboardConfig(StrictModel):
                              "dashboard's 'Change admin password' (never a plain password)")
         return v
 
+    # Audit 2026-10-18 item 7: one budget per kind of action (a few settings
+    # saves must never use up the right to approve a blocked backup), and the
+    # dashboard's timings, all tunable here instead of literals in ui.py.
+    rate_limit_window_seconds: int = Field(
+        default=300, ge=10, le=3600, description="Window of every dashboard rate limit")
+    rate_limit_triggers: int = Field(
+        default=5, ge=1, le=100,
+        description="Manual backup / verification / FY-check starts per window and address")
+    rate_limit_logins: int = Field(
+        default=10, ge=1, le=100, description="Sign-in attempts (dashboard and Advanced) per window")
+    rate_limit_reports: int = Field(
+        default=10, ge=1, le=100, description="Report downloads / report emails per window")
+    rate_limit_settings: int = Field(
+        default=20, ge=1, le=200,
+        description="Settings saves, admin-password changes and test emails per window")
+    rate_limit_decisions: int = Field(
+        default=10, ge=1, le=100,
+        description="Approve / run / dismiss of blocked backups per window")
+    session_hours: int = Field(
+        default=24, ge=1, le=168, description="A dashboard sign-in lasts this many hours")
+    config_refresh_seconds: int = Field(
+        default=300, ge=10, le=3600,
+        description="The dashboard re-reads config.yaml at most this often")
+    trigger_wait_seconds: int = Field(
+        default=180, ge=0, le=600,
+        description="A manual start waits this long for the run's first result before "
+                    "answering (the run continues afterwards)")
+
     @field_validator("firewall_remote_addresses")
     @classmethod
     def _office_addresses_only(cls, v: list[str]) -> list[str]:
