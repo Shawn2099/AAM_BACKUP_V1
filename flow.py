@@ -2238,8 +2238,31 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     from core import rollover_journal as rj
 
     journal = db.rollover_incomplete()
-    resumed = journal is not None
     source, lan_dest = config.paths.source_drive, config.paths.lan_destination
+    if journal is not None:
+        configured = fy_rollover.configured_fy(source, lan_dest)
+        switch_done = rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
+        if not switch_done and configured == journal["to_fy"]:
+            # R3: the config was written but the process died before the journal saw it.
+            # The switch is done; a "final backup" now would back up the NEW folders.
+            logger.warning(f"FY rollover {journal['from_fy']} -> {journal['to_fy']}: "
+                           "config.yaml already points at the new FY - switch step closed")
+            db.rollover_step_done(journal["from_fy"], journal["to_fy"], rj.CONFIG_SWITCH,
+                                  now_iso())
+            journal = db.rollover_get(journal["from_fy"], journal["to_fy"])
+            switch_done = True
+        if (switch_done and configured is not None and fy_rollover.classify_rollover(
+                configured, get_fy_prefix()) in (fy_rollover.FORWARD, fy_rollover.JUMP)):
+            # a NEW rollover is due: an old journal stuck on a follow-up step (archive, NAS
+            # folder) must not hold the next year back
+            for step in rj.attempt_order(journal):
+                db.rollover_step_skipped(
+                    journal["from_fy"], journal["to_fy"], step, now_iso(),
+                    reason=f"superseded by the rollover to {get_fy_prefix()}")
+            logger.warning(f"FY rollover {journal['from_fy']} -> {journal['to_fy']}: open "
+                           "follow-up steps closed because the next rollover is due")
+            journal = None
+    resumed = journal is not None
     if resumed:
         from_fy, to_fy = journal["from_fy"], journal["to_fy"]
         switch_pending = not rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
@@ -2404,7 +2427,12 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     def run_steps():
         nonlocal blocking_error
         for step in rj.attempt_order(journal):
-            if not rj.prerequisites_met(db.rollover_get(from_fy, to_fy), step):
+            current = db.rollover_get(from_fy, to_fy)
+            if not rj.prerequisites_met(current, step):
+                skipped_req = rj.skipped_prerequisite(current, step)
+                if skipped_req is not None:   # not needed either (F1): the journal can complete
+                    db.rollover_step_skipped(from_fy, to_fy, step, now_iso(),
+                                             reason=f"not needed: {skipped_req} was skipped")
                 continue                      # e.g. NAS shutdown while the NAS was never reached
             finished, error = _rollover_step(db, from_fy, to_fy, step, run_id, steps[step])
             if not finished and step in rj.BLOCKING:

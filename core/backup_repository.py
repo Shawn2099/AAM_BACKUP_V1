@@ -136,6 +136,16 @@ def sweep_abandoned_runs(config, db: ManifestDB) -> list[dict]:
         leg = row["mode"]
         logger.error(f"{leg} run {row['run_id']} (started {row['started_at']}) recorded as "
                      f"{row['status']}: {row['error_message']}")
+        if leg == "rollover":
+            # not a backup: the journal resumes it (plan A); one stable incident per year
+            notify(config, AlertEvent(
+                key="rollover:abandoned", kind="FAILURE", mode="rollover",
+                title="FY rollover interrupted",
+                message=(f"{row['error_message']} Your data is safe: the rollover continues "
+                         "where it stopped at the next morning check."),
+                status=row["status"], occurred_at=row["started_at"],
+                fault_code="AAM-ROL-04", run_id=row["run_id"]), db=db)
+            continue
         notify(config, AlertEvent(
             key=f"backup:{leg}:{row['status']}", kind="FAILURE", mode=leg,
             title=f"{leg.upper()} backup abandoned",

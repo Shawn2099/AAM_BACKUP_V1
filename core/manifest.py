@@ -1225,7 +1225,8 @@ class ManifestDB:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT run_id, mode, status, started_at, extended_metrics FROM run_history "
-                "WHERE status IN ('CLOUD_RUNNING', 'LAN_RUNNING')").fetchall()
+                "WHERE status IN ('CLOUD_RUNNING', 'LAN_RUNNING', 'ROLLOVER_RUNNING')"
+            ).fetchall()
         changed = []
         for run_id, mode, status, started_at, metrics in rows:
             try:

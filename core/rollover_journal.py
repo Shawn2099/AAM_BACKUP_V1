@@ -62,6 +62,14 @@ def prerequisites_met(journal: dict, step: str) -> bool:
     return all(journal["steps"][r]["state"] == DONE for r in REQUIRES.get(step, ()))
 
 
+def skipped_prerequisite(journal: dict, step: str) -> str | None:
+    """The prerequisite that was SKIPPED (then this step is not needed either), if any."""
+    for required in REQUIRES.get(step, ()):
+        if journal["steps"][required]["state"] == SKIPPED:
+            return required
+    return None
+
+
 def attempt_order(journal: dict) -> list[str]:
     """Every step that is not finished, in execution order."""
     return [name for name in STEPS if not is_finished(journal["steps"][name])]

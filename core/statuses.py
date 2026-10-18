@@ -40,6 +40,7 @@ class RunStatus(StrEnum):
     ROLLOVER_BLOCKED = "ROLLOVER_BLOCKED"
     ROLLOVER_FAILED = "ROLLOVER_FAILED"      # a step before the switch failed; resumed next morning
     ROLLOVER_RUNNING = "ROLLOVER_RUNNING"
+    ROLLOVER_ABANDONED = "ROLLOVER_ABANDONED"   # the process died mid-rollover; resumed next morning
 
 
 class AuditStatus(StrEnum):
@@ -90,7 +91,7 @@ FAILED_STATUSES: frozenset[str] = frozenset({
     RunStatus.CLOUD_SLOT_TIMEOUT, RunStatus.CLOUD_ABANDONED,
     RunStatus.LAN_SUSPECT, RunStatus.LAN_FAILED,
     RunStatus.LAN_SLOT_TIMEOUT, RunStatus.LAN_ABANDONED,
-    RunStatus.ROLLOVER_FAILED,
+    RunStatus.ROLLOVER_FAILED, RunStatus.ROLLOVER_ABANDONED,
 })
 
 CLOUD_SUCCESS_STATUSES = frozenset(s for s in SUCCESS_STATUSES if s.startswith("CLOUD_"))
@@ -133,6 +134,7 @@ _LABELS: dict[str, str] = {
     RunStatus.ROLLOVER_BLOCKED: "Blocked - approval needed",
     RunStatus.ROLLOVER_FAILED: "FY rollover not finished",
     RunStatus.ROLLOVER_RUNNING: "FY rollover running",
+    RunStatus.ROLLOVER_ABANDONED: "Abandoned",
 }
 
 
@@ -181,6 +183,9 @@ def describe(status, files_copied: int | None = 0, files_failed: int | None = 0)
                 "again every morning, see issue below")
     if s == RunStatus.ROLLOVER_RUNNING:
         return "FY rollover in progress"
+    if s == RunStatus.ROLLOVER_ABANDONED:
+        return ("FY rollover was interrupted (service stopped) - it continues at the next "
+                "morning check")
     if cat == CATEGORY_NO_CHANGES:
         return "Backup complete - no changes detected"
     if cat == CATEGORY_SUCCESS:

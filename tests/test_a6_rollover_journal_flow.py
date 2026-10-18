@@ -21,6 +21,12 @@ def _events(r):
     return [c.args[1] for c in r.m["notify"].call_args_list]
 
 
+def _config_now_points_at_the_new_fy(r):
+    """What the real config switch does to config.yaml (the rig's update_config_yaml is a mock)."""
+    r.cfg.paths.source_drive = "E:\\DATA\\FY27-28"
+    r.cfg.paths.lan_destination = "\\\\nas\\backup\\FY27-28"
+
+
 def _reset_mocks(r):
     for name in ("_run_cloud_pipeline", "_run_lan_pipeline", "notify", "_record_run",
                  "update_config_yaml", "run_archive_transition", "lan_shutdown_task",
@@ -124,6 +130,7 @@ def test_archive_failure_warns_is_retried_and_never_repeats_the_rest():
         assert "archive" in info.message and "Nothing to do" not in info.message
 
         # next morning the archive works; nothing else is repeated
+        _config_now_points_at_the_new_fy(r)
         _reset_mocks(r)
         r.m["run_archive_transition"].return_value = True
         assert r.run() == "ROLLOVER_COMPLETED"
@@ -145,6 +152,7 @@ def test_archive_failure_escalates_after_the_configured_days():
             with conn:
                 conn.execute("UPDATE rollover_journal_steps SET first_failed_at = ? "
                              "WHERE step = ?", ("2020-01-01T00:00:00+05:30", rj.ARCHIVE))
+        _config_now_points_at_the_new_fy(r)
         _reset_mocks(r)
         r.m["run_archive_transition"].return_value = False
         r.run()
