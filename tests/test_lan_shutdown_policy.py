@@ -13,6 +13,8 @@ import pytest
 
 import flow
 
+_REAL_SHUTDOWN_TASK_FN = flow.lan_shutdown_task.fn
+
 
 def _make_lan_config(
     shutdown_after_backup: bool = True,
@@ -174,6 +176,9 @@ class TestLanShutdownPolicy:
 
     @patch("flow.notify")
     @patch("flow.shutdown_from_config")
+    # The real lan_shutdown_task, run as a plain function: as a Prefect task outside a flow it
+    # needs a running API, so the test only passed when an earlier test had left one behind.
+    @patch("flow.lan_shutdown_task", new=lambda *a, **k: _REAL_SHUTDOWN_TASK_FN(*a, **k))
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})

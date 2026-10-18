@@ -152,7 +152,7 @@ class _Rig:
         ]
 
     def _leg(self, leg, status):
-        def run(config, run_id, started_at, monotonic_start=None, approval_id=None):
+        def run(config, run_id, started_at, monotonic_start=None, approval_id=None, **kwargs):
             if status.endswith("COMPLETE"):
                 return {"status": status}
             raise RuntimeError(f"{leg} final backup ended {status}")

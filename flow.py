@@ -1720,8 +1720,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                        budget_hours: float | None = None,
-                      approval_id: str | None = None):
-    """Execute LAN backup tasks sequentially. Each task is independently tracked."""
+                      approval_id: str | None = None, allow_shutdown: bool = True):
+    """Execute LAN backup tasks sequentially. Each task is independently tracked.
+
+    allow_shutdown=False (the final backup of an FY rollover, plan A4): the NAS is NOT powered
+    off at any call site - the new NAS FY folder is created after this run."""
     # WP14: the run budget counts from the job's start, including the slot wait
     budget = RunBudget(
         "lan",
@@ -1855,9 +1858,11 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             # powering off the NAS now strands them until the next WoL, and the
             # partial state must be reported, not silent.
             if status == "LAN_COMPLETE":
-                nas_shutdown = lan_shutdown_task(config, artefacts_dir)
+                if allow_shutdown:
+                    nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             elif status == "LAN_PARTIAL":
-                shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
+                shutdown_on_fail = (allow_shutdown and getattr(
+                    config.lan, "shutdown_on_all_retries_exhausted", False) is True)
                 nas_msg = (
                     "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
                     if shutdown_on_fail
@@ -1906,7 +1911,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 guard_record = e.record
             fault_code = faults.classify_run("lan", status, exc=e, guard_record=guard_record,
                                              sync_result=sync_result)
-            shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
+            shutdown_on_fail = (allow_shutdown and getattr(
+                config.lan, "shutdown_on_all_retries_exhausted", False) is True)
             if not alert_sent and not isinstance(e, guards.GuardBlocked):
                 # The one alert of this run, sent BEFORE any NAS shutdown below.
                 nas_msg = (
@@ -2266,7 +2272,10 @@ def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
         if not enabled:
             continue
         try:
-            result = pipeline(config, f"{run_id}-final-{leg}", now_iso(), time.monotonic())
+            # plan A4: the LAN final backup leaves the NAS on - its new FY folder follows
+            extra = {"allow_shutdown": False} if leg == "lan" else {}
+            result = pipeline(config, f"{run_id}-final-{leg}", now_iso(), time.monotonic(),
+                              **extra)
             status[leg] = result.get("status", "UNKNOWN")
         except Exception as e:  # noqa: BLE001 - recorded; G6 blocks on it
             status[leg] = f"{leg.upper()}_BLOCKED" if isinstance(e, guards.GuardBlocked) \

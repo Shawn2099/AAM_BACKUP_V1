@@ -123,7 +123,7 @@ class Calendar:
             p.stop()
 
     def _pipeline(self, leg):
-        def run(config, run_id, started_at, monotonic_start=None, approval_id=None):
+        def run(config, run_id, started_at, monotonic_start=None, approval_id=None, **kwargs):
             status = self.leg_status[leg]
             self.backups.append({"when": pendulum.now(IST), "leg": leg, "run_id": run_id,
                                  "source": config.paths.source_drive,
