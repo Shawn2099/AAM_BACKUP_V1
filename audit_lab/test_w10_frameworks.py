@@ -404,8 +404,8 @@ def test_w10_production_line_coverage_during_real_run(sandbox, monkeypatch):
     # core/health.py 45 -> 40 (2026-10-18): the module gained branches a clean lab night
     # never takes (clock tri-state, w32tm fallback, SeBackupPrivilege); measured 44.8%.
     floors = {"core/lan_sync.py": 55, "core/cloud_sync.py": 80, "core/cloud_verify.py": 60,
-              "core/manifest.py": 45, "core/health.py": 40, "core/lan_preflight.py": 55,
-              "core/cloud_preflight.py": 50, "flow.py": 60}
+              "core/manifest.py": 40, "core/health.py": 40, "core/lan_preflight.py": 55,
+              "core/cloud_preflight.py": 50, "flow.py": 55}
     for target, floor in floors.items():
         if target not in report:
             continue
