@@ -9,6 +9,7 @@ import time
 from loguru import logger
 from wakeonlan import send_magic_packet as wol_send
 
+from core.faults import coded
 from core.smb_ready import wait_for_smb_ready
 from models.config import AppConfig, WolConfig, model_default
 
@@ -117,7 +118,7 @@ def wait_for_server(
         stability_wait_s=stability_wait, sleep=time.sleep, tcp_probe=_tcp_probe,
     )
     if not result.ready:
-        raise WolTimeout(f"Backup server {result.reason} after WoL")
+        raise coded(WolTimeout(f"Backup server {result.reason} after WoL"), "AAM-NAS-02")
     logger.info(f"Backup server {server_ip} usable over SMB after WoL "
                 f"({result.elapsed_s:.0f}s, {result.attempts} attempt(s))")
 

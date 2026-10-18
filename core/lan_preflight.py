@@ -10,6 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from core.faults import coded
 from core.health import HealthError  # P1-EXC: THE domain exception - single identity
 from core.lan_sync import (
     _read_log_tail,
@@ -120,7 +121,7 @@ def run_lan_dry_run(
             "and network connectivity is operational."
         )
         logger.error(msg)
-        raise HealthError(msg)
+        raise coded(HealthError(msg), "AAM-NAS-01")
 
     # 2. Strict Canary File Verification (.is_file() instead of .exists())
     dest_path = Path(dest)
@@ -130,7 +131,7 @@ def run_lan_dry_run(
     except OSError as e:
         msg = f"Cannot access LAN destination '{dest}': {e}"
         logger.error(msg)
-        raise HealthError(msg) from e
+        raise coded(HealthError(msg), "AAM-NAS-01") from e
 
     if not canary_valid:
         # M2 2.3 (G5): no longer a hard failure here. The marker state is

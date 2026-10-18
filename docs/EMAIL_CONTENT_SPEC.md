@@ -135,6 +135,7 @@ in the report CSV and in the email.
 | AAM-NAS-08 | Backup target changed | The backup target changed from {old} to {new} since the last good backup. We stopped to make sure your files go to the right place. | You | If you or support changed it on purpose, approve on the dashboard. If not, do not approve - call support. |
 | AAM-NAS-09 | New, empty backup target | The backup target {dest} is new and empty. Before the first full copy we need your OK. | You | If this is the new NAS/folder you expected, approve on the dashboard (type the words shown). |
 | AAM-NAS-10 | Wrong disk or folder on the NAS | {dest} has files but not the backup's marker file, so it may be a different disk or folder. We stopped so we do not overwrite it. | Support | Do not approve. Forward to support. |
+| AAM-NAS-11 | NAS is not storing files reliably | We saved a small test file on the NAS but could not read the same content back. Nothing was copied. | IT / Support | Check the NAS for disk warnings; forward to support. |
 
 ### 4.3 Office backup copy (LAN)
 
@@ -159,6 +160,7 @@ in the report CSV and in the email.
 | AAM-CLD-07 | Online backup ran out of time | The online backup reached its time limit ({hours} h); {copied} files were uploaded, the rest follow next time. | Nothing / Support | Nothing for the first full upload (it takes several nights). Tell support if it continues after that. |
 | AAM-CLD-08 | Online backup did not finish cleanly | The upload ended in an unexpected way; we cannot prove every file was uploaded. | Support | Forward to support. |
 | AAM-CLD-09 | Size check after upload failed | After the upload, the online copy did not match the server's files in number or size ({detail}). | Support | Forward to support. The next backup re-checks. |
+| AAM-CLD-10 | Could not check the online backup before starting | The check of the online backup before the upload failed (cause not recognised), so nothing was uploaded. | Support | Forward to support. The next backup tries again. |
 
 ### 4.5 Deleting files (protection against mass deletion)
 
@@ -175,6 +177,7 @@ in the report CSV and in the email.
 | AAM-CLK-01 | Server clock is wrong | The server's clock is off by {skew} compared with internet time. A wrong clock can put files in the wrong financial-year folder, so we did not start. | IT | Correct the server's date/time (Windows: Settings > Time > Sync now). Then press "Run backup". |
 | AAM-CLK-02 | Server clock could not be checked | No time server answered, so we could not prove the clock is right. The backup ran (setting: {policy}). | IT | Nothing urgent. If this repeats, check the server's internet / time settings. |
 | AAM-CLK-03 | Clock is behind - FY switch refused | The server's clock says it is before the financial year the backups already use. We refuse to switch back. | IT / Support | Correct the server's date/time; call support. |
+| AAM-CLK-04 | Server clock could not be checked - backup stopped | No time server answered and `health.clock_unverified_policy` is `block`, so nothing was uploaded. | IT | Check the server's internet access / time.google.com; then press "Run Cloud Backup". |
 | AAM-ROL-01 | Financial year jumped more than one year | The date says FY {to}, but the backups use {from}. Moving more than one year at once is unusual. | You | Check the server date. Approve only if this is really intended. |
 | AAM-ROL-02 | Last backup of the old year incomplete | The final backup of FY {from} did not complete for {legs}. Switching now would leave the last changes of {from} unprotected. | You / Support | Fix the backup problem first (see its own email); the switch then runs automatically. |
 

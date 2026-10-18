@@ -22,7 +22,8 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import approvals, fy_rollover, guards, permissions, report, statuses
+from core import approvals, faults, fy_rollover, guards, permissions, report, statuses
+from core.rclone_errors import find_transport_failure
 from core.backup_repository import (
     record_run_history,
     record_sync_results,
@@ -473,8 +474,17 @@ def cloud_preflight_task(config, fy_prefix: str, artefacts_dir: str | None = Non
         artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
     )
     if not result["ok"]:
-        raise RuntimeError(f"Cloud preflight failed: {result['error']}")
+        raise faults.coded(RuntimeError(f"Cloud preflight failed: {result['error']}"),
+                           _cloud_preflight_fault(result))
     return result
+
+
+def _cloud_preflight_fault(result: dict) -> str:
+    """Fault code of a failed GCS probe: tool missing, transport cause, else CLD-10."""
+    if result.get("error") == "rclone not found":
+        return "AAM-SYS-04"
+    cause = find_transport_failure(result.get("error") or "")
+    return faults.TRANSPORT_CODES.get(cause.category, "AAM-CLD-10") if cause else "AAM-CLD-10"
 
 
 @task(name="cloud-guards")
@@ -897,7 +907,8 @@ def lan_preflight_task(config, artefacts_dir: str | None = None):
         log_tail_kb=config.lan.log_tail_kb,
     )
     if not result["ok"]:
-        raise RuntimeError(f"LAN preflight failed: {result['error']}")
+        raise faults.coded(RuntimeError(f"LAN preflight failed: {result['error']}"),
+                           "AAM-LAN-01")
     return result
 
 
@@ -1423,6 +1434,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         sync_result = {"exit_code": -1}
         sync_state: dict = {}   # XR: the latest attempt's result + per-attempt evidence
         error_msg = None
+        fault_code: str | None = None   # core.faults code of a non-success run
         files_copied = 0
         bytes_copied = 0
         extended_metrics = None
@@ -1629,6 +1641,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             sync_result = sync_state.get("result", sync_result)
             current = sync_result.get("status", status) if phase == "sync" else status
             status = statuses.decide_terminal_status("cloud", phase, current, _exception_kind(e))
+            fault_code = faults.classify_run(
+                "cloud", status, exc=e, sync_result=sync_result,
+                guard_record=e.record if isinstance(e, guards.GuardBlocked) else guard_record)
             if isinstance(e, guards.GuardBlocked):
                 guard_record = e.record   # its ACTION REQUIRED email goes out below
             elif not alert_sent:
@@ -1657,6 +1672,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 extended_metrics = _merge_metrics(extended_metrics, clock=clock)
             extended_metrics = _with_guards(extended_metrics, guard_record)
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
+            if fault_code:
+                extended_metrics = _merge_metrics(extended_metrics, fault_code=fault_code)
             try:
                 _record_run(
                     config, run_id, "cloud", started_at, status,
@@ -1704,6 +1721,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         sync_result = {"exit_code": -1}
         sync_state: dict = {}   # XR: the latest attempt's result + per-attempt evidence
         error_msg = None
+        fault_code: str | None = None   # core.faults code of a non-success run
         files_copied = 0
         bytes_copied = 0
         files_failed = 0
@@ -1862,6 +1880,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             status = statuses.decide_terminal_status("lan", phase, current, _exception_kind(e))
             if isinstance(e, guards.GuardBlocked):
                 guard_record = e.record
+            fault_code = faults.classify_run("lan", status, exc=e, guard_record=guard_record,
+                                             sync_result=sync_result)
             shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
             if not alert_sent and not isinstance(e, guards.GuardBlocked):
                 # The one alert of this run, sent BEFORE any NAS shutdown below.
@@ -1897,6 +1917,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 extended_metrics = _merge_metrics(extended_metrics, nas_shutdown=nas_shutdown)
             extended_metrics = _with_guards(extended_metrics, guard_record)
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
+            if fault_code:
+                extended_metrics = _merge_metrics(extended_metrics, fault_code=fault_code)
             try:
                 _record_run(
                     config, run_id, "lan", started_at, status,

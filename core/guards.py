@@ -53,6 +53,7 @@ class GuardResult:
     verdict: str          # PASS | BLOCK
     reason: str
     metrics: dict = field(default_factory=dict)
+    fault_code: str | None = None   # core.faults code of a BLOCK (audit 2026-10-18)
 
     @property
     def passed(self) -> bool:
@@ -63,8 +64,8 @@ def _pass(guard: str, reason: str, **metrics) -> GuardResult:
     return GuardResult(guard, PASS, reason, metrics)
 
 
-def _block(guard: str, reason: str, **metrics) -> GuardResult:
-    return GuardResult(guard, BLOCK, reason, metrics)
+def _block(guard: str, reason: str, code: str, **metrics) -> GuardResult:
+    return GuardResult(guard, BLOCK, reason, metrics, code)
 
 
 # ── G1: source must contain at least one real file ─────────────────────────
@@ -80,7 +81,7 @@ def g1_source_has_files(first_file: str | None, source: str) -> GuardResult:
         f"Source {source} contains no files (it is empty or holds only empty "
         "folders). Mirroring it would delete every backup copy. This usually "
         "means the drive is not mounted or the path is wrong.",
-        source=source,
+        "AAM-SRC-03", source=source,
     )
 
 
@@ -91,7 +92,7 @@ def g2_source_shrink(current_files: int | None, baseline_files: int | None,
     name = "G2_SOURCE_SHRINK"
     if current_files is None:
         return _block(name, "Source file count could not be measured - cannot prove "
-                            "the source is complete.", current_files=None,
+                            "the source is complete.", "AAM-SRC-05", current_files=None,
                       baseline_files=baseline_files)
     if baseline_files is None or baseline_files <= 0:
         return _pass(name, "no previous successful run to compare with (first run)",
@@ -107,7 +108,7 @@ def g2_source_shrink(current_files: int | None, baseline_files: int | None,
             f"Source has {current_files:,} files but had {baseline_files:,} at the last "
             f"successful backup ({pct:.1f}% fewer; limit {max_shrink_percent}%). "
             "Files may have been deleted or the wrong folder is mounted.",
-            **metrics,
+            "AAM-SRC-04", **metrics,
         )
     return _pass(name, f"source file count change within limit ({pct:.1f}% fewer)", **metrics)
 
@@ -124,7 +125,7 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
     extra = {"already_deleted": already_deleted} if already_deleted else {}
     if planned_deletes is None or destination_files is None:
         return _block(name, "The number of files this backup would delete could not be "
-                            "measured - refusing to mirror blindly.",
+                            "measured - refusing to mirror blindly.", "AAM-DEL-02",
                       planned_deletes=planned_deletes, destination_files=destination_files,
                       **extra)
     planned_deletes += already_deleted
@@ -141,7 +142,7 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
             f"This backup would delete {planned_deletes:,} of {destination_files:,} "
             f"backup files{earlier} ({pct:.1f}%; limits {max_delete_files:,} files / "
             f"{max_delete_percent}%).",
-            **metrics,
+            "AAM-DEL-01", **metrics,
         )
     return _pass(name, f"{planned_deletes:,} planned deletion(s) within limits{earlier}",
                  **metrics)
@@ -173,7 +174,7 @@ def g4_destination_identity(destination: str, last_success_destination: str | No
     if forbid_local:
         if destination_ips is None:
             return _block(name, f"Could not resolve the destination host of {destination} "
-                                "to check it is not this machine.", **metrics)
+                                "to check it is not this machine.", "AAM-NAS-01", **metrics)
         local_hit = destination_ips & local_ips or {
             ip for ip in destination_ips if ipaddress.ip_address(ip).is_loopback}
         if local_hit:
@@ -181,14 +182,14 @@ def g4_destination_identity(destination: str, last_success_destination: str | No
                 name,
                 f"Destination {destination} is on THIS machine ({', '.join(sorted(local_hit))}). "
                 "A backup on the same machine does not protect against its loss.",
-                **metrics,
+                "AAM-NAS-07", **metrics,
             )
     if last_success_destination and _norm_dest(last_success_destination) != _norm_dest(destination):
         return _block(
             name,
             f"Destination changed since the last successful backup: was "
             f"{last_success_destination}, now {destination}. Confirm the change is intended.",
-            **metrics,
+            "AAM-NAS-08", **metrics,
         )
     return _pass(name, "destination unchanged and off-host", **metrics)
 
@@ -203,20 +204,21 @@ def g5_canary(canary_present: bool | None, destination_has_files: bool | None,
     if canary_present:
         return _pass(name, "destination mount marker present", **metrics)
     if canary_present is None:
-        return _block(name, f"Could not check the mount marker on {destination}.", **metrics)
+        return _block(name, f"Could not check the mount marker on {destination}.",
+                      "AAM-NAS-01", **metrics)
     if destination_has_files:
         return _block(
             name,
             f"Mount marker .AAM_TARGET_MOUNTED is missing on {destination}, which already "
             "holds files. Someone may have changed the share. Approve only if you have "
             "confirmed this is the correct backup location (the marker will be recreated).",
-            **metrics,
+            "AAM-NAS-10", **metrics,
         )
     return _block(
         name,
         f"Mount marker .AAM_TARGET_MOUNTED is missing on the empty destination "
         f"{destination}. Approve to initialise this location as the backup target.",
-        **metrics,
+        "AAM-NAS-09", **metrics,
     )
 
 
@@ -238,7 +240,7 @@ def g6_fy_rollover(from_fy: str, to_fy: str, kind: str, final_status: dict) -> G
             f"The computer date says the current FY is {to_fy}, but the backups are set up "
             f"for {from_fy} - more than one FY later. Check the date and the FY folders; "
             f"approve only if moving straight to {to_fy} is intended.",
-            **metrics,
+            "AAM-ROL-01", **metrics,
         )
     failed = sorted(leg for leg, status in final_status.items() if not is_success(status))
     if failed:
@@ -248,7 +250,7 @@ def g6_fy_rollover(from_fy: str, to_fy: str, kind: str, final_status: dict) -> G
             f"({', '.join(f'{leg}={final_status[leg]}' for leg in failed)}). Rolling over now "
             f"would leave {from_fy}'s last changes on that leg unprotected. Fix it and the "
             "daily check retries, or approve to roll over anyway.",
-            **metrics,
+            "AAM-ROL-02", **metrics,
         )
     return _pass(name, f"{from_fy} -> {to_fy}: next FY and every final backup complete", **metrics)
 
@@ -344,7 +346,7 @@ def backstop_blocked(leg: str, record: dict, deleted: int) -> GuardBlocked:
     reason = (f"The {leg} sync stopped at its delete limit after deleting {deleted:,} "
               "file(s): it wanted to delete more than the safety check measured just "
               "before the sync. Nothing more is deleted until a person approves.")
-    blocked = asdict(_block("G3_MASS_DELETE", reason, **metrics))
+    blocked = asdict(_block("G3_MASS_DELETE", reason, "AAM-DEL-03", **metrics))
     results = [r for r in results if r.get("guard") != "G3_MASS_DELETE"] + [blocked]
     approved = [a for a in record.get("approved_guards", []) if a != "G3_MASS_DELETE"]
     new_record = {**record, "results": results, "approved_guards": approved}

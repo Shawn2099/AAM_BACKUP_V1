@@ -124,7 +124,7 @@ class TestCheckClock:
 
 def _health(tmp_path, clock_state, policy, mode="cloud"):
     result = health.ClockResult(clock_state, None, None, "both sources unreachable")
-    with patch.object(health, "check_source_drive", return_value=(True, "")), \
+    with patch.object(health, "source_drive_fault", return_value=(None, "")), \
             patch.object(health, "check_binary_exists", return_value=True), \
             patch.object(health, "check_gcs_key", return_value=(True, "")), \
             patch.object(health, "check_clock", return_value=result) as chk:

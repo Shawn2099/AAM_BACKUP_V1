@@ -10,6 +10,7 @@ from pathlib import Path
 import pendulum
 from loguru import logger
 
+from core.faults import coded
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool
@@ -21,6 +22,14 @@ class HealthError(RuntimeError):
 
 
 def check_source_drive(source_path: str, min_free_gb: int = model_default(HealthConfig, "min_free_source_gb")) -> tuple[bool, str]:
+    """(ok, reason) - see source_drive_fault, which also names the fault code."""
+    code, reason = source_drive_fault(source_path, min_free_gb)
+    return code is None, reason
+
+
+def source_drive_fault(source_path: str,
+                       min_free_gb: int = model_default(HealthConfig, "min_free_source_gb")
+                       ) -> tuple[str | None, str]:
     """Verify source drive exists, can be listed, and has free space.
 
     Whether the source holds any files is NOT judged here: that is guard G1
@@ -32,25 +41,24 @@ def check_source_drive(source_path: str, min_free_gb: int = model_default(Health
         min_free_gb: Minimum free space required (GB). Override via config.health.min_free_source_gb.
 
     Returns:
-        (True, "") if healthy.
-        (False, "reason") if check failed.
+        (None, "") if healthy, else (core.faults code, reason).
     """
     source = Path(source_path)
     if not source.exists():
-        return False, f"Source drive not accessible: {source}"
+        return "AAM-SRC-01", f"Source drive not accessible: {source}"
 
     try:
         next(iter(source.iterdir()), None)  # lists the root; reads one entry only
     except PermissionError:
-        return False, f"Source drive permission denied: {source}"
+        return "AAM-SRC-02", f"Source drive permission denied: {source}"
     except OSError as e:
-        return False, f"Source drive error: {e}"
+        return "AAM-SRC-01", f"Source drive error: {e}"
 
     try:
         usage = shutil.disk_usage(str(source))
         free_gb = usage.free / (1024**3)
         if free_gb < min_free_gb:
-            return False, (
+            return "AAM-SYS-05", (
                 f"Source drive critically low on space: {free_gb:.1f} GB free "
                 f"(minimum: {min_free_gb} GB)"
             )
@@ -58,7 +66,7 @@ def check_source_drive(source_path: str, min_free_gb: int = model_default(Health
     except OSError:
         logger.warning(f"Could not check disk space on {source} - skipping")
 
-    return True, ""
+    return None, ""
 
 
 def check_binary_exists(name: str) -> bool:
@@ -210,19 +218,19 @@ def pre_backup_health(
     if mode not in valid_modes:
         raise HealthError(f"Invalid mode '{mode}' - expected one of: {', '.join(sorted(valid_modes))}")
 
-    ok, reason = check_source_drive(source_path, min_free_gb=min_free_source_gb)
-    if not ok:
-        raise HealthError(reason)
+    code, reason = source_drive_fault(source_path, min_free_gb=min_free_source_gb)
+    if code:
+        raise coded(HealthError(reason), code)
 
     if mode in ("cloud", "all"):
         if not check_binary_exists("rclone"):
-            raise HealthError("rclone not found in PATH")
+            raise coded(HealthError("rclone not found in PATH"), "AAM-SYS-04")
         if not gcs_key_path:
-            raise HealthError("GCS key path is required for cloud mode")
+            raise coded(HealthError("GCS key path is required for cloud mode"), "AAM-CLD-04")
         if gcs_key_path:
             ok, reason = check_gcs_key(gcs_key_path)
             if not ok:
-                raise HealthError(reason)
+                raise coded(HealthError(reason), "AAM-CLD-04")
         clock = check_clock(
             max_skew_seconds=max_clock_skew_seconds,
             connection_timeout=clock_check_timeout_seconds,
@@ -232,18 +240,19 @@ def pre_backup_health(
         )
         if clock.state == CLOCK_SKEWED:
             # Clock skew >10 min causes GCS JWT authentication to be rejected
-            raise HealthError(f"Clock skew exceeds limit: {clock.reason}")
+            raise coded(HealthError(f"Clock skew exceeds limit: {clock.reason}"), "AAM-CLK-01")
         if clock.state == CLOCK_UNVERIFIED:
             if clock_unverified_policy == "block":
-                raise HealthError(
+                raise coded(HealthError(
                     f"Clock could not be verified (health.clock_unverified_policy: block): "
-                    f"{clock.reason}. Allow HTTPS to www.googleapis.com or NTP to {ntp_server}.")
+                    f"{clock.reason}. Allow HTTPS to www.googleapis.com or NTP to {ntp_server}."),
+                    "AAM-CLK-04")
             logger.warning(f"Clock could not be verified - continuing "
                            f"(health.clock_unverified_policy: warn): {clock.reason}")
 
     if mode in ("lan", "all"):
         if not check_binary_exists("robocopy"):
-            raise HealthError("robocopy not found in PATH")
+            raise coded(HealthError("robocopy not found in PATH"), "AAM-SYS-04")
 
     logger.info(f"Pre-backup health check passed (mode={mode})")
     return clock

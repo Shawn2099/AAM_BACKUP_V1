@@ -27,6 +27,7 @@ import shutil
 from loguru import logger
 
 from core import guards
+from core.faults import TRANSPORT_CODES, coded
 from core.process import resolve_binary
 from core.rclone_errors import find_transport_failure
 from core.run_artefacts import RunArtefacts
@@ -50,6 +51,11 @@ _PRIVILEGE_NAME = re.compile(r"^Se\w+Privilege$")
 
 class PermissionCheckError(RuntimeError):
     """A right the backup needs is missing (or could not be verified)."""
+
+
+def _fail(code: str, message: str) -> PermissionCheckError:
+    """The error with its core.faults code (audit 2026-10-18)."""
+    return coded(PermissionCheckError(message), code)
 
 
 # ── SeBackupPrivilege (robocopy /ZB) ───────────────────────────────────────
@@ -79,14 +85,14 @@ def check_backup_privilege(artefacts: RunArtefacts, timeout_s: float) -> None:
     if not result.completed or result.exit_code != 0:
         detail = result.describe_failure() or (
             f"whoami exit {result.exit_code}: {result.stderr_text().strip() or 'no output'}")
-        raise PermissionCheckError(f"SeBackupPrivilege could not be checked ({detail}) - "
+        raise _fail("AAM-LAN-05", f"SeBackupPrivilege could not be checked ({detail}) - "
                                    "refusing to start robocopy /ZB blind.")
     held = parse_privileges(result.stdout_text())
     if not held:
-        raise PermissionCheckError("SeBackupPrivilege could not be checked: whoami listed "
+        raise _fail("AAM-LAN-05", "SeBackupPrivilege could not be checked: whoami listed "
                                    "no privileges.")
     if "SeBackupPrivilege" not in held:
-        raise PermissionCheckError(
+        raise _fail("AAM-LAN-05",
             "The account running the backup does not hold SeBackupPrivilege ('Back up files "
             "and directories'), which robocopy /ZB needs - robocopy would stop with exit 16. "
             "Fix: secpol.msc > Local Policies > User Rights Assignment > 'Back up files and "
@@ -130,16 +136,16 @@ def probe_destination_write(dest: str, run_id: str) -> None:
         data = _read_back(path)
     except OSError as e:
         _remove_quietly(path)
-        raise PermissionCheckError(f"Cannot write to the LAN destination {dest}: {e}. {fix}") from e
+        raise _fail("AAM-NAS-03", f"Cannot write to the LAN destination {dest}: {e}. {fix}") from e
     if data != _PROBE_PAYLOAD:
         _remove_quietly(path)
-        raise PermissionCheckError(
+        raise _fail("AAM-NAS-11",
             f"Wrote a test file to the LAN destination {dest} but could not read back the same "
             "content - the share is not storing data reliably. Check the NAS before backing up.")
     try:
         os.remove(path)
     except OSError as e:
-        raise PermissionCheckError(
+        raise _fail("AAM-NAS-03",
             f"Could create but not delete a test file on the LAN destination {dest} ({e}); the "
             f"mirror must delete files that were removed from the source. {fix}") from e
     logger.info(f"Preflight: LAN destination writable ({dest})")
@@ -148,16 +154,16 @@ def probe_destination_write(dest: str, run_id: str) -> None:
 def check_destination_free_space(dest: str, bytes_needed: int | None, min_free_gb: float) -> None:
     """Free space on the NAS >= bytes the mirror will write + configured margin."""
     if bytes_needed is None:
-        raise PermissionCheckError(
+        raise _fail("AAM-NAS-05",
             "NAS free space could not be measured against the backup size: the robocopy /L "
             "byte count is missing - refusing to start a copy that may fill the NAS.")
     try:
         free = shutil.disk_usage(dest).free
     except OSError as e:
-        raise PermissionCheckError(f"NAS free space could not be measured on {dest}: {e}") from e
+        raise _fail("AAM-NAS-05", f"NAS free space could not be measured on {dest}: {e}") from e
     need = bytes_needed + min_free_gb * GB
     if free < need:
-        raise PermissionCheckError(
+        raise _fail("AAM-NAS-04",
             f"Not enough free space on the NAS {dest}: {free / GB:.1f} GB free, this backup "
             f"needs {need / GB:.1f} GB ({bytes_needed / GB:.1f} GB to copy + "
             f"lan.min_free_dest_gb {min_free_gb} GB margin). Free up space on the NAS or "
@@ -172,14 +178,14 @@ def probe_source_read(source: str) -> str:
     try:
         first = guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES)
     except OSError as e:
-        raise PermissionCheckError(f"Cannot list the source {source}: {e}") from e
+        raise _fail("AAM-SRC-02", f"Cannot list the source {source}: {e}") from e
     if first is None:
-        raise PermissionCheckError(f"No file to test read access on in the source {source}.")
+        raise _fail("AAM-SRC-02", f"No file to test read access on in the source {source}.")
     try:
         with open(first, "rb") as f:
             f.read(1)
     except OSError as e:
-        raise PermissionCheckError(
+        raise _fail("AAM-SRC-02",
             f"Cannot read the source file {first}: {e}. The account running the backup "
             f"needs read rights on {source}.") from e
     logger.info(f"Preflight: source readable ({first})")
@@ -206,8 +212,9 @@ def probe_cloud_write(bucket: str, run_id: str, config_path: str, timeout_s: flo
             continue
         text = "\n".join(t for t in (result.stderr_text(), result.stdout_text()) if t)
         cause = find_transport_failure(text)
+        cloud_code = TRANSPORT_CODES.get(cause.category, "AAM-CLD-05") if cause else "AAM-CLD-05"
         detail = result.describe_failure() or f"rclone exit {result.exit_code}"
-        raise PermissionCheckError(
+        raise _fail(cloud_code,
             f"Cloud write check failed: could not {what} the test object {target} ({detail}: "
             f"{tail_lines(text, error_tail_lines) or 'no output'})."
             + (f" Cause: {cause.category} - {cause.hint}" if cause else "")

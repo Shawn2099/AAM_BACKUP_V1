@@ -11,6 +11,7 @@ from loguru import logger
 from core.guards import require_source_files
 from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
+from core.rclone_errors import find_transport_failure
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool, tail_lines
 from models.config import CloudConfig, model_default
@@ -385,7 +386,8 @@ def run_cloud_sync(
     if result.spawn_error:
         missing = "FileNotFoundError" in result.spawn_error
         return {**base, "status": "CLOUD_FAILED", "exit_code": -1,
-                "error": "rclone not found" if missing else result.spawn_error}
+                "error": "rclone not found" if missing else result.spawn_error,
+                **({"fault_code": "AAM-SYS-04"} if missing else {})}
     if result.timed_out:
         # G7: a timeout is an interruption, not a data event — rclone sync
         # is resumable. Not retried (XR-6): rclone overran its own
@@ -459,6 +461,9 @@ def run_cloud_sync(
         logger.error(f"rclone error (exit {code}); full log: {log_path}\n{detail}")
 
     if status == "CLOUD_FAILED":
+        # fault code evidence (audit 2026-10-18): TLS interception / DNS / auth
+        cause = find_transport_failure(log_text)
+        base["transport_category"] = cause.category if cause else None
         base["retryable"] = rclone_retryable(code, stats,
                                              max_delete_reached=base["max_delete_reached"])
     logger.info(f"Cloud {'dry-run' if dry_run else 'sync'} exit {code} "

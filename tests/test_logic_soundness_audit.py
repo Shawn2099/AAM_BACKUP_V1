@@ -132,7 +132,7 @@ class TestPreBackupHealth:
 
     @pytest.fixture(autouse=True)
     def _ok_source(self):
-        with patch("core.health.check_source_drive", return_value=(True, "")):
+        with patch("core.health.source_drive_fault", return_value=(None, "")):
             yield
 
     def test_invalid_mode(self):
@@ -140,7 +140,7 @@ class TestPreBackupHealth:
             health.pre_backup_health("E:\\", "sideways")
 
     def test_source_failure_propagates(self):
-        with patch("core.health.check_source_drive", return_value=(False, "bad")):
+        with patch("core.health.source_drive_fault", return_value=("AAM-SRC-01", "bad")):
             with pytest.raises(health.HealthError):
                 health.pre_backup_health("E:\\", "lan")
 
