@@ -147,8 +147,7 @@ class _Rig:
                 {"approval_id": "a1"} if approved else {})),
             patch("flow._backup_slot"),
             patch("flow.fy_rollover.create_new_fy_folders", return_value={}),
-            patch("flow.fy_rollover.backup_config_file", return_value="cfg.bak"),
-            patch("flow.fy_rollover.update_config_yaml"),
+            patch("flow.fy_rollover.update_config_yaml", return_value="cfg.bak"),
             patch("flow.fy_rollover.run_archive_transition", return_value=True),
         ]
 
@@ -161,7 +160,7 @@ class _Rig:
 
     def __enter__(self):
         self.m = {p.attribute: p.start() for p in self.patches}
-        for name in ("create_new_fy_folders", "backup_config_file", "update_config_yaml",
+        for name in ("create_new_fy_folders", "update_config_yaml",
                      "run_archive_transition", "_backup_slot"):
             self.order.attach_mock(self.m[name], name)
         return self
@@ -190,7 +189,7 @@ def test_forward_rollover_runs_pipelines_then_switches_inside_the_slot():
         r.m["_run_cloud_pipeline"].assert_called_once()
         r.m["_run_lan_pipeline"].assert_called_once()
         names = [c[0] for c in r.order.mock_calls if not c[0].startswith("_backup_slot().")]
-        assert names[:5] == ["_backup_slot", "create_new_fy_folders", "backup_config_file",
+        assert names[:4] == ["_backup_slot", "create_new_fy_folders",
                              "update_config_yaml", "run_archive_transition"]
         r.m["create_new_fy_folders"].assert_called_once_with(
             "E:\\DATA", "\\\\nas\\backup", "FY27-28", placeholder_name="README_FY.txt")

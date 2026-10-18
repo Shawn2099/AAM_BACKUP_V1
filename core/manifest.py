@@ -12,13 +12,15 @@ from pathlib import Path
 
 from loguru import logger
 
+from core import rollover_journal as rj
 from core.time_utils import cutoff_iso, now_iso
 from models.config import MaintenanceConfig, model_default
 
 # Critical-6: version gate for schema migrations. Bump when DDL or the
 # legacy-migration steps below change. Fresh databases are stamped straight
 # to this value; pre-versioning databases run _migrate_legacy_schema once.
-SCHEMA_VERSION = 3   # v3: notifications.fault_code / message_id / thread_id
+SCHEMA_VERSION = 4   # v3: notifications.fault_code / message_id / thread_id
+                     # v4 (plan SCH): rollover_journal(+_steps), notifications.attachments_rung
 
 # Per-connection pragmas. journal_mode=WAL is persistent (set once per file)
 # and is applied separately with a bounded retry: SQLite does not invoke the
@@ -117,7 +119,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at  TEXT NOT NULL,
     fault_code  TEXT,           -- core.faults code (v3, audit 2026-10-18)
     message_id  TEXT,           -- Message-ID of the email sent (v3)
-    thread_id   TEXT            -- Message-ID of the incident's first email (v3)
+    thread_id   TEXT,           -- Message-ID of the incident's first email (v3)
+    attachments_rung TEXT       -- which attachment rung was delivered (v4, plan B)
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_key ON notifications(event_key, created_at);
@@ -157,6 +160,28 @@ CREATE TABLE IF NOT EXISTS config_changes (
     new_value    TEXT,
     risky        INTEGER NOT NULL DEFAULT 0,
     backup_file  TEXT
+);
+
+-- FY rollover step journal (plan A, v4): one row per (from_fy, to_fy), one row per step.
+-- The daily check resumes at the first step that is not done / skipped.
+CREATE TABLE IF NOT EXISTS rollover_journal (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_fy     TEXT NOT NULL,
+    to_fy       TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (from_fy, to_fy)
+);
+
+CREATE TABLE IF NOT EXISTS rollover_journal_steps (
+    journal_id  INTEGER NOT NULL REFERENCES rollover_journal(id),
+    step        TEXT NOT NULL,
+    state       TEXT NOT NULL,          -- core.rollover_journal pending/done/failed/skipped
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT,
+    started_at  TEXT,
+    finished_at TEXT,
+    run_id      TEXT,
+    PRIMARY KEY (journal_id, step)
 );
 
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
@@ -316,7 +341,7 @@ class ManifestDB:
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(notifications)").fetchall()
                 }
-                for column in ("fault_code", "message_id", "thread_id"):
+                for column in ("fault_code", "message_id", "thread_id", "attachments_rung"):
                     if n_columns and column not in n_columns:
                         conn.execute(f"ALTER TABLE notifications ADD COLUMN {column} TEXT")
                 # Legacy tables may predate UNIQUE(run_id): drop duplicate
@@ -976,14 +1001,97 @@ class ManifestDB:
             conn.execute(
                 """INSERT INTO notifications
                    (event_key, kind, mode, subject, status, error, attempts, created_at,
-                    fault_code, message_id, thread_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    fault_code, message_id, thread_id, attachments_rung)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (data["event_key"], data["kind"], data.get("mode"), data.get("subject"),
                  data["status"], data.get("error"), data.get("attempts", 0),
                  data["created_at"], data.get("fault_code"), data.get("message_id"),
-                 data.get("thread_id")),
+                 data.get("thread_id"), data.get("attachments_rung")),
             )
             conn.commit()
+
+    # ── FY rollover journal (plan A) ─────────────────────────────────────
+
+    def _journal_row(self, conn, from_fy: str, to_fy: str):
+        return conn.execute("SELECT * FROM rollover_journal WHERE from_fy = ? AND to_fy = ?",
+                            (from_fy, to_fy)).fetchone()
+
+    def _journal_dict(self, conn, row) -> dict:
+        steps = {r["step"]: {k: r[k] for k in ("state", "attempts", "last_error", "started_at",
+                                               "finished_at", "run_id")}
+                 for r in conn.execute("SELECT * FROM rollover_journal_steps WHERE journal_id = ?",
+                                       (row["id"],))}
+        return {"from_fy": row["from_fy"], "to_fy": row["to_fy"],
+                "created_at": row["created_at"],
+                "steps": {name: steps[name] for name in rj.STEPS}}
+
+    def rollover_open(self, from_fy: str, to_fy: str, now: str) -> dict:
+        """The journal of this transition; created with every step pending if new
+        (idempotent: an existing journal is returned unchanged)."""
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                conn.execute("INSERT OR IGNORE INTO rollover_journal (from_fy, to_fy, created_at) "
+                             "VALUES (?, ?, ?)", (from_fy, to_fy, now))
+                row = self._journal_row(conn, from_fy, to_fy)
+                for name in rj.STEPS:
+                    conn.execute("INSERT OR IGNORE INTO rollover_journal_steps "
+                                 "(journal_id, step, state) VALUES (?, ?, ?)",
+                                 (row["id"], name, rj.PENDING))
+            return self._journal_dict(conn, row)
+
+    def rollover_get(self, from_fy: str, to_fy: str) -> dict | None:
+        with self._lock:
+            conn = self._get_conn()
+            row = self._journal_row(conn, from_fy, to_fy)
+            return self._journal_dict(conn, row) if row else None
+
+    def rollover_incomplete(self) -> dict | None:
+        """The newest journal that still has a step to do, or None."""
+        with self._lock:
+            conn = self._get_conn()
+            for row in conn.execute("SELECT * FROM rollover_journal ORDER BY id DESC"):
+                journal = self._journal_dict(conn, row)
+                if not rj.is_complete(journal):
+                    return journal
+        return None
+
+    def _rollover_step_update(self, from_fy: str, to_fy: str, step: str, sql: str,
+                              params: tuple) -> None:
+        if step not in rj.STEPS:
+            raise ValueError(f"unknown rollover step {step!r}")
+        with self._lock:
+            conn = self._get_conn()
+            row = self._journal_row(conn, from_fy, to_fy)
+            if row is None:
+                raise ValueError(f"no rollover journal for {from_fy} -> {to_fy}")
+            with conn:
+                conn.execute(f"UPDATE rollover_journal_steps SET {sql} "
+                             "WHERE journal_id = ? AND step = ?", (*params, row["id"], step))
+
+    def rollover_step_start(self, from_fy: str, to_fy: str, step: str, now: str,
+                            run_id: str | None = None) -> None:
+        self._rollover_step_update(
+            from_fy, to_fy, step,
+            "attempts = attempts + 1, started_at = ?, finished_at = NULL, run_id = ?",
+            (now, run_id))
+
+    def rollover_step_done(self, from_fy: str, to_fy: str, step: str, now: str) -> None:
+        self._rollover_step_update(from_fy, to_fy, step,
+                                   "state = ?, finished_at = ?, last_error = NULL",
+                                   (rj.DONE, now))
+
+    def rollover_step_failed(self, from_fy: str, to_fy: str, step: str, now: str,
+                             error: str) -> None:
+        self._rollover_step_update(from_fy, to_fy, step,
+                                   "state = ?, finished_at = ?, last_error = ?",
+                                   (rj.FAILED, now, error))
+
+    def rollover_step_skipped(self, from_fy: str, to_fy: str, step: str, now: str,
+                              reason: str) -> None:
+        self._rollover_step_update(from_fy, to_fy, step,
+                                   "state = ?, finished_at = ?, last_error = ?",
+                                   (rj.SKIPPED, now, reason))
 
     def last_notification(self, event_key: str, status: str | None = None) -> dict | None:
         with self._lock:
