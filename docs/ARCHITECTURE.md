@@ -248,7 +248,7 @@ GET  /health      unauthenticated (always "healthy" today — WP9)
 POST /trigger/cloud | /trigger/lan | /trigger/verify/{mode}   → prefect arun_deployment
 GET  /report/weekly|monthly          HTML download
 POST /trigger/report/*/email         send now
-auth: api_key → session cookie (dashboard.auth_enabled), rate limits in memory
+auth: always on - dashboard password (`dashboard.login_password_hash`) → session cookie; Advanced password (`dashboard.admin_password_hash`) → second cookie; sessions carry the fingerprint of the hash they were opened with (a change or reset ends older sessions); no hash = 'not set up' page, nothing opens; rate limits in memory
 ```
 
 ### 5.5 Watchdog — `watchdog.py` (own service)

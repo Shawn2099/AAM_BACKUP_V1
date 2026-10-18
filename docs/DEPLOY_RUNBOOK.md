@@ -132,6 +132,21 @@ see `INSTALLATION COMPLETE`.
    `backup-lan`, `integrity-audit`, reports, `rollover-check`.
 4. `C:\BackupAgent\logs\watchdog_app.log` — recent lines, no CRITICAL.
 
+### Dashboard passwords
+
+There are two: the **dashboard password** (everyone who opens the dashboard) and the **Advanced
+password** (owner / IT, for the Advanced settings). The installer asks for both at the server
+console on the first install (typed twice, hidden); only salted hashes are stored in config.yaml.
+Until both exist the dashboard shows only "not set up" (nothing opens).
+
+* Change either: Settings > Advanced > *Change dashboard password* / *Change Advanced password*
+  (re-enter the Advanced password). Everyone else signed in with the old one is signed out, and
+  the recipients get an INFO email (no password in it).
+* Forgotten: on the server, as administrator, run
+  `deploy	_reset_dashboard_passwords.ps1` (`-Which login` or `-Which admin` for just one).
+  No restart needed; the agent signs everyone out on its next config refresh
+  (`dashboard.config_refresh_seconds`, 5 minutes by default).
+
 ### Changing settings later
 
 Open `http://localhost:8080/settings` (signed in). Every setting except the

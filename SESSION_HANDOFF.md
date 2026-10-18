@@ -173,6 +173,14 @@ rung in `notifications.attachments_rung`), group **C** (619d69b, d7a5b1b: `core/
 calendar periods from the flow run's scheduled time; empty period still reports and replaces the
 AAM-RPT-01 stale alert; P3/P4/P5 fixed; lab tests w14/w19/w20 updated). Unit suite: **2260 passed /
 19 skipped**. The full lab has NOT been re-run since B and C.
+**Group E done (2026-10-19):** two passwords (`dashboard.login_password_hash`, `dashboard.admin_password_hash`),
+sign-in always on, `api_key`/`auth_enabled`/`X-API-Key` removed, sessions carry hash fingerprints,
+'not set up' = fail closed, Advanced > Passwords card, INFO email on change,
+`core/password_setup.py` + `deploy/set_dashboard_passwords.py` (installer, only missing) +
+`deploy/11_reset_dashboard_passwords.ps1`, real-uvicorn E2E. Tests/lab use `test_support/ui_login.py`
+(fixed hashes, autouse signed-in TestClient, marker `anonymous` to opt out). The local ignored
+`config.yaml` had its two removed keys deleted (copy of the old file in the session scratchpad).
+Unit suite 2290 passed. **Milestone audit lab not yet re-run** (do it next, in the background).
 **Open:** C7 (email real reports built from a read-only copy of the box DB) waits for step 10.
 **Next:** group **E** (two passwords, remove X-API-Key/auth_enabled/api_key, E10 sign-in always on)
 -> **milestone audit lab** -> D, S, F, H, G, step 10 release.

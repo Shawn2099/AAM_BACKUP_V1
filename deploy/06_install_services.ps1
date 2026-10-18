@@ -165,6 +165,19 @@ if ($cfgExit -ne 0) {
     exit 1
 }
 
+# -- Dashboard passwords (plan E4) ------------------------------------
+# The dashboard opens only when BOTH passwords exist (fail closed). Ask here, at the server
+# console, for the ones that have no hash yet; they are typed twice, hidden, and stored as
+# salted hashes. Later changes: Settings > Advanced > Passwords, or 11_reset_dashboard_passwords.ps1.
+Push-Location $ProjectDir
+& $VenvPython (Join-Path $ProjectDir "deploy\set_dashboard_passwords.py") --config $ConfigFile --only-missing
+$pwExit = $LASTEXITCODE
+Pop-Location
+if ($pwExit -ne 0) {
+    Write-Host "  ERROR: the dashboard passwords were not set. Re-run this installer. Services were NOT changed." -ForegroundColor Red
+    exit 1
+}
+
 # -- Service account (agent only) -------------------------------------
 # AamBackupAgent touches the NAS, so it runs as the dedicated account.
 # AamPrefectServer (local API) and AamWatchdog (must stop/start services,

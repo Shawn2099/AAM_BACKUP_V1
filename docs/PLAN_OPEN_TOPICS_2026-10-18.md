@@ -105,7 +105,7 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
 | 2 | **I** Interruption / late start -> **milestone audit lab** | M | [x] e42d2af ... 6c38038; lab 242/0/3 |
 | 3 | **B** Emails sized to fit | M | [x] e63ad59, a7480ae |
 | 4 | **C** Reports: one model | M | [~] C1-C6, C8 done (619d69b, d7a5b1b); C7 proof at step 10 |
-| 5 | **E** Passwords (incl. E10 sign-in always on) -> **milestone audit lab** | M | [ ] |
+| 5 | **E** Passwords (incl. E10 sign-in always on) -> **milestone audit lab** | M | [~] E1-E10 done; milestone lab pending |
 | 6 | **D** Dashboard address | S | [ ] |
 | 6c | **S** Secrets encrypted with Windows DPAPI | M | [ ] |
 | 7 | **F** Dated log names | S | [ ] |
@@ -409,21 +409,21 @@ page (fail closed).
   credential version), sends the INFO email; documented in `docs/DEPLOY_RUNBOOK.md`.
 
 **Tasks:**
-- [ ] **E1** Config key `dashboard.login_password_hash` (validator like the admin hash; hidden in
+- [x] **E1** (E commits) Config key `dashboard.login_password_hash` (validator like the admin hash; hidden in
   settings; lock-out key list) + `core/admin_auth.py` login verification.
-- [ ] **E2** Session credential versions (dashboard + Advanced) + invalidation tests.
-- [ ] **E3** API endpoints: change dashboard password / change Advanced password (re-auth, rules,
+- [x] **E2** (E commits) Session credential versions (dashboard + Advanced) + invalidation tests.
+- [x] **E3** (E commits) API endpoints: change dashboard password / change Advanced password (re-auth, rules,
   rate limit) + tests.
-- [ ] **E4** Not-set-up state (no hashes -> setup page only, fail closed) + installer prompt for
+- [x] **E4** (E commits) Not-set-up state (no hashes -> setup page only, fail closed) + installer prompt for
   both passwords (`06_install_services.ps1`) + tests; `dashboard.api_key` removed from the model.
-- [ ] **E5** Advanced "Passwords" card in the settings UI.
-- [ ] **E6** INFO email on change (fault-free INFO kind; sample for G).
-- [ ] **E7** `deploy/11_reset_dashboard_passwords.ps1` + runbook section; test the script logic
+- [x] **E5** (E commits) Advanced "Passwords" card in the settings UI.
+- [x] **E6** (E commits) INFO email on change (fault-free INFO kind; sample for G).
+- [x] **E7** (E commits) `deploy/11_reset_dashboard_passwords.ps1` + runbook section; test the script logic
   (Python helper it calls) in the suite.
-- [ ] **E8** E2E on a real uvicorn server: change both, old sessions signed out, new ones work.
-- [ ] **E10** (rev 5, F-2) Sign-in always on: `dashboard.auth_enabled` removed from the model; every
+- [x] **E8** (E commits) E2E on a real uvicorn server: change both, old sessions signed out, new ones work.
+- [x] **E10** (E commits) (rev 5, F-2) Sign-in always on: `dashboard.auth_enabled` removed from the model; every
   "auth disabled" branch in `ui.py` removed; tests use the session helper.
-- [ ] **E9** (rev 2, G-2) Remove the `X-API-Key` header login (`ui._check_api_key_header`):
+- [x] **E9** (E commits) (rev 2, G-2) Remove the `X-API-Key` header login (`ui._check_api_key_header`):
   it is a master key that would bypass both passwords; nothing in production uses it. Tests move
   to a session-login helper (`test_support`), not a header.
 
