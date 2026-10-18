@@ -33,6 +33,7 @@ rclone LOCAL backend (config section [aam_gcs]), the /ZB flag dropped (this
 account has no SeBackupPrivilege — proven in C1), and alert capture.
 """
 from __future__ import annotations
+from test_support import ui_login  # noqa: E402
 
 import asyncio
 import contextlib
@@ -272,7 +273,8 @@ def test_w8_dashboard_trigger_and_duplicate_guard(pf_rig, monkeypatch):
 
     async def _post_twice():
         transport = httpx.ASGITransport(app=ui.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://aam-lab") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://aam-lab",
+                                     cookies={"session": ui_login.SESSION_TOKEN}) as c:
             r2 = await c.post("/trigger/lan")
             body = r2.json() if r2.headers.get("content-type", "").startswith("application/json") else {}
             return r2.status_code, body
@@ -318,7 +320,8 @@ def test_w8_dashboard_trigger_fails_closed_without_prefect(pf_rig, monkeypatch):
 
     async def _call():
         transport = httpx.ASGITransport(app=ui.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://aam-lab") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://aam-lab",
+                                     cookies={"session": ui_login.SESSION_TOKEN}) as c:
             with temporary_settings(updates={PREFECT_API_URL: dead}):
                 trig = await c.post("/trigger/lan")
                 trig_cloud = await c.post("/trigger/cloud")
