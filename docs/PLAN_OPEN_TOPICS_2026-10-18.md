@@ -98,7 +98,7 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
 
 | Step | Task group | Size | Done |
 |---|---|---|---|
-| 0 | Groundwork: commit docs, fix the 7 audit-lab reds, rerun the lab | S | [ ] |
+| 0 | Groundwork: commit docs, fix the 7 audit-lab reds, rerun the lab | S | [x] 887123f, 93e8d75, lab 238/0/3 |
 | 0b | **H1** dependency upgrades + **K** config store (`filelock`) | S-M | [ ] |
 | 1 | **SCH** schema v4 (one migration), then **A** FY rollover journal | L | [ ] |
 | 2 | **I** Interruption / late start -> **milestone audit lab** | M | [ ] |
@@ -116,11 +116,11 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
 
 ## Step 0 - Groundwork
 
-- [ ] **0.1** Commit the doc changes of 2026-10-18 (CLAUDE.md + SESSION_HANDOFF.md: box = full
+- [x] **0.1** Commit the doc changes of 2026-10-18 (CLAUDE.md + SESSION_HANDOFF.md: box = full
   control; this plan).
-- [ ] **0.2** Tidy stale handoff parts: §3 test status, "Built but NOT wired yet" title (all wired),
+- [x] **0.2** Tidy stale handoff parts: §3 test status, "Built but NOT wired yet" title (all wired),
   §4 item 6 (duplicate of M4), §6 old v1.1.3 facts marked background.
-- [ ] **0.3** Fix the 7 audit-lab reds from §4f (log `agent_runs/audit_lab_2026-10-18_email.log`):
+- [x] **0.3** Fix the 7 audit-lab reds from §4f (log `agent_runs/audit_lab_2026-10-18_email.log`):
   - w14 auth + w19 session: use `dashboard.session_hours` instead of the removed `ui._SESSION_TTL`.
   - w19 flash test: covers removed dead code -> remove / replace with the current behaviour.
   - w19 email endpoints: fake gets the new `legs` argument.
@@ -129,7 +129,7 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
     floor with the reason written in the test.
   - w14 `/report/weekly` + `/report/monthly` 404: find out if it is seed-date rot or real.
     (The report period itself is rebuilt in C; here only make the lab truthful.)
-- [ ] **0.4** Rerun the full audit lab (background, ~20-30 min) -> 0 red. Record the result in the
+- [x] **0.4** Rerun the full audit lab (background, ~20-30 min) -> 0 red. Record the result in the
   handoff.
 
 ---

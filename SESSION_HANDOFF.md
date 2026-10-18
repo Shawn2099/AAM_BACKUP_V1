@@ -59,8 +59,9 @@ caused by our program, a human is asked whenever an action could be wrong.**
 | M4 Operations | **done** (4.1–4.6) — M4 lab 238/1 → W10 stale expectation fixed → **0 red** |
 | M5 Acceptance (on-box) | **in progress on the trial box - PAUSED by owner 2026-10-15 ~16:40** (see §4a) |
 
-**Test status at last check (2026-10-16, §4d, HEAD 9b8ddec):** `tests/` **1970 passed / 0 failed /
-19 skipped**; full audit lab (at 0eac85a) **238 passed / 0 failed / 3 skipped**.
+**Test status (2026-10-18, §4f, HEAD 1bc1474):** `tests/` **2142 passed / 0 failed / 19 skipped**;
+audit lab 231/7/3 -> the 7 reds fixed in 93e8d75 (plan 0.3), full re-run DONE: 238 passed / 0 failed / 3 skipped (
+`agent_runs/logs/lab_step0_20261018-2019.log`). Older: lab at 0eac85a 238/0/3.
 **M4 milestone audit lab (2026-10-15): 238 passed / 1 failed / 2 skipped (20 min)**; the 1 red was
 W10 `deployment_schedules_fire_when_intended` expecting the old monthly 08:00 / audit 03:00 -
 updated to 08:30 / 10:00, green. W16 schedule collision is green now (local config fixed).
@@ -68,7 +69,7 @@ updated to 08:30 / 10:00, green. W16 schedule collision is green now (local conf
 Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
 config.yaml `monthly_cron` changed - DEC-7).
 
-### Built but NOT wired yet (M2/M3 must call these)
+### M2/M3 building blocks - all wired now (kept as a map)
 | Module | What | Wire in |
 |---|---|---|
 | `core/guards.py` | G1–G5 **wired** (2.2, 2.3) | — |
@@ -149,11 +150,7 @@ config.yaml `monthly_cron` changed - DEC-7).
    later - ask if it matters. The audit's LAN shutdown has
    no run row: a non-VERIFIED audit shutdown is the WARNING email only (the banner reads the last
    LAN *run* row).
-6. **M4 (plan §13)** - 4.1 shutdown result verification (WP10), 4.2 clock tri-state +
-   w32tm fallback (WP12), 4.3 watchdog restart order / STOP_PENDING / config / own log (WP13),
-   4.4 schedule/time-budget validator with cronsim (WP14), 4.5 installer `uv run --frozen
-   --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
-   (M3 deferral - tool_runner migration of the check tools - DONE 2026-10-16, §4d.)
+6. (M4 items 4.1-4.6 are listed as DONE in item 5 above; the duplicate list was removed 2026-10-18.)
 
 ## 4g. AGREED PLAN (owner 2026-10-18) - §4f-2 topics + older items
 
