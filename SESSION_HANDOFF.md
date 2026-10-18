@@ -164,10 +164,18 @@ shutdown in the final LAN backup; A7 `_complete_pending_rollover_nas_folder`; A8
 rollover step card; independent review F1-F4 fixed; lab W6b with real robocopy). Unit suite at
 last run: **2218 passed / 0 failed / 19 skipped**. Owner decision D-17: a retry that still has to
 switch repeats the final backup.
-**Next:** step 2 = group **I** (budget from the flow run's scheduled start, `*_MISSED`, sweep of
-every mode, lab hard-kill scenario) -> then run the **milestone audit lab** (after A + I; last full
-lab was after 0b: 236/2/3, the 2 reds fixed and re-run green, NOT yet re-run in full since A) ->
-B emails -> C reports -> E passwords -> lab -> D, S, F, H, G, release.
+**Done since (2026-10-19):** group **I** (e42d2af..6c38038; W22 hard-kill lab; W10 coverage floors
+lowered manifest 45->40, flow 60->55 because A/I add failure-night-only branches; full lab then
+**242 passed / 3 skipped / 0 failed**), group **B** (e63ad59, a7480ae: attachment ladder
+full -> report-only -> none, sized to the advertised SMTP SIZE, one rung down on 552/554/hang-up,
+rung in `notifications.attachments_rung`), group **C** (619d69b, d7a5b1b: `core/report_period.py`
+`ReportPeriod`, `ManifestDB.get_runs_between`, `report.build_report_model` + `render_report_html`;
+calendar periods from the flow run's scheduled time; empty period still reports and replaces the
+AAM-RPT-01 stale alert; P3/P4/P5 fixed; lab tests w14/w19/w20 updated). Unit suite: **2260 passed /
+19 skipped**. The full lab has NOT been re-run since B and C.
+**Open:** C7 (email real reports built from a read-only copy of the box DB) waits for step 10.
+**Next:** group **E** (two passwords, remove X-API-Key/auth_enabled/api_key, E10 sign-in always on)
+-> **milestone audit lab** -> D, S, F, H, G, step 10 release.
 **OWNER INSTRUCTION (2026-10-18): do NOT test the real NAS shutdown today.** No test, lab run or
 box action may power off the real NAS (rollover `nas_shutdown`, `lan_shutdown_task`, M5 shutdown
 scenarios). It is tested later, with the owner physically near the NAS: open item for step 10 /
