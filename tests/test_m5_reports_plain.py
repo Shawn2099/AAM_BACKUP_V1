@@ -93,9 +93,11 @@ def test_monthly_is_the_previous_calendar_month(db):
 
 
 def test_fy_switch_sends_an_info_email():
-    from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent / "flow.py").read_text(encoding="utf-8")
-    block = src.split('record("ROLLOVER_COMPLETE"', 1)[1].split("return \"ROLLOVER_COMPLETED\"", 1)[0]
+    import inspect
+
+    import flow
+    # the `announce` step of the rollover journal sends it (plan A)
+    block = inspect.getsource(flow._rollover_resume)
     assert 'kind="INFO"' in block and "New financial year" in block
 
 

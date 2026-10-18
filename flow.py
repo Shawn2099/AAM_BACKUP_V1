@@ -2136,11 +2136,14 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
     * The final backup of the closing FY runs through the NORMAL pipelines
       (backup slot, guards, permission checks, run rows, alerts). Every
       enabled leg must end COMPLETE, otherwise G6 blocks and asks a human.
-    * The switch runs inside the backup slot: new FY folders (+ placeholder
-      so the new, empty FY is not mistaken for a missing drive), config
-      backup, atomic config update, then the archive transition (slow,
-      non-blocking, last).
-    * One run_history row (mode "rollover") per decision.
+    * The rollover is a persisted step journal (`rollover_journal`, plan A): final backups ->
+      source folder + placeholder -> NAS folder + mount marker -> config switch
+      (compare-and-set) -> archive transition -> NAS shutdown -> INFO email. Each step is
+      idempotent; this daily check is the resumer and continues at the first unfinished step
+      (a failed NAS step never stops the config switch; a failed switch is ROLLOVER_FAILED +
+      AAM-ROL-04, retried every morning with a repeated final backup, owner D-17).
+    * Everything after the final backups runs inside one backup-slot hold.
+    * One run_history row (mode "rollover") per run.
 
     Returns "ROLLOVER_COMPLETED" | "NO_ROLLOVER_NEEDED".
     Raises RolloverError when blocked (the Prefect run fails; the attention
@@ -2154,20 +2157,67 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
         logger.warning(f"Log retention skipped (config load failed): {e}")
 
     config = load_config(config_path)
+    db = ManifestDB.from_config(config)
+    try:
+        return _rollover_resume(config, config_path, approval_id, db)
+    finally:
+        db.close()
+
+
+def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):
+    """Run one journal step and persist its outcome (plan A, saga).
+
+    fn() returns None (done) or ("skipped", reason). Any exception marks the step failed
+    and is returned to the caller - except a guard block, which is a human decision, not a
+    failure: the step is marked failed with that text and the block is re-raised.
+    Returns (finished, error).
+    """
+    db.rollover_step_start(from_fy, to_fy, step, now_iso(), run_id=run_id)
+    try:
+        outcome = fn()
+    except guards.GuardBlocked as e:
+        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"blocked: {e}")
+        raise
+    except Exception as e:  # noqa: BLE001 - recorded on the journal; the caller decides
+        logger.error(f"FY rollover {from_fy} -> {to_fy}: step {step} failed: {e}")
+        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=str(e))
+        return False, e
+    if isinstance(outcome, tuple) and outcome[0] == "skipped":
+        db.rollover_step_skipped(from_fy, to_fy, step, now_iso(), reason=outcome[1])
+    else:
+        db.rollover_step_done(from_fy, to_fy, step, now_iso())
+    return True, None
+
+
+def _rollover_resume(config, config_path: str, approval_id: str | None, db):
+    """The journal-driven rollover (plan A): continue the open journal at its first
+    unfinished step, or open a new one when a rollover is due. See rollover_check_flow."""
+    from core import rollover_journal as rj
+
+    journal = db.rollover_incomplete()
+    resumed = journal is not None
     source, lan_dest = config.paths.source_drive, config.paths.lan_destination
-    from_fy = fy_rollover.configured_fy(source, lan_dest)
-    if from_fy is None:
-        fy_rollover.detect_rollover(source, lan_dest)   # logs the opt-out warning
-        return "NO_ROLLOVER_NEEDED"
-    to_fy = get_fy_prefix()
-    kind = fy_rollover.classify_rollover(from_fy, to_fy)
-    if kind == fy_rollover.NONE:
-        return "NO_ROLLOVER_NEEDED"
+    if resumed:
+        from_fy, to_fy = journal["from_fy"], journal["to_fy"]
+        switch_pending = not rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
+        # the daily check only needs the date when the one-way switch is still to do
+        kind = (fy_rollover.classify_rollover(from_fy, get_fy_prefix())
+                if switch_pending else fy_rollover.FORWARD)
+    else:
+        from_fy = fy_rollover.configured_fy(source, lan_dest)
+        if from_fy is None:
+            fy_rollover.detect_rollover(source, lan_dest)   # logs the opt-out warning
+            return "NO_ROLLOVER_NEEDED"
+        to_fy = get_fy_prefix()
+        kind = fy_rollover.classify_rollover(from_fy, to_fy)
+        if kind == fy_rollover.NONE:
+            return "NO_ROLLOVER_NEEDED"
+        switch_pending = True
 
     run_id = _stable_run_id("rollover")
     started_at = now_iso()
     monotonic_start = time.monotonic()
-    metrics = {"from_fy": from_fy, "to_fy": to_fy, "kind": kind}
+    metrics = {"from_fy": from_fy, "to_fy": to_fy, "kind": kind, "resumed": resumed}
 
     def record(status: str, error: str | None, extra: dict) -> None:
         try:
@@ -2178,10 +2228,10 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
         except Exception as e:  # noqa: BLE001 - the decision itself stands
             logger.critical(f"Failed to record rollover run {run_id}: {e}")
 
-    if kind == fy_rollover.CLOCK_BEHIND:
-        msg = (f"FY rollover refused: the computer clock says the current FY is {to_fy}, "
-               f"which is EARLIER than the configured {from_fy}. The clock is wrong; the "
-               "backups keep using " + from_fy + ". Correct the server date/time "
+    if switch_pending and kind == fy_rollover.CLOCK_BEHIND:
+        msg = (f"FY rollover refused: the computer clock says the current FY is "
+               f"{get_fy_prefix()}, which is EARLIER than the configured {from_fy}. The clock "
+               "is wrong; the backups keep using " + from_fy + ". Correct the server date/time "
                "(w32tm /resync). Nothing was changed.")
         logger.error(msg)
         record("ROLLOVER_BLOCKED", msg, {})
@@ -2195,70 +2245,192 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
     # The FY switch is one-way, so the date it acts on must be proven against
     # Google / NTP first: a clock one FY ahead would otherwise roll over on its
     # own and leave the real FY unprotected. Not approvable (like CLOCK_BEHIND).
-    clock = check_clock(
-        max_skew_seconds=config.health.max_clock_skew_seconds,
-        connection_timeout=config.health.clock_check_timeout_seconds,
-        ntp_server=config.health.ntp_server,
-        w32tm_timeout_s=config.health.w32tm_timeout_seconds,
-        artefacts=RunArtefacts.ephemeral("rollover-clock"),
-    )
-    metrics["clock"] = clock.to_metrics()
-    if clock.state != CLOCK_OK:
-        msg = (f"FY rollover {from_fy} -> {to_fy} refused: the server clock could not be "
-               f"proven correct ({clock.state}: {clock.reason}). The backups keep using "
-               f"{from_fy}; nothing was changed. Correct the date/time (w32tm /resync) or "
-               "restore internet/NTP access - the check repeats every morning.")
-        logger.error(msg)
-        record("ROLLOVER_BLOCKED", msg, {})
-        notify(config, AlertEvent(
-            key=f"rollover:clock_{clock.state.lower()}", kind="ACTION_REQUIRED",
-            mode="rollover", title="Server clock not proven - FY rollover refused",
-            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
-            fault_code="AAM-ROL-03", run_id=run_id))
-        raise fy_rollover.RolloverError(msg)
+    # Only a pending switch needs it; the steps after the switch resume without.
+    if switch_pending:
+        clock = check_clock(
+            max_skew_seconds=config.health.max_clock_skew_seconds,
+            connection_timeout=config.health.clock_check_timeout_seconds,
+            ntp_server=config.health.ntp_server,
+            w32tm_timeout_s=config.health.w32tm_timeout_seconds,
+            artefacts=RunArtefacts.ephemeral("rollover-clock"),
+        )
+        metrics["clock"] = clock.to_metrics()
+        if clock.state != CLOCK_OK:
+            msg = (f"FY rollover {from_fy} -> {to_fy} refused: the server clock could not be "
+                   f"proven correct ({clock.state}: {clock.reason}). The backups keep using "
+                   f"{from_fy}; nothing was changed. Correct the date/time (w32tm /resync) or "
+                   "restore internet/NTP access - the check repeats every morning.")
+            logger.error(msg)
+            record("ROLLOVER_BLOCKED", msg, {})
+            notify(config, AlertEvent(
+                key=f"rollover:clock_{clock.state.lower()}", kind="ACTION_REQUIRED",
+                mode="rollover", title="Server clock not proven - FY rollover refused",
+                message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+                fault_code="AAM-ROL-03", run_id=run_id))
+            raise fy_rollover.RolloverError(msg)
 
-    logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
-    final_status, final_errors = _run_final_backups(config, run_id)
-    g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
-    approved, approval_record = _apply_approval(config, "rollover", approval_id, run_id, [g6])
-    try:
-        guard_record = guards.enforce("rollover", [g6], approved_guards=approved,
-                                      **metrics, **approval_record)
-    except guards.GuardBlocked as e:
-        record("ROLLOVER_BLOCKED", str(e), {"guards": e.record, "final_errors": final_errors})
-        _open_block_request(config, "rollover", run_id, e.record, started_at)
-        raise fy_rollover.RolloverError(str(e)) from e
+    journal = db.rollover_open(from_fy, to_fy, started_at)
+    _record_running(config, "rollover", run_id, started_at)   # a crash is swept as ABANDONED
+    for step in rj.reset_at_start(journal):                    # owner D-17
+        db.rollover_step_reset(from_fy, to_fy, step)
+    journal = db.rollover_get(from_fy, to_fy)
+    logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}), "
+                f"{'resuming' if resumed else 'starting'}: steps still to do: "
+                f"{', '.join(rj.attempt_order(journal))}")
 
     src_root = fy_rollover._parent_path(source)
     lan_root = fy_rollover._parent_path(lan_dest)
-    with _backup_slot(config):
-        fy_rollover.create_new_fy_folders(
-            src_root, lan_root, to_fy,
-            placeholder_name=config.rollover.source_placeholder_name)
-        config_backup = fy_rollover.update_config_yaml(config_path, src_root, lan_root, to_fy)
-        archive_ok = None
-        if config.cloud.enabled:
-            archive_ok = fy_rollover.run_archive_transition(
-                bucket=config.cloud.bucket, old_fy=from_fy,
-                gcs_key_path=config.paths.gcs_key_path,
-                auth_timeout=config.health.rollover_auth_timeout_seconds,
-                archive_timeout=config.health.rollover_archive_timeout_seconds,
-            )
-            if not archive_ok:
-                logger.warning(f"Archive transition of {from_fy} failed - the rollover itself "
-                               "is complete; re-run the transition manually (see logs)")
+    final_status: dict = {}
+    guard_record = None
+    blocking_error: tuple[str, Exception] | None = None
+    config_backup = None
+    archive_ok = None
+
+    def step_final_backups():
+        nonlocal final_status, guard_record
+        logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
+        final_status, final_errors = _run_final_backups(config, run_id)
+        g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
+        approved, approval_record = _apply_approval(config, "rollover", approval_id, run_id, [g6])
+        try:
+            guard_record = guards.enforce("rollover", [g6], approved_guards=approved,
+                                          **{k: v for k, v in metrics.items()
+                                             if k in ("from_fy", "to_fy", "kind", "clock")},
+                                          **approval_record)
+        except guards.GuardBlocked as e:
+            record("ROLLOVER_BLOCKED", str(e),
+                   {"guards": e.record, "final_errors": final_errors})
+            _open_block_request(config, "rollover", run_id, e.record, started_at)
+            raise
+
+    def step_source_folder():
+        fy_rollover.create_source_folder(
+            src_root, to_fy, placeholder_name=config.rollover.source_placeholder_name)
+
+    def step_nas_folder():
+        if not config.lan.enabled:
+            return ("skipped", "LAN backup is disabled")
+        if config.wol.enabled:
+            ensure_server_online(config)     # wake + wait, exactly as the LAN leg does
+        fy_rollover.create_nas_folder(lan_root, to_fy)
+
+    def step_config_switch():
+        nonlocal config_backup
+        config_backup = fy_rollover.update_config_yaml(
+            config_path, src_root, lan_root, to_fy, expect_fy=from_fy)
+
+    def step_archive():
+        nonlocal archive_ok
+        if not config.cloud.enabled:
+            return ("skipped", "cloud backup is disabled")
+        archive_ok = fy_rollover.run_archive_transition(
+            bucket=config.cloud.bucket, old_fy=from_fy,
+            gcs_key_path=config.paths.gcs_key_path,
+            auth_timeout=config.health.rollover_auth_timeout_seconds,
+            archive_timeout=config.health.rollover_archive_timeout_seconds,
+        )
+        if not archive_ok:
+            raise RuntimeError(f"Archive transition of {from_fy} failed - retried every morning")
+
+    def step_nas_shutdown():
+        if not (config.lan.enabled and config.lan.shutdown_after_backup
+                and config.wol.enabled):
+            return ("skipped", "NAS shutdown is not configured")
+        lan_shutdown_task(config)
+
+    def step_announce():
+        pending = [s for s in rj.STEPS if s != rj.ANNOUNCE
+                   and not rj.is_finished(db.rollover_get(from_fy, to_fy)["steps"][s])]
+        todo = ("" if not pending else
+                " A few follow-up steps are still being retried automatically "
+                f"({', '.join(p.replace('_', ' ') for p in pending)}); your data is safe.")
+        notify(config, AlertEvent(
+            key=f"rollover:done:{to_fy}", kind="INFO", mode="rollover",
+            title=f"New financial year {to_fy} started",
+            message=(f"From today your backups use the new folder {to_fy}. The {from_fy} "
+                     f"backups are kept unchanged.{todo or ' Nothing to do.'}"),
+            status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at))
+
+    steps = {
+        rj.FINAL_BACKUPS: step_final_backups, rj.SOURCE_FOLDER: step_source_folder,
+        rj.NAS_FOLDER: step_nas_folder, rj.CONFIG_SWITCH: step_config_switch,
+        rj.ARCHIVE: step_archive, rj.NAS_SHUTDOWN: step_nas_shutdown,
+        rj.ANNOUNCE: step_announce,
+    }
+
+    def run_steps():
+        nonlocal blocking_error
+        for step in rj.attempt_order(journal):
+            if not rj.prerequisites_met(db.rollover_get(from_fy, to_fy), step):
+                continue                      # e.g. NAS shutdown while the NAS was never reached
+            finished, error = _rollover_step(db, from_fy, to_fy, step, run_id, steps[step])
+            if not finished and step in rj.BLOCKING:
+                blocking_error = (step, error)
+                return
+            if not finished and step == rj.ARCHIVE:
+                _rollover_archive_alert(config, db, from_fy, to_fy, error, run_id, started_at)
+
+    def fail(step: str, error) -> None:
+        msg = (f"FY rollover {from_fy} -> {to_fy} stopped at step '{step.replace('_', ' ')}': "
+               f"{error}. Your data is safe; the rollover continues where it stopped every "
+               "morning.")
+        record("ROLLOVER_FAILED", msg, {"failed_step": step})
+        notify(config, AlertEvent(
+            key=f"rollover:{to_fy}:{step}", kind="ACTION_REQUIRED", mode="rollover",
+            title="Financial-year switch could not be finished", message=msg,
+            status="ROLLOVER_FAILED", occurred_at=started_at,
+            fault_code="AAM-ROL-04", run_id=run_id))
+        raise fy_rollover.RolloverError(msg)
+
+    try:
+        if not rj.is_finished(journal["steps"][rj.FINAL_BACKUPS]):
+            # the final backups run through the normal pipelines, which take the backup slot
+            # themselves (limit 1) - they must stay OUTSIDE the slot held below
+            finished, error = _rollover_step(db, from_fy, to_fy, rj.FINAL_BACKUPS, run_id,
+                                             step_final_backups)
+            if not finished:
+                blocking_error = (rj.FINAL_BACKUPS, error)
+            journal = db.rollover_get(from_fy, to_fy)
+        if blocking_error is None:
+            with _backup_slot(config):
+                run_steps()
+    except guards.GuardBlocked as e:
+        raise fy_rollover.RolloverError(str(e)) from e
+    except fy_rollover.RolloverError:
+        raise
+    except Exception as e:  # noqa: BLE001 - never leave a RUNNING row and no alert behind
+        fail("unexpected", e)
+
+    final = db.rollover_get(from_fy, to_fy)
+    metrics["steps"] = {name: final["steps"][name]["state"] for name in rj.STEPS}
+    if blocking_error is not None:
+        fail(*blocking_error)
+
     record("ROLLOVER_COMPLETE", None, {"guards": guard_record, "final_status": final_status,
                                        "archive_ok": archive_ok,
                                        "config_backup": str(config_backup)})
-    logger.info(f"FY rollover complete: {from_fy} -> {to_fy} | archive_ok={archive_ok}")
-    # Owner D5 (2026-10-18): once a year, tell the office the switch happened.
-    notify(config, AlertEvent(
-        key=f"rollover:done:{to_fy}", kind="INFO", mode="rollover",
-        title=f"New financial year {to_fy} started",
-        message=(f"From today your backups use the new folder {to_fy}. The {from_fy} backups "
-                 "are kept unchanged. Nothing to do."),
-        status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at))
+    logger.info(f"FY rollover {from_fy} -> {to_fy}: switched | archive_ok={archive_ok} | "
+                f"steps={metrics['steps']}")
     return "ROLLOVER_COMPLETED"
+
+
+def _rollover_archive_alert(config, db, from_fy: str, to_fy: str, error, run_id: str,
+                            started_at: str) -> None:
+    """AAM-ROL-05: the archive move failed. WARNING at first; ACTION_REQUIRED once it has
+    been failing for rollover.archive_alert_after_days. One stable incident per rollover."""
+    step = db.rollover_get(from_fy, to_fy)["steps"]["archive"]
+    first = step.get("first_failed_at") or started_at
+    days = (pendulum.parse(started_at) - pendulum.parse(first)).total_days()
+    escalate = days >= config.rollover.archive_alert_after_days
+    notify(config, AlertEvent(
+        key=f"rollover:{to_fy}:archive",
+        kind="ACTION_REQUIRED" if escalate else "WARNING", mode="rollover",
+        title="Old year not moved to cheaper storage yet",
+        message=(f"Moving the {from_fy} online copy to the ARCHIVE storage class failed"
+                 f"{f' for {int(days)} day(s)' if days >= 1 else ''}: {error}. Your data is "
+                 "safe; it is tried again every morning."),
+        status="ROLLOVER_COMPLETE", occurred_at=started_at, fault_code="AAM-ROL-05",
+        run_id=run_id))
 
 
 def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:

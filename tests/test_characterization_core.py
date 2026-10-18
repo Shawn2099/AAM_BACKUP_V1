@@ -783,7 +783,9 @@ class TestFyRolloverCharacterization:
         cfg = MagicMock()
         cfg.paths.source_drive = "E:/data"
         cfg.paths.lan_destination = "\\\\nas\\share"
+        no_journal = MagicMock(rollover_incomplete=MagicMock(return_value=None))
         with patch("flow.load_config", return_value=cfg), patch("flow.log_retention_task"), \
+             patch("flow.ManifestDB.from_config", return_value=no_journal), \
              patch("flow._run_lan_pipeline") as lan:
             assert flow.rollover_check_flow.fn("cfg.yaml") == "NO_ROLLOVER_NEEDED"
         lan.assert_not_called()

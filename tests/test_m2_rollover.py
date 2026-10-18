@@ -6,6 +6,9 @@ folder empty (every backup failed from April 1), ran at agent boot.
 """
 
 import inspect
+import os
+import shutil
+import tempfile
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -16,6 +19,7 @@ from core import approvals as ap
 from core import fy_rollover as fr
 from core import guards as g
 from core import statuses
+from core.manifest import ManifestDB
 from core.health import CLOCK_OK, CLOCK_SKEWED, CLOCK_UNVERIFIED, ClockResult
 from models.config import AppConfig, HealthConfig, RolloverConfig
 
@@ -132,6 +136,9 @@ class _Rig:
                  approved=False, clock=None):
         self.cfg = _cfg()
         self.order = MagicMock()
+        self._tmp = tempfile.mkdtemp()
+        self.db = ManifestDB(os.path.join(self._tmp, "m.db"))
+        self.db.close = lambda: None            # the flow closes it; the test reads it afterwards
         self.patches = [
             patch("flow.check_clock", return_value=clock or ClockResult(CLOCK_OK, 1.0, "google", "")),
             patch("flow.load_config", return_value=self.cfg),
@@ -146,9 +153,15 @@ class _Rig:
                 frozenset({"G6_FY_ROLLOVER"}) if approved else frozenset(),
                 {"approval_id": "a1"} if approved else {})),
             patch("flow._backup_slot"),
-            patch("flow.fy_rollover.create_new_fy_folders", return_value={}),
+            patch("flow.fy_rollover.create_source_folder"),
+            patch("flow.fy_rollover.create_nas_folder"),
             patch("flow.fy_rollover.update_config_yaml", return_value="cfg.bak"),
             patch("flow.fy_rollover.run_archive_transition", return_value=True),
+            # plan A: the journal lives in the manifest DB (one real DB per rig)
+            patch("flow.ManifestDB.from_config", side_effect=lambda cfg: self.db),
+            patch("flow._record_running"),
+            patch("flow.ensure_server_online"),
+            patch("flow.lan_shutdown_task"),
         ]
 
     def _leg(self, leg, status):
@@ -160,7 +173,7 @@ class _Rig:
 
     def __enter__(self):
         self.m = {p.attribute: p.start() for p in self.patches}
-        for name in ("create_new_fy_folders", "update_config_yaml",
+        for name in ("create_source_folder", "create_nas_folder", "update_config_yaml",
                      "run_archive_transition", "_backup_slot"):
             self.order.attach_mock(self.m[name], name)
         return self
@@ -168,6 +181,7 @@ class _Rig:
     def __exit__(self, *exc):
         for p in self.patches:
             p.stop()
+        shutil.rmtree(self._tmp, ignore_errors=True)
 
     def run(self, **kw):
         return flow.rollover_check_flow.fn(config_path="cfg.yaml", **kw)
@@ -189,12 +203,13 @@ def test_forward_rollover_runs_pipelines_then_switches_inside_the_slot():
         r.m["_run_cloud_pipeline"].assert_called_once()
         r.m["_run_lan_pipeline"].assert_called_once()
         names = [c[0] for c in r.order.mock_calls if not c[0].startswith("_backup_slot().")]
-        assert names[:4] == ["_backup_slot", "create_new_fy_folders",
+        assert names[:5] == ["_backup_slot", "create_source_folder", "create_nas_folder",
                              "update_config_yaml", "run_archive_transition"]
-        r.m["create_new_fy_folders"].assert_called_once_with(
-            "E:\\DATA", "\\\\nas\\backup", "FY27-28", placeholder_name="README_FY.txt")
+        r.m["create_source_folder"].assert_called_once_with(
+            "E:\\DATA", "FY27-28", placeholder_name="README_FY.txt")
+        r.m["create_nas_folder"].assert_called_once_with("\\\\nas\\backup", "FY27-28")
         r.m["update_config_yaml"].assert_called_once_with(
-            "cfg.yaml", "E:\\DATA", "\\\\nas\\backup", "FY27-28")
+            "cfg.yaml", "E:\\DATA", "\\\\nas\\backup", "FY27-28", expect_fy="FY26-27")
         assert r.statuses() == ["ROLLOVER_COMPLETE"]
         r.m["_open_block_request"].assert_not_called()
 
@@ -204,7 +219,7 @@ def test_failed_final_backup_blocks_and_asks_a_human():
         with pytest.raises(fr.RolloverError, match="lan"):
             r.run()
         r.m["update_config_yaml"].assert_not_called()
-        r.m["create_new_fy_folders"].assert_not_called()
+        r.m["create_source_folder"].assert_not_called()
         assert r.statuses() == ["ROLLOVER_BLOCKED"]
         leg, record = r.m["_open_block_request"].call_args.args[1], \
             r.m["_open_block_request"].call_args.args[3]
@@ -256,7 +271,7 @@ def test_rollover_never_acts_on_a_clock_that_is_not_proven(clock, computed):
             r.run(approval_id="a1")
         r.m["_run_cloud_pipeline"].assert_not_called()
         r.m["_run_lan_pipeline"].assert_not_called()
-        r.m["create_new_fy_folders"].assert_not_called()
+        r.m["create_source_folder"].assert_not_called()
         r.m["update_config_yaml"].assert_not_called()
         r.m["run_archive_transition"].assert_not_called()
         r.m["_apply_approval"].assert_not_called()       # an unproven date is not approvable

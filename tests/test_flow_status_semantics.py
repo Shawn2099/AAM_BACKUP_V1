@@ -341,6 +341,9 @@ class TestRolloverCheckFlow:
     The rollover decisions themselves (forward-only, final backups through
     the pipelines, G6 approval) are covered in tests/test_m2_rollover.py."""
 
+    # the daily check first looks for an open rollover journal (plan A): none here
+    @patch("flow.ManifestDB.from_config",
+           new=lambda cfg: MagicMock(rollover_incomplete=MagicMock(return_value=None)))
     @patch("flow.log_retention_task")
     @patch("flow.get_fy_prefix", return_value="FY26-27")
     @patch("flow.load_config")
