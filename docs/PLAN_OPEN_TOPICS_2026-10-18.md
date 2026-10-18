@@ -316,11 +316,11 @@ message gets the same message three times, then the alert is lost.
 - The `notifications` row records the rung delivered; the "For support" block says so.
 
 **Tasks:**
-- [ ] **B1** `SmtpSession` refactor (behaviour unchanged) - existing transport tests green.
-- [ ] **B2** Size measurement + rung choice (`core/support_bundle.py` builds each rung).
-- [ ] **B3** Rejection / disconnect fallback; record the rung (schema: column or extended field -
+- [x] **B1** (e63ad59, as `_smtp_session`) `SmtpSession` refactor (behaviour unchanged) - existing transport tests green.
+- [x] **B2** (e63ad59, a7480ae; rungs = full, report-only, none built by `notify.attachment_ladder`; no logs-tail rung) Size measurement + rung choice (`core/support_bundle.py` builds each rung).
+- [x] **B3** (e63ad59) Rejection / disconnect fallback; record the rung (schema: column or extended field -
   the column comes from SCH).
-- [ ] **B4** Tests with the real SMTP test server (`test_support/smtp_server.py`): small SIZE
+- [x] **B4** (e63ad59, a7480ae) Tests with the real SMTP test server (`test_support/smtp_server.py`): small SIZE
   advertised; 552 reply; hang-up mid-DATA; SIZE 0 (no limit) -> each delivers exactly one email.
 
 **Done when:** no attachment problem can stop an alert from being delivered.
