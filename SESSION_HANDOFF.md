@@ -180,7 +180,9 @@ sign-in always on, `api_key`/`auth_enabled`/`X-API-Key` removed, sessions carry 
 `deploy/11_reset_dashboard_passwords.ps1`, real-uvicorn E2E. Tests/lab use `test_support/ui_login.py`
 (fixed hashes, autouse signed-in TestClient, marker `anonymous` to opt out). The local ignored
 `config.yaml` had its two removed keys deleted (copy of the old file in the session scratchpad).
-Unit suite 2290 passed. **Milestone audit lab not yet re-run** (do it next, in the background).
+Unit suite 2290 passed. **Milestone lab after B, C, E: 241 passed / 3 skipped / 2 failed -> both (W8 raw httpx clients without a session) fixed and re-run green.** The full lab now takes ~50 min.
+Also done: D1 `core/netinfo.py`, S1 `core/secrets.py` (DPAPI), H2/H3 deploy scripts, G1/G2 `core/email_samples.py` + `tools/preview_emails.py`.
+**Next:** D2/D3, F, S2-S5, then G3, step 10.
 **Open:** C7 (email real reports built from a read-only copy of the box DB) waits for step 10.
 **Next:** group **E** (two passwords, remove X-API-Key/auth_enabled/api_key, E10 sign-in always on)
 -> **milestone audit lab** -> D, S, F, H, G, step 10 release.
