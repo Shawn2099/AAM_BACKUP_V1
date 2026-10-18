@@ -3,11 +3,15 @@
 #                    WORKGROUP, LocalSystem has no usable credentials on the NAS).
 #                    The password is asked for interactively, never passed on the
 #                    command line. Omit it to keep LocalSystem (NOT for production).
+#   -KeepServiceAccount  upgrade without the account password: AamBackupAgent keeps the account and
+#                    the password Windows already holds for it (the service is updated in place, not
+#                    removed). Fails if the agent does not run as a dedicated account yet.
 #   Run 04_check_readiness.ps1 -ServiceAccount <same> first: it proves the account
 #   can reach the NAS, read the source and write the runtime folder.
 param(
     [string]$ServiceAccount = "",
-    [string]$PasswordFile = ""
+    [string]$PasswordFile = "",
+    [switch]$KeepServiceAccount
 )
 
 # =======================================================================
@@ -17,6 +21,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     $fwd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($ServiceAccount) { $fwd += " -ServiceAccount `"$ServiceAccount`"" }
     if ($PasswordFile) { $fwd += " -PasswordFile `"$PasswordFile`"" }
+    if ($KeepServiceAccount) { $fwd += " -KeepServiceAccount" }
     Start-Process powershell.exe -ArgumentList $fwd -Verb RunAs
     exit
 }
@@ -183,15 +188,27 @@ if ($pwExit -ne 0) {
 # AamPrefectServer (local API) and AamWatchdog (must stop/start services,
 # which a plain account cannot) stay LocalSystem.
 $AgentPassword = $null
+if ($KeepServiceAccount) {
+    $current = (Get-CimInstance Win32_Service -Filter "Name='AamBackupAgent'" -ErrorAction SilentlyContinue).StartName
+    if (-not $current -or $current -eq "LocalSystem") {
+        Write-Host "  ERROR: -KeepServiceAccount: AamBackupAgent does not run as a dedicated account ('$current')." -ForegroundColor Red
+        Write-Host "  Install it once with -ServiceAccount .\<account>. Services were NOT changed." -ForegroundColor Red
+        exit 1
+    }
+    $ServiceAccount = $current
+    Write-Host "[OK]   Keeping AamBackupAgent's account $ServiceAccount (password stays with Windows)"
+}
 if ($ServiceAccount) {
     try {
-        $sec = if ($PasswordFile) { Read-PasswordFile $PasswordFile } else { Read-Host -AsSecureString "Password for $ServiceAccount" }
-        $AgentPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+        if (-not $KeepServiceAccount) {
+            $sec = if ($PasswordFile) { Read-PasswordFile $PasswordFile } else { Read-Host -AsSecureString "Password for $ServiceAccount" }
+            $AgentPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+        }
     } catch {
         $AgentPassword = $null
     }
-    if (-not $AgentPassword) {
+    if (-not $AgentPassword -and -not $KeepServiceAccount) {
         Write-Host "  ERROR: no password for $ServiceAccount could be read. Services were NOT changed." -ForegroundColor Red
         exit 1
     }
@@ -234,7 +251,10 @@ Write-Host "[setup] Stopping any running AAM services..."
 & $NSSM stop $SVC_SERVER 2>$null
 
 & $NSSM remove $SVC_WATCHDOG confirm 2>$null
-& $NSSM remove $SVC_AGENT confirm 2>$null
+if (-not $KeepServiceAccount) {
+    # (kept: removing the service would drop the account password Windows holds for it)
+    & $NSSM remove $SVC_AGENT confirm 2>$null
+}
 & $NSSM remove $SVC_SERVER confirm 2>$null
 
 Start-Sleep -Seconds 3
@@ -293,7 +313,11 @@ Write-Host "[OK]   $SVC_SERVER installed."
 Write-Host ""
 Write-Host "[setup] Installing $SVC_AGENT..."
 
-& $NSSM install $SVC_AGENT $VenvPython
+if (-not $KeepServiceAccount) {
+    & $NSSM install $SVC_AGENT $VenvPython
+} else {
+    & $NSSM set $SVC_AGENT Application $VenvPython
+}
 & $NSSM set $SVC_AGENT AppParameters "launch.py"
 & $NSSM set $SVC_AGENT AppDirectory $ProjectDir
 & $NSSM set $SVC_AGENT DisplayName "AAM Backup Agent"
@@ -328,7 +352,9 @@ Write-Host "[setup] Installing $SVC_AGENT..."
 & $NSSM set $SVC_AGENT AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0" "AAM_CONFIG=$ConfigFile"
 if ($ServiceAccount) {
     # NSSM grants the account "Log on as a service" when it sets ObjectName
-    & $NSSM set $SVC_AGENT ObjectName $ServiceAccount $AgentPassword
+    if (-not $KeepServiceAccount) {
+        & $NSSM set $SVC_AGENT ObjectName $ServiceAccount $AgentPassword
+    }
     $AgentPassword = $null
     # Read it back from Windows - never report an account that was not applied
     # (trial box 2026-10-15: a bad password left the agent on LocalSystem while
