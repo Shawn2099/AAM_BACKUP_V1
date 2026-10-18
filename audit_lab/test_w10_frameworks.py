@@ -403,6 +403,9 @@ def test_w10_production_line_coverage_during_real_run(sandbox, monkeypatch):
     # on real rclone logs. Measured 82% on the clean run.
     # core/health.py 45 -> 40 (2026-10-18): the module gained branches a clean lab night
     # never takes (clock tri-state, w32tm fallback, SeBackupPrivilege); measured 44.8%.
+        # core/manifest.py 45 -> 40, flow.py 60 -> 55 (2026-10-19): the rollover journal, MISSED and
+        # abandoned-run branches (groups A and I) run only on failure nights; measured 44.4% and
+        # 57.9% on the clean run. W6/W22 and tests/test_m5_abandoned_runs.py cover them.
     floors = {"core/lan_sync.py": 55, "core/cloud_sync.py": 80, "core/cloud_verify.py": 60,
               "core/manifest.py": 40, "core/health.py": 40, "core/lan_preflight.py": 55,
               "core/cloud_preflight.py": 50, "flow.py": 55}
