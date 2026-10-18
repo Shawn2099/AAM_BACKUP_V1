@@ -9,6 +9,17 @@ on deploy day (see §4f).
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
 
+> **START HERE (next session, owner 2026-10-18 "will start in next session"):**
+> 1. Fix the 7 audit-lab reds from §4f (6 stale test expectations + w10 `core/health.py`
+>    coverage floor; check the w14 `/report/*` 404s - seed-date rot vs real). Fix the
+>    `_serve_report` "No runs found in the last N days" text (wrong for the calendar month).
+>    Then re-run the full audit lab. (Proposed to the owner; confirm at the start of the
+>    session before fixing.)
+> 2. Then DISCUSS §4f-2 topics 1-7 with the owner and agree a plan - build nothing from that
+>    list before the owner agrees. Incl. the design question: "Download Monthly Report"
+>    mid-month = last month (current behaviour) or this month so far?
+> 3. Box: not redeployed since 6adcfb2; §4d/§4e/§4f deploy only when the owner says so.
+
 ---
 
 ## 1. What we are doing
