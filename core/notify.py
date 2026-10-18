@@ -18,7 +18,6 @@ It never raises: a broken alert path must not break a backup.
 
 from __future__ import annotations
 
-import html
 import smtplib
 import socket
 import ssl
@@ -32,7 +31,7 @@ from urllib.parse import urlsplit
 
 from loguru import logger
 
-from core.time_utils import format_ist, now_iso
+from core.time_utils import now_iso
 
 SENT = "SENT"
 FAILED = "FAILED"
@@ -79,6 +78,9 @@ class AlertEvent:
     details: dict = field(default_factory=dict)
     occurred_at: str = field(default_factory=now_iso)
     attachment_text: str | None = None
+    fault_code: str | None = None      # core.faults code (docs/EMAIL_CONTENT_SPEC.md §4)
+    run_id: str | None = None          # the run this is about: support reference
+    resolved_code: str | None = None   # RECOVERED: the code that was fixed
 
 
 @dataclass
@@ -135,7 +137,7 @@ def email_config_problem(notifications) -> str | None:
 class _TextExtractor(HTMLParser):
     """Plain-text rendering of our own email HTML (stdlib only)."""
 
-    _BREAKS = {"br", "p", "div", "h1", "h2", "h3", "h4", "tr", "li", "pre", "table", "ul", "ol"}
+    _BREAKS = {"br", "p", "div", "h1", "h2", "h3", "h4", "tr", "pre", "table", "ul", "ol"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -150,6 +152,8 @@ class _TextExtractor(HTMLParser):
             self.out.append("\n")
         elif tag == "td":
             self.out.append("  ")
+        elif tag == "li":
+            self.out.append("\n- ")
         elif tag == "a":
             self._href = dict(attrs).get("href")
 
@@ -247,14 +251,6 @@ def send_email(notifications, subject: str, body_html: str,
 
 # ── Alert rendering ───────────────────────────────────────────────────────
 
-_KIND_LABEL = {
-    "FAILURE": "Backup Failure",
-    "ACTION_REQUIRED": "ACTION REQUIRED",
-    "RECOVERED": "Recovered",
-    "WARNING": "Warning",
-}
-
-
 _SERVER_ONLY_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "::", ""}
 
 
@@ -282,48 +278,24 @@ def dashboard_link_problem(config) -> str | None:
     return None
 
 
-def render_alert(config, event: AlertEvent) -> tuple[str, str, list[dict]]:
-    """Return (subject, html_body, attachments) for an event."""
-    firm = config.firm_name
-    label = _KIND_LABEL.get(event.kind, event.kind)
-    subject = f"[{label}] {firm} - {event.mode.upper()}: {event.title}"
+def render_alert(config, event: AlertEvent, db=None) -> tuple[str, str, list[dict]]:
+    """Return (subject, html_body, attachments) for an event.
+
+    The text is the plain-language email of core.email_compose (audit
+    2026-10-18); a long message is cut in the body and attached in full."""
+    from core.email_compose import compose
+
+    subject, body, _text = compose(config, event, db)
     limit = config.alerts.body_max_chars
     message = event.message or ""
     attachments: list[dict] = []
     full_text = event.attachment_text if event.attachment_text is not None else message
-    if len(message) > limit:
-        message = message[:limit] + "\n... [truncated - full text attached]"
-    if full_text and (len(full_text) > limit or event.attachment_text is not None):
+    if full_text and (len(message) > limit or event.attachment_text is not None):
         cap = config.alerts.attachment_max_kb * 1024
         data = full_text.encode("utf-8")
         if len(data) > cap:
             data = data[-cap:]
         attachments.append({"filename": "details.txt", "content": data})
-
-    url = dashboard_url(config)
-    rows = [("Firm", firm), ("Pipeline", event.mode.upper()),
-            ("Status", event.status or "-"),
-            ("Exit code", "-" if event.exit_code is None else str(event.exit_code)),
-            ("Time", format_ist(event.occurred_at))]
-    rows += [(str(k), str(v)) for k, v in event.details.items()]
-    cells = "".join(
-        f"<tr><td style='padding:6px 10px;border:1px solid #e5e7eb;background:#f9fafb;"
-        f"font-weight:600'>{html.escape(k)}</td><td style='padding:6px 10px;border:1px solid "
-        f"#e5e7eb'>{html.escape(v)}</td></tr>" for k, v in rows)
-    action = (
-        "<p style='font-weight:600'>Please open the backup dashboard to review "
-        "and decide: <a href='{0}'>{0}</a></p>".format(html.escape(url))
-        if event.kind in ("ACTION_REQUIRED", "FAILURE", "WARNING")
-        else "<p>Dashboard: <a href='{0}'>{0}</a></p>".format(html.escape(url))
-    )
-    body = (
-        "<!DOCTYPE html><html><head><meta charset='utf-8'></head>"
-        "<body style='font-family:system-ui,sans-serif;color:#1f2937'>"
-        f"<h2>{html.escape(label)} - {html.escape(event.title)}</h2>"
-        f"{action}<table style='border-collapse:collapse'>{cells}</table>"
-        "<pre style='white-space:pre-wrap;font-size:13px'>"
-        f"{html.escape(message)}</pre></body></html>"
-    )
     return subject, body, attachments
 
 
@@ -350,7 +322,7 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
 
 
 def _notify(config, event: AlertEvent, db) -> DeliveryResult:
-    subject, body, attachments = render_alert(config, event)
+    subject, body, attachments = render_alert(config, event, db)
 
     if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
         result = DeliveryResult(DISABLED, "notifications.send_on_failure is false "
@@ -363,7 +335,11 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
                 SUPPRESSED, f"same alert already sent at {last['created_at']} "
                             f"(cooldown {cooldown_h}h)")
         else:
-            result = send_email(config.notifications, subject, body, attachments)
+            headers = {"X-AAM-Reference": event.run_id or event.key}
+            if event.fault_code:
+                headers["X-AAM-Fault-Code"] = event.fault_code
+            result = send_email(config.notifications, subject, body, attachments,
+                                headers=headers)
 
     try:
         db.record_notification({

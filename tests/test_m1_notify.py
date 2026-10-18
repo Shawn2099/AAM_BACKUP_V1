@@ -64,7 +64,7 @@ def test_real_smtp_delivery_with_dashboard_link_and_record(tmp_path, db):
     assert result.status == nt.SENT
     assert len(srv.messages) == 1
     data = _decoded(srv.messages[0]["data"])
-    assert "http://backup-server:8080" in data and "LAN backup failed" in data
+    assert "http://backup-server:8080" in data and "Copy to the NAS failed" in data
     row = db.last_notification("backup:lan:LAN_FAILED")
     assert row["status"] == nt.SENT and row["kind"] == "FAILURE"
 

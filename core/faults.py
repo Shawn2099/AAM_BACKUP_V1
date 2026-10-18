@@ -238,6 +238,12 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
        "The server's date says a financial year more than one year after the one the "
        "backups use. That is unusual.",
        "Check the server's date.", "Approve on the dashboard only if this is intended."),
+    _f("AAM-ROL-03", "Clock not proven - financial-year switch waits", ACTION, (IT,),
+       "The switch to the new financial year needs a proven server clock, but no time "
+       "server answered. The backups keep using the current year's folder; nothing was "
+       "changed.",
+       "Check the server's internet access and its date and time.",
+       "The switch is tried again every morning."),
     _f("AAM-ROL-02", "Last backup of the old year incomplete", ACTION, (YOU, SUPPORT),
        "The final backup of the old financial year did not complete. Switching now would "
        "leave its last changes unprotected.",

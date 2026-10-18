@@ -140,5 +140,6 @@ def sweep_abandoned_runs(config, db: ManifestDB) -> list[dict]:
             key=f"backup:{leg}:{row['status']}", kind="FAILURE", mode=leg,
             title=f"{leg.upper()} backup abandoned",
             message=f"{row['error_message']} The next scheduled run copies what is missing.",
-            status=row["status"], occurred_at=row["started_at"]), db=db)
+            status=row["status"], occurred_at=row["started_at"],
+            fault_code="AAM-SYS-02", run_id=row["run_id"]), db=db)
     return rows

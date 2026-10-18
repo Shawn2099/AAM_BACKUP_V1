@@ -297,16 +297,22 @@ def _cloud_diff_count(manifest: list, before: dict) -> int:
 
 
 def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
-                    occurred_at: str) -> None:
+                    occurred_at: str, *, run_id: str | None = None,
+                    sync_result: dict | None = None, fault_code: str | None = None) -> None:
     """THE failure alert of one run (plan WP8): one per failed run, at the
     terminal decision, through core.notify (delivery recorded, cooldown per
-    leg+status, dashboard link). Never raises."""
+    leg+status, dashboard link). Never raises. The fault code is the one the
+    pipeline classified, else derived from the status + tool evidence."""
+    try:
+        code = fault_code or faults.classify_run(leg, status, sync_result=sync_result)
+    except Exception:  # noqa: BLE001 - the alert must still go out
+        code = faults.UNKNOWN
     notify(config, AlertEvent(
         key=f"backup:{leg}:{status}", kind="FAILURE", mode=leg,
         title=f"{leg.upper()} backup {statuses.label(status).lower()}",
         message=message, status=status,
         exit_code=exit_code if type(exit_code) is int else None,
-        occurred_at=occurred_at,
+        occurred_at=occurred_at, fault_code=code, run_id=run_id,
     ))
 
 
@@ -324,6 +330,7 @@ def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
         db = ManifestDB.from_config(config)
         try:
             previous = db.previous_run_status(leg, run_id)
+            previous_code = db.previous_run_fault_code(leg, run_id)
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 - never affects the run
@@ -336,7 +343,8 @@ def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
             title=f"{leg.upper()} backup recovered",
             message=f"The {leg.upper()} backup completed successfully again "
                     f"(previous run: {statuses.label(previous)}).",
-            status="RECOVERED"))
+            status="RECOVERED", run_id=run_id,
+            resolved_code=previous_code or faults.classify_run(leg, previous)))
 
 
 def _exception_kind(exc: BaseException) -> str:
@@ -407,7 +415,7 @@ def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
             except Exception as rec_err:  # noqa: BLE001
                 logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
             _send_run_alert(config, leg, status, f"The {leg.upper()} backup could not start: {e}",
-                            None, started_at)
+                            None, started_at, run_id=run_id)
             raise
         yield
 
@@ -1002,6 +1010,7 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
         key=f"blocked:{leg}", kind="ACTION_REQUIRED", mode=leg,
         title=f"{leg.upper()} backup blocked - approval needed",
         message=message, status=f"{leg.upper()}_BLOCKED",
+        fault_code=faults.blocked_guard_code(guard_record) or faults.UNKNOWN, run_id=run_id,
         details={"Blocked by": ", ".join(r.get("guard", "?") for r in blocked),
                  "Run": run_id,
                  "Approval request": approval_id or "could not be recorded - see the logs"},
@@ -1217,6 +1226,7 @@ def lan_shutdown_task(config, artefacts_dir: str | None = None) -> dict | None:
             message=(f"The NAS {server_ip} was not confirmed powered off after the backup: "
                      f"{result.detail}. The backup result itself is unaffected."),
             status=f"NAS_SHUTDOWN_{result.outcome}", exit_code=result.exit_code,
+            fault_code="AAM-NAS-06",
         ))
     return result.to_metrics()
 
@@ -1511,7 +1521,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     if isinstance(stats, dict) else None,
                 })
                 _send_run_alert(config, "cloud", status, error_msg,
-                                sync_result.get("exit_code"), started_at)
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, sync_result=sync_result)
                 alert_sent = True
                 raise PartialRun(f"Cloud run ended {status} - {error_msg}")
             phase = "verify"
@@ -1543,7 +1554,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 error_msg = verify_err
                 logger.error(verify_err)
                 _send_run_alert(config, "cloud", status, verify_err,
-                                sync_result.get("exit_code"), started_at)
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, sync_result=sync_result)
                 alert_sent = True
                 raise RuntimeError(verify_err)
 
@@ -1623,7 +1635,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     f"Cloud backup PARTIAL: rclone exit {sync_result.get('exit_code')} - some "
                     "work did not complete. rclone sync is resumable; the next scheduled run "
                     "continues from where this one left off.",
-                    sync_result.get("exit_code"), started_at)
+                    sync_result.get("exit_code"), started_at,
+                    run_id=run_id, sync_result=sync_result)
                 alert_sent = True
             # Terminal-state policy (single authoritative decision point):
             # a non-success status must never return normally (which the
@@ -1649,7 +1662,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             elif not alert_sent:
                 _send_run_alert(config, "cloud", status,
                                 _failure_alert_text("cloud", status, error_msg),
-                                sync_result.get("exit_code"), started_at)
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, fault_code=fault_code)
                 alert_sent = True
             if extended_metrics is None:
                 # Failure-path telemetry: persist whatever stages were
@@ -1855,7 +1869,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 if sync_result.get("budget_stopped"):
                     error_msg = sync_result["error"]
                 _send_run_alert(config, "lan", status, partial_text,
-                                sync_result.get("exit_code"), started_at)
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, sync_result=sync_result)
                 alert_sent = True
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
@@ -1892,7 +1907,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 )
                 _send_run_alert(config, "lan", status,
                                 _failure_alert_text("lan", status, error_msg, nas_msg),
-                                sync_result.get("exit_code"), started_at)
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, fault_code=fault_code)
                 alert_sent = True
             if shutdown_on_fail and not isinstance(e, PartialRun):
                 logger.info(
@@ -2003,7 +2019,8 @@ def _send_summary_report(config, days: int, period: str) -> None:
                    "running.")
             notify(config, AlertEvent(
                 key=f"stale:{period.lower()}", kind="ACTION_REQUIRED", mode="report",
-                title=f"No backups in the last {days} days", message=msg, status="STALE"), db=db)
+                title=f"No backups in the last {days} days", message=msg, status="STALE",
+                fault_code="AAM-RPT-01"), db=db)
             raise RuntimeError(msg)
         subject, body, attachments = email
         result = send_email(config.notifications, subject, body, attachments)
@@ -2148,7 +2165,8 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
         notify(config, AlertEvent(
             key="rollover:clock_behind", kind="ACTION_REQUIRED", mode="rollover",
             title="Server clock is behind - FY rollover refused", message=msg,
-            status="ROLLOVER_BLOCKED", occurred_at=started_at))
+            status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-CLK-03", run_id=run_id))
         raise fy_rollover.RolloverError(msg)
 
     # The FY switch is one-way, so the date it acts on must be proven against
@@ -2172,7 +2190,8 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
         notify(config, AlertEvent(
             key=f"rollover:clock_{clock.state.lower()}", kind="ACTION_REQUIRED",
             mode="rollover", title="Server clock not proven - FY rollover refused",
-            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at))
+            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-ROL-03", run_id=run_id))
         raise fy_rollover.RolloverError(msg)
 
     logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
@@ -2391,6 +2410,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             notify(config, AlertEvent(
                 key=f"audit:{mode}:{','.join(sorted(outcomes))}",
                 kind=_audit_alert_kind(outcomes), mode="audit",
+                fault_code=("AAM-AUD-02" if _audit_alert_kind(outcomes) == "WARNING"
+                            else "AAM-AUD-01"),
                 title="Integrity audit did not verify", message=error_summary,
                 status="NOT_VERIFIED"))
             raise ExceptionGroup("Integrity audit did not verify", excs)

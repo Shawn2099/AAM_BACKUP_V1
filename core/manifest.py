@@ -766,6 +766,19 @@ class ManifestDB:
                 "ORDER BY started_at DESC LIMIT 1", (mode, run_id)).fetchone()
         return row[0] if row else None
 
+    def previous_run_fault_code(self, mode: str, run_id: str) -> str | None:
+        """core.faults code stored on the latest run of this leg other than `run_id`."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT extended_metrics FROM run_history WHERE mode = ? AND run_id != ? "
+                "ORDER BY started_at DESC LIMIT 1", (mode, run_id)).fetchone()
+        try:
+            metrics = json.loads(row[0]) if row and row[0] else {}
+        except ValueError:
+            return None
+        return metrics.get("fault_code") if isinstance(metrics, dict) else None
+
     def guard_baseline(self, mode: str, fy: str) -> dict | None:
         """Guard record of the last successful run of this leg in this FY.
 

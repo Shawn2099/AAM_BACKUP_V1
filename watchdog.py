@@ -295,12 +295,23 @@ def _notify(event_kwargs: dict) -> None:
         logger.warning(f"Watchdog alert delivery skipped/failed: {e}")
 
 
-def _critical(key: str, title: str, message: str, status: str) -> None:
+def _watchdog_fault(key: str) -> str:
+    """core.faults code of a watchdog CRITICAL (docs/EMAIL_CONTENT_SPEC.md §4.8)."""
+    if key.startswith("start_suppressed"):
+        return "AAM-SVC-03"
+    if key.startswith(("stuck_stop", "live_lock_cap")):
+        return "AAM-SVC-02"
+    return "AAM-SVC-01"
+
+
+def _critical(key: str, title: str, message: str, status: str,
+              fault_code: str | None = None) -> None:
     """Log CRITICAL and email it (ACTION_REQUIRED, de-duplicated by key, recorded)."""
     global _attention_raised
     logger.critical(message)
     _notify({"key": f"watchdog:{key}", "kind": "ACTION_REQUIRED", "title": title,
-             "message": message, "status": status})
+             "message": message, "status": status,
+             "fault_code": fault_code or _watchdog_fault(key)})
     _attention_raised = True
 
 
@@ -343,7 +354,7 @@ def _check_stale_legs(cfg=None) -> list[str]:
                     message=(f"{item['message']} Scheduled backups are not completing - "
                              "either each run fails (see its own alert) or the runs are not "
                              "starting at all. Check the dashboard and the services."),
-                    status="STALE"), db=db)
+                    status="STALE", fault_code="AAM-SYS-03"), db=db)
         finally:
             db.close()
         return [i["code"].split(":", 1)[1] for i in stale]
@@ -461,7 +472,8 @@ def _restart_stack() -> bool:
             _critical("restart_failed", "Prefect API not healthy after restart",
                       f"{WATCHED_SERVICE} is RUNNING but its API did not answer within "
                       f"{API_READY_TIMEOUT}s; {AGENT_SERVICE} was not started. "
-                      "Manual intervention required.", "RESTART_FAILED")
+                      "Manual intervention required.", "RESTART_FAILED",
+                      fault_code="AAM-SVC-04")
             return False
     logger.info("Restart complete: server RUNNING, API healthy, agent RUNNING")
     return True

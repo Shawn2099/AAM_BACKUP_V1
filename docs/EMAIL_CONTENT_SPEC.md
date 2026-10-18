@@ -180,6 +180,7 @@ in the report CSV and in the email.
 | AAM-CLK-04 | Server clock could not be checked - backup stopped | No time server answered and `health.clock_unverified_policy` is `block`, so nothing was uploaded. | IT | Check the server's internet access / time.google.com; then press "Run Cloud Backup". |
 | AAM-ROL-01 | Financial year jumped more than one year | The date says FY {to}, but the backups use {from}. Moving more than one year at once is unusual. | You | Check the server date. Approve only if this is really intended. |
 | AAM-ROL-02 | Last backup of the old year incomplete | The final backup of FY {from} did not complete for {legs}. Switching now would leave the last changes of {from} unprotected. | You / Support | Fix the backup problem first (see its own email); the switch then runs automatically. |
+| AAM-ROL-03 | Clock not proven - financial-year switch waits | The switch to the new FY needs a proven clock but no time server answered; backups keep using the current FY folder, nothing changed. | IT | Check internet access and the date/time; the switch is retried every morning. |
 
 ### 4.7 Weekly safety check (integrity audit)
 
