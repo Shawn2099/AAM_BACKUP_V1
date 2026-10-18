@@ -168,6 +168,10 @@ switch repeats the final backup.
 every mode, lab hard-kill scenario) -> then run the **milestone audit lab** (after A + I; last full
 lab was after 0b: 236/2/3, the 2 reds fixed and re-run green, NOT yet re-run in full since A) ->
 B emails -> C reports -> E passwords -> lab -> D, S, F, H, G, release.
+**OWNER INSTRUCTION (2026-10-18): do NOT test the real NAS shutdown today.** No test, lab run or
+box action may power off the real NAS (rollover `nas_shutdown`, `lan_shutdown_task`, M5 shutdown
+scenarios). It is tested later, with the owner physically near the NAS: open item for step 10 /
+M5. Until then the lab keeps shutdown faked/off (W6b already skips `nas_shutdown`).
 **Working notes:** OpenCode CLI is not installed here (opencode agent fails) - use a Claude
 `general-purpose` read-only reviewer instead (it found 4 real bugs in A). `tests/test_lan_shutdown_policy`
 used to depend on test order (fixed). Write patch scripts with the Write tool into the scratchpad,
