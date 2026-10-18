@@ -107,7 +107,13 @@ Flag anything that is "Running" for more than 6 h, any notification `status` FAI
 `backup.lock` PRESENT outside 21:00-08:00. This is plan 5.3 (seven truthful nights): report
 the night number (night 1 = 2026-10-16 21:00).
 
-### T04 - Investigate: cloud integrity audit "20 files missing in GCS" (read-only) - OPEN
+### T04 - Investigate: cloud integrity audit "20 files missing in GCS" (read-only) - DONE 2026-10-16
+Result (`agent_runs/reports/T04.md`): neither (a) nor (b). Old v1.1.3 code wrote rclone's
+partial diff as a content verdict on nights Google was unreachable (TLS interception / DNS);
+WP7 `find_transport_failure` now records AUDIT_INCOMPLETE instead. Lead checked
+`core/integrity.py` + `core/rclone_errors.py`. Prediction for Sun 2026-10-18 10:00: cloud
+VERIFIED (~579) or AUDIT_INCOMPLETE if Google is unreachable; never missing=20.
+T03 on 2026-10-19 must report that audit's result against this prediction.
 needs: nothing
 Box audits on 2026-10-04 and 2026-10-11 (OLD install, before the 2026-10-15 fresh install)
 reported `cloud VERIFICATION_FAILED missing-from-dest=20`, while every cloud backup says

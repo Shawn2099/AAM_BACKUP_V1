@@ -1,6 +1,7 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-18 (UI + email audit and rebuild - see §4f; rclone exit codes +
+**Last updated:** 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
+UI + email audit and rebuild - see §4f; rclone exit codes +
 bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
 **Box not redeployed with §4d / §4e / §4f** (box is at 6adcfb2; owner decides). §4f adds schema
 v3 (one-time in-place upgrade of the box DB) and needs `dashboard.public_url` + bind/firewall
@@ -9,16 +10,11 @@ on deploy day (see §4f).
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
 
-> **START HERE (next session, owner 2026-10-18 "will start in next session"):**
-> 1. Fix the 7 audit-lab reds from §4f (6 stale test expectations + w10 `core/health.py`
->    coverage floor; check the w14 `/report/*` 404s - seed-date rot vs real). Fix the
->    `_serve_report` "No runs found in the last N days" text (wrong for the calendar month).
->    Then re-run the full audit lab. (Proposed to the owner; confirm at the start of the
->    session before fixing.)
-> 2. Then DISCUSS §4f-2 topics 1-7 with the owner and agree a plan - build nothing from that
->    list before the owner agrees. Incl. the design question: "Download Monthly Report"
->    mid-month = last month (current behaviour) or this month so far?
-> 3. Box: not redeployed since 6adcfb2; §4d/§4e/§4f deploy only when the owner says so.
+> **START HERE:** the §4f-2 topics were discussed and the plan is **AGREED (owner 2026-10-18)
+> - full plan + task checklist: `docs/PLAN_OPEN_TOPICS_2026-10-18.md`** (short copy in §4g;
+> the plan file wins). Work through its "Order of work" step by step; each step test-first, full
+> suite, GitNexus impact + detect_changes, one commit. Box: full control (owner), but deploy
+> only at step 9 of §4g.
 
 ---
 
@@ -47,7 +43,9 @@ caused by our program, a human is asked whenever an action could be wrong.**
 6. Test first: every fix has a regression test that is red on the old code.
 7. Commit per sub-step with finding IDs; end commit messages with
    `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-8. **Production-trial box is READ-ONLY** for us (see §6). Never change it without asking.
+8. **Production-trial box: FULL CONTROL** (owner 2026-10-15, re-confirmed 2026-10-18) - we may
+   deploy, restart services, change config and run tests on it (see §6). Still tell the owner
+   what will be done before an action that stops a backup or touches backup data.
 9. Accepted risks (do not work on): ransomware vs LAN mirror; GCS lifecycle keeps ~2 versions.
 
 ## 3. Status
@@ -157,6 +155,117 @@ config.yaml `monthly_cron` changed - DEC-7).
    --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
    (M3 deferral - tool_runner migration of the check tools - DONE 2026-10-16, §4d.)
 
+## 4g. AGREED PLAN (owner 2026-10-18) - §4f-2 topics + older items
+
+Principles: one source of truth per concern (one report model, one SMTP path, one rollover
+state, one credential store; outputs only render); every multi-step action is idempotent
+and resumable from persisted state; fail closed but never silent (row + email + dashboard);
+no new dependencies; new tunables = config keys with bounds.
+
+Owner decisions: topic 4 = keep the built "Send test email" only; recipients = everyone gets
+everything for now; preview of every email = yes; reports: scheduled emails = calendar
+periods (weekly Mon-Sun, monthly = previous calendar month), dashboard downloads AND the
+dashboard "send email" buttons = last 7 / last 30 days up to now; server IP is static but
+the link is resolved dynamically; two passwords (dashboard + Advanced), both changed/reset
+inside Advanced, plus a server-side reset script for a forgotten Advanced password (yes);
+Windows Update is currently stopped on the box - a reboot mid-run must simply resume next
+run (item I). Clock-check "block" stays a FAILED backup (not approvable). Prefect
+`database is locked` accepted for MVP.
+
+**A. FY rollover = persisted, resumable step journal (saga).** Findings: R1 the final LAN
+backup shuts the NAS down BEFORE the new NAS FY folder is created (fails silently with
+`lan.shutdown_after_backup` + WoL); R2 exceptions in the switch (slot busy, mkdir, config
+write) = no row, no email, maybe half done; R3 crash between config write and row = switched
+silently, next day NONE; R4 archive failure = log only, never retried, INFO says "nothing to
+do". Design: table `rollover_journal` (new-database schema; fresh install, no upgrade path - plan D-16: from/to FY, per-step state, attempts, last
+error, times); steps (each idempotent): final backups + G6 -> source folder + placeholder ->
+NAS folder + marker (final LAN backup does NOT shut the NAS down; wake/ready as in the LAN
+leg) -> config switch as compare-and-set (only if config still points at the old FY) +
+reload/validate, restore backup on failure -> archive transition -> NAS shutdown -> INFO
+email ("nothing to do" only when every step is done). The daily 06:00 check is the resumer
+(continues at the first not-done step). Crash: ROLLOVER_RUNNING row first (abandoned sweep).
+NAS step failed: config still switches (cloud protects the new FY from day 1); step stays
+pending and the next LAN pipeline (NAS awake) completes it from the journal - no approval.
+New codes AAM-ROL-04 (switch failed part-way, ACTION_REQUIRED), AAM-ROL-05 (archive failed,
+WARNING; ACTION_REQUIRED after new key `rollover.archive_alert_after_days`). Dashboard
+rollover step card. Tests: calendar simulation per failure + resume on 2 April; lab W6 with
+the NAS off after the final backup.
+
+**B. Emails sized to fit, never lost to attachments.** `_send_once` -> `SmtpSession`
+(connect, EHLO, read the RFC 1870 SIZE limit, send). Measure the encoded message (base64 ~4/3)
+against min(server SIZE, `alerts.attachments_max_total_kb`) and pick the richest rung:
+report+zip -> report+tail-only zip -> report only -> none + "logs on the server at <path>".
+A size rejection (5xx) or disconnect during DATA steps one rung down and resends at once.
+`notifications` records the rung delivered. Tests: real SMTP server with small SIZE, 552,
+hang-up mid-DATA.
+
+**C. Reports = one model, many renderers.** Findings: P1 an empty period sends NO report;
+P2 weekly = rolling 7x24h but labelled as calendar days; P3 "resolved" only inside the
+period; P4 rollover rows counted as backups, files summed across legs; P5 integrity rows for
+disabled legs. Design: `ReportPeriod` (IST start/end, label; scheduled = previous calendar
+week / previous calendar month; dashboard download + send buttons = last 7 / 30 days up to
+now); `db.get_runs_between(start, end)`; `ReportModel` built once (per-leg backup totals,
+last good copy, problems resolved against full history, latest audit, open decisions, data
+per leg); email HTML, download, CSV, subject only render it; empty period still reports
+("action needed: no backup ran"); download text "No backups in <period>". Proof: reports from
+a read-only copy of the box DB emailed to the owner.
+
+**D. Dashboard link resolved dynamically.** `dashboard.public_url` empty = auto: new
+`core/netinfo.py` asks the OS which local address routes to the NAS / default gateway (UDP
+connect + getsockname, no packet sent); resolved per email (short cache). Emails show
+`http://<ip>:8080 (or http://<name>:8080)`. A manual `public_url` that differs from the
+detected address -> readiness + watchdog amber. Firewall stays LocalSubnet.
+
+**E. Passwords.** `dashboard.login_password_hash` (new) + `dashboard.admin_password_hash`,
+both PBKDF2-SHA256 600k (stdlib), written via `config_edit` (atomic, backup, history).
+Advanced "Passwords" card: change dashboard password / change Advanced password; both
+require re-entering the current Advanced password; new twice; min length; the two must
+differ. Sessions carry a credential version -> on change every other session signed in
+with the old password ends (OWASP); the changer stays signed in. INFO email "dashboard
+password changed by <who>". Bootstrap: no hash yet -> one sign-in with `api_key` from
+config.yaml, dashboard forces setting both. Forgotten Advanced password:
+`deploy/11_reset_dashboard_passwords.ps1` (admin on the server) clears the hashes ->
+bootstrap state.
+
+**F. Dated log names.** `run_logs/<day>/2026-10-18_2100_lan_<short id>/` and files
+`2026-10-18_2100_lan_robocopy-sync.log`; built only in `RunArtefacts`; DB run id unchanged;
+old paths stay valid; retention unchanged.
+
+**G. Preview of every email.** `core/email_samples.py` = one realistic sample per kind / fault
+family / reminder+RESOLVED / reports / password notice / ROL-04/05 / attachment rung (unit
+test fails if a fault code has no sample). `tools/preview_emails.py --to <addr>` sends them
+through the real composer + transport with `[PREVIEW]`, no DB record, no cooldown;
+`--out <dir>` writes .eml files.
+
+**H. Older items.** 36 `uv audit` advisories: targeted `uv lock --upgrade-package` + suite +
+lab. `03_setup_system.bat` Active Hours 12:00-06:00 = 18 h is INVALID on WS2016 (max 12 h,
+Microsoft waas-restart doc): Windows Update is stopped on the box now; make the script
+write a valid 12 h window (20:00-08:00) and readiness report the real update state.
+
+**I. Interruption (reboot / power cut mid-run) resumes next run.** Already OK: Prefect 3.7.2
+`concurrency()` holds the slot on a 300 s renewed lease (dead process frees it); robocopy
+`/Z` restartable; GCS uploads atomic; `sweep_abandoned_runs` -> ABANDONED + one email;
+backup.lock PID check. GAP: the run budget counts from the actual start, so a run Prefect
+starts late after a reboot (e.g. 09:30) gets a full budget -> office hours + the schedule
+proof assumes scheduled starts. Fix: budget counted from the flow run's scheduled start
+(manual runs: actual start); no budget left -> `*_MISSED` row + WARNING email, next night
+continues. Prove in the audit lab: hard-kill the process tree mid-sync (cloud, LAN), mid-audit,
+mid-rollover; restart -> ABANDONED + one email, lock gone, slot free within the lease, next
+run completes, destination == source, no false guard block.
+
+**Rev 2 (re-review):** gaps G-1..G-9 added in the plan file §2a - notably new group K (one
+locked writer for config.yaml, `filelock` proposed), removal of the `X-API-Key` master key (E9),
+report emails recorded (C8). Rev 3/4 (final): filelock yes; exactly two dashboard passwords
+(hashes in config.yaml, reset script, `api_key` + `X-API-Key` removed); SMTP password + Google
+key encrypted with DPAPI (group S); HTTPS removed (post-MVP). Plan file status: FINAL.
+
+**Order of work:** 0 commit docs + tidy handoff, fix the 7 audit-lab reds (§4f) + rerun the
+lab (S) -> 0b K config store (S) -> 1 A rollover (L) -> 2 I interruption (M) -> 3 B email sizing (M) -> 4 C reports (M)
+-> 5 E passwords (M) -> 6 D dashboard address (S) -> 7 F log names (S) -> 8 H (S-M) -> 9 G
+preview to the owner + fix feedback -> 10 full suite + audit lab + code review -> deploy to
+the box -> M5 scenarios -> 7 truthful nights -> tune budgets -> owner changes the `aambackup`
+password on both machines.
+
 ## 4f. Session 2026-10-18 (UI + email audit, plain-language emails, fault codes)
 
 Box check (read-only): 3 services Running; every night since the 16 Oct deploy recorded truthfully
@@ -211,7 +320,7 @@ re-sent once (old notification rows have no fault code).
 **Open / follow-up:** file-list CSV attachment (spec §5.3); Gmail shows the RESOLVED email
 outside the thread (own subject, by design); a real Gmail send of each email type on the box.
 
-### 4f-2. Open topics to DISCUSS with the owner before building (2026-10-18)
+### 4f-2. Open topics (DISCUSSED 2026-10-18 -> agreed plan in §4g; kept for background)
 
 Owner: "discuss and make a plan before moving forward". Nothing below is built yet.
 Proposed order: 1 -> 2 -> 5 -> 3 (review only, then discuss) -> 4 -> 6 -> 7.
@@ -507,7 +616,12 @@ Owner: the trial box is ours (fresh install OK, old config only as reference; me
 - `RunArtefacts.open(dir)` is used inside Prefect tasks (pass the folder path string, not the object).
 - `smtplib` raises `SMTPSenderRefused` for 4xx too — classify SMTP errors by reply code.
 
-## 6. Production-trial box (read-only facts, 2026-10-14)
+## 6. Production-trial box (facts from 2026-10-14; full control since 2026-10-15)
+
+> **Current state (2026-10-18):** owner gave us full control of the box. `C:\AAMBackup` is a
+> fresh clone of `mvp-hardening` at 6adcfb2 (§4a/§4b), AamBackupAgent runs as `.\aambackup`,
+> schedule LAN 21:00 / cloud 02:00. The bullets below describe the OLD v1.1.3 install and are
+> kept as background only.
 
 - SSH alias `innoviztawinserver2016` (user `administrator`), code `C:\AAMBackup` (branch `production`, v1.1.3 `6550aad`), runtime `C:\BackupAgent`.
 - Windows Server 2016 Standard, **WORKGROUP**; all 3 services run as **LocalSystem** → root cause of NAS "Access is denied" (plan §10 item 2): needs a dedicated service account.
