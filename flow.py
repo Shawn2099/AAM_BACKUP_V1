@@ -1718,6 +1718,46 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 # LAN pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
+def _complete_pending_rollover_nas_folder(config) -> None:
+    """Plan A7 (+ F-9): finish a rollover's `nas_folder` step from the journal.
+
+    Only when the config switch is done, `paths.lan_destination` IS the journal's new FY
+    folder and the share root exists (create_nas_folder refuses otherwise). Never raises and
+    never blocks the backup: on failure the step stays failed and G5 behaves as before.
+    """
+    from core import rollover_journal as rj
+
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            journal = db.rollover_incomplete()
+            if journal is None:
+                return
+            steps = journal["steps"]
+            if (rj.is_finished(steps[rj.NAS_FOLDER])
+                    or steps[rj.CONFIG_SWITCH]["state"] != rj.DONE
+                    or fy_rollover._fy_name(config.paths.lan_destination) != journal["to_fy"]):
+                return
+            from_fy, to_fy = journal["from_fy"], journal["to_fy"]
+            db.rollover_step_start(from_fy, to_fy, rj.NAS_FOLDER, now_iso())
+            try:
+                fy_rollover.create_nas_folder(
+                    fy_rollover._parent_path(config.paths.lan_destination), to_fy)
+            except OSError as e:
+                logger.warning(f"FY rollover: NAS folder for {to_fy} still not possible: {e}")
+                db.rollover_step_failed(from_fy, to_fy, rj.NAS_FOLDER, now_iso(), error=str(e))
+                return
+            db.rollover_step_done(from_fy, to_fy, rj.NAS_FOLDER, now_iso())
+            if not rj.is_finished(steps[rj.NAS_SHUTDOWN]):
+                db.rollover_step_skipped(from_fy, to_fy, rj.NAS_SHUTDOWN, now_iso(),
+                                         reason="this LAN run's own shutdown follows")
+            logger.info(f"FY rollover: NAS folder for {to_fy} completed by the LAN run")
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping must never stop a backup
+        logger.error(f"FY rollover: pending NAS folder step not completed: {e}")
+
+
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                        budget_hours: float | None = None,
                       approval_id: str | None = None, allow_shutdown: bool = True):
@@ -1764,6 +1804,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         try:
             health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
+            # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
+            # completed now that the NAS is awake - before G5 looks for the mount marker
+            _complete_pending_rollover_nas_folder(config)
             dry_run = preflight(config, artefacts_dir)
             before_dict = lan_snapshot_before_task(config)
             guard_record = lan_guards_task(
