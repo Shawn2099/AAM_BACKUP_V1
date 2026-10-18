@@ -49,6 +49,7 @@ this file wins. Tick the boxes as work is committed and write the commit hash ne
 | D-12 | **HTTPS removed from this plan (owner, rev 4)** - post-MVP. Accepted risk for now: the dashboard is plain HTTP on the office LAN (port open to LocalSubnet only), so the two passwords travel unencrypted on the LAN. Group T below is kept only as a record of the options. |
 | D-13 | Exactly **two passwords** (dashboard + Advanced), stored only as hashes in config.yaml; changed in Advanced; forgotten -> reset script on the server. `api_key` and the `X-API-Key` header are removed (no setup key either: the installer / reset script asks for the new passwords at the server). |
 | D-14 | Encrypt the other secrets (SMTP password, Google Cloud key) with Windows DPAPI **now** -> new group **S**. |
+| D-17 | **Rollover retry repeats the final backup** (owner 2026-10-18): a retry that still has to do the config switch re-runs the final backup of the old FY first (resets `final_backups` to pending), so files changed in between are never left behind. |
 | D-16 | **Fresh install, no migration** (owner, rev 6): the new version is installed fresh on every system (new database, new config.yaml; old config only as reference). No database upgrade path, no old-config compatibility, no plain-secret migration. |
 | D-15 | Everyone on the office network views the dashboard, but **nothing can be installed on the PCs** - only on the server. (Recorded for a later HTTPS decision: a private CA is ruled out; a public certificate needs a domain + DNS API.) |
 
@@ -99,7 +100,7 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
 | Step | Task group | Size | Done |
 |---|---|---|---|
 | 0 | Groundwork: commit docs, fix the 7 audit-lab reds, rerun the lab | S | [x] 887123f, 93e8d75, lab 238/0/3 |
-| 0b | **H1** dependency upgrades + **K** config store (`filelock`) | S-M | [ ] |
+| 0b | **H1** dependency upgrades + **K** config store (`filelock`) | S-M | [x] 8806c45, df255a3, 0f20cd1, f6f0a32, a13e389; lab 236/2/3, the 2 reds (w13, w6) fixed + re-run green |
 | 1 | **SCH** schema v4 (one migration), then **A** FY rollover journal | L | [ ] |
 | 2 | **I** Interruption / late start -> **milestone audit lab** | M | [ ] |
 | 3 | **B** Emails sized to fit | M | [ ] |
@@ -149,12 +150,12 @@ round-trip load -> caller edits -> backup -> atomic write -> `os.replace` retrie
 (rollover) check the current value inside the lock.
 
 **Tasks:**
-- [ ] **K1** Add `filelock` (owner OK, D-11) to `pyproject.toml` / `uv.lock`.
-- [ ] **K2** `config_transaction` + config keys `maintenance.config_lock_timeout_seconds`,
+- [x] **K1** (df255a3) Add `filelock` (owner OK, D-11) to `pyproject.toml` / `uv.lock`.
+- [x] **K2** (0f20cd1) `config_transaction` + config keys `maintenance.config_lock_timeout_seconds`,
   `maintenance.config_replace_retries` / `_delay_ms` + tests: two processes writing at once
   (no lost update); a reader holding the file open during the replace (retried, succeeds);
   invalid result restored.
-- [ ] **K3** Move the three writers onto it (settings, admin hash, rollover); existing tests green.
+- [x] **K3** (f6f0a32, a13e389) Move the three writers onto it (settings, admin hash, rollover); existing tests green.
 
 ---
 
@@ -203,12 +204,35 @@ round-trip load -> caller edits -> backup -> atomic write -> `os.replace` retrie
   `rollover.archive_alert_after_days`.
 - Dashboard: a rollover card listing each step and its state while a rollover is open.
 
+**Design rules added before building (rev 7, 2026-10-18, pre-build review):**
+1. The resumer looks up `rollover_incomplete()` FIRST and classifies second (after
+   `config_switch` the config already points at `to_fy`, so classify says NONE). The clock
+   proof gates only a pending `config_switch`.
+2. Step semantics are pure data in `core/rollover_journal.py`: BLOCKING steps (final_backups,
+   source_folder, config_switch) stop the run on failure; non-blocking steps (nas_folder, archive,
+   nas_shutdown, announce) do not; dependencies: nas_shutdown needs nas_folder done, announce needs
+   config_switch done. The resumer walks every unfinished step, not only the first.
+3. Config switch = compare-and-set, three outcomes decided inside the transaction: at `from_fy`
+   -> switch; already at `to_fy` -> step done (R3, crash after the write); anything else -> refuse,
+   write nothing, ROL-04.
+4. D-17: a run that still has to do `config_switch` first resets `final_backups` to pending.
+5. A4 suppresses EVERY `lan_shutdown_task` call site in `_run_lan_pipeline` (complete, partial,
+   exception branch), incl. `shutdown_on_all_retries_exhausted`.
+6. `first_failed_at` per step (cleared on done) is what `archive_alert_after_days` counts from.
+7. ROL-04 / ROL-05 use stable incident keys (`rollover:<to_fy>:<step>`), no run id.
+8. `nas_folder` raises on failure (no swallow), reuses the LAN leg's wake + `smb_ready` and
+   `guards.MOUNT_MARKER`; A7 runs after wake/ready and before G5, only under the F-9 conditions.
+9. Final backups stay OUTSIDE `_backup_slot` (the pipelines take the slot; limit 1 = deadlock);
+   folders + switch inside one hold.
+10. `ROLLOVER_RUNNING` / `ROLLOVER_FAILED` in `core/statuses.py` (category, label, description);
+    a rollover row must never count as a backup's "last success".
+
 **Tasks:**
-- [ ] **SCH** (rev 6, D-16) ONE schema change for the whole plan, in the schema a NEW database is
+- [x] **SCH** (04aa69a; `first_failed_at` added with A5) (rev 6, D-16) ONE schema change for the whole plan, in the schema a NEW database is
   created with: `rollover_journal` (states pending / done / failed / skipped),
   `notifications.attachments_rung`, report rows (mode `report`). **No upgrade path from old
   databases** (fresh install); test = a fresh DB has every table / column.
-- [ ] **A1** `rollover_journal` repository functions (create / get / mark step) + tests.
+- [x] **A1** (04aa69a) `rollover_journal` repository functions (create / get / mark step) + tests.
 - [ ] **A2** Fault codes AAM-ROL-04 / AAM-ROL-05 in `core/faults.py` (+ email wording in
   `core/email_compose.py`, `docs/EMAIL_CONTENT_SPEC.md`).
 - [ ] **A3** Config key `rollover.archive_alert_after_days` (default + bounds, example, help).
@@ -575,7 +599,7 @@ whole day folders; the support zip keeps the names. (No old-name compatibility n
 
 ## H - Older items
 
-- [ ] **H1** (done in step 0b, rev 5 F-5) `uv audit` (36 advisories, all transitive via Prefect):
+- [x] **H1** (8806c45; done in step 0b, rev 5 F-5) `uv audit` (36 advisories, all transitive via Prefect):
   `uv lock --upgrade-package <pkg>` one at a time; full suite + audit lab after the set.
 - [ ] **H2** `deploy/03_setup_system.bat`: Active Hours 12:00-06:00 = 18 h is **invalid on
   Windows Server 2016** (max 12 h, Microsoft "waas-restart"). Write a valid 12 h window
