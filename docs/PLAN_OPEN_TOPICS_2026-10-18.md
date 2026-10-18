@@ -102,9 +102,9 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
 | 0 | Groundwork: commit docs, fix the 7 audit-lab reds, rerun the lab | S | [x] 887123f, 93e8d75, lab 238/0/3 |
 | 0b | **H1** dependency upgrades + **K** config store (`filelock`) | S-M | [x] 8806c45, df255a3, 0f20cd1, f6f0a32, a13e389; lab 236/2/3, the 2 reds (w13, w6) fixed + re-run green |
 | 1 | **SCH** schema v4 (one migration), then **A** FY rollover journal | L | [x] 04aa69a ... 2d601bb; independent review F1-F4 fixed |
-| 2 | **I** Interruption / late start -> **milestone audit lab** | M | [ ] |
-| 3 | **B** Emails sized to fit | M | [ ] |
-| 4 | **C** Reports: one model | M | [ ] |
+| 2 | **I** Interruption / late start -> **milestone audit lab** | M | [x] e42d2af ... 6c38038; lab 242/0/3 |
+| 3 | **B** Emails sized to fit | M | [x] e63ad59, a7480ae |
+| 4 | **C** Reports: one model | M | [~] C1-C6, C8 done (619d69b, d7a5b1b); C7 proof at step 10 |
 | 5 | **E** Passwords (incl. E10 sign-in always on) -> **milestone audit lab** | M | [ ] |
 | 6 | **D** Dashboard address | S | [ ] |
 | 6c | **S** Secrets encrypted with Windows DPAPI | M | [ ] |
@@ -354,17 +354,17 @@ message gets the same message three times, then the alert is lost.
   "No backups in <period>".
 
 **Tasks:**
-- [ ] **C1** `ReportPeriod` + tests (IST boundaries, month lengths incl. February / 31-day months,
+- [x] **C1** (619d69b) `ReportPeriod` + tests (IST boundaries, month lengths incl. February / 31-day months,
   DST-free IST, runs over midnight, a run in progress).
-- [ ] **C2** `get_runs_between` + tests.
-- [ ] **C3** `ReportModel` (fix P3, P4, P5) + tests.
-- [ ] **C4** Renderers on the model; empty period still reports (P1); subject from the model.
-- [ ] **C5** Wire: scheduled flows (calendar), `ui.py` download + send buttons (last 7 / 30 days),
+- [x] **C2** (619d69b) `get_runs_between` + tests.
+- [x] **C3** (d7a5b1b) `ReportModel` (fix P3, P4, P5) + tests.
+- [x] **C4** (d7a5b1b) Renderers on the model; empty period still reports (P1); subject from the model.
+- [x] **C5** (d7a5b1b) Wire: scheduled flows (calendar), `ui.py` download + send buttons (last 7 / 30 days),
   `_serve_report` text.
-- [ ] **C6** Consistency test: report = CSV = dashboard counts for the same period.
-- [ ] **C7** Proof: copy the box DB read-only, generate weekly + monthly + last-30-days reports,
+- [x] **C6** (d7a5b1b) Consistency test: report = CSV = dashboard counts for the same period.
+- [ ] **C7** (needs the trial box: do at step 10, with the deploy) Proof: copy the box DB read-only, generate weekly + monthly + last-30-days reports,
   email them to the owner.
-- [ ] **C8** (rev 2, G-3) Scheduled report emails are recorded in `notifications` (kind REPORT,
+- [x] **C8** (d7a5b1b) (rev 2, G-3) Scheduled report emails are recorded in `notifications` (kind REPORT,
   sent / failed, attempts); the dashboard shows a failed report delivery like a failed alert.
 
 Rev 2 (G-9): `previous_week()` / `previous_month()` take the flow run's **scheduled** time, so a
