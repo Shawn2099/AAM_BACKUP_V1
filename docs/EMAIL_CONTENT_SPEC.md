@@ -206,7 +206,7 @@ in the report CSV and in the email.
 | AAM-SVC-02 | Backup program stuck | The backup program did not stop or restart properly. | Support | Forward to support now. |
 | AAM-SVC-03 | Automatic restarts paused | The backup program restarted {n} times in one hour; automatic restarts are paused to avoid a loop. No backups run until fixed. | Support | Forward to support now. |
 | AAM-SVC-04 | Scheduler not responding | The part that starts backups on time did not answer and could not be repaired automatically. | Support | Forward to support now. |
-| AAM-RPT-01 | No backups recorded | No backup ran at all in the last {days} days. | Support | Forward to support now. |
+| AAM-RPT-01 | *(retired, plan C P1)* | No longer sent: a period with no backup is reported by the weekly / monthly report itself ("action needed: ... no backup ran"). Kept in the catalogue only so old references resolve. | - | - |
 
 Dashboard-only (cannot be emailed, by definition): **AAM-MAIL-01 Alert emails are not being delivered**
 (shown as a red banner with the mail server's reason).
@@ -277,7 +277,7 @@ list are attached only when `alerts.attach_file_names` is true.
 - **Repeat rule:** the same unresolved problem (same leg + same code) is re-sent at most once per
   `alerts.repeat_cooldown_hours` (12 h) as a reminder ("Reminder 2 - still not fixed since ...");
   a new code or a RESOLVED starts a new incident and is always sent.
-- Not switchable: ACTION NEEDED emails, AAM-SYS-03, AAM-AUD-01, AAM-SVC-*, AAM-RPT-01.
+- Not switchable: ACTION NEEDED emails, AAM-SYS-03, AAM-AUD-01, AAM-SVC-*.
   Switchable (Advanced, typed confirmation): routine PROBLEM/WARNING emails.
 - Headers: `Message-ID`, `Date`, `From` (one address), `To`, `Subject`, `Auto-Submitted: auto-generated`
   (RFC 3834 - stops out-of-office auto-replies), `X-AAM-Fault-Code`, `X-AAM-Reference` (support can search on them).
@@ -456,8 +456,11 @@ What to do: Nothing.   (or the steps of the open item)
 Then: per-leg table of every run of the period (not "last 10"), the CSV attachment, and the support line
 (server, version). Monthly = the previous calendar month (1st-last day), not "last 30 days".
 
-### 7.14 No backups recorded (ACTION NEEDED): AAM-RPT-01
-"No backup ran at all between {from} and {to}. Backups are not starting. Forward this email to support now."
+### 7.14 No backups recorded (retired)
+Replaced (plan C, P1): the weekly / monthly report is sent even when nothing ran; its subject and top banner say "action needed: <leg> - no backup ran" and the table row says "No backup ran in this period."
+
+### 7.16 Password changed (INFO, plan E6)
+"The Dashboard (or Advanced) password of the backup dashboard was changed by {who} at {time}. If this was not you, contact support." Sent to all recipients; never contains a password.
 
 ### 7.15 Test email (INFO, new)
 "This is a test from your backup system, sent by {who} from the dashboard on {time}. If you can read this,
