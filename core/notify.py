@@ -82,6 +82,7 @@ class AlertEvent:
     run_id: str | None = None          # the run this is about: support reference
     resolved_code: str | None = None   # RECOVERED: the code that was fixed
     artefacts_dir: str | None = None   # the run's full-log folder (support attachments)
+    first_reported_at: str | None = None   # set by _notify on a reminder of an open incident
 
 
 @dataclass
@@ -313,10 +314,34 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
     return result
 
 
+def _incident(event: AlertEvent, db) -> tuple[dict | None, str | None]:
+    """(the earlier SENT email of this same, unchanged incident or None,
+    Message-ID of the incident's first email to reply to or None).
+
+    Audit 2026-10-18 item 6: a RESOLVED email or a different fault code on
+    the leg starts a new incident, so its first email is never suppressed."""
+    prior = db.last_notification(event.key, status=SENT)
+    if event.kind == "RECOVERED":
+        same = prior if prior and not db.sent_in_mode_after(
+            event.mode, prior["id"], recovered=False) else None
+        open_problem = db.last_open_incident(event.mode) or {}
+        root = open_problem.get("thread_id") or open_problem.get("message_id")
+        return same, root
+    unchanged = (prior is not None and prior.get("fault_code") == event.fault_code
+                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True))
+    same = prior if unchanged else None
+    root = (same.get("thread_id") or same.get("message_id")) if same else None
+    return same, root
+
+
 def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     if event.fault_code is None:
         from core.email_compose import effective_code
         event = replace(event, fault_code=effective_code(event))
+    same, root = _incident(event, db)
+    if same and event.kind != "RECOVERED":
+        first = (db.notification_by_message_id(root) if root else None) or same
+        event = replace(event, first_reported_at=first["created_at"])
     subject, body, attachments = render_alert(config, event, db)
 
     if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
@@ -324,15 +349,17 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
                                           "(routine failure/warning emails only)")
     else:
         cooldown_h = config.alerts.repeat_cooldown_hours
-        last = db.last_notification(event.key, status=SENT) if cooldown_h > 0 else None
-        if last and _within_hours(last["created_at"], cooldown_h):
+        if same and cooldown_h > 0 and _within_hours(same["created_at"], cooldown_h):
             result = DeliveryResult(
-                SUPPRESSED, f"same alert already sent at {last['created_at']} "
+                SUPPRESSED, f"same alert already sent at {same['created_at']} "
                             f"(cooldown {cooldown_h}h)")
         else:
             headers = {"X-AAM-Reference": event.run_id or event.key}
             if event.fault_code:
                 headers["X-AAM-Fault-Code"] = event.fault_code
+            if root:      # reminder / RESOLVED: same conversation as the first email
+                headers["In-Reply-To"] = root
+                headers["References"] = root
             result = send_email(config.notifications, subject, body, attachments,
                                 headers=headers)
 
@@ -341,6 +368,8 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
             "event_key": event.key, "kind": event.kind, "mode": event.mode,
             "subject": subject, "status": result.status, "error": result.error,
             "attempts": result.attempts, "created_at": now_iso(),
+            "fault_code": event.fault_code, "message_id": result.message_id,
+            "thread_id": (root or result.message_id) if result.status == SENT else None,
         })
     except Exception as e:  # noqa: BLE001
         logger.error(f"Could not record notification outcome for {event.key}: {e}")

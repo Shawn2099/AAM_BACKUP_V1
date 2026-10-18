@@ -224,6 +224,8 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
         f"<div style='background:{colour};color:#ffffff;padding:10px 14px;border-radius:6px;"
         f"font-weight:600'>{e(severity)} - {e(headline)}</div>",
         f"<p>{e(_when(event.occurred_at))}</p>",
+        (f"<p><b>Reminder:</b> this was first reported on {e(_when(event.first_reported_at))} "
+         "and is still not fixed.</p>" if event.first_reported_at else ""),
         f"<p>{e(what)}</p>",
     ]
     if details:

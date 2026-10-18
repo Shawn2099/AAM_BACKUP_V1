@@ -267,7 +267,10 @@ list are attached only when `alerts.attach_file_names` is true.
 - One email per run outcome (after our own retries), never per attempt (already so).
 - **Incident threading:** the first email of an incident gets `Message-ID: <{reference}@aam-backup>`; its
   reminders and the RESOLVED email carry `In-Reply-To` / `References` to it and keep the same subject, so Gmail
-  and Outlook show the story as one conversation. (Needs a `message_id` column in `notifications`.)
+  and Outlook show the story as one conversation. Built 2026-10-18: schema v3 adds
+  `notifications.fault_code / message_id / thread_id`. Note: Gmail groups by subject too, so the
+  reminders join the first email's conversation in Gmail, while the RESOLVED email (its own,
+  clearer subject) is threaded by Outlook/Apple Mail but shown separately by Gmail.
 - **Repeat rule:** the same unresolved problem (same leg + same code) is re-sent at most once per
   `alerts.repeat_cooldown_hours` (12 h) as a reminder ("Reminder 2 - still not fixed since ...");
   a new code or a RESOLVED starts a new incident and is always sent.

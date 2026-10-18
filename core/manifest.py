@@ -18,7 +18,7 @@ from models.config import MaintenanceConfig, model_default
 # Critical-6: version gate for schema migrations. Bump when DDL or the
 # legacy-migration steps below change. Fresh databases are stamped straight
 # to this value; pre-versioning databases run _migrate_legacy_schema once.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3   # v3: notifications.fault_code / message_id / thread_id
 
 # Per-connection pragmas. journal_mode=WAL is persistent (set once per file)
 # and is applied separately with a bounded retry: SQLite does not invoke the
@@ -114,7 +114,10 @@ CREATE TABLE IF NOT EXISTS notifications (
     status      TEXT NOT NULL,
     error       TEXT,
     attempts    INTEGER DEFAULT 0,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    fault_code  TEXT,           -- core.faults code (v3, audit 2026-10-18)
+    message_id  TEXT,           -- Message-ID of the email sent (v3)
+    thread_id   TEXT            -- Message-ID of the incident's first email (v3)
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_key ON notifications(event_key, created_at);
@@ -308,6 +311,14 @@ class ManifestDB:
                     if column not in fe_columns:
                         conn.execute(
                             f"ALTER TABLE file_entries ADD COLUMN {column} {sql_type}")
+                # v3 (audit 2026-10-18): incidents - fault code and email ids
+                n_columns = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(notifications)").fetchall()
+                }
+                for column in ("fault_code", "message_id", "thread_id"):
+                    if n_columns and column not in n_columns:
+                        conn.execute(f"ALTER TABLE notifications ADD COLUMN {column} TEXT")
                 # Legacy tables may predate UNIQUE(run_id): drop duplicate
                 # run_ids (keep the first) and add the unique index that
                 # insert_run's ON CONFLICT(run_id) relies on. Runs once,
@@ -964,11 +975,13 @@ class ManifestDB:
             conn = self._get_conn()
             conn.execute(
                 """INSERT INTO notifications
-                   (event_key, kind, mode, subject, status, error, attempts, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (event_key, kind, mode, subject, status, error, attempts, created_at,
+                    fault_code, message_id, thread_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (data["event_key"], data["kind"], data.get("mode"), data.get("subject"),
                  data["status"], data.get("error"), data.get("attempts", 0),
-                 data["created_at"]),
+                 data["created_at"], data.get("fault_code"), data.get("message_id"),
+                 data.get("thread_id")),
             )
             conn.commit()
 
@@ -984,6 +997,35 @@ class ManifestDB:
                     "SELECT * FROM notifications WHERE event_key = ? "
                     "ORDER BY id DESC LIMIT 1", (event_key,)).fetchone()
             return dict(row) if row else None
+
+    def sent_in_mode_after(self, mode: str, after_id: int, *, recovered: bool) -> bool:
+        """Was a RECOVERED (recovered=True) or a problem email (False) of this
+        mode SENT after notification `after_id`? Ends / starts an incident."""
+        op = "=" if recovered else "!="
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                f"SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
+                f"AND kind {op} 'RECOVERED' LIMIT 1", (mode, after_id)).fetchone()
+        return row is not None
+
+    def last_open_incident(self, mode: str) -> dict | None:
+        """Newest SENT problem email of this mode with no RECOVERED after it."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE mode = ? AND status = 'SENT' "
+                "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
+                "WHERE mode = ? AND status = 'SENT' AND kind = 'RECOVERED'), 0) "
+                "ORDER BY id DESC LIMIT 1", (mode, mode)).fetchone()
+        return dict(row) if row else None
+
+    def notification_by_message_id(self, message_id: str) -> dict | None:
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT * FROM notifications WHERE message_id = ? "
+                               "ORDER BY id LIMIT 1", (message_id,)).fetchone()
+        return dict(row) if row else None
 
     def notification_failures_since(self, days: int) -> list[dict]:
         cutoff = cutoff_iso(days)
