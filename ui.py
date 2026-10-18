@@ -34,7 +34,8 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import admin_auth, approvals, config_edit, faults, fy_rollover, statuses
+from core import (admin_auth, approvals, config_edit, faults, fy_rollover, rollover_journal,
+                  statuses)
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
@@ -1015,6 +1016,19 @@ async def validate_settings(request: Request):
                                         allow_advanced=_is_admin(request))
 
 
+def _open_rollover_journal() -> dict | None:
+    """The unfinished rollover journal (plan A8), if any."""
+    return get_db().rollover_incomplete()
+
+
+def _unfinished_rollover_message(journal: dict) -> str:
+    todo = ", ".join(rollover_journal.LABELS[s].lower()
+                     for s in rollover_journal.attempt_order(journal))
+    return (f"The rollover {journal['from_fy']} to {journal['to_fy']} is not finished yet. "
+            f"Still to do: {todo}. It continues automatically every morning; "
+            "'Run' continues it now.")
+
+
 @app.get("/api/rollover")
 async def rollover_status(request: Request):
     """FY rollover panel: the backups' FY, today's FY, the last attempt, and
@@ -1024,10 +1038,16 @@ async def rollover_status(request: Request):
     configured = fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
     current = get_fy_prefix()
     state = fy_rollover.manual_run_state(configured, current)
+    journal = _open_rollover_journal()
+    if journal is not None:           # an unfinished rollover can always be continued
+        state = {**state, "can_run": True, "message": _unfinished_rollover_message(journal)}
     last = get_db().last_run("rollover")
     approval = next((a for a in get_db().open_approvals() if a["leg"] == "rollover"), None)
     return {
         "configured_fy": configured, "current_fy": current, **state,
+        "journal": None if journal is None else {
+            "from_fy": journal["from_fy"], "to_fy": journal["to_fy"],
+            "steps": rollover_journal.describe_steps(journal)},
         "last_attempt": None if last is None else {
             "status": last.get("status"),
             "label": statuses.label(last.get("status")),
@@ -1047,7 +1067,7 @@ async def run_rollover_now(request: Request):
     cfg = _cfg()
     configured = fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
     state = fy_rollover.manual_run_state(configured, get_fy_prefix())
-    if not state["can_run"]:
+    if not state["can_run"] and _open_rollover_journal() is None:
         raise HTTPException(status_code=409, detail=state["message"])
     running = await _is_running("rollover")
     if running is None:

@@ -403,6 +403,26 @@ function applyTab() {
 // ── FY rollover panel ────────────────────────────────────────────────────────
 let rolloverState = null;
 
+const STEP_MARK = { done: '✓', skipped: '–', failed: '✗', pending: '•' };
+const STEP_COLOR = { done: '#34d399', skipped: '#9ca3af', failed: '#f87171', pending: '#fbbf24' };
+
+function renderRolloverSteps(journal) {
+    const box = document.getElementById('ro-steps');
+    if (!journal) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    document.getElementById('ro-steps-title').textContent = journal.from_fy + ' → ' + journal.to_fy;
+    const list = document.getElementById('ro-steps-list');
+    list.textContent = '';
+    journal.steps.forEach(function (s) {
+        const li = document.createElement('li');
+        li.style.color = STEP_COLOR[s.state] || '#e5e7eb';
+        li.textContent = (STEP_MARK[s.state] || '•') + ' ' + s.label +
+            (s.state === 'failed' && s.error ? ' - will retry: ' + s.error : '') +
+            (s.state === 'skipped' ? ' - not needed' : '');
+        list.appendChild(li);
+    });
+}
+
 async function loadRollover() {
     const resp = await fetch('/api/rollover');
     if (resp.status === 401) { window.location.href = '/login'; return; }
@@ -418,6 +438,7 @@ async function loadRollover() {
         ? 'A rollover check is running right now.'
         : d.message + (d.running === null && d.can_run
             ? ' (The scheduler (Prefect) is not reachable, so it cannot be started right now.)' : '');
+    renderRolloverSteps(d.journal);
     document.getElementById('ro-approval').style.display = d.approval_pending ? 'block' : 'none';
     document.getElementById('btn-rollover').disabled = !authEnabled || !d.can_run || d.running || d.running === null;
 }

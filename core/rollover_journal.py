@@ -75,3 +75,26 @@ def reset_at_start(journal: dict) -> list[str]:
             and journal["steps"][FINAL_BACKUPS]["state"] == DONE):
         return [FINAL_BACKUPS]
     return []
+
+
+# Plain-language names for the dashboard card (no technical words).
+LABELS = {
+    FINAL_BACKUPS: "Last backup of the old year",
+    SOURCE_FOLDER: "New year folder on the server",
+    NAS_FOLDER: "New year folder on the NAS",
+    CONFIG_SWITCH: "Switch the backups to the new year",
+    ARCHIVE: "Move the old year to cheaper online storage",
+    NAS_SHUTDOWN: "Turn the NAS off again",
+    ANNOUNCE: "Tell the office by email",
+}
+
+
+def describe_steps(journal: dict) -> list[dict]:
+    """The journal as display rows (dashboard card), in execution order."""
+    rows = []
+    for name in STEPS:
+        step = journal["steps"][name]
+        rows.append({"step": name, "label": LABELS[name], "state": step["state"],
+                     "attempts": step["attempts"], "error": step["last_error"],
+                     "finished_at": step["finished_at"]})
+    return rows
