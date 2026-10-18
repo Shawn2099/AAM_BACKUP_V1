@@ -10,6 +10,7 @@ from pathlib import Path
 import pendulum
 from loguru import logger
 
+from core import gcs_key
 from core.faults import coded
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
@@ -75,12 +76,19 @@ def check_binary_exists(name: str) -> bool:
 
 
 def check_gcs_key(key_path: str) -> tuple[bool, str]:
-    """Verify GCS service account key file exists."""
+    """Verify GCS service account key file exists (and, when it is the DPAPI-protected copy, that
+    it decrypts here and is a service-account key)."""
     kp = Path(key_path)
     if not kp.exists():
         return False, f"GCS key file not found: {key_path}"
     if kp.stat().st_size == 0:
         return False, f"GCS key file is empty: {key_path}"
+    if gcs_key.is_protected(kp):
+        try:
+            gcs_key.read_json(kp)
+        except Exception as e:  # noqa: BLE001 - any failure means the key cannot be used here
+            return False, (f"GCS key file {key_path} cannot be used on this server ({e}) - "
+                           "re-install the Google key with the installer")
     return True, ""
 
 

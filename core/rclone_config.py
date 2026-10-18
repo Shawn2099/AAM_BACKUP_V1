@@ -8,6 +8,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from core import gcs_key
+
 
 def write_temp_config(
     gcs_key_path: str,
@@ -30,11 +32,14 @@ def write_temp_config(
     if storage_class and storage_class.upper() not in valid_storage_classes:
         raise ValueError(f"Invalid storage_class: {storage_class!r}. Must be one of {valid_storage_classes}")
     
-    key_abs = str(Path(gcs_key_path).resolve()).replace("\\", "/")
+    if gcs_key.is_protected(gcs_key_path):
+        # the key reaches rclone through its environment (temp_rclone_config), never as a file
+        key_line = ""
+    else:
+        key_line = "service_account_file = " + str(Path(gcs_key_path).resolve()).replace("\\", "/") + "\n"
     content = f"""[aam_gcs]
 type = google cloud storage
-service_account_file = {key_abs}
-project_number = {project_number}
+{key_line}project_number = {project_number}
 object_acl =
 bucket_acl =
 bucket_policy_only = true
@@ -54,10 +59,20 @@ storage_class = {storage_class}
 @contextmanager
 def temp_rclone_config(*args, **kwargs):
     """Context manager: write temp config, yield path, auto-cleanup."""
+    key_path = args[0] if args else kwargs.get("gcs_key_path", "")
+    credentials = gcs_key.read_json(key_path) if gcs_key.is_protected(key_path) else None
     path = write_temp_config(*args, **kwargs)
+    previous = os.environ.get(gcs_key.RCLONE_ENV)
+    if credentials is not None:
+        os.environ[gcs_key.RCLONE_ENV] = credentials      # in memory only; removed below
     try:
         yield path
     finally:
+        if credentials is not None:
+            if previous is None:
+                os.environ.pop(gcs_key.RCLONE_ENV, None)
+            else:
+                os.environ[gcs_key.RCLONE_ENV] = previous
         try:
             Path(path).unlink()
         except OSError:
