@@ -92,7 +92,7 @@ def test_w19_session_lifecycle(ui_rig, monkeypatch):
     assert ui._validate_session("bogus") is False       # unknown token
 
     # expired session: rejected and evicted
-    ui._sessions[token]["created_at"] = time.time() - ui._SESSION_TTL.total_seconds() - 1
+    ui._sessions[token]["created_at"] = time.time() - ui._session_ttl().total_seconds() - 1
     assert ui._validate_session(token) is False
     assert token not in ui._sessions
 
@@ -227,11 +227,9 @@ def test_w19_dashboard_flash_and_typeresponse_fallback(ui_rig):
     ui = ui_rig["ui"]
     ui_rig["cfg"].dashboard.auth_enabled = False
     with TestClient(ui.app) as client:
+        # the old ?status= flash banner was dead code and is gone (4f): the page just renders
         r = client.get("/", params={"status": "triggered_lan"})
         assert r.status_code == 200
-        assert "LAN backup started" in r.text          # the flash_map branch
-        r = client.get("/", params={"status": "nonsense"})
-        assert "flash" not in r.text or "flash " not in r.text
 
     # Starlette < 0.28 fallback: keyword call raises TypeError -> positional call
     calls = []
@@ -669,11 +667,11 @@ def test_w19_email_report_endpoints(ui_rig):
         gen_args, send_args = [], []
         outcome = {"mode": "ok"}
 
-        def fake_gen(db, firm, d, p, is_email=False):
+        def fake_gen(db, firm, d, p, is_email=False, legs=None):
             gen_args.append((d, p))
             return "" if outcome["mode"] == "no_data" else "<html>report</html>"
 
-        def fake_send(db, cfg_, firm, body_html=None):
+        def fake_send(db, cfg_, firm, body_html=None, legs=None):
             if outcome["mode"] == "raise":
                 raise OSError("smtp unreachable")
             return outcome["mode"] == "ok"

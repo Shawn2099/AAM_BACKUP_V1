@@ -355,11 +355,22 @@ def test_w14_dashboard_and_status_endpoints(ui_rig, monkeypatch):
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
+    # dates relative to today (date rot, 2026-10-18): weekly = last 7 days, monthly = the
+    # previous calendar month (until plan group C5 moves the buttons to "last 30 days")
+    import pendulum
+
+    from core.time_utils import IST
+    now_ist = pendulum.now(IST)
+    recent = now_ist.subtract(days=2).format("YYYY-MM-DD")
+    last_month = now_ist.start_of("month").subtract(months=1).add(days=14).format("YYYY-MM-DD")
     _seed_db(ui_rig["db_path"], runs=[
-        {"run_id": "c1", "mode": "cloud", "started_at": "2026-10-10T18:00:00+05:30",
+        {"run_id": "c1", "mode": "cloud", "started_at": f"{recent}T18:00:00+05:30",
          "status": "CLOUD_COMPLETE", "files_copied": 12, "duration_seconds": 8.0},
-        {"run_id": "l1", "mode": "lan", "started_at": "2026-10-10T01:00:00+05:30",
+        {"run_id": "l1", "mode": "lan", "started_at": f"{recent}T01:00:00+05:30",
          "status": "LAN_FAILED", "error_message": "robocopy exit 16", "files_failed": 1},
+        {"run_id": "c0", "mode": "cloud", "started_at": f"{last_month}T18:00:00+05:30",
+         "ended_at": f"{last_month}T18:05:00+05:30",
+         "status": "CLOUD_COMPLETE", "files_copied": 3, "duration_seconds": 8.0},
     ], entries=9)
 
     # Prefect unreachable -> the tri-state must degrade, not crash
@@ -390,7 +401,7 @@ def test_w14_dashboard_and_status_endpoints(ui_rig, monkeypatch):
                 problems.append("the failed LAN run was not surfaced")
             if body["manifest"]["lan_files"] == 0 or body["manifest"]["cloud_files"] == 0:
                 problems.append(f"manifest counts were {body['manifest']}")
-            if len(body["recent_runs"]) != 2:
+            if len(body["recent_runs"]) != 3:
                 problems.append(f"recent_runs={len(body['recent_runs'])}")
             if body["fy_prefix"] != "FY26-27" and not body["fy_prefix"].startswith("FY"):
                 problems.append(f"fy_prefix={body['fy_prefix']!r}")
@@ -520,7 +531,7 @@ def test_w14_auth_and_rate_limit_branches(ui_rig, monkeypatch):
     if ui._validate_session("not-a-real-token"):
         problems.append("an unknown token validated")
     # expired sessions must be dropped on validation
-    ui._sessions[token]["created_at"] = time.time() - ui._SESSION_TTL.total_seconds() - 1
+    ui._sessions[token]["created_at"] = time.time() - ui._session_ttl().total_seconds() - 1
     if ui._validate_session(token):
         problems.append("an expired session still validated")
     if token in ui._sessions:
@@ -608,7 +619,7 @@ def test_w14_auth_and_rate_limit_branches(ui_rig, monkeypatch):
     if not ui._check_rate_limit("10.0.0.2", 5):
         problems.append("the rate limit bled across client IPs")
     # an expired window must reset
-    ui._RATE_LIMITS["10.0.0.3"] = [time.time() - ui._RATE_WINDOW - 1]
+    ui._RATE_LIMITS["10.0.0.3"] = [time.time() - ui._dash("rate_limit_window_seconds") - 1]
     if not ui._check_rate_limit("10.0.0.3", 5):
         problems.append("an expired rate window still blocked")
     rows.append("rate limit: window enforced, per-IP, expired window resets")

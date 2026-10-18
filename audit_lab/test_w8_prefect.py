@@ -558,6 +558,10 @@ def test_w8_report_flows_contain_smtp_outage(pf_rig):
     now = pendulum.now(IST).isoformat()
     db.insert_run({"run_id": "w8-seed", "mode": "lan", "started_at": now, "ended_at": now,
                    "status": "LAN_COMPLETE"})
+    # the monthly report covers the previous calendar month -> seed a run there too
+    prev = pendulum.now(IST).start_of("month").subtract(months=1).add(days=14).isoformat()
+    db.insert_run({"run_id": "w8-seed-prev", "mode": "lan", "started_at": prev, "ended_at": prev,
+                   "status": "LAN_COMPLETE"})
     db.close()
 
     results = {}
