@@ -94,8 +94,8 @@ if ($uvPath) {
     # admin's profile - a hard link shares that file's permissions, so the
     # service account could not read them (trial box: agent would not start).
     # Copies inherit the project folder's "Users can read" permission instead.
-    Write-Host "       -> Installing required libraries (uv sync --frozen --link-mode copy)... " -NoNewline
-    $sync = cmd /c "`"$uvPath`" sync --frozen --link-mode copy --directory `"$ProjectDir`" 2>&1"
+    Write-Host "       -> Installing required libraries (uv sync --frozen --no-dev --link-mode copy)... " -NoNewline
+    $sync = cmd /c "`"$uvPath`" sync --frozen --no-dev --link-mode copy --directory `"$ProjectDir`" 2>&1"
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK]" -ForegroundColor Green
     } else {
@@ -166,13 +166,22 @@ if ($ar -and $ar.NoAutoRebootWithLoggedOnUsers -eq 1) {
 # 8b. Check Registry - Windows Update Active Hours (G9)
 # The NoAutoReboot policy above is useless on a headless server (no logged-on
 # user). Active Hours is the protection that actually works here: reboots
-# must be confined to 06:00-12:00 so neither the 01:00 LAN window nor the
-# 18:00-23:00 cloud window can be interrupted by a WU reboot.
+# must be confined to 08:00-20:00. Windows Server 2016 accepts at most 12 hours of Active Hours
+# (20:00-08:00 here); an 18 h window is invalid (plan H2). Report the REAL Windows Update state:
+# when the update service is disabled or a policy turns updates off (a deliberate choice on this
+# server) nothing reboots the box, and Active Hours are informational.
+$wu = Get-Service wuauserv -ErrorAction SilentlyContinue
+$wuPolicy = Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -ErrorAction SilentlyContinue
+$wuOff = ($wu -and $wu.StartType -eq "Disabled") -or ($wuPolicy -and $wuPolicy.NoAutoUpdate -eq 1)
+$wuState = if (-not $wu) { "service not found" } else { "service $($wu.Status), start type $($wu.StartType)" }
+if ($wuPolicy -and $wuPolicy.NoAutoUpdate -eq 1) { $wuState += ", policy NoAutoUpdate=1" }
 $ah = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" -ErrorAction SilentlyContinue
-if ($ah -and $ah.Start -eq 12 -and $ah.End -eq 6) {
-    Check-Item "Update Active Hours" "12:00-06:00 (backup windows protected)" $false
+if ($ah -and $ah.Start -eq 20 -and $ah.End -eq 8) {
+    Check-Item "Update Active Hours" "20:00-08:00 (12 h, backup nights protected); Windows Update: $wuState" $false
+} elseif ($wuOff) {
+    Check-Item "Update Active Hours" "Not set, but Windows Update is off ($wuState) - nothing reboots the server" $false
 } else {
-    Check-Item "Update Active Hours" "Missing/incorrect - reboots could hit a backup window (Run 03_setup_system.bat)" $true
+    Check-Item "Update Active Hours" "Missing/incorrect (need 20:00-08:00) and Windows Update is active ($wuState) - reboots could hit a backup window (Run 03_setup_system.bat)" $true
 }
 
 # 9. Check Ports

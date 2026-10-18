@@ -300,8 +300,8 @@ class TestDeployArtifacts:
     def test_setup_script_sets_active_hours(self):
         bat = (Path(__file__).resolve().parent.parent / "deploy" / "03_setup_system.bat").read_text()
         assert "ActiveHours" in bat
-        assert re.search(r"/v Start /t REG_DWORD /d 12", bat)
-        assert re.search(r"/v End /t REG_DWORD /d 6", bat)
+        assert re.search(r"/v Start /t REG_DWORD /d 20", bat)   # plan H2: 12 h max on Server 2016
+        assert re.search(r"/v End /t REG_DWORD /d 8", bat)
 
     def test_readiness_checks_active_hours(self):
         ps1 = (Path(__file__).resolve().parent.parent / "deploy" / "04_check_readiness.ps1").read_text()

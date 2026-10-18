@@ -151,19 +151,19 @@ if %ERRORLEVEL% equ 0 (
 
 :: G9: the policy above only applies while a user is LOGGED ON - a headless
 :: backup server is almost never logged on, so it does not protect this box.
-:: Windows Update Active Hours do: reboots are forbidden 12:00-06:00 (18 h,
-:: the maximum allowed window), leaving only 06:00-12:00 for a pending
-:: reboot. Both backup windows (LAN 01:00, cloud 18:00-23:00) sit INSIDE the
-:: protected hours. Set Start=12, End=6 so protected = 12:00 to next 06:00.
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v Start /t REG_DWORD /d 12 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v End /t REG_DWORD /d 6 /f >nul 2>&1
+:: Windows Update Active Hours do: reboots are forbidden inside them. Windows Server 2016
+:: allows at most 12 hours (Microsoft "waas-restart"): a longer window such as 12:00-06:00 (18 h)
+:: is INVALID and ignored (plan H2). Protected = 20:00 to next 08:00 (12 h), which covers the
+:: nightly LAN and cloud backups; a pending reboot can happen 08:00-20:00.
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v Start /t REG_DWORD /d 20 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v End /t REG_DWORD /d 8 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v ActiveHoursSource /t REG_DWORD /d 2 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    echo [OK]   Update Active Hours set to 12:00-06:00. Reboots can only happen 06:00-12:00.
+    echo [OK]   Update Active Hours set to 20:00-08:00 (12 h, the maximum). Reboots can only happen 08:00-20:00.
 ) else (
     echo [WARN] Active Hours registry write failed. Set manually:
     echo        HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours
-    echo        Start=12  End=6  ActiveHoursSource=2
+    echo        Start=20  End=8  ActiveHoursSource=2
 )
 
 :: ====================================================================

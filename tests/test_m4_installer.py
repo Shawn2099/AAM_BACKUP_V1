@@ -185,7 +185,7 @@ def test_venv_is_built_with_copies_not_hard_links():
     """Trial box 2026-10-15: uv hard-linked .venv packages to its cache in the admin's
     profile; a hard link shares that file's permissions, so the service account got
     'Permission denied' and the agent did not start. The readiness probe caught it."""
-    assert "sync --frozen --link-mode copy" in READINESS
+    assert "sync --frozen --no-dev --link-mode copy" in READINESS
 
 
 def test_runtime_rights_reach_existing_files_on_an_upgrade():
