@@ -153,3 +153,54 @@ def test_two_processes_writing_at_once_lose_no_update(tmp_path):
     name = load_config(str(cfg)).firm_name
     assert name.startswith("Test Firm")
     assert name.count("a") == n and name.count("b") == n
+
+
+# ---- K3: the three writers use the transaction --------------------------------------------
+
+def _locked_cfg(tmp_path):
+    return _write_config(tmp_path, "maintenance:\n  config_lock_timeout_seconds: 1\n")
+
+
+def test_settings_save_waits_for_and_respects_the_lock(tmp_path):
+    from core import config_edit as ce
+    cfg = _locked_cfg(tmp_path)
+    before = cfg.read_bytes()
+    with FileLock(str(cfg) + ".lock"):
+        with pytest.raises(ce.ConfigEditError) as ei:
+            ce.apply_changes(str(cfg), {"budget.lan_max_hours": 5}, phrase=None, actor="t",
+                             lock_busy=lambda: None, now_iso=lambda: "2026-10-18T10:00:00")
+    assert ei.value.status == 409 and "in use" in str(ei.value)
+    assert cfg.read_bytes() == before
+
+
+def test_password_hash_write_respects_the_lock(tmp_path):
+    from core import config_edit as ce
+    cfg = _locked_cfg(tmp_path)
+    before = cfg.read_bytes()
+    with FileLock(str(cfg) + ".lock"):
+        with pytest.raises(ce.ConfigEditError) as ei:
+            ce.set_admin_password_hash(str(cfg), "pbkdf2$x", actor="t",
+                                       now_iso=lambda: "2026-10-18T10:00:00")
+    assert ei.value.status == 409
+    assert cfg.read_bytes() == before
+
+
+def test_rollover_config_switch_respects_the_lock(tmp_path):
+    from core import fy_rollover
+    cfg = _locked_cfg(tmp_path)
+    before = cfg.read_bytes()
+    with FileLock(str(cfg) + ".lock"):
+        with pytest.raises(config_file.ConfigWriteError, match="in use"):
+            fy_rollover.update_config_yaml(str(cfg), str(tmp_path / "src"),
+                                           "\\\\nas\\share", "FY27-28")
+    assert cfg.read_bytes() == before
+
+
+def test_rollover_config_switch_writes_both_paths_and_validates(tmp_path):
+    from core import fy_rollover
+    cfg = _write_config(tmp_path)
+    fy_rollover.update_config_yaml(str(cfg), str(tmp_path / "src"), "\\\\nas\\share",
+                                   "FY27-28")
+    loaded = load_config(str(cfg))
+    assert loaded.paths.source_drive.endswith("FY27-28")
+    assert loaded.paths.lan_destination.endswith("FY27-28")

@@ -717,7 +717,10 @@ class TestFyRolloverCharacterization:
             "firm_name: Test\n"
             "paths:\n"
             r"  source_drive: E:\src\FY26-27" + "\n"
-            r"  lan_destination: \\nas\share\FY26-27" + "\n",
+            r"  lan_destination: \\nas\share\FY26-27" + "\n"
+            # the switch re-loads the written file (plan K): the rest must be valid too
+            "wol:\n  enabled: false\ncloud:\n  enabled: false\n"
+            "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n",
             encoding="utf-8",
         )
         update_config_yaml(str(cfg), r"E:\src", r"\\nas\share", "FY27-28")

@@ -62,6 +62,12 @@ class TestChildPath:
         assert _child_path("E:\\SOURCE\\", "FY26-27") == "E:\\SOURCE\\FY26-27"
 
 
+# the switch now re-loads the written file (plan K): the rest of the file must be valid too
+_VALID_REST = ("wol:\n  enabled: false\n"
+               "cloud:\n  enabled: false\n"
+               "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n")
+
+
 class TestUpdateConfigYaml:
     def test_updates_paths(self, tmp_path):
         """Config YAML is updated with new FY paths."""
@@ -74,6 +80,7 @@ class TestUpdateConfigYaml:
             "  database_path: C:\\BackupAgent\\manifest.db\n"
             "  log_directory: C:\\BackupAgent\\logs\n"
             "  gcs_key_path: key.json\n"
+            + _VALID_REST
         )
 
         update_config_yaml(
@@ -99,6 +106,7 @@ class TestUpdateConfigYaml:
             "  database_path: C:\\BackupAgent\\manifest.db\n"
             "  log_directory: C:\\BackupAgent\\logs\n"
             "  gcs_key_path: key.json\n"
+            + _VALID_REST
         )
 
         update_config_yaml(
@@ -122,6 +130,7 @@ class TestUpdateConfigYaml:
             "  database_path: C:\\BackupAgent\\manifest.db\n"
             "  log_directory: C:\\BackupAgent\\logs\n"
             "  gcs_key_path: key.json\n"
+            + _VALID_REST
         )
 
         update_config_yaml(
@@ -131,10 +140,11 @@ class TestUpdateConfigYaml:
             new_fy="FY26-27",
         )
 
-        # No temp files left in the directory
-        remaining = list(tmp_path.iterdir())
-        assert len(remaining) == 1
-        assert remaining[0].name == "config.yaml"
+        # No temp files left in the directory; only the file, its backup and the lock file
+        names = sorted(p.name for p in tmp_path.iterdir())
+        assert not [n for n in names if n.startswith(".config_")]
+        assert "config.yaml" in names
+        assert all(n == "config.yaml" or n.startswith("config.yaml.") for n in names), names
 
 
 class TestRunArchiveTransition:

@@ -21,6 +21,7 @@ from loguru import logger
 
 from core.config_file import (  # noqa: F401 - backup_config_file is part of this module's API
     backup_config_file,
+    config_transaction,
     load_round_trip,
     write_atomic,
 )
@@ -249,14 +250,13 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
     Uses the shared config writer (core.config_file): ruamel round-trip, so
     comments and formatting survive; atomic replace.
     """
-    yaml, cfg = load_round_trip(config_path)
     new_source = _child_path(source_root, new_fy)
     new_lan = _child_path(lan_root, new_fy)
-    old_source = cfg["paths"]["source_drive"]
-    old_lan = cfg["paths"]["lan_destination"]
-    cfg["paths"]["source_drive"] = new_source
-    cfg["paths"]["lan_destination"] = new_lan
-    write_atomic(config_path, yaml, cfg, tmp_prefix=".config_rollover_")
+    with config_transaction(config_path, tmp_prefix=".config_rollover_") as txn:
+        old_source = txn.doc["paths"]["source_drive"]
+        old_lan = txn.doc["paths"]["lan_destination"]
+        txn.doc["paths"]["source_drive"] = new_source
+        txn.doc["paths"]["lan_destination"] = new_lan
     logger.info(
         f"FY rollover: config.yaml updated\n"
         f"  source:  {old_source} → {new_source}\n"

@@ -31,8 +31,8 @@ from pydantic import BaseModel, ValidationError
 
 from core import approvals
 from core.config_help import SECTION_TITLES, label_and_help
-from core.config_file import (backup_config_file, load_round_trip, prune_backups, set_dotted,
-                               write_atomic)
+from core.config_file import (ConfigWriteError, config_transaction, load_round_trip,
+                               prune_backups, set_dotted)
 
 LOCKED = frozenset({
     "dashboard.auth_enabled", "dashboard.api_key", "dashboard.bind_address", "dashboard.port",
@@ -385,8 +385,6 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
     lock_busy: callable -> str | None; a reason when a backup/rollover holds
     the backup lock (then nothing is written).
     """
-    from models.config import load_config
-
     with _WRITE_LOCK:
         current, typed = _prepare(config_path, changes, allow_advanced)
         if not typed:
@@ -404,17 +402,13 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
         if busy:
             raise ConfigEditError(409, f"Not saved - {busy}. Try again when it has finished.")
 
-        backup = backup_config_file(config_path)
-        yaml, doc = load_round_trip(config_path)
-        for key, value in typed.items():
-            set_dotted(doc, key, value)
-        write_atomic(config_path, yaml, doc, tmp_prefix=".config_edit_")
         try:
-            saved = load_config(config_path)
-        except Exception as e:  # noqa: BLE001 - must never leave an unloadable file
-            shutil.copy2(backup, config_path)
-            raise ConfigEditError(500, f"The written file did not load ({e}); the previous "
-                                       f"config.yaml was restored from {backup.name}.") from e
+            with config_transaction(config_path, tmp_prefix=".config_edit_") as txn:
+                for key, value in typed.items():
+                    set_dotted(txn.doc, key, value)
+        except ConfigWriteError as e:
+            raise ConfigEditError(409 if e.busy else 500, str(e)) from e
+        backup, saved = txn.backup, txn.saved
         try:
             prune_backups(config_path, keep=saved.maintenance.config_backups_keep)
         except OSError:  # housekeeping must never fail a saved change
@@ -443,19 +437,13 @@ def set_admin_password_hash(config_path: str, new_hash: str, *, actor: str, db=N
     """Store a new Advanced-login hash the same safe way as any setting:
     backup, atomic comment-preserving write, load check (restore on failure),
     history entry with the value hidden. Returns the backup file name."""
-    from models.config import load_config
-
     with _WRITE_LOCK:
-        backup = backup_config_file(config_path)
-        yaml, doc = load_round_trip(config_path)
-        set_dotted(doc, "dashboard.admin_password_hash", new_hash)
-        write_atomic(config_path, yaml, doc, tmp_prefix=".config_edit_")
         try:
-            saved = load_config(config_path)
-        except Exception as e:  # noqa: BLE001 - must never leave an unloadable file
-            shutil.copy2(backup, config_path)
-            raise ConfigEditError(500, f"The written file did not load ({e}); the previous "
-                                       f"config.yaml was restored from {backup.name}.") from e
+            with config_transaction(config_path, tmp_prefix=".config_edit_") as txn:
+                set_dotted(txn.doc, "dashboard.admin_password_hash", new_hash)
+        except ConfigWriteError as e:
+            raise ConfigEditError(409 if e.busy else 500, str(e)) from e
+        backup, saved = txn.backup, txn.saved
         try:
             prune_backups(config_path, keep=saved.maintenance.config_backups_keep)
         except OSError:
