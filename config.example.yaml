@@ -469,6 +469,10 @@ rollover:
   # Small note written into the NEW source FY folder (never overwritten), so the
   # new, still-empty year is not mistaken for a missing drive by the backup.
   source_placeholder_name: README_FY.txt
+  # The old year's online copy is moved to the cheaper ARCHIVE storage class after the
+  # switch; if that fails it is retried every morning. After this many days of failing
+  # the warning email becomes "action needed". 1–365
+  archive_alert_after_days: 3
 
 # ═══════════════════════════════════════════════════
 # WEEKLY INTEGRITY AUDIT (read-only content comparison)

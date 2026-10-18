@@ -44,3 +44,34 @@ def next_step(journal: dict) -> str | None:
 
 def is_complete(journal: dict) -> bool:
     return next_step(journal) is None
+
+
+# A BLOCKING step that fails stops the run (nothing after it is attempted until the next
+# resume); a non-blocking step that fails is recorded and the run goes on. E.g. a NAS that
+# is off must not stop the config switch: the cloud has to protect the new FY from day 1.
+BLOCKING = frozenset({FINAL_BACKUPS, SOURCE_FOLDER, CONFIG_SWITCH})
+
+# Steps that only make sense once another step is done.
+REQUIRES = {
+    NAS_SHUTDOWN: (NAS_FOLDER,),     # only shut down a NAS we actually reached
+    ANNOUNCE: (CONFIG_SWITCH,),
+}
+
+
+def prerequisites_met(journal: dict, step: str) -> bool:
+    return all(journal["steps"][r]["state"] == DONE for r in REQUIRES.get(step, ()))
+
+
+def attempt_order(journal: dict) -> list[str]:
+    """Every step that is not finished, in execution order."""
+    return [name for name in STEPS if not is_finished(journal["steps"][name])]
+
+
+def reset_at_start(journal: dict) -> list[str]:
+    """Steps to put back to pending at the start of a run (owner D-17): while the config
+    switch is still to do, a `final_backups` that is `done` dates from an earlier run, and
+    files changed in the closing FY since then would be left behind by the switch."""
+    if (not is_finished(journal["steps"][CONFIG_SWITCH])
+            and journal["steps"][FINAL_BACKUPS]["state"] == DONE):
+        return [FINAL_BACKUPS]
+    return []

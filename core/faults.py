@@ -244,6 +244,16 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
        "changed.",
        "Check the server's internet access and its date and time.",
        "The switch is tried again every morning."),
+    _f("AAM-ROL-04", "Financial-year switch could not be finished", ACTION, (SUPPORT,),
+       "The switch to the new financial year stopped part-way. Your data is safe: nothing "
+       "was deleted, and the backup program's settings file is exactly as it was before.",
+       _FORWARD, "The switch is tried again every morning and continues where it stopped."),
+    _f("AAM-ROL-05", "Old year not moved to cheaper storage yet", WARNING, (SUPPORT,),
+       "The financial year switch is done, but the old year's online copy could not be "
+       "moved to the cheaper archive storage. Your data is safe; it only costs more until "
+       "this works.",
+       "Nothing else is needed: it is tried again every morning.",
+       "If this email repeats, " + _FORWARD[0].lower() + _FORWARD[1:]),
     _f("AAM-ROL-02", "Last backup of the old year incomplete", ACTION, (YOU, SUPPORT),
        "The final backup of the old financial year did not complete. Switching now would "
        "leave its last changes unprotected.",

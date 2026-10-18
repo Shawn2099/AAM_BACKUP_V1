@@ -242,6 +242,9 @@ HELP: dict[str, tuple[str, str]] = {
     "approvals.expiry_hours": ("An approval is valid for", ""),
     "approvals.tolerance_percent": ("Allowed change after approval", ""),
     "rollover.source_placeholder_name": ("Note file placed in a new year folder", ""),
+    "rollover.archive_alert_after_days": (
+        "Escalate a stuck archive move after",
+        "Moving last year's online copy to cheaper storage is retried every morning."),
     "audit.checkers": ("Files checked at the same time", ""),
     "audit.retries": ("Retries", ""),
     "audit.retries_sleep_seconds": ("Wait between retries", ""),

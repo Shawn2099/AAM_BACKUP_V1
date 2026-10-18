@@ -38,6 +38,8 @@ class RunStatus(StrEnum):
 
     ROLLOVER_COMPLETE = "ROLLOVER_COMPLETE"
     ROLLOVER_BLOCKED = "ROLLOVER_BLOCKED"
+    ROLLOVER_FAILED = "ROLLOVER_FAILED"      # a step before the switch failed; resumed next morning
+    ROLLOVER_RUNNING = "ROLLOVER_RUNNING"
 
 
 class AuditStatus(StrEnum):
@@ -76,7 +78,7 @@ BLOCKED_STATUSES: frozenset[str] = frozenset({
 })
 
 RUNNING_STATUSES: frozenset[str] = frozenset({
-    RunStatus.CLOUD_RUNNING, RunStatus.LAN_RUNNING,
+    RunStatus.CLOUD_RUNNING, RunStatus.LAN_RUNNING, RunStatus.ROLLOVER_RUNNING,
 })
 
 SKIPPED_STATUSES: frozenset[str] = frozenset({
@@ -88,6 +90,7 @@ FAILED_STATUSES: frozenset[str] = frozenset({
     RunStatus.CLOUD_SLOT_TIMEOUT, RunStatus.CLOUD_ABANDONED,
     RunStatus.LAN_SUSPECT, RunStatus.LAN_FAILED,
     RunStatus.LAN_SLOT_TIMEOUT, RunStatus.LAN_ABANDONED,
+    RunStatus.ROLLOVER_FAILED,
 })
 
 CLOUD_SUCCESS_STATUSES = frozenset(s for s in SUCCESS_STATUSES if s.startswith("CLOUD_"))
@@ -128,6 +131,8 @@ _LABELS: dict[str, str] = {
     RunStatus.LAN_RUNNING: "Running",
     RunStatus.ROLLOVER_COMPLETE: "FY rolled over",
     RunStatus.ROLLOVER_BLOCKED: "Blocked - approval needed",
+    RunStatus.ROLLOVER_FAILED: "FY rollover not finished",
+    RunStatus.ROLLOVER_RUNNING: "FY rollover running",
 }
 
 
@@ -171,6 +176,11 @@ def describe(status, files_copied: int | None = 0, files_failed: int | None = 0)
     files = int(files_copied or 0)
     failed = int(files_failed or 0)
     cat = category(s)
+    if s == RunStatus.ROLLOVER_FAILED:
+        return ("FY rollover could not be finished - your data is safe and it is tried "
+                "again every morning, see issue below")
+    if s == RunStatus.ROLLOVER_RUNNING:
+        return "FY rollover in progress"
     if cat == CATEGORY_NO_CHANGES:
         return "Backup complete - no changes detected"
     if cat == CATEGORY_SUCCESS:

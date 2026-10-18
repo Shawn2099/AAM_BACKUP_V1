@@ -701,6 +701,13 @@ class RolloverConfig(StrictModel):
                     "file and guard G1 does not block an intentionally new, empty FY.",
     )
 
+    archive_alert_after_days: int = Field(
+        default=3, ge=1, le=365,
+        description="The old FY's move to the cheaper ARCHIVE storage class is retried every "
+                    "morning; after it has failed for this many days the warning email becomes "
+                    "an 'action needed' email.",
+    )
+
     @field_validator("source_placeholder_name")
     @classmethod
     def plain_file_name(cls, v: str) -> str:

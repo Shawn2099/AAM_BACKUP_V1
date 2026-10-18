@@ -181,6 +181,8 @@ in the report CSV and in the email.
 | AAM-ROL-01 | Financial year jumped more than one year | The date says FY {to}, but the backups use {from}. Moving more than one year at once is unusual. | You | Check the server date. Approve only if this is really intended. |
 | AAM-ROL-02 | Last backup of the old year incomplete | The final backup of FY {from} did not complete for {legs}. Switching now would leave the last changes of {from} unprotected. | You / Support | Fix the backup problem first (see its own email); the switch then runs automatically. |
 | AAM-ROL-03 | Clock not proven - financial-year switch waits | The switch to the new FY needs a proven clock but no time server answered; backups keep using the current FY folder, nothing changed. | IT | Check internet access and the date/time; the switch is retried every morning. |
+| AAM-ROL-04 | Financial-year switch could not be finished | The switch to FY {to} stopped part-way. Your data is safe: nothing was deleted; the settings file is exactly as before. | Support | Forward this email to support; the switch is retried every morning and continues where it stopped. |
+| AAM-ROL-05 | Old year not moved to cheaper storage yet | The switch is done, but the online copy of FY {from} could not be moved to ARCHIVE storage. Data is safe; it only costs more until this works. | Support | Nothing needed - retried every morning. Becomes ACTION NEEDED after `rollover.archive_alert_after_days`. |
 
 ### 4.7 Weekly safety check (integrity audit)
 

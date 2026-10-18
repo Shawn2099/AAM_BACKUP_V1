@@ -121,3 +121,71 @@ def test_journal_survives_reopening_the_database(tmp_path):
         assert rj.next_step(j) == rj.SOURCE_FOLDER
     finally:
         d2.close()
+
+
+# ---- rev 7: first_failed_at, reset, step rules ----------------------------------------------
+
+def test_first_failed_at_is_kept_across_failures_and_cleared_on_done(db):
+    db.rollover_open("FY26-27", "FY27-28", "t0")
+    for t in ("t1", "t2"):
+        db.rollover_step_start("FY26-27", "FY27-28", rj.ARCHIVE, t)
+        db.rollover_step_failed("FY26-27", "FY27-28", rj.ARCHIVE, t, error="gcloud down")
+    s = db.rollover_get("FY26-27", "FY27-28")["steps"][rj.ARCHIVE]
+    assert s["first_failed_at"] == "t1" and s["attempts"] == 2
+    db.rollover_step_done("FY26-27", "FY27-28", rj.ARCHIVE, "t3")
+    assert db.rollover_get("FY26-27", "FY27-28")["steps"][rj.ARCHIVE]["first_failed_at"] is None
+
+
+def test_step_reset_returns_a_done_step_to_pending_and_keeps_attempts(db):
+    db.rollover_open("FY26-27", "FY27-28", "t0")
+    db.rollover_step_start("FY26-27", "FY27-28", rj.FINAL_BACKUPS, "t1")
+    db.rollover_step_done("FY26-27", "FY27-28", rj.FINAL_BACKUPS, "t2")
+    db.rollover_step_reset("FY26-27", "FY27-28", rj.FINAL_BACKUPS)
+    s = db.rollover_get("FY26-27", "FY27-28")["steps"][rj.FINAL_BACKUPS]
+    assert (s["state"], s["attempts"], s["finished_at"]) == (rj.PENDING, 1, None)
+
+
+def _journal(**states):
+    return {"steps": {name: {"state": states.get(name, rj.PENDING)} for name in rj.STEPS}}
+
+
+def test_blocking_and_non_blocking_steps():
+    assert rj.BLOCKING == {rj.FINAL_BACKUPS, rj.SOURCE_FOLDER, rj.CONFIG_SWITCH}
+    for step in (rj.NAS_FOLDER, rj.ARCHIVE, rj.NAS_SHUTDOWN, rj.ANNOUNCE):
+        assert step not in rj.BLOCKING
+
+
+def test_prerequisites():
+    j = _journal()
+    assert not rj.prerequisites_met(j, rj.NAS_SHUTDOWN)        # nas_folder not done
+    assert not rj.prerequisites_met(j, rj.ANNOUNCE)            # config_switch not done
+    j = _journal(nas_folder=rj.DONE, config_switch=rj.DONE)
+    assert rj.prerequisites_met(j, rj.NAS_SHUTDOWN) and rj.prerequisites_met(j, rj.ANNOUNCE)
+    assert rj.prerequisites_met(_journal(), rj.FINAL_BACKUPS)  # no prerequisites
+
+
+def test_a_failed_nas_folder_does_not_stop_the_config_switch():
+    j = _journal(final_backups=rj.DONE, source_folder=rj.DONE, nas_folder=rj.FAILED)
+    order = rj.attempt_order(j)
+    assert order[0] == rj.NAS_FOLDER and rj.CONFIG_SWITCH in order
+
+
+def test_attempt_order_lists_every_unfinished_step_in_order():
+    # a BLOCKING step that fails stops the run at runtime (flow); the list itself is complete
+    j = _journal(final_backups=rj.DONE)
+    assert rj.attempt_order(j) == [rj.SOURCE_FOLDER, rj.NAS_FOLDER, rj.CONFIG_SWITCH, rj.ARCHIVE,
+                                   rj.NAS_SHUTDOWN, rj.ANNOUNCE]
+    assert rj.attempt_order(_journal(**{n: rj.DONE for n in rj.STEPS})) == []
+
+
+def test_resume_after_the_switch_does_not_need_the_blocking_steps():
+    j = _journal(final_backups=rj.DONE, source_folder=rj.DONE, nas_folder=rj.DONE,
+                 config_switch=rj.DONE, archive=rj.FAILED)
+    assert rj.attempt_order(j) == [rj.ARCHIVE, rj.NAS_SHUTDOWN, rj.ANNOUNCE]
+
+
+def test_final_backup_is_repeated_while_the_switch_is_still_to_do():
+    # D-17 (owner 2026-10-18)
+    assert rj.reset_at_start(_journal(final_backups=rj.DONE)) == [rj.FINAL_BACKUPS]
+    assert rj.reset_at_start(_journal()) == []                                  # first pass
+    assert rj.reset_at_start(_journal(final_backups=rj.DONE, config_switch=rj.DONE)) == []

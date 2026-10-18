@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS rollover_journal_steps (
     state       TEXT NOT NULL,          -- core.rollover_journal pending/done/failed/skipped
     attempts    INTEGER NOT NULL DEFAULT 0,
     last_error  TEXT,
+    first_failed_at TEXT,       -- first failure of the current streak (cleared on done)
     started_at  TEXT,
     finished_at TEXT,
     run_id      TEXT,
@@ -1018,7 +1019,7 @@ class ManifestDB:
 
     def _journal_dict(self, conn, row) -> dict:
         steps = {r["step"]: {k: r[k] for k in ("state", "attempts", "last_error", "started_at",
-                                               "finished_at", "run_id")}
+                                               "first_failed_at", "finished_at", "run_id")}
                  for r in conn.execute("SELECT * FROM rollover_journal_steps WHERE journal_id = ?",
                                        (row["id"],))}
         return {"from_fy": row["from_fy"], "to_fy": row["to_fy"],
@@ -1078,14 +1079,20 @@ class ManifestDB:
 
     def rollover_step_done(self, from_fy: str, to_fy: str, step: str, now: str) -> None:
         self._rollover_step_update(from_fy, to_fy, step,
-                                   "state = ?, finished_at = ?, last_error = NULL",
-                                   (rj.DONE, now))
+                                   "state = ?, finished_at = ?, last_error = NULL, "
+                                   "first_failed_at = NULL", (rj.DONE, now))
 
     def rollover_step_failed(self, from_fy: str, to_fy: str, step: str, now: str,
                              error: str) -> None:
         self._rollover_step_update(from_fy, to_fy, step,
-                                   "state = ?, finished_at = ?, last_error = ?",
-                                   (rj.FAILED, now, error))
+                                   "state = ?, finished_at = ?, last_error = ?, "
+                                   "first_failed_at = COALESCE(first_failed_at, ?)",
+                                   (rj.FAILED, now, error, now))
+
+    def rollover_step_reset(self, from_fy: str, to_fy: str, step: str) -> None:
+        """Back to pending (attempts kept) - used when a done step must be repeated."""
+        self._rollover_step_update(from_fy, to_fy, step,
+                                   "state = ?, finished_at = NULL", (rj.PENDING,))
 
     def rollover_step_skipped(self, from_fy: str, to_fy: str, step: str, now: str,
                               reason: str) -> None:
