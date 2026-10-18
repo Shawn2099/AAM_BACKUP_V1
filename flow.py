@@ -1980,7 +1980,7 @@ def _send_summary_report(config, days: int, period: str) -> None:
                    "has nothing to report. Check that the backup service and its schedules are "
                    "running.")
             notify(config, AlertEvent(
-                key=f"stale:{period.lower()}", kind="WARNING", mode="report",
+                key=f"stale:{period.lower()}", kind="ACTION_REQUIRED", mode="report",
                 title=f"No backups in the last {days} days", message=msg, status="STALE"), db=db)
             raise RuntimeError(msg)
         subject, body, attachments = email
@@ -2224,6 +2224,14 @@ def _audit_budget_incomplete(exc: BudgetExceeded) -> dict:
             "detail": f"could not run - {exc}. Raise budget.audit_max_hours or move the audit."}
 
 
+def _audit_alert_kind(outcomes: list[str]) -> str:
+    """WARNING only when every unverified leg merely could not run; any
+    difference or unknown result needs a person (never switchable)."""
+    if outcomes and all(o.endswith("=AUDIT_INCOMPLETE") for o in outcomes):
+        return "WARNING"
+    return "ACTION_REQUIRED"
+
+
 @flow(name="integrity-audit", log_prints=True)
 def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
     """Read-only weekly integrity audit: source↔backup content verification.
@@ -2359,7 +2367,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             # The key carries each leg's outcome: a "could not run" alert must
             # never put a real mismatch inside its cooldown (code review 2026-10-16).
             notify(config, AlertEvent(
-                key=f"audit:{mode}:{','.join(sorted(outcomes))}", kind="FAILURE", mode="audit",
+                key=f"audit:{mode}:{','.join(sorted(outcomes))}",
+                kind=_audit_alert_kind(outcomes), mode="audit",
                 title="Integrity audit did not verify", message=error_summary,
                 status="NOT_VERIFIED"))
             raise ExceptionGroup("Integrity audit did not verify", excs)

@@ -35,6 +35,11 @@ FAILED = "FAILED"
 SUPPRESSED = "SUPPRESSED"
 DISABLED = "DISABLED"
 
+# Never silenced by notifications.send_on_failure (audit 2026-10-18, item 1):
+# a decision is needed or protection is lost, and RECOVERED closes an alert
+# the reader has already seen. Only routine FAILURE / WARNING emails obey it.
+ALWAYS_SENT_KINDS = frozenset({"ACTION_REQUIRED", "RECOVERED"})
+
 def _is_permanent_smtp_error(exc: BaseException) -> bool:
     """True when retrying cannot help (RFC 5321: 5xx = permanent).
 
@@ -261,8 +266,9 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
 def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     subject, body, attachments = render_alert(config, event)
 
-    if not config.notifications.send_on_failure and event.kind != "RECOVERED":
-        result = DeliveryResult(DISABLED, "notifications.send_on_failure is false")
+    if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
+        result = DeliveryResult(DISABLED, "notifications.send_on_failure is false "
+                                          "(routine failure/warning emails only)")
     else:
         cooldown_h = config.alerts.repeat_cooldown_hours
         last = db.last_notification(event.key, status=SENT) if cooldown_h > 0 else None

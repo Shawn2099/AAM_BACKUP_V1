@@ -61,8 +61,10 @@ HELP: dict[str, tuple[str, str]] = {
     "notifications.smtp_security": ("Mail connection security",
                                     "Leave on 'auto' unless your mail provider says otherwise."),
     "notifications.smtp_auth": ("Mail server needs a login", "Off only for an internal mail relay."),
-    "notifications.send_on_failure": ("Email me when something goes wrong",
-                                      "Send an alert email when a backup fails or needs a decision."),
+    "notifications.send_on_failure": ("Email me when a backup fails",
+                                      "Routine failure and warning emails. Emails that need your "
+                                      "decision, overdue backups, safety-check differences and a "
+                                      "stopped backup program are always sent."),
     "notifications.weekly_enabled": ("Send the weekly report", ""),
     "notifications.monthly_enabled": ("Send the monthly report", ""),
     "notifications.smtp_timeout_seconds": ("Mail server time-out", "How long to wait for the mail server."),

@@ -28,6 +28,7 @@ def _cfg(cloud=True, lan=True, stale=26):
                                   auth_enabled=False, api_key=""),
         paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
         firm_name="T",
+        notifications=SimpleNamespace(send_on_failure=True),
         schedule=SimpleNamespace(cloud_cron="0 22 * * *", lan_cron="0 21 * * *",
                                  timezone="Asia/Kolkata"),
     )

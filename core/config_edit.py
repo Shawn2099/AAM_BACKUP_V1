@@ -52,6 +52,8 @@ _RISKY_KEYS = frozenset({
     "lan.use_backup_mode", "health.clock_unverified_policy", "cloud.write_probe_enabled",
     # what counts as "unchanged": a wide window skips same-size edits
     "cloud.modify_window_seconds", "audit.modify_window_seconds",
+    # silences routine failure emails (decisions/overdue are always sent)
+    "notifications.send_on_failure",
     # NAS power
     "wol.enabled", "wol.server_ip", "wol.mac_address", "wol.broadcast_address",
     "lan.shutdown_after_backup", "lan.shutdown_on_all_retries_exhausted",
@@ -84,7 +86,7 @@ BASIC_KEYS = frozenset({
     "schedule.monthly_cron", "schedule.audit_cron",
     "notifications.recipients", "notifications.sender", "notifications.smtp_host",
     "notifications.smtp_port", "notifications.smtp_username", "notifications.smtp_password",
-    "notifications.smtp_security", "notifications.send_on_failure",
+    "notifications.smtp_security",
     "notifications.weekly_enabled", "notifications.monthly_enabled",
     "lan.enabled", "cloud.enabled", "paths.source_drive", "paths.lan_destination",
     "lan.shutdown_after_backup", "wol.enabled", "wol.mac_address", "wol.server_ip",

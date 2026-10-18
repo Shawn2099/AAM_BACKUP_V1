@@ -101,6 +101,11 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            f"Service watchdog: {watchdog.get('subject') or watchdog.get('event_key')} "
                            f"({format_ist(watchdog.get('created_at'))})."))
 
+    if not config.notifications.send_on_failure:
+        items.append(_item(AMBER, "alerts_off",
+                           "Failure emails are switched off (Settings > Advanced). Decisions, "
+                           "overdue backups and safety-check differences are still emailed."))
+
     failed = db.notification_failures_since(window)
     if failed:
         latest = failed[0]

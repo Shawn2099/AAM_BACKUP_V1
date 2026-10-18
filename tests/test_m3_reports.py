@@ -63,7 +63,7 @@ def test_no_runs_in_the_period_sends_a_stale_warning_and_fails():
     out, _db, notify, send = _run(flow.weekly_report_flow, runs=[])
     assert isinstance(out, RuntimeError) and "No backup runs" in str(out)
     event = notify.call_args.args[1]
-    assert event.kind == "WARNING" and event.status == "STALE" and event.key == "stale:weekly"
+    assert event.kind == "ACTION_REQUIRED" and event.status == "STALE" and event.key == "stale:weekly"
     send.assert_not_called()
 
 

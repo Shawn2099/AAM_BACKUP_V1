@@ -60,7 +60,9 @@ def _setup(monkeypatch, cloud=True, lan=True):
 def _one_alert(m):
     assert m["notify"].call_count == 1
     event = m["notify"].call_args.args[1]
-    assert event.kind == "FAILURE" and event.mode == "audit"
+    # audit 2026-10-18: differences / unknown need a person; "could not run" is a warning
+    could_not_run = all(o.endswith("=AUDIT_INCOMPLETE") for o in event.key.split(":", 2)[2].split(","))
+    assert event.kind == ("WARNING" if could_not_run else "ACTION_REQUIRED") and event.mode == "audit"
     return event
 
 
