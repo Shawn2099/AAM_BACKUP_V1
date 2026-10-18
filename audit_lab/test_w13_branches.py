@@ -980,6 +980,7 @@ def test_w13_create_new_fy_folders_lan_offline_is_non_blocking(sandbox):
 def test_w13_update_config_yaml_atomic_and_preserving(sandbox, monkeypatch):
     """update_config_yaml() keeps comments, rewrites both paths, and leaves the
     original untouched (with no temp file) when the atomic replace fails."""
+    from core.config_file import ConfigWriteError
     from core.fy_rollover import update_config_yaml
 
     cfg_path = sandbox / "config.yaml"
@@ -990,6 +991,9 @@ def test_w13_update_config_yaml_atomic_and_preserving(sandbox, monkeypatch):
         "  source_drive: 'C:\\BackupAgent\\source\\FY26-27'\n"
         "  lan_destination: '\\\\NAS\\share\\FY26-27'\n"
         "  runtime_dir: 'C:\\BackupAgent\\runtime'\n"
+        # the switch re-loads the written file (plan K): the rest must be valid too
+        "wol:\n  enabled: false\ncloud:\n  enabled: false\n"
+        "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n"
     )
     cfg_path.write_text(original, encoding="utf-8")
 
@@ -1021,7 +1025,7 @@ def test_w13_update_config_yaml_atomic_and_preserving(sandbox, monkeypatch):
     raised = None
     try:
         update_config_yaml(str(cfg_path), "C:\\BackupAgent\\source", "\\\\NAS\\share", "FY28-29")
-    except OSError as e:
+    except (OSError, ConfigWriteError) as e:   # K: a failed replace is a ConfigWriteError
         raised = e
     monkeypatch.undo()
     after_bytes = cfg_path.read_bytes()

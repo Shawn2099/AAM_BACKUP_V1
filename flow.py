@@ -2229,8 +2229,7 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
         fy_rollover.create_new_fy_folders(
             src_root, lan_root, to_fy,
             placeholder_name=config.rollover.source_placeholder_name)
-        config_backup = fy_rollover.backup_config_file(config_path)
-        fy_rollover.update_config_yaml(config_path, src_root, lan_root, to_fy)
+        config_backup = fy_rollover.update_config_yaml(config_path, src_root, lan_root, to_fy)
         archive_ok = None
         if config.cloud.enabled:
             archive_ok = fy_rollover.run_archive_transition(

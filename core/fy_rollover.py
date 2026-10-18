@@ -244,8 +244,8 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str,
 
 
 def update_config_yaml(config_path: str, source_root: str, lan_root: str,
-                       new_fy: str) -> None:
-    """Atomically update source_drive and lan_destination in config.yaml.
+                       new_fy: str) -> Path:
+    """Atomically update source_drive and lan_destination in config.yaml; returns the backup.
 
     Uses the shared config writer (core.config_file): ruamel round-trip, so
     comments and formatting survive; atomic replace.
@@ -262,6 +262,7 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
         f"  source:  {old_source} → {new_source}\n"
         f"  LAN:     {old_lan} → {new_lan}"
     )
+    return txn.backup
 
 
 def run_archive_transition(

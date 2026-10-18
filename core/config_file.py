@@ -106,7 +106,12 @@ def write_atomic(config_path: str, yaml, doc, *, tmp_prefix: str,
 
 
 class ConfigWriteError(RuntimeError):
-    """config.yaml could not be changed; it is left as it was."""
+    """config.yaml could not be changed; it is left as it was. `busy`: another
+    writer held the lock for the whole wait (try again later)."""
+
+    def __init__(self, message: str, *, busy: bool = False):
+        super().__init__(message)
+        self.busy = busy
 
 
 @dataclass
@@ -154,7 +159,8 @@ def config_transaction(config_path: str, *, tmp_prefix: str):
     except Timeout as e:
         raise ConfigWriteError(
             f"config.yaml is in use by another change (waited "
-            f"{opts['config_lock_timeout_seconds']} s). Nothing was written; try again.") from e
+            f"{opts['config_lock_timeout_seconds']} s). Nothing was written; try again.",
+            busy=True) from e
     try:
         yaml, doc = load_round_trip(config_path)
         txn = ConfigTransaction(yaml=yaml, doc=doc)
