@@ -406,7 +406,7 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
         try:
             with config_transaction(config_path, tmp_prefix=".config_edit_") as txn:
                 for key, value in typed.items():
-                    set_dotted(txn.doc, key, value)
+                    set_dotted(txn.doc, key, _stored_form(key, value))
         except ConfigWriteError as e:
             raise ConfigEditError(409 if e.busy else 500, str(e)) from e
         backup, saved = txn.backup, txn.saved
@@ -431,6 +431,16 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
                 })
         result.effects = sorted({EFFECT_TEXT[c["effect"]] for c in result.changed})
         return result
+
+
+def _stored_form(key: str, value):
+    """What goes into config.yaml: a secret is written encrypted (DPAPI, plan S2) when this
+    machine can; an empty value stays empty."""
+    if key in SECRET and value:
+        from core import secrets as secrets_store
+        if secrets_store.available() and not secrets_store.is_protected(str(value)):
+            return secrets_store.protect(str(value))
+    return value
 
 
 PASSWORD_KEYS = frozenset({"dashboard.admin_password_hash", "dashboard.login_password_hash"})

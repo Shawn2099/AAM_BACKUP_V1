@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 import yaml
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -412,11 +413,43 @@ class CloudConfig(StrictModel):
         return v
 
 
+class SecretText(str):
+    """A secret read from config.yaml. `protected` = it was stored encrypted (DPAPI, plan S2);
+    False = it was a plain value (dev / tests; the dashboard shows amber on a server)."""
+
+    protected: bool = True
+
+    def __new__(cls, value: str, protected: bool):
+        obj = super().__new__(cls, value)
+        obj.protected = protected
+        return obj
+
+    def __repr__(self) -> str:
+        return "'***'"
+
+
 class NotificationConfig(StrictModel):
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
+
+    @field_validator("smtp_password")
+    @classmethod
+    def _decrypt_smtp_password(cls, v: str) -> str:
+        """`dpapi:<base64>` is decrypted in memory (the plain value never goes back to disk).
+        A value that cannot be decrypted on this machine (config.yaml copied from another server)
+        loads EMPTY so the services still start; mail then reports its missing password."""
+        from core import secrets as secrets_store
+
+        if not secrets_store.is_protected(v):
+            return SecretText(v, protected=not v)
+        try:
+            return SecretText(secrets_store.unprotect(v), protected=True)
+        except secrets_store.SecretsError as e:
+            logger.error(f"notifications.smtp_password cannot be decrypted on this server ({e}) - "
+                         "enter the mail password again in Settings")
+            return SecretText("", protected=True)
     sender: str = ""
     recipients: list[str] = Field(default_factory=list)
     # F12: the old `send_on_success` flag was removed — no code path ever

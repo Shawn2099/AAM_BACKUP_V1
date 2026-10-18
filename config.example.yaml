@@ -300,6 +300,9 @@ notifications:
   smtp_host: "smtp.gmail.com"
   smtp_port: 587
   smtp_username: "your-smtp-user@gmail.com"
+  # Stored encrypted ("dpapi:...", Windows DPAPI, bound to THIS server) once you save it in
+  # Settings or the installer writes it; a plain value still works but the dashboard shows amber.
+  # Copied to another server it cannot be decrypted: enter it again there.
   smtp_password: "YOUR_APP_PASSWORD"
   sender: "your-smtp-user@gmail.com"
   recipients:

@@ -108,6 +108,14 @@ def compute_attention(db, config, now=None) -> list[dict]:
         items.append(_item(AMBER, "email_link",
                            f"Emails cannot link to this dashboard: {link_problem}."))
 
+    smtp_pw = getattr(getattr(config, "notifications", None), "smtp_password", "")
+    if smtp_pw and not getattr(smtp_pw, "protected", True):
+        from core import secrets as secrets_store
+        if secrets_store.available():
+            items.append(_item(AMBER, "smtp_password_plain",
+                               "The mail password is stored as plain text in config.yaml - save it "
+                               "again in Settings so it is stored encrypted."))
+
     changed = db.last_config_change_at("notifications.")
     if changed:
         tested = db.last_sent_at("test")
