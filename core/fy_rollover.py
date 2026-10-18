@@ -25,6 +25,7 @@ from core.config_file import (  # noqa: F401 - backup_config_file is part of thi
     load_round_trip,
     write_atomic,
 )
+from core.guards import MOUNT_MARKER
 from core.run_artefacts import RunArtefacts
 from core.time_utils import get_fy_prefix
 from core.tool_runner import run_tool
@@ -243,9 +244,54 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str,
     return created
 
 
+def create_source_folder(source_root: str, new_fy: str,
+                         placeholder_name: str | None = None) -> Path:
+    """Step `source_folder`: the new source FY folder (+ placeholder). Idempotent: an
+    existing folder is kept and a placeholder file is never overwritten.
+
+    placeholder_name (rollover.source_placeholder_name): a short note written into the NEW
+    source folder so the first nights of the new FY back up a real file instead of being
+    blocked by guard G1. Raises on failure (local disk problem).
+    """
+    new_source = Path(_child_path(source_root, new_fy))
+    new_source.mkdir(parents=True, exist_ok=True)
+    logger.info(f"FY rollover: source folder {new_source} ready")
+    if placeholder_name:
+        placeholder = new_source / placeholder_name
+        try:
+            with open(placeholder, "x", encoding="utf-8") as f:
+                f.write(_PLACEHOLDER_TEXT.format(fy=new_fy))
+            logger.info(f"FY rollover: wrote placeholder {placeholder}")
+        except FileExistsError:
+            logger.info(f"FY rollover: placeholder {placeholder} already exists - kept")
+    return new_source
+
+
+def create_nas_folder(lan_root: str, new_fy: str) -> Path:
+    """Step `nas_folder`: the new NAS FY folder + the mount marker. Idempotent.
+
+    Raises OSError when the share root is not reachable: the folder is only ever created
+    inside an existing share (never invented on a wrong or offline path, F-9), and the
+    caller records the failure instead of swallowing it.
+    """
+    root = Path(lan_root)
+    if not root.is_dir():
+        raise OSError(f"NAS share {lan_root} is not reachable - the new folder was not created")
+    new_lan = Path(_child_path(lan_root, new_fy))
+    new_lan.mkdir(exist_ok=True)
+    (new_lan / MOUNT_MARKER).touch(exist_ok=True)
+    logger.info(f"FY rollover: NAS folder {new_lan} ready")
+    return new_lan
+
+
 def update_config_yaml(config_path: str, source_root: str, lan_root: str,
-                       new_fy: str) -> Path:
-    """Atomically update source_drive and lan_destination in config.yaml; returns the backup.
+                       new_fy: str, *, expect_fy: str | None = None) -> Path | None:
+    """Step `config_switch`: point source_drive and lan_destination at `new_fy`.
+
+    Returns the config backup. With `expect_fy` this is compare-and-set, decided inside the
+    config lock: config at `expect_fy` -> switch; already at `new_fy` -> nothing is written
+    and None is returned (a crash after the write, R3); anything else -> RolloverError,
+    nothing written.
 
     Uses the shared config writer (core.config_file): ruamel round-trip, so
     comments and formatting survive; atomic replace.
@@ -255,6 +301,16 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
     with config_transaction(config_path, tmp_prefix=".config_rollover_") as txn:
         old_source = txn.doc["paths"]["source_drive"]
         old_lan = txn.doc["paths"]["lan_destination"]
+        if expect_fy is not None:
+            current = configured_fy(str(old_source), str(old_lan))
+            if current == new_fy:
+                logger.info(f"FY rollover: config.yaml already points at {new_fy} - kept")
+                txn.unchanged = True
+                return None
+            if current != expect_fy:
+                raise RolloverError(
+                    f"config.yaml points at {current or 'no FY folder'}, not {expect_fy} - "
+                    f"the switch to {new_fy} was not made. Nothing was written.")
         txn.doc["paths"]["source_drive"] = new_source
         txn.doc["paths"]["lan_destination"] = new_lan
     logger.info(

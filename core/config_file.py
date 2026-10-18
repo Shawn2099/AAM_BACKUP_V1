@@ -121,6 +121,7 @@ class ConfigTransaction:
     doc: Any
     backup: Path | None = None
     saved: Any = field(default=None)
+    unchanged: bool = False     # set by the body when it decided nothing must be written
 
 
 def _maintenance_options(config_path: str) -> dict:
@@ -143,7 +144,8 @@ def config_transaction(config_path: str, *, tmp_prefix: str):
     """The only way to change config.yaml.
 
         with config_transaction(path, tmp_prefix=".x_") as txn:
-            set_dotted(txn.doc, "section.key", value)   # or raise to abort: nothing is written
+            set_dotted(txn.doc, "section.key", value)   # or raise / set txn.unchanged = True:
+                                                        # nothing is written
         txn.backup, txn.saved                           # backup file, the re-loaded config
 
     Compare-and-set callers check the current value inside the body (they hold
@@ -165,6 +167,8 @@ def config_transaction(config_path: str, *, tmp_prefix: str):
         yaml, doc = load_round_trip(config_path)
         txn = ConfigTransaction(yaml=yaml, doc=doc)
         yield txn
+        if txn.unchanged:
+            return
         txn.backup = backup_config_file(config_path)
         try:
             write_atomic(config_path, yaml, doc, tmp_prefix=tmp_prefix,
