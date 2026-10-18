@@ -38,7 +38,7 @@ from core.cloud_reporter import (
     get_cloud_manifest,
     get_cloud_size,
 )
-from core.budget import BudgetExceeded, RunBudget
+from core.budget import BudgetExceeded, RunBudget, late_seconds as seconds_late
 from core.cloud_sync import resolve_max_duration_seconds, run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.health import CLOCK_OK, check_clock, pre_backup_health
@@ -393,6 +393,45 @@ def _record_running(config, leg: str, run_id: str, started_at: str) -> None:
             db.close()
     except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup
         logger.error(f"Could not record the RUNNING row for {leg} run {run_id}: {e}")
+
+
+def _scheduled_lateness_seconds() -> float:
+    """Plan I2: how long after its SCHEDULED time this flow run started (a reboot or a busy
+    server starts a missed run late). 0 for a manual run and outside a flow run: those count
+    their run budget from the actual start."""
+    try:
+        from prefect.context import FlowRunContext
+        ctx = FlowRunContext.get()
+        run = ctx.flow_run if ctx else None
+        if run is None or not getattr(run, "auto_scheduled", False) or run.expected_start_time is None:
+            return 0.0
+        return seconds_late(run.expected_start_time.timestamp(), time.time())
+    except Exception as e:  # noqa: BLE001 - a lateness we cannot read means "on time", never a block
+        logger.warning(f"Scheduled start time unknown ({e}); the run budget counts from now")
+        return 0.0
+
+
+def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget: RunBudget,
+                         reserve_s: float, late_s: float, monotonic_start: float | None) -> None:
+    """Plan I2: a run that starts with no budget left (less than the time its last steps need)
+    would run into office hours. Record <LEG>_MISSED and send ONE warning per leg (the stable
+    key `missed:<leg>` keeps several missed nights at boot from sending one email each), then
+    raise PartialRun so Prefect never shows this run as completed. Takes no backup slot."""
+    if late_s <= 0 or budget.remaining() > reserve_s:
+        return
+    status = f"{leg.upper()}_MISSED"
+    late_h = late_s / 3600
+    error = (f"The {leg.upper()} backup was scheduled for {late_h:.1f} h before it could start "
+             f"(the server was off or busy), so its {budget.describe()} run budget was already "
+             "used up. Nothing was changed; the next scheduled run continues.")
+    logger.warning(error)
+    _record_run(config, run_id, leg, started_at, status, -1, error,
+                monotonic_start=monotonic_start)
+    notify(config, AlertEvent(
+        key=f"missed:{leg}", kind="WARNING", mode=leg,
+        title=f"{leg.upper()} backup night missed", message=error, status=status,
+        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id))
+    raise PartialRun(f"{leg.upper()} run ended {status} - {error}")
 
 
 @contextmanager
@@ -1409,13 +1448,20 @@ def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> st
 
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                         budget_hours: float | None = None,
-                        approval_id: str | None = None):
-    """Execute cloud backup tasks sequentially. Each task is independently tracked."""
-    # WP14: the run budget counts from the job's start, including the slot wait
+                        approval_id: str | None = None, late_seconds: float = 0.0):
+    """Execute cloud backup tasks sequentially. Each task is independently tracked.
+
+    late_seconds: how long after its scheduled time the run started (plan I2); the budget
+    counts from the scheduled time, so a late start gets only what is left of it."""
+    # WP14: the run budget counts from the job's start (I2: its scheduled start), including
+    # the slot wait
     budget = RunBudget(
         "cloud",
         (budget_hours if budget_hours is not None else config.budget.cloud_max_hours) * 3600,
-        monotonic_start if monotonic_start is not None else time.monotonic())
+        (monotonic_start if monotonic_start is not None else time.monotonic()) - late_seconds)
+    _missed_if_no_budget(config, "cloud", run_id, started_at, budget,
+                         config.budget.cloud_verify_reserve_minutes * 60, late_seconds,
+                         monotonic_start)
     with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start):
         fy_prefix = _effective_fy_prefix(config)
 
@@ -1760,16 +1806,22 @@ def _complete_pending_rollover_nas_folder(config) -> None:
 
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                        budget_hours: float | None = None,
-                      approval_id: str | None = None, allow_shutdown: bool = True):
+                      approval_id: str | None = None, allow_shutdown: bool = True,
+                      late_seconds: float = 0.0):
     """Execute LAN backup tasks sequentially. Each task is independently tracked.
 
     allow_shutdown=False (the final backup of an FY rollover, plan A4): the NAS is NOT powered
-    off at any call site - the new NAS FY folder is created after this run."""
-    # WP14: the run budget counts from the job's start, including the slot wait
+    off at any call site - the new NAS FY folder is created after this run.
+    late_seconds: see _run_cloud_pipeline (plan I2)."""
+    # WP14: the run budget counts from the job's start (I2: its scheduled start), including
+    # the slot wait
     budget = RunBudget(
         "lan",
         (budget_hours if budget_hours is not None else config.budget.lan_max_hours) * 3600,
-        monotonic_start if monotonic_start is not None else time.monotonic())
+        (monotonic_start if monotonic_start is not None else time.monotonic()) - late_seconds)
+    _missed_if_no_budget(config, "lan", run_id, started_at, budget,
+                         config.budget.lan_post_reserve_minutes * 60, late_seconds,
+                         monotonic_start)
     with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start):
 
         # Apply config-driven retries to tasks that benefit from retrying
@@ -2761,6 +2813,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     # flow-level wrapper is intentionally GONE in this same commit; keeping
     # both would self-deadlock the limit=1 resource.
     excs = []
+    # plan I2: only the FIRST leg of this flow run is late; a second leg starts when it starts
+    late_s = 0.0 if budget_hours is not None else _scheduled_lateness_seconds()
 
     try:
         # ── Cloud ──
@@ -2768,16 +2822,19 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             logger.info("Starting cloud backup pipeline")
             try:
                 _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic(),
-                                    approval_id=approval_id, budget_hours=budget_hours)
+                                    approval_id=approval_id, budget_hours=budget_hours,
+                                    late_seconds=late_s)
             except Exception as e:
                 excs.append(e)
+            late_s = 0.0
 
         # ── LAN ──
         if mode in ("lan", "all") and config.lan.enabled:
             logger.info("Starting LAN backup pipeline")
             try:
                 _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic(),
-                                  approval_id=approval_id, budget_hours=budget_hours)
+                                  approval_id=approval_id, budget_hours=budget_hours,
+                                  late_seconds=late_s)
             except Exception as e:
                 excs.append(e)
 

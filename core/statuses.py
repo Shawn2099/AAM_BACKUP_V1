@@ -24,6 +24,7 @@ class RunStatus(StrEnum):
     CLOUD_BLOCKED = "CLOUD_BLOCKED"
     CLOUD_SLOT_TIMEOUT = "CLOUD_SLOT_TIMEOUT"
     CLOUD_ABANDONED = "CLOUD_ABANDONED"
+    CLOUD_MISSED = "CLOUD_MISSED"        # started so late that its run budget was already used up
     CLOUD_RUNNING = "CLOUD_RUNNING"
 
     LAN_COMPLETE = "LAN_COMPLETE"
@@ -34,6 +35,7 @@ class RunStatus(StrEnum):
     LAN_BLOCKED = "LAN_BLOCKED"
     LAN_SLOT_TIMEOUT = "LAN_SLOT_TIMEOUT"
     LAN_ABANDONED = "LAN_ABANDONED"
+    LAN_MISSED = "LAN_MISSED"
     LAN_RUNNING = "LAN_RUNNING"
 
     ROLLOVER_COMPLETE = "ROLLOVER_COMPLETE"
@@ -88,9 +90,9 @@ SKIPPED_STATUSES: frozenset[str] = frozenset({
 
 FAILED_STATUSES: frozenset[str] = frozenset({
     RunStatus.CLOUD_SUSPECT, RunStatus.CLOUD_FAILED, RunStatus.CLOUD_VERIFY_FAILED,
-    RunStatus.CLOUD_SLOT_TIMEOUT, RunStatus.CLOUD_ABANDONED,
+    RunStatus.CLOUD_SLOT_TIMEOUT, RunStatus.CLOUD_ABANDONED, RunStatus.CLOUD_MISSED,
     RunStatus.LAN_SUSPECT, RunStatus.LAN_FAILED,
-    RunStatus.LAN_SLOT_TIMEOUT, RunStatus.LAN_ABANDONED,
+    RunStatus.LAN_SLOT_TIMEOUT, RunStatus.LAN_ABANDONED, RunStatus.LAN_MISSED,
     RunStatus.ROLLOVER_FAILED, RunStatus.ROLLOVER_ABANDONED,
 })
 
@@ -128,6 +130,8 @@ _LABELS: dict[str, str] = {
     RunStatus.LAN_SLOT_TIMEOUT: "Could not start",
     RunStatus.CLOUD_ABANDONED: "Abandoned",
     RunStatus.LAN_ABANDONED: "Abandoned",
+    RunStatus.CLOUD_MISSED: "Missed",
+    RunStatus.LAN_MISSED: "Missed",
     RunStatus.CLOUD_RUNNING: "Running",
     RunStatus.LAN_RUNNING: "Running",
     RunStatus.ROLLOVER_COMPLETE: "FY rolled over",
@@ -208,6 +212,9 @@ def describe(status, files_copied: int | None = 0, files_failed: int | None = 0)
         return "Backup did not finish normally - completion unproven, see issue below"
     if s in (RunStatus.CLOUD_SLOT_TIMEOUT, RunStatus.LAN_SLOT_TIMEOUT):
         return "Backup could not start - another job held the backup slot too long"
+    if s in (RunStatus.CLOUD_MISSED, RunStatus.LAN_MISSED):
+        return ("Backup did not run - the server was off or busy at the scheduled time; "
+                "the next run continues")
     if s in (RunStatus.CLOUD_ABANDONED, RunStatus.LAN_ABANDONED):
         return "Backup was interrupted (service stopped) - outcome unknown"
     if s == RunStatus.CLOUD_VERIFY_FAILED:

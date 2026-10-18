@@ -65,6 +65,12 @@ class RunBudget:
         return f"{self.seconds / 3600:g} h (budget.{self.leg}_max_hours)"
 
 
+def late_seconds(expected: float, actual: float) -> float:
+    """How long after its scheduled time a run really started (never negative). The run budget
+    is counted from the scheduled time, so a late start gets only what is left of it."""
+    return max(0.0, actual - expected)
+
+
 def schedule_problems(jobs: dict[str, tuple[str, float]], timezone: str,
                       wait_seconds: float, *, start: datetime | None = None,
                       days: int = 366) -> list[str]:

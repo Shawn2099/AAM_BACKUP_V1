@@ -288,6 +288,12 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
     _f("AAM-SYS-05", "Server disk almost full", PROBLEM, (IT,),
        "A disk on the server is almost full, so we did not start.",
        "Free space on the server disk.", "Call support if unsure."),
+    _f("AAM-SYS-07", "Backup night missed", WARNING, (NOBODY, SUPPORT),
+       "The server was switched off or busy at the scheduled backup time, and the backup "
+       "started too late to run without reaching into office hours. Your data is safe: "
+       "nothing was changed.",
+       "Nothing is needed. The next scheduled backup copies everything that changed.",
+       "Tell support if this keeps happening - the server may be restarting at night."),
     _f(UNKNOWN, "Unexpected program error", PROBLEM, (SUPPORT,),
        "Something unexpected went wrong in the backup program.",
        _FORWARD),
@@ -387,6 +393,8 @@ def classify_run(leg: str, status: str, *, exc: BaseException | None = None,
         return "AAM-SYS-01"
     if status.endswith("_ABANDONED"):
         return "AAM-SYS-02"
+    if status.endswith("_MISSED"):
+        return "AAM-SYS-07"
     if status.endswith("_SUSPECT"):
         return "AAM-CLD-08" if cloud else "AAM-LAN-04"
     if status == "CLOUD_VERIFY_FAILED":

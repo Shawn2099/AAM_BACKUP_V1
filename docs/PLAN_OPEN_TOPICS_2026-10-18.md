@@ -279,8 +279,8 @@ Verify in I4 that `prefect serve` really starts late runs after a restart and th
 server-side lease expiry frees the slot (Prefect 3.7.2 `concurrency(lease_duration=300)`).
 
 **Tasks:**
-- [ ] **I1** `*_MISSED` statuses in `core/statuses.py` (category, label, description) + fault code.
-- [ ] **I2** `RunBudget` from the scheduled start; late start with no budget -> `*_MISSED` row +
+- [x] **I1** (see commit) `*_MISSED` statuses in `core/statuses.py` (category, label, description) + fault code.
+- [x] **I2** (see commit) `RunBudget` from the scheduled start; late start with no budget -> `*_MISSED` row +
   WARNING email; partial budget -> runs with what is left (ends `*_PARTIAL` if needed).
 - [ ] **I3** Verify `sweep_abandoned_runs` covers cloud, LAN, audit and rollover rows; add tests
   for any mode not covered. Fix the wording / key for non-backup modes (G-7: today "ROLLOVER

@@ -200,6 +200,7 @@ in the report CSV and in the email.
 | AAM-SYS-03 | Backup overdue | The {leg} has had no successful backup for {hours} hours (limit {limit} h). Either each try fails (see the other emails) or the backup is not starting at all. | You → Support | 1. Open the dashboard and look at the last runs. 2. Forward this email to support. |
 | AAM-SYS-04 | Backup tool missing | A program the backup needs ({tool}) is missing on the server. | Support | Forward to support. |
 | AAM-SYS-05 | Server disk almost full | The server's disk {disk} has only {free} free (needs {min}). | IT | Free space on the server disk; call support if unsure. |
+| AAM-SYS-07 | Backup night missed | The server was switched off or busy at the scheduled backup time and the backup started too late to run without reaching into office hours. Nothing was changed. | Nobody → Support | Nothing needed; the next backup copies everything. Tell support if it repeats. |
 | AAM-SYS-06 | Unexpected program error | Something unexpected went wrong in the backup program ({error_type}). | Support | Forward to support - the attached report has the details. |
 | AAM-SVC-01 | Backup program stopped | The backup program on the server is stopped and could not be restarted automatically. **No backups will run until it is fixed.** | Support | Forward to support now. |
 | AAM-SVC-02 | Backup program stuck | The backup program did not stop or restart properly. | Support | Forward to support now. |
