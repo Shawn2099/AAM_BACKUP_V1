@@ -1190,14 +1190,16 @@ def trigger_weekly_email(request: Request):
     cfg = _cfg()
     db = get_db()
     from core.report import generate_report_html, send_weekly_report
-    html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly")
+    legs = _enabled_legs(cfg)
+    html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly", legs=legs)
     if not html_body:
         return JSONResponse(
             {"status": "no_data", "detail": "No backup runs in the last 7 days — nothing to send."},
             status_code=404,
         )
     try:
-        ok = send_weekly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body)
+        ok = send_weekly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
+                                legs=legs)
     except Exception as e:
         logger.exception("Failed to send weekly email report manual trigger")
         return JSONResponse(
@@ -1227,14 +1229,16 @@ def trigger_monthly_email(request: Request):
     cfg = _cfg()
     db = get_db()
     from core.report import generate_report_html, send_monthly_report
-    html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly")
+    legs = _enabled_legs(cfg)
+    html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly", legs=legs)
     if not html_body:
         return JSONResponse(
             {"status": "no_data", "detail": "No backup runs in the last 30 days — nothing to send."},
             status_code=404,
         )
     try:
-        ok = send_monthly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body)
+        ok = send_monthly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
+                                 legs=legs)
     except Exception as e:
         logger.exception("Failed to send monthly email report manual trigger")
         return JSONResponse(
@@ -1250,6 +1254,11 @@ def trigger_monthly_email(request: Request):
     )
 
 
+def _enabled_legs(cfg) -> tuple[str, ...]:
+    return tuple(leg for leg in ("cloud", "lan")
+                 if getattr(getattr(cfg, leg, None), "enabled", False))
+
+
 def _serve_report(days: int, period: str) -> Response:
     """Generate an HTML report and serve it as a downloadable file."""
     cfg = _cfg()
@@ -1260,7 +1269,7 @@ def _serve_report(days: int, period: str) -> Response:
 
     db = get_db()
     from core.report import generate_report_html
-    html_body = generate_report_html(db, cfg.firm_name, days, period)
+    html_body = generate_report_html(db, cfg.firm_name, days, period, legs=_enabled_legs(cfg))
 
     if not html_body:
         return HTMLResponse(

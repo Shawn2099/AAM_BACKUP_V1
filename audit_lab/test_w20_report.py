@@ -309,9 +309,10 @@ def test_w20_report_html_status_variants(sandbox):
 def test_w20_report_html_row_limit(sandbox):
     from core import report as rep
 
+    # audit 2026-10-18: every run of the period is listed (was "last 10")
     runs = [_run(run_id=f"r{i}") for i in range(25)]
-    html = rep.generate_report_html(FakeDB(runs), "Firm", 30, "Monthly")
-    assert "Showing 10 most recent backups (out of 25 total)" in html
+    html = rep.generate_report_html(FakeDB(runs), "Firm", 7, "Weekly")
+    assert "Showing all 25 backups of the period" in html
 
 
 def test_w20_report_html_no_audits(sandbox):
@@ -378,7 +379,7 @@ def test_w20_summary_report_happy(sandbox, monkeypatch):
     monkeypatch.setattr(rep, "_send_email_with_attachments", fake_send)
     ok = rep.send_summary_report(FakeDB([_run()]), n, "Firm", 7, "Weekly")
     assert ok is True
-    assert seen["subject"] == "Backup Weekly Report - Firm"
+    assert seen["subject"].startswith("[Firm Backup] Weekly backup report ")
     att = seen["attachments"]
     assert att[0]["filename"] == "Firm_Weekly_Report.csv"
     assert att[0]["content"].startswith(b"Started At")
@@ -391,10 +392,15 @@ def test_w20_summary_report_uses_given_body(sandbox, monkeypatch):
     seen = {}
     monkeypatch.setattr(rep, "_send_email_with_attachments",
                         lambda c, s, b, a: seen.update(subject=s, body=b) or True)
-    rep.send_summary_report(FakeDB([_run()]), n, "Firm", 30, "Monthly",
+    import pendulum
+
+    from core.time_utils import IST
+    # Monthly = the previous calendar month (audit 2026-10-18)
+    last_month = pendulum.now(IST).start_of("month").subtract(days=5).isoformat()
+    rep.send_summary_report(FakeDB([_run(started_at=last_month)]), n, "Firm", 30, "Monthly",
                             body_html="<html>GIVEN</html>")
     assert seen["body"] == "<html>GIVEN</html>"    # no regeneration
-    assert seen["subject"] == "Backup Monthly Report - Firm"
+    assert seen["subject"].startswith("[Firm Backup] Monthly backup report ")
 
 
 def test_w20_weekly_monthly_delegate(sandbox, monkeypatch):
@@ -403,7 +409,7 @@ def test_w20_weekly_monthly_delegate(sandbox, monkeypatch):
     cfg, n = _cfg(sandbox)
     calls = []
 
-    def fake_summary(db, config, firm, days, period, body_html=None):
+    def fake_summary(db, config, firm, days, period, body_html=None, legs=None):
         calls.append((days, period, body_html))
         return True
 

@@ -7,11 +7,13 @@ report.py's own SMTP code gave up on transient 4xx replies after one try.
 
 from unittest.mock import MagicMock, patch
 
+import pendulum
 import pytest
 
 import flow
 from core import notify as nt
 from core import report
+from core.time_utils import IST
 
 
 def _cfg(enabled=True):
@@ -38,7 +40,10 @@ def _run(flow_fn, *, runs, delivery=None):
     return out, db, notify, send
 
 
-RUNS = [{"run_id": "r", "mode": "lan", "status": "LAN_COMPLETE", "started_at": "2026-10-14"}]
+# a run in the previous calendar month: inside the monthly report's period
+# (audit 2026-10-18) and returned by the mocked weekly query alike
+_LAST_MONTH = pendulum.now(IST).start_of("month").subtract(days=3).isoformat()
+RUNS = [{"run_id": "r", "mode": "lan", "status": "LAN_COMPLETE", "started_at": _LAST_MONTH}]
 
 
 @pytest.mark.parametrize("flow_fn,period", [(flow.weekly_report_flow, "Weekly"),

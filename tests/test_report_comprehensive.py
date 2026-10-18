@@ -64,7 +64,8 @@ class TestSendReports:
             {
                 "mode": run_mode,
                 "status": run_status,
-                "started_at": "2026-01-01T00:00:00",
+                # previous calendar month: inside the monthly period (audit 2026-10-18)
+                "started_at": pendulum.now(IST).start_of("month").subtract(days=3).isoformat(),
                 "files_copied": 100,
                 "files_failed": 0,
                 "duration_seconds": 3600,

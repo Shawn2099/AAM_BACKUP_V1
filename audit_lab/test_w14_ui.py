@@ -713,19 +713,26 @@ def test_w14_generate_report_html_branches(ui_rig):
         problems.append(f"an empty DB produced a report: {str(empty_html)[:80]!r}")
     empty_db.close()
 
+    # dates relative to today: a fixed date fell out of the 7-day window
+    # (date rot found 2026-10-18)
+    import pendulum
+
+    from core.time_utils import IST
+    day = pendulum.now(IST).subtract(days=2)
+    d0, d1 = day.format("YYYY-MM-DD"), day.add(days=1).format("YYYY-MM-DD")
     db_path = _seed_db(ui_rig["sandbox"] / "runtime" / "m2.db", runs=[
-        {"run_id": "c1", "mode": "cloud", "started_at": "2026-10-10T18:00:00+05:30",
-         "ended_at": "2026-10-10T18:05:00+05:30", "status": "CLOUD_COMPLETE",
+        {"run_id": "c1", "mode": "cloud", "started_at": f"{d0}T18:00:00+05:30",
+         "ended_at": f"{d0}T18:05:00+05:30", "status": "CLOUD_COMPLETE",
          "files_copied": 12, "files_failed": 0, "bytes_copied": 5000,
          "duration_seconds": 300, "exit_code": 0},
-        {"run_id": "l1", "mode": "lan", "started_at": "2026-10-10T01:00:00+05:30",
-         "ended_at": "2026-10-10T01:02:00+05:30", "status": "LAN_FAILED",
+        {"run_id": "l1", "mode": "lan", "started_at": f"{d0}T01:00:00+05:30",
+         "ended_at": f"{d0}T01:02:00+05:30", "status": "LAN_FAILED",
          "files_copied": 0, "files_failed": 5, "bytes_copied": 0,
          "duration_seconds": 120, "exit_code": 16,
          "error_message": "You do not have the Backup and Restore Files user rights."},
     ], audits=[{
         "audit_id": "a1", "mode": "cloud", "scope": "cloud/full",
-        "started_at": "2026-10-11T03:00:00+05:30", "ended_at": "2026-10-11T03:05:00+05:30",
+        "started_at": f"{d1}T03:00:00+05:30", "ended_at": f"{d1}T03:05:00+05:30",
         "status": "VERIFICATION_FAILED", "files_checked": 12, "mismatches": 1,
         "detail": "content mismatch detected (content-changed=1)",
     }], entries=6)

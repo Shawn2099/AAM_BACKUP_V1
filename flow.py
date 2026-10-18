@@ -2017,20 +2017,26 @@ def _record_run(
 # Report flows
 # ═══════════════════════════════════════════════════════════════
 
+def _enabled_legs(config) -> tuple[str, ...]:
+    return tuple(leg for leg in ("cloud", "lan") if getattr(config, leg).enabled)
+
+
 def _send_summary_report(config, days: int, period: str) -> None:
     """Send a summary report truthfully (plan WP8): delivery is recorded in
     the notifications table and a failed delivery FAILS the flow; a period
     with no runs at all sends a STALE warning instead of skipping silently."""
     db = ManifestDB.from_config(config)
     try:
-        email = report.build_summary_email(db, config.firm_name, days, period)
+        email = report.build_summary_email(db, config.firm_name, days, period,
+                                           legs=_enabled_legs(config))
         if email is None:
-            msg = (f"No backup runs were recorded in the last {days} days - the {period} report "
+            _, label = report.period_runs(db, days, period)
+            msg = (f"No backup runs were recorded in {label} - the {period} report "
                    "has nothing to report. Check that the backup service and its schedules are "
                    "running.")
             notify(config, AlertEvent(
                 key=f"stale:{period.lower()}", kind="ACTION_REQUIRED", mode="report",
-                title=f"No backups in the last {days} days", message=msg, status="STALE",
+                title=f"No backups in {label}", message=msg, status="STALE",
                 fault_code="AAM-RPT-01"), db=db)
             raise RuntimeError(msg)
         subject, body, attachments = email
@@ -2240,6 +2246,13 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
                                        "archive_ok": archive_ok,
                                        "config_backup": str(config_backup)})
     logger.info(f"FY rollover complete: {from_fy} -> {to_fy} | archive_ok={archive_ok}")
+    # Owner D5 (2026-10-18): once a year, tell the office the switch happened.
+    notify(config, AlertEvent(
+        key=f"rollover:done:{to_fy}", kind="INFO", mode="rollover",
+        title=f"New financial year {to_fy} started",
+        message=(f"From today your backups use the new folder {to_fy}. The {from_fy} backups "
+                 "are kept unchanged. Nothing to do."),
+        status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at))
     return "ROLLOVER_COMPLETED"
 
 

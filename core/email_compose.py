@@ -187,7 +187,7 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
         what = (f"The problem reported earlier ({was.title}) is fixed." if was
                 else (event.message or "The earlier problem is fixed."))
         steps: tuple[str, ...] = ()
-    elif event.fault_code is not None or event.status:
+    elif event.kind != "INFO" and (event.fault_code is not None or event.status):
         fault = faults.get(effective_code(event))
         severity = fault.severity
         subject = f"[{firm} Backup] {severity}: {label} - {fault.title} ({fault.code})"
