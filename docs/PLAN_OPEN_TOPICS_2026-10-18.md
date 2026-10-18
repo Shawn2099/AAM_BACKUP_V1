@@ -101,7 +101,7 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
 |---|---|---|---|
 | 0 | Groundwork: commit docs, fix the 7 audit-lab reds, rerun the lab | S | [x] 887123f, 93e8d75, lab 238/0/3 |
 | 0b | **H1** dependency upgrades + **K** config store (`filelock`) | S-M | [x] 8806c45, df255a3, 0f20cd1, f6f0a32, a13e389; lab 236/2/3, the 2 reds (w13, w6) fixed + re-run green |
-| 1 | **SCH** schema v4 (one migration), then **A** FY rollover journal | L | [ ] |
+| 1 | **SCH** schema v4 (one migration), then **A** FY rollover journal | L | [x] 04aa69a ... 2d601bb; independent review F1-F4 fixed |
 | 2 | **I** Interruption / late start -> **milestone audit lab** | M | [ ] |
 | 3 | **B** Emails sized to fit | M | [ ] |
 | 4 | **C** Reports: one model | M | [ ] |
@@ -233,22 +233,22 @@ round-trip load -> caller edits -> backup -> atomic write -> `os.replace` retrie
   `notifications.attachments_rung`, report rows (mode `report`). **No upgrade path from old
   databases** (fresh install); test = a fresh DB has every table / column.
 - [x] **A1** (04aa69a) `rollover_journal` repository functions (create / get / mark step) + tests.
-- [ ] **A2** Fault codes AAM-ROL-04 / AAM-ROL-05 in `core/faults.py` (+ email wording in
+- [x] **A2** (f59f90a) Fault codes AAM-ROL-04 / AAM-ROL-05 in `core/faults.py` (+ email wording in
   `core/email_compose.py`, `docs/EMAIL_CONTENT_SPEC.md`).
-- [ ] **A3** Config key `rollover.archive_alert_after_days` (default + bounds, example, help).
-- [ ] **A4** Final LAN backup inside the rollover runs without NAS shutdown (pipeline parameter);
+- [x] **A3** (f59f90a) Config key `rollover.archive_alert_after_days` (default + bounds, example, help).
+- [x] **A4** (c00878d) Final LAN backup inside the rollover runs without NAS shutdown (pipeline parameter);
   test: shutdown task not called during the rollover's final backup.
-- [ ] **A5** Steps as idempotent functions in `core/fy_rollover.py`; config switch as
+- [x] **A5** (ada3955) Steps as idempotent functions in `core/fy_rollover.py`; config switch as
   compare-and-set + validate + restore.
-- [ ] **A6** `rollover_check_flow` rewritten as the journal resumer; `ROLLOVER_RUNNING` row;
+- [x] **A6** (1c12d27, 2d601bb) `rollover_check_flow` rewritten as the journal resumer; `ROLLOVER_RUNNING` row;
   ROLLOVER_FAILED / ROLLOVER_COMPLETE rows; truthful INFO email.
-- [ ] **A7** LAN pipeline completes a pending `nas_folder` step (NAS awake) before the guards.
-- [ ] **A8** Dashboard rollover step card (`ui.py` + `static/js/dashboard.js`).
-- [ ] **A9** Calendar-simulation tests (`tests/test_calendar_simulation.py` style) on 1 April:
+- [x] **A7** (1919a33) LAN pipeline completes a pending `nas_folder` step (NAS awake) before the guards.
+- [x] **A8** (5cfa561) Dashboard rollover step card (`ui.py` + `static/js/dashboard.js`).
+- [x] **A9** (1c12d27, a6 tests) Calendar-simulation tests (`tests/test_calendar_simulation.py` style) on 1 April:
   slot busy; NAS off; config not writable; crash after the config write; restore failing;
   archive failing (+ escalation after N days); resume on 2 April; each = correct row + exactly
   one email + journal state.
-- [ ] **A10** Audit lab W6: NAS switched off after the final backup -> folder still created,
+- [x] **A10** (this commit) Audit lab W6: NAS switched off after the final backup -> folder still created,
   first new-FY LAN night COMPLETE without approval.
 
 **Done when:** every failure path above has a row + email + journal state, resume works after a
