@@ -905,6 +905,10 @@ class DashboardConfig(StrictModel):
         description="Approve / run / dismiss of blocked backups per window")
     session_hours: int = Field(
         default=24, ge=1, le=168, description="A dashboard sign-in lasts this many hours")
+    link_cache_seconds: int = Field(
+        default=60, ge=0, le=3600,
+        description="The dashboard address put into emails is looked up from the network at most "
+                    "this often (0 = every time)")
     config_refresh_seconds: int = Field(
         default=300, ge=10, le=3600,
         description="The dashboard re-reads config.yaml at most this often")

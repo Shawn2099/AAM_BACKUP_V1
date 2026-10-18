@@ -34,12 +34,15 @@ def _cfg(tmp_path, **dash) -> AppConfig:
     ({"public_url": "http://0.0.0.0:8080"}, True),
     ({"public_url": "backup-server:8080"}, True),                 # no http:// - not a link
 ])
-def test_dashboard_link_problem(tmp_path, dash, problem):
+def test_dashboard_link_problem(tmp_path, dash, problem, monkeypatch):
+    monkeypatch.setattr(nt.netinfo, "all_ipv4", lambda: ["10.10.151.20"])      # this server's address
     assert bool(nt.dashboard_link_problem(_cfg(tmp_path, **dash))) is problem
 
 
 def test_link_never_points_at_0_0_0_0(tmp_path, monkeypatch):
     monkeypatch.setattr(nt.socket, "gethostname", lambda: "BACKUP-SRV")
+    monkeypatch.setattr(nt.netinfo, "office_ip", lambda nas_host=None: None)
+    nt._link_cache.clear()
     cfg = _cfg(tmp_path, bind_address="0.0.0.0", port=8080)
     assert nt.dashboard_url(cfg) == "http://BACKUP-SRV:8080"
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 import smtplib
 import socket
 import ssl
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from email.mime.application import MIMEApplication
@@ -32,6 +33,7 @@ from urllib.parse import urlsplit
 
 from loguru import logger
 
+from core import netinfo
 from core.time_utils import now_iso
 
 SENT = "SENT"
@@ -342,19 +344,56 @@ def _drops_a_rung(exc: BaseException, state: dict, rungs: list[list[dict]]) -> b
 _SERVER_ONLY_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "::", ""}
 
 
-def dashboard_url(config) -> str:
+_link_cache: dict = {}
+
+
+def _nas_host(config) -> str | None:
+    host = getattr(getattr(config, "wol", None), "server_ip", "") or ""
+    if host:
+        return host
+    dest = getattr(getattr(config, "paths", None), "lan_destination", "") or ""
+    if dest.startswith("\\\\"):
+        return dest.lstrip("\\").split("\\", 1)[0] or None
+    return None
+
+
+def _detected_ip(config) -> str | None:
+    """The office address of this server (plan D1), looked up at most every
+    dashboard.link_cache_seconds."""
+    ttl = getattr(config.dashboard, "link_cache_seconds", 60)
+    hit = _link_cache.get("ip")
+    if hit and ttl and time.monotonic() - hit[0] < ttl:
+        return hit[1]
+    ip = netinfo.office_ip(_nas_host(config))
+    _link_cache["ip"] = (time.monotonic(), ip)
+    return ip
+
+
+def dashboard_urls(config) -> tuple[str, str | None]:
+    """(link, alternative link) for emails (plan D2). A manual dashboard.public_url wins.
+    Otherwise: the bind address when it is one office PCs can reach, else (0.0.0.0 / ::) the
+    detected office address, else the server name. The alternative is the server name."""
     d = config.dashboard
     if getattr(d, "public_url", ""):
-        return d.public_url
-    host = d.bind_address
+        return d.public_url, None
+    host = getattr(d, "bind_address", "127.0.0.1")
+    name = f"http://{socket.gethostname()}:{d.port}"
     if host in ("0.0.0.0", "::"):          # "all interfaces" is not an address to open
-        host = socket.gethostname()
-    return f"http://{host}:{d.port}"
+        ip = _detected_ip(config)
+        if ip:
+            return f"http://{ip}:{d.port}", name
+        return name, None
+    return f"http://{host}:{d.port}", (name if netinfo.usable(host) else None)
+
+
+def dashboard_url(config) -> str:
+    return dashboard_urls(config)[0]
 
 
 def dashboard_link_problem(config) -> str | None:
     """Why the emails' dashboard link would not open on an office PC, or None
-    (owner 2026-10-18: dashboard on the office network only)."""
+    (owner 2026-10-18: dashboard on the office network only). Plan D3: also a manual IP that is
+    not an address of this server, and a bind address other than the detected office address."""
     url = dashboard_url(config)
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
@@ -363,6 +402,17 @@ def dashboard_link_problem(config) -> str | None:
         return (f"the dashboard link in emails is {url}, which opens only on the server "
                 "itself - set dashboard.public_url to the address office PCs use "
                 "(e.g. http://backup-server:8080)")
+    d = config.dashboard
+    detected = _detected_ip(config)
+    if netinfo.usable(parts.hostname) and parts.hostname not in netinfo.all_ipv4():
+        return (f"the dashboard link {url} uses {parts.hostname}, which is not an address of this "
+                f"server (this server's office address is {detected or 'unknown'}) - correct "
+                "dashboard.public_url")
+    bind = getattr(d, "bind_address", "127.0.0.1")
+    if bind not in ("0.0.0.0", "::") and netinfo.usable(bind) and detected and bind != detected:
+        return (f"the dashboard listens only on {bind} but the office address of this "
+                f"server is {detected} - office PCs cannot open it; set dashboard.bind_address to "
+                "0.0.0.0 or the office address")
     return None
 
 

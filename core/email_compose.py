@@ -169,7 +169,7 @@ def effective_code(event) -> str | None:
 
 def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
     """(subject, html body, plain-text body) for one alert event."""
-    from core.notify import dashboard_url, html_to_text
+    from core.notify import dashboard_urls, html_to_text
 
     now = now or pendulum.now(IST)
     firm = config.firm_name
@@ -209,7 +209,7 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
     who_list = fault.who if fault else ()
     who = ("you" if faults.YOU in who_list or not who_list
            else "fix by " + " or ".join(WHO[w] for w in who_list if w in WHO))
-    url = dashboard_url(config)
+    url, alt_url = dashboard_urls(config)
     safety = _data_safety(config, db, now)
     next_text = _next_text(config, event, fault, now)
     support = _support_lines(config, event, fault)
@@ -240,7 +240,8 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
         f"<p style='margin:20px 0'><a href='{e(url)}' style='background:#1d4ed8;color:#ffffff;"
         f"padding:10px 16px;border-radius:6px;text-decoration:none;font-weight:600'>"
         f"Open the backup dashboard</a><br><span style='font-size:13px;color:#6b7280'>"
-        f"{e(url)} (works on the office network)</span></p>")
+        f"{e(url)}" + (f" (or {e(alt_url)})" if alt_url else "")
+        + " - works on the office network</span></p>")
     parts.append(
         "<hr style='border:none;border-top:1px solid #e5e7eb;margin:24px 0 8px 0'>"
         "<div style='font-size:12px;color:#6b7280'><b>For support</b><br>"

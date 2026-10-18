@@ -180,6 +180,7 @@ HELP: dict[str, tuple[str, str]] = {
     "dashboard.rate_limit_settings": ("Settings saves allowed", "Also test emails and password changes."),
     "dashboard.rate_limit_decisions": ("Approvals allowed", "Approve / run / dismiss of blocked backups."),
     "dashboard.session_hours": ("Stay signed in for", ""),
+    "dashboard.link_cache_seconds": ("Look up the dashboard address in emails every", ""),
     "dashboard.config_refresh_seconds": ("Dashboard re-reads settings every", ""),
     "dashboard.trigger_wait_seconds": ("Wait for a started run", "Before the page answers; the run continues."),
     "dashboard.firewall_remote_addresses": ("Office PCs allowed to open the dashboard",

@@ -284,6 +284,9 @@ dashboard:
   rate_limit_decisions: 10
   # A dashboard sign-in lasts this many hours (1-168)
   session_hours: 24
+  # The dashboard address in emails is looked up from the network at most this often,
+  # seconds (0-3600; 0 = every time)
+  link_cache_seconds: 60
   # The dashboard re-reads config.yaml at most this often, seconds (10-3600)
   config_refresh_seconds: 300
   # A manual start waits this long for the run's first result before the page

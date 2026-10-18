@@ -297,9 +297,11 @@ if (Test-Path $venvPy) {
     Push-Location $ProjectDir
     $linkOut = & $venvPy -c "from models.config import load_config; from core.notify import dashboard_link_problem; p = dashboard_link_problem(load_config(r'$cfg')); print(p or 'ok'); raise SystemExit(1 if p else 0)" 2>&1
     $linkExit = $LASTEXITCODE
+    # plan D3: show the link emails will use and every IPv4 of this server, so the owner can confirm it
+    $linkInfo = & $venvPy -c "from models.config import load_config; from core.notify import dashboard_urls; from core.netinfo import all_ipv4; c = load_config(r'$cfg'); u = dashboard_urls(c); print(u[0] + (' (or ' + u[1] + ')' if u[1] else '') + '; this server: ' + ', '.join(all_ipv4()))" 2>&1
     Pop-Location
     if ($linkExit -eq 0) {
-        Check-Item "Dashboard link in emails" "works from office PCs" $false
+        Check-Item "Dashboard link in emails" "$($linkInfo | Select-Object -Last 1) - works from office PCs" $false
     } else {
         Check-Item "Dashboard link in emails" "$($linkOut | Select-Object -Last 1)" $true
     }
