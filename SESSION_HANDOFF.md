@@ -152,6 +152,28 @@ config.yaml `monthly_cron` changed - DEC-7).
    LAN *run* row).
 6. (M4 items 4.1-4.6 are listed as DONE in item 5 above; the duplicate list was removed 2026-10-18.)
 
+## 4h. PROGRESS on the §4g plan (2026-10-18 session) - read this first
+
+Plan file `docs/PLAN_OPEN_TOPICS_2026-10-18.md` has the ticks + commit hashes. **Done:** step 0
+(7 lab reds fixed, lab 238/0/3), 0b (11 packages upgraded, `uv audit` 0 advisories; `filelock`;
+`config_file.config_transaction` = the ONE locked writer of config.yaml, 3 `maintenance.config_*`
+keys), SCH (schema v4: `rollover_journal(+_steps)`, `notifications.attachments_rung`), **group A
+complete** (journal `core/rollover_journal.py`; `flow._rollover_resume` = the resumer; step
+functions in `core/fy_rollover.py`; ROL-04/05; `ROLLOVER_RUNNING/FAILED/ABANDONED`; A4 no NAS
+shutdown in the final LAN backup; A7 `_complete_pending_rollover_nas_folder`; A8 Settings > FY
+rollover step card; independent review F1-F4 fixed; lab W6b with real robocopy). Unit suite at
+last run: **2218 passed / 0 failed / 19 skipped**. Owner decision D-17: a retry that still has to
+switch repeats the final backup.
+**Next:** step 2 = group **I** (budget from the flow run's scheduled start, `*_MISSED`, sweep of
+every mode, lab hard-kill scenario) -> then run the **milestone audit lab** (after A + I; last full
+lab was after 0b: 236/2/3, the 2 reds fixed and re-run green, NOT yet re-run in full since A) ->
+B emails -> C reports -> E passwords -> lab -> D, S, F, H, G, release.
+**Working notes:** OpenCode CLI is not installed here (opencode agent fails) - use a Claude
+`general-purpose` read-only reviewer instead (it found 4 real bugs in A). `tests/test_lan_shutdown_policy`
+used to depend on test order (fixed). Write patch scripts with the Write tool into the scratchpad,
+never heredocs with backslashes. Print `^FAILED` lines (not `tail`) after suite runs; check
+`git status --short` before every commit.
+
 ## 4g. AGREED PLAN (owner 2026-10-18) - §4f-2 topics + older items
 
 Principles: one source of truth per concern (one report model, one SMTP path, one rollover
