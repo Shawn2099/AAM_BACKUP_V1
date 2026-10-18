@@ -79,7 +79,10 @@ def test_r3_loaded_runtime_timeouts(tmp_path):
     # 1. rig config: pinned values load verbatim
     raw = _RIG_CONFIG.read_text(encoding="utf-8")
     pinned = yaml.safe_load(raw)["cloud"]
-    rig = AppConfig(**yaml.safe_load(raw)).cloud
+    data = yaml.safe_load(raw)
+    for removed in ("api_key", "auth_enabled"):          # keys of an older release (plan E)
+        data.get("dashboard", {}).pop(removed, None)
+    rig = AppConfig(**data).cloud
     for field, policy_default in _POLICY_DEFAULTS.items():
         assert getattr(rig, field) == pinned.get(field, policy_default)
 
@@ -94,8 +97,7 @@ def test_r3_loaded_runtime_timeouts(tmp_path):
         "  enabled: false\n"
         "wol:\n"
         "  enabled: false\n"
-        "dashboard:\n"
-        "  auth_enabled: false\n"
+        "dashboard: {}\n"
     )
     defaults = load_config(str(minimal)).cloud
     for field, policy_default in _POLICY_DEFAULTS.items():

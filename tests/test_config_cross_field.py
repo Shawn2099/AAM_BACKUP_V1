@@ -13,15 +13,14 @@ def _quiet_legs(**overrides):
 
     Each sub-model validates on its own, before AppConfig.cross_field_validation
     runs: WolConfig(enabled=True) demands a MAC, CloudConfig(enabled=True)
-    demands bucket + project_number, DashboardConfig(auth_enabled=True) demands
-    an api_key. A test that only cares about one AppConfig-level rule therefore
+    demands bucket + project_number. A test that only cares about one AppConfig-level rule therefore
     has to hand the other legs a config that passes on its own, otherwise the
     sub-model error fires first and the rule under test never runs.
     """
     legs = dict(
         wol=WolConfig(enabled=False),
         cloud=CloudConfig(enabled=False),
-        dashboard=DashboardConfig(auth_enabled=False),
+        dashboard=DashboardConfig(),
     )
     legs.update(overrides)
     return legs
@@ -177,10 +176,7 @@ class TestFromYaml:
     def test_load_valid_config(self, tmp_path):
         """Load config from YAML file.
 
-        Legs that are not under test must be explicitly disabled/enumerated:
-        DashboardConfig.auth_enabled defaults to True, which then demands an
-        api_key (a bare-minimum YAML that omits the dashboard section used to
-        load, but that was the pre-hardening default)."""
+        Legs that are not under test must be explicitly disabled/enumerated."""
         config = tmp_path / "config.yaml"
         config.write_text(
             "firm_name: Test Firm\n"
@@ -197,8 +193,7 @@ class TestFromYaml:
             "  enabled: false\n"
             "wol:\n"
             "  enabled: false\n"
-            "dashboard:\n"
-            "  auth_enabled: false\n"
+            "dashboard: {}\n"
         )
         result = AppConfig.from_yaml(str(config))
         assert result.firm_name == "Test Firm"

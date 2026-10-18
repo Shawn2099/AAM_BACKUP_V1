@@ -835,8 +835,6 @@ class WatchdogConfig(StrictModel):
 
 
 class DashboardConfig(StrictModel):
-    auth_enabled: bool = True
-    api_key: str = Field(default="", description="API key for dashboard authentication")
     bind_address: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1024, le=65535)
     public_url: str = Field(
@@ -864,9 +862,9 @@ class DashboardConfig(StrictModel):
     # Owner 2026-10-15: Advanced settings need a second, separate login.
     admin_password_hash: str = Field(
         default="",
-        description="Advanced-settings login. Empty = the same as dashboard.api_key. Set it "
-                    "ONLY via 'Change admin password' in Advanced (stores a salted PBKDF2 hash, "
-                    "never the password).")
+        description="Advanced-settings login: a salted PBKDF2 hash written by the installer, "
+                    "'Change Advanced password' in Advanced, or the reset script on the server - "
+                    "never the password itself. Empty = nobody can open Advanced.")
     admin_session_minutes: int = Field(
         default=30, ge=5, le=480,
         description="The Advanced-settings login expires after this many minutes")
@@ -926,14 +924,8 @@ class DashboardConfig(StrictModel):
                              "never Any: " + ", ".join(repr(b) for b in bad))
         return [a.strip() for a in v]
 
-    @model_validator(mode="after")
-    def api_key_required_when_auth_enabled(self) -> "DashboardConfig":
-        if self.auth_enabled and not self.api_key:
-            raise ValueError("api_key must be set when auth_enabled is True")
-        return self
-
     def __repr__(self) -> str:
-        return f"DashboardConfig(auth_enabled={self.auth_enabled}, api_key='***', bind_address='{self.bind_address}', port={self.port})"
+        return f"DashboardConfig(bind_address='{self.bind_address}', port={self.port})"
 
     def __str__(self) -> str:
         return self.__repr__()

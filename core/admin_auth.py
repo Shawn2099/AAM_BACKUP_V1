@@ -1,9 +1,9 @@
-"""Advanced-settings login (owner 2026-10-15).
+"""Dashboard sign-in and Advanced-settings login (owner 2026-10-15; plan E, 2026-10-18).
 
-The Advanced settings page needs a second login. Initially its password is
-the dashboard key (`dashboard.admin_password_hash` empty); once changed on
-the page, only a salted PBKDF2-SHA256 hash is stored in config.yaml - never
-the password itself. Stdlib only (hashlib, hmac, secrets).
+Two separate passwords: the dashboard password (`dashboard.login_password_hash`) and the
+Advanced password (`dashboard.admin_password_hash`). Only salted PBKDF2-SHA256 hashes are stored
+in config.yaml - never a password. A missing hash means nobody signs in (fail closed). Stdlib
+only (hashlib, hmac, secrets).
 
 The iteration count is a fixed security parameter, not an operational
 tunable: it is stored inside every hash, so raising it later never breaks a
@@ -40,13 +40,11 @@ def _check_hash(password: str, stored: str) -> bool:
 
 
 def verify_admin_password(password: str, dashboard) -> bool:
-    """True when `password` opens Advanced: the stored hash, or - while none is
-    set - the dashboard key. Never true for an empty password or key."""
-    if not password:
+    """True when `password` opens Advanced: only the stored Advanced hash counts (no hash set =
+    nobody gets in); never the dashboard password."""
+    if not password or not dashboard.admin_password_hash:
         return False
-    if dashboard.admin_password_hash:
-        return _check_hash(password, dashboard.admin_password_hash)
-    return bool(dashboard.api_key) and hmac.compare_digest(password, dashboard.api_key)
+    return _check_hash(password, dashboard.admin_password_hash)
 
 
 def verify_login_password(password: str, dashboard) -> bool:

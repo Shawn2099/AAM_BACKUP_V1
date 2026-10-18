@@ -24,7 +24,7 @@ def _base(**overrides) -> dict:
         "paths": {"source_drive": "E:\\FY26-27", "lan_destination": UNC_DEST},
         "wol": {"enabled": False},
         "cloud": {"enabled": False},
-        "dashboard": {"auth_enabled": False},
+        "dashboard": {},
     }
     for section, values in overrides.items():
         data.setdefault(section, {}).update(values)

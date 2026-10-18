@@ -86,9 +86,17 @@ def _session_ttl() -> timedelta:
     return timedelta(hours=_dash("session_hours"))
 
 
+def _login_fingerprint() -> str:
+    return admin_auth.fingerprint(_cfg().dashboard.login_password_hash)
+
+
+def _admin_fingerprint() -> str:
+    return admin_auth.fingerprint(_cfg().dashboard.admin_password_hash)
+
+
 def _create_session() -> str:
     token = secrets.token_hex(32)
-    _sessions[token] = {"created_at": time.time()}
+    _sessions[token] = {"created_at": time.time(), "fp": _login_fingerprint()}
     _cleanup_expired_sessions()
     return token
 
@@ -103,6 +111,9 @@ def _cleanup_expired_sessions() -> None:
 
 
 def _validate_session(token: str | None) -> bool:
+    """A session is valid while it is young AND the dashboard password it was opened with is still
+    the one in config.yaml (plan E2): a changed or reset password ends every older session,
+    including a reset done by the script in another process (the config refresh picks it up)."""
     if not token:
         return False
     session = _sessions.get(token)
@@ -111,24 +122,11 @@ def _validate_session(token: str | None) -> bool:
     if time.time() - session["created_at"] > _session_ttl().total_seconds():
         del _sessions[token]
         return False
+    if not admin_auth.credentials_set(_cfg().dashboard) or session.get("fp") != _login_fingerprint():
+        _sessions.pop(token, None)
+        return False
     return True
 
-
-def _get_api_key() -> str:
-    cfg = _cfg()
-    return cfg.dashboard.api_key if cfg.dashboard.auth_enabled else ""
-
-
-def _auth_enabled() -> bool:
-    return _cfg().dashboard.auth_enabled
-
-
-def _check_api_key_header(request: Request) -> bool:
-    header_key = request.headers.get("X-API-Key", "")
-    configured_key = _get_api_key()
-    if not configured_key:
-        return True
-    return hmac.compare_digest(header_key, configured_key)
 
 # ── Lazy config (works on any OS, validates only on use) ─────
 # TTL-based refresh ensures the dashboard picks up config.yaml changes (e.g. FY
@@ -387,34 +385,41 @@ def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
 # ── API endpoints ────────────────────────────────────────────
 
 
+_LOGIN_STYLE = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.login { background: #1f2937; padding: 2rem; border-radius: 0.5rem; width: 340px; }
+h1 { font-size: 1.25rem; margin-bottom: 1.5rem; text-align: center; }
+label { display: block; font-size: 0.875rem; color: #9ca3af; margin-bottom: 0.25rem; }
+input { width: 100%; padding: 0.5rem; border: 1px solid #374151; border-radius: 0.375rem; background: #111827; color: #e5e7eb; margin-bottom: 1rem; }
+button { width: 100%; padding: 0.5rem; border: none; border-radius: 0.375rem; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }
+button:hover { background: #1d4ed8; }
+p { line-height: 1.5; }
+"""
+
+NOT_SET_UP = ("The dashboard passwords are not set up yet. On the server, run the installer "
+              "(deploy\\06_install_services.ps1) or deploy\\11_reset_dashboard_passwords.ps1 as "
+              "administrator to set them.")
+
+
+def _login_html(body: str) -> str:
+    return (f"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            f"<title>AAM Backup - Sign in</title><style>{_LOGIN_STYLE}</style></head><body>"
+            f"<div class=\"login\"><h1>AAM Backup Dashboard</h1>{body}</div></body></html>")
+
+
 @app.get("/login", response_class=HTMLResponse)
 def login_page(error: str = ""):
+    if not admin_auth.credentials_set(_cfg().dashboard):
+        return HTMLResponse(_login_html(f"<p style=\"color:#fbbf24\">{html.escape(NOT_SET_UP)}</p>"),
+                            status_code=503)
     error_html = f'<p style="color:#ef4444;margin-bottom:1rem">{html.escape(error)}</p>' if error else ""
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>AAM Backup — Login</title>
-<style>
-* {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; display: flex; align-items: center; justify-content: center; min-height: 100vh; }}
-.login {{ background: #1f2937; padding: 2rem; border-radius: 0.5rem; width: 320px; }}
-h1 {{ font-size: 1.25rem; margin-bottom: 1.5rem; text-align: center; }}
-label {{ display: block; font-size: 0.875rem; color: #9ca3af; margin-bottom: 0.25rem; }}
-input {{ width: 100%; padding: 0.5rem; border: 1px solid #374151; border-radius: 0.375rem; background: #111827; color: #e5e7eb; margin-bottom: 1rem; }}
-button {{ width: 100%; padding: 0.5rem; border: none; border-radius: 0.375rem; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }}
-button:hover {{ background: #1d4ed8; }}
-</style></head>
-<body>
-<div class="login">
-<h1>AAM Backup Dashboard</h1>
-{error_html}
+    return _login_html(f"""{error_html}
 <form action="/login" method="post">
-<label for="api_key">API Key</label>
-<input type="password" name="api_key" id="api_key" required autofocus>
+<label for="password">Password</label>
+<input type="password" name="password" id="password" required autofocus>
 <button type="submit">Sign In</button>
-</form>
-</div>
-</body>
-</html>"""
+</form>""")
 
 
 @app.post("/login")
@@ -422,31 +427,22 @@ async def login_submit(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"login:{client_ip}", _dash("rate_limit_logins")):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
-    is_https = request.url.scheme == "https"
-    if not _auth_enabled():
-        token = _create_session()
-        resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(
-            key="session", value=token,
-            httponly=True, samesite="lax",
-            secure=is_https,
-            max_age=int(_session_ttl().total_seconds()),
-        )
-        return resp
+    dashboard = _cfg().dashboard
+    if not admin_auth.credentials_set(dashboard):
+        return RedirectResponse("/login", status_code=303)
     form = await request.form()
-    api_key = form.get("api_key", "")
-    configured_key = _get_api_key()
-    if configured_key and hmac.compare_digest(str(api_key), configured_key):
+    if admin_auth.verify_login_password(str(form.get("password", "")), dashboard):
         token = _create_session()
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(
             key="session", value=token,
             httponly=True, samesite="lax",
-            secure=is_https,
+            secure=request.url.scheme == "https",
             max_age=int(_session_ttl().total_seconds()),
         )
         return resp
-    return RedirectResponse("/login?error=Invalid+API+key", status_code=303)
+    logger.warning(f"Dashboard sign-in refused for {client_ip}")
+    return RedirectResponse("/login?error=Wrong+password", status_code=303)
 
 
 @app.get("/logout")
@@ -460,17 +456,18 @@ def logout(request: Request):
 
 
 def _require_auth(request: Request):
-    if not _auth_enabled():
-        return
-    session_token = request.cookies.get("session")
-    if _validate_session(session_token):
-        return
-    if _check_api_key_header(request):
+    """Every dashboard endpoint but /health and /login needs a signed-in session (plan E10).
+    Until both passwords are set (plan E4) nothing opens: browsers get the 'not set up' page at
+    /login, API callers a 503 (fail closed)."""
+    if not admin_auth.credentials_set(_cfg().dashboard):
+        if "text/html" in request.headers.get("Accept", ""):
+            raise HTTPException(status_code=303, headers={"Location": "/login"})
+        raise HTTPException(status_code=503, detail=NOT_SET_UP)
+    if _validate_session(request.cookies.get("session")):
         return
     # Browser requests (Accept: text/html) get redirected to login page.
     # API requests get JSON 401.
-    accept = request.headers.get("Accept", "")
-    if "text/html" in accept:
+    if "text/html" in request.headers.get("Accept", ""):
         raise HTTPException(status_code=303, headers={"Location": "/login"})
     raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -486,7 +483,6 @@ async def dashboard(request: Request):
     context = {
         "request": request,
         "fy_prefix": fy_rollover.effective_fy_prefix(cfg.paths.source_drive),
-        "auth_enabled": _auth_enabled(),
         "cloud_schedule": cloud_schedule,
         "lan_schedule": lan_schedule,
         "cloud_enabled": cfg.cloud.enabled,
@@ -694,17 +690,11 @@ _APPROVAL_TARGETS = {
 
 def _approval_actor(request: Request) -> str:
     ip = request.client.host if request.client else "unknown"
-    how = "session" if _validate_session(request.cookies.get("session")) else "api-key"
-    return f"{ip} ({how})"
+    return f"{ip} (session)"
 
 
 def _require_approval_rights(request: Request) -> None:
     _require_auth(request)
-    if not _auth_enabled():
-        raise HTTPException(
-            status_code=403,
-            detail="Approving or dismissing a blocked backup needs dashboard sign-in: "
-                   "set dashboard.auth_enabled: true (with an api_key) in config.yaml.")
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"decision:{client_ip}", _dash("rate_limit_decisions")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
@@ -767,7 +757,7 @@ async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
 def list_approvals(request: Request):
     _require_auth(request)
     rows = get_db().open_approvals()
-    return {"auth_enabled": _auth_enabled(), "approvals": [_approval_view(r) for r in rows]}
+    return {"approvals": [_approval_view(r) for r in rows]}
 
 
 @app.post("/approvals/{approval_id}/approve")
@@ -850,11 +840,6 @@ def _settings_lock_busy() -> str | None:
 
 def _require_settings_rights(request: Request) -> None:
     _require_auth(request)
-    if not _auth_enabled():
-        raise HTTPException(
-            status_code=403,
-            detail="Changing settings needs dashboard sign-in: set dashboard.auth_enabled: true "
-                   "(with an api_key) in config.yaml.")
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"settings:{client_ip}", _dash("rate_limit_settings")):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
@@ -862,19 +847,22 @@ def _require_settings_rights(request: Request) -> None:
 
 # ── Advanced-settings login (owner 2026-10-15) ───────────────
 # A second, separate login on top of the dashboard sign-in. Its password is
-# the dashboard key until changed here; then only a PBKDF2 hash is stored.
+# its own stored PBKDF2 hash (plan E1-E3); the sign-in password never opens it.
 # Enforced on the server: without it, advanced settings are neither sent to
 # the browser nor accepted in a save / validate.
 
-_admin_sessions: dict[str, float] = {}
+_admin_sessions: dict[str, dict] = {}
 
 
 def _is_admin(request: Request) -> bool:
     token = request.cookies.get("admin_session")
-    created = _admin_sessions.get(token) if token else None
-    if created is None:
+    session = _admin_sessions.get(token) if token else None
+    if session is None:
         return False
-    if time.time() - created > _cfg().dashboard.admin_session_minutes * 60:
+    if time.time() - session["created_at"] > _cfg().dashboard.admin_session_minutes * 60:
+        _admin_sessions.pop(token, None)
+        return False
+    if session["fp"] != _admin_fingerprint():          # the Advanced password changed since
         _admin_sessions.pop(token, None)
         return False
     return True
@@ -884,7 +872,6 @@ def _is_admin(request: Request) -> bool:
 def admin_status(request: Request):
     _require_auth(request)
     return {"admin": _is_admin(request),
-            "password_changed": bool(_cfg().dashboard.admin_password_hash),
             "session_minutes": _cfg().dashboard.admin_session_minutes}
 
 
@@ -902,7 +889,7 @@ async def admin_login(request: Request):
         logger.warning(f"Advanced login refused for {client_ip}")
         raise HTTPException(status_code=401, detail="Wrong admin password.")
     token = secrets.token_hex(32)
-    _admin_sessions[token] = time.time()
+    _admin_sessions[token] = {"created_at": time.time(), "fp": _admin_fingerprint()}
     logger.warning(f"Advanced login by {_approval_actor(request)}")
     resp = JSONResponse({"status": "ok", "session_minutes": _cfg().dashboard.admin_session_minutes})
     resp.set_cookie(key="admin_session", value=token, httponly=True, samesite="strict",
@@ -919,8 +906,17 @@ def admin_logout(request: Request):
     return resp
 
 
-@app.post("/api/admin/password")
-async def admin_change_password(request: Request):
+def _reload_config_now() -> None:
+    global _config_loaded_at
+    with _CFG_LOCK:
+        _config_loaded_at = 0.0
+
+
+async def _change_password(request: Request, which: str) -> JSONResponse | dict:
+    """Change the dashboard sign-in password (`which="login"`) or the Advanced one
+    (`which="admin"`). Needs an Advanced session AND the current Advanced password typed again
+    (plan E3); the two passwords must differ; every OTHER session signed in with the old password
+    ends (plan E2) while the person who changed it stays signed in."""
     _require_settings_rights(request)
     if not _is_admin(request):
         raise HTTPException(status_code=403, detail="Sign in to Advanced first.")
@@ -930,34 +926,73 @@ async def admin_change_password(request: Request):
         body = {}
     dashboard = _cfg().dashboard
     if not admin_auth.verify_admin_password(str(body.get("current", "")), dashboard):
-        raise HTTPException(status_code=400, detail="The current admin password is wrong.")
-    problem = admin_auth.new_password_problem(str(body.get("new", "")), str(body.get("confirm", "")),
+        raise HTTPException(status_code=400, detail="The current Advanced password is wrong.")
+    new = str(body.get("new", ""))
+    problem = admin_auth.new_password_problem(new, str(body.get("confirm", "")),
                                               dashboard.admin_password_min_length)
     if problem:
         raise HTTPException(status_code=400, detail=problem)
+    other = dashboard.login_password_hash if which == "admin" else dashboard.admin_password_hash
+    if other and admin_auth._check_hash(new, other):
+        raise HTTPException(status_code=400, detail="The dashboard password and the Advanced "
+                                                    "password must be different.")
+    key, name = (("dashboard.admin_password_hash", "Advanced") if which == "admin"
+                 else ("dashboard.login_password_hash", "Dashboard"))
     actor = _approval_actor(request)
+    new_hash = admin_auth.hash_password(new)
     try:
-        config_edit.set_admin_password_hash(
-            _settings_config_path(), admin_auth.hash_password(str(body["new"])),
-            actor=actor, db=get_db(), now_iso=now_iso)
+        config_edit.set_password_hash(_settings_config_path(), key, new_hash,
+                                      actor=actor, db=get_db(), now_iso=now_iso)
     except config_edit.ConfigEditError as e:
         return JSONResponse({"detail": str(e)}, status_code=e.status)
-    global _config_loaded_at
-    with _CFG_LOCK:
-        _config_loaded_at = 0.0
-    # every OTHER Advanced session ends: they signed in with the old password
-    keep = request.cookies.get("admin_session")
-    for token in [t for t in _admin_sessions if t != keep]:
-        _admin_sessions.pop(token, None)
-    logger.warning(f"Advanced (admin) password changed by {actor}")
-    return {"status": "changed", "detail": "Admin password changed. Other Advanced sessions "
-                                           "were signed out."}
+    _reload_config_now()
+    fresh = admin_auth.fingerprint(new_hash)
+    if which == "admin":
+        keep = request.cookies.get("admin_session")
+        for token in [t for t in _admin_sessions if t != keep]:
+            _admin_sessions.pop(token, None)
+        if keep in _admin_sessions:
+            _admin_sessions[keep]["fp"] = fresh
+    else:
+        keep = request.cookies.get("session")
+        for token in [t for t in _sessions if t != keep]:
+            _sessions.pop(token, None)
+        if keep in _sessions:
+            _sessions[keep]["fp"] = fresh
+    logger.warning(f"{name} password changed by {actor}")
+    _announce_password_change(request, name, actor)
+    return {"status": "changed", "detail": f"{name} password changed. Everyone else who was "
+                                           f"signed in with the old one was signed out."}
+
+
+def _announce_password_change(request: Request, name: str, actor: str) -> None:
+    """INFO email to the recipients (plan E6): which password, who, when - never the password."""
+    try:
+        from core.notify import AlertEvent, notify
+        notify(_cfg(), AlertEvent(
+            key=f"password:{name.lower()}", kind="INFO", mode="dashboard",
+            title=f"{name} password changed",
+            message=f"The {name} password of the backup dashboard was changed by {actor} "
+                    f"at {format_ist(now_iso(), 'D MMM YYYY, h:mm A')}. If this was not you, "
+                    "contact support."), db=get_db())
+    except Exception as e:  # noqa: BLE001 - the change stands; a failed email is logged and visible
+        logger.error(f"Could not send the {name} password change notice: {e}")
+
+
+@app.post("/api/admin/password")
+async def admin_change_password(request: Request):
+    return await _change_password(request, "admin")
+
+
+@app.post("/api/admin/dashboard-password")
+async def dashboard_change_password(request: Request):
+    return await _change_password(request, "login")
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     _require_auth(request)
-    context = {"request": request, "auth_enabled": _auth_enabled()}
+    context = {"request": request}
     try:
         return templates.TemplateResponse(request=request, name="settings.html", context=context)
     except TypeError:
@@ -974,7 +1009,7 @@ def get_settings(request: Request):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"config.yaml does not load: {e}") from e
     admin = _is_admin(request)
-    return {"auth_enabled": _auth_enabled(), "admin": admin,
+    return {"admin": admin,
             "sections": config_edit.catalog(current, include_advanced=admin),
             "effects": config_edit.EFFECT_TEXT}
 

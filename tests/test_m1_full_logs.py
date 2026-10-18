@@ -22,7 +22,7 @@ def _cfg(tmp_path, **run_logs) -> AppConfig:
         paths={"source_drive": str(src), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
-        dashboard={"auth_enabled": False},
+        dashboard={},
         notifications={"send_on_failure": False},
         run_logs=run_logs or {},
     )

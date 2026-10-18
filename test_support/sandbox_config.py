@@ -28,6 +28,9 @@ SANDBOX_MARKER = "aam-test-sandbox-"
 _LAN_DEST = "\\\\127.0.0.1\\aam-test-sandbox-no-such-share\\FY26-27"
 
 
+from test_support import ui_login  # noqa: E402
+
+
 def _config_dict(root: Path) -> dict:
     source = root / "source" / "FY26-27"
     source.mkdir(parents=True, exist_ok=True)
@@ -48,7 +51,7 @@ def _config_dict(root: Path) -> dict:
         "cloud": {"enabled": True, "bucket": SANDBOX_BUCKET, "project_number": "0"},
         "notifications": {"send_on_failure": False, "weekly_enabled": False,
                           "monthly_enabled": False},
-        "dashboard": {"auth_enabled": False},
+        "dashboard": dict(ui_login.DASHBOARD),
     }
 
 

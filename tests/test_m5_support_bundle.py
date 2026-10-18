@@ -5,6 +5,7 @@ Every PROBLEM / ACTION NEEDED / WARNING email carries a plain-text support
 report and, when it fits, a zip of the run's full log folder - so a forwarded
 email lets support find the cause. Secrets never leave the server."""
 
+from test_support import ui_login  # noqa: E402
 import gzip
 import io
 import zipfile
@@ -18,7 +19,7 @@ from models.config import AppConfig
 
 UNC = "\\\\10.10.151.53\\aam_nas\\FY26-27"
 SMTP_PASS = "S3cr3t-Pass-xyz"
-API_KEY = "K3y-Value-abc"
+API_KEY = ui_login.LOGIN_HASH          # a stored secret the bundle must scrub
 PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\n-----END PRIVATE KEY-----"
 
 
@@ -28,8 +29,7 @@ def _cfg(tmp_path, **alerts) -> AppConfig:
         paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
-        dashboard={"auth_enabled": True, "api_key": API_KEY,
-                   "public_url": "http://backup-server:8080"},
+        dashboard={"public_url": "http://backup-server:8080", **ui_login.DASHBOARD},
         notifications={"smtp_host": "smtp.example", "sender": "b@firm.example",
                        "recipients": ["o@firm.example"], "smtp_username": "u",
                        "smtp_password": SMTP_PASS},

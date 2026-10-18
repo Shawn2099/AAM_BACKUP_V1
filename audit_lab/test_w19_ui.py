@@ -60,6 +60,8 @@ def ui_rig(sandbox, monkeypatch):
     ui._config, ui._config_loaded_at = cfg, time.time()
     monkeypatch.setattr(ui, "_DB_INSTANCE", None)
     ui._sessions.clear()
+    from test_support import ui_login
+    ui_login.register(ui)               # the signed-in test client (plan E10)
     ui._RATE_LIMITS.clear()
     ui._config, ui._config_loaded_at = None, 0.0
     try:
@@ -147,31 +149,33 @@ def test_w19_login_page(ui_rig):
         assert "&lt;script&gt;" in r.text      # escaped, never raw HTML
 
 
-def test_w19_login_disabled_auth(ui_rig):
+def test_w19_login_not_set_up(ui_rig):
+    """Plan E4: no password hash = nobody signs in; /login shows the 'not set up' page."""
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = False
+    ui_rig["cfg"].dashboard.login_password_hash = ""
     with TestClient(ui.app) as client:
-        r = client.post("/login", follow_redirects=False)
-        assert r.status_code == 303 and r.headers["location"] == "/"
-        assert "session" in r.cookies
-        assert ui._validate_session(r.cookies["session"]) is True
+        r = client.post("/login", data={"password": ""}, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == "/login"
+        assert "session" not in r.cookies
+        page = client.get("/login")
+        assert page.status_code == 503 and "not set up" in page.text
 
 
 def test_w19_login_enabled_auth(ui_rig):
     from fastapi.testclient import TestClient
 
+    from test_support import ui_login
+
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = True
-    ui_rig["cfg"].dashboard.api_key = "s3cret"
     with TestClient(ui.app, base_url="https://labtest") as client:      # https -> secure flag
-        r = client.post("/login", data={"api_key": "s3cret"}, follow_redirects=False)
+        r = client.post("/login", data={"password": ui_login.LOGIN_PASSWORD}, follow_redirects=False)
         assert r.status_code == 303 and "session" in r.cookies
         assert "Secure" in r.headers.get("set-cookie", "")
-        r = client.post("/login", data={"api_key": "wrong"}, follow_redirects=False)
+        r = client.post("/login", data={"password": "wrong"}, follow_redirects=False)
         assert r.status_code == 303
-        assert "Invalid+API+key" in r.headers["location"]
+        assert "Wrong+password" in r.headers["location"]
 
 
 def test_w19_login_rate_limited(ui_rig):
@@ -180,7 +184,7 @@ def test_w19_login_rate_limited(ui_rig):
     ui = ui_rig["ui"]
     ui_rig["monkeypatch"].setattr(ui, "_check_rate_limit", lambda *a, **k: False)
     with TestClient(ui.app) as client:
-        r = client.post("/login", data={"api_key": "x"})
+        r = client.post("/login", data={"password": "x"})
         assert r.status_code == 429
 
 
@@ -199,9 +203,7 @@ def test_w19_require_auth_branches(ui_rig):
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = True
-    ui_rig["cfg"].dashboard.api_key = "k3y"
-    with TestClient(ui.app) as client:
+    with TestClient(ui.app, cookies={"session": "none"}) as client:
         # browser request -> redirect to login
         r = client.get("/status", headers={"Accept": "text/html"},
                        follow_redirects=False)
@@ -209,13 +211,13 @@ def test_w19_require_auth_branches(ui_rig):
         # API request -> 401 JSON
         r = client.get("/status")
         assert r.status_code == 401
-        # valid API key header passes
+        # the removed X-API-Key header opens nothing
         r = client.get("/status", headers={"X-API-Key": "k3y"})
-        assert r.status_code != 401
+        assert r.status_code == 401
         # valid session cookie passes
         token = ui._create_session()
         client.cookies.set("session", token)
-        r = client.get("/status", headers={"X-API-Key": ""})
+        r = client.get("/status")
         assert r.status_code != 401
 
 
@@ -225,7 +227,6 @@ def test_w19_dashboard_flash_and_typeresponse_fallback(ui_rig):
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = False
     with TestClient(ui.app) as client:
         # the old ?status= flash banner was dead code and is gone (4f): the page just renders
         r = client.get("/", params={"status": "triggered_lan"})
@@ -258,7 +259,6 @@ def test_w19_status_error_truncation(ui_rig):
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = False
     db_path = ui_rig["sandbox"] / "runtime" / "manifest.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     _seed_runs(db_path, [_status_run(error_len=5000)])
@@ -277,7 +277,6 @@ def test_w19_status_db_unavailable(ui_rig):
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = False
 
     class BadDB:
         def get_recent_runs(self, n):
@@ -329,7 +328,6 @@ def _prep_triggers(ui_rig, *, leg_enabled=True, running=False, verify=None,
     ui = ui_rig["ui"]
     ui_rig["cfg"].cloud.enabled = leg_enabled
     ui_rig["cfg"].lan.enabled = leg_enabled
-    ui_rig["cfg"].dashboard.auth_enabled = False
     # these tests make many posts per minute from one IP: neutralise the
     # rate limiter here and exercise the 429 branch separately (per test)
     ui_rig["monkeypatch"].setattr(ui, "_check_rate_limit", lambda *a, **k: True)
@@ -621,7 +619,6 @@ def test_w19_health_endpoint(ui_rig):
     from core.time_utils import IST
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = False
     ui_rig["monkeypatch"].setattr(ui, "_is_running", lambda leg: _async(False))
     # 1. nothing has ever succeeded -> 503 with the reasons, no paths/secrets
     with TestClient(ui.app) as client:
@@ -657,7 +654,6 @@ def test_w19_email_report_endpoints(ui_rig):
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = False
     ui_rig["cfg"].notifications.recipients = ["ops@example.com"]
     from core import report as rep
 
@@ -710,7 +706,6 @@ def test_w19_report_download_rate_limit(ui_rig):
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
-    ui_rig["cfg"].dashboard.auth_enabled = False
     ui_rig["monkeypatch"].setattr(ui, "_check_rate_limit", lambda *a, **k: False)
     with TestClient(ui.app) as client:
         assert client.get("/report/weekly").status_code == 429

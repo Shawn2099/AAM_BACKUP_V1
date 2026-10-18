@@ -12,6 +12,7 @@ test asserts the REAL behaviour and explains it in the docstring — that is the
 point of a characterization test.
 """
 
+from test_support import ui_login  # noqa: E402
 import contextlib
 import os
 import subprocess
@@ -720,7 +721,7 @@ class TestFyRolloverCharacterization:
             r"  lan_destination: \\nas\share\FY26-27" + "\n"
             # the switch re-loads the written file (plan K): the rest must be valid too
             "wol:\n  enabled: false\ncloud:\n  enabled: false\n"
-            "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n",
+            + ui_login.DASHBOARD_YAML,
             encoding="utf-8",
         )
         update_config_yaml(str(cfg), r"E:\src", r"\\nas\share", "FY27-28")

@@ -541,53 +541,19 @@ def test_w14_auth_and_rate_limit_branches(ui_rig, monkeypatch):
     rows.append(f"sessions: create/validate/unknown/expired all behave "
                 f"(store size now {len(ui._sessions)})")
 
-    # ---- API key -------------------------------------------------------------
-    # _get_api_key() reads through _cfg(), which loads from DISK — the
-    # in-memory cfg mutations must be written to config.yaml or the production
-    # code never sees them (auth appears disabled and every check passes).
-    import json
-
-    import yaml
-
-    def _write_cfg():
-        yaml.safe_dump(json.loads(cfg.model_dump_json()),
-                       (ui_rig["sandbox"] / "config.yaml").open("w", encoding="utf-8"))
-
-    ui._config = None
-    ui._config_loaded_at = 0.0
-    cfg = ui_rig["cfg"]
-    cfg.dashboard.auth_enabled = True
-    cfg.dashboard.api_key = "lab-secret-key"
-    _write_cfg()
+    # ---- sign-in (plan E: always on, no API key) ------------------------------
+    # _require_auth() reads through _cfg(), which loads from DISK, so the lab config
+    # (written by build_config with the two test password hashes) is what applies.
+    from fastapi import HTTPException
 
     class _Req:
         def __init__(self, headers=None, cookies=None):
             self.headers = headers or {}
             self.cookies = cookies or {}
 
-    if not ui._check_api_key_header(_Req({"X-API-Key": "lab-secret-key"})):
-        problems.append("the correct API key was rejected")
-    if ui._check_api_key_header(_Req({"X-API-Key": "wrong"})):
-        problems.append("a wrong API key was accepted")
-    if ui._check_api_key_header(_Req()):
-        problems.append("a missing API key was accepted while auth is enabled")
-    # with auth disabled the header must not matter
-    cfg.dashboard.auth_enabled = False
-    _write_cfg()
     ui._config = None
     ui._config_loaded_at = 0.0
-    if not ui._check_api_key_header(_Req()):
-        problems.append("the API key was required although auth is disabled")
-    rows.append("api key: correct accepted, wrong/missing rejected, ignored when auth off")
-
-    # _require_auth: redirects browsers (303) and 401s API clients
-    from fastapi import HTTPException
-
     ui._sessions.clear()
-    cfg.dashboard.auth_enabled = True
-    _write_cfg()
-    ui._config = None
-    ui._config_loaded_at = 0.0
     try:
         ui._require_auth(_Req({"Accept": "text/html"}))
         problems.append("an unauthenticated browser request was allowed through")
@@ -603,10 +569,14 @@ def test_w14_auth_and_rate_limit_branches(ui_rig, monkeypatch):
         rows.append(f"_require_auth(api, no session)     -> {e.status_code}")
         if e.status_code != 401:
             problems.append(f"an API request got {e.status_code}, want 401")
+    try:
+        ui._require_auth(_Req({"X-API-Key": "anything", "Accept": "application/json"}))
+        problems.append("the removed X-API-Key header opened the dashboard")
+    except HTTPException:
+        pass
     good = ui._create_session()
     ui._require_auth(_Req(cookies={"session": good}))
-    rows.append("_require_auth(valid session) -> passes")
-    cfg.dashboard.auth_enabled = False
+    rows.append("_require_auth(valid session) -> passes; X-API-Key header opens nothing")
     ui._sessions.clear()
 
     # ---- rate limiting -------------------------------------------------------

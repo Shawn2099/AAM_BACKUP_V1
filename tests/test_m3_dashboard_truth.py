@@ -6,6 +6,7 @@ emails were invisible; the FY shown came from the calendar while backups
 used the configured FY.
 """
 
+from test_support import ui_login  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -25,7 +26,7 @@ def _cfg(cloud=True, lan=True, stale=26):
     return SimpleNamespace(
         cloud=SimpleNamespace(enabled=cloud), lan=SimpleNamespace(enabled=lan),
         dashboard=SimpleNamespace(stale_after_hours=stale, alert_failure_window_days=7,
-                                  auth_enabled=False, api_key="",
+                                  **ui_login.DASHBOARD,
                                   public_url="http://backup-server:8080"),
         paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
         firm_name="T",
@@ -101,7 +102,7 @@ def test_degraded_run_logs_are_amber(db):
 
 
 def test_dashboard_config_keys():
-    d = DashboardConfig(auth_enabled=False)
+    d = DashboardConfig()
     assert (d.stale_after_hours, d.alert_failure_window_days) == (26, 7)
 
 

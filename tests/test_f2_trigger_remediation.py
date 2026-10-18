@@ -116,7 +116,7 @@ def _body(resp):
 def test_trigger_wait_constant_is_180_seconds():
     # audit 2026-10-18: a config key now (dashboard.trigger_wait_seconds)
     from models.config import DashboardConfig
-    assert DashboardConfig(auth_enabled=False).trigger_wait_seconds == 180
+    assert DashboardConfig().trigger_wait_seconds == 180
 
 
 @pytest.mark.parametrize("query", ["wait=false", "wait=False", "wait=0", "wait=no", "wait=off"])

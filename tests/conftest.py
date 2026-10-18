@@ -86,3 +86,37 @@ def _guard_standard_fds():
     yield
     closed = before - _open_fds()
     assert not closed, f"test closed standard file descriptor(s) {sorted(closed)}"
+
+@pytest.fixture(autouse=True)
+def _dashboard_session():
+    """The dashboard always needs a sign-in (plan E10): register the fixed test session and
+    Advanced-session tokens (test_support.ui_login.HEADERS / ADMIN_HEADERS) in the ui module."""
+    import ui
+    from test_support import ui_login
+
+    ui_login.register(ui)
+    yield
+    ui_login.unregister(ui)
+
+
+@pytest.fixture(autouse=True)
+def _dashboard_test_client(request, monkeypatch):
+    """TestClient(ui.app) starts signed in (the session registered above) unless the test is
+    marked `anonymous` (tests of the sign-in itself)."""
+    if request.node.get_closest_marker("anonymous"):
+        yield
+        return
+    import ui
+    from fastapi.testclient import TestClient
+
+    from test_support import ui_login
+
+    original = TestClient.__init__
+
+    def signed_in_init(self, app, *args, **kwargs):
+        if app is ui.app and not kwargs.get("headers") and not kwargs.get("cookies"):
+            kwargs["cookies"] = {"session": ui_login.SESSION_TOKEN}
+        original(self, app, *args, **kwargs)
+
+    monkeypatch.setattr(TestClient, "__init__", signed_in_init)
+    yield

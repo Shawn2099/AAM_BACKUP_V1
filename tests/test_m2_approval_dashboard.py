@@ -3,6 +3,7 @@
 Real auth (API key), real ManifestDB; only Prefect is faked.
 """
 
+from test_support import ui_login  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -15,7 +16,7 @@ from core import approvals as ap
 from core.manifest import ManifestDB
 from models.config import ApprovalsConfig
 
-KEY = {"X-API-Key": "secret-key"}
+KEY = {}      # the TestClient is signed in already (tests/conftest.py)
 GUARDS = [{"guard": "G3_MASS_DELETE", "reason": "This backup would delete 600 of 1,000",
            "metrics": {"planned_deletes": 600, "delete_percent": 60.0}}]
 
@@ -24,7 +25,7 @@ GUARDS = [{"guard": "G3_MASS_DELETE", "reason": "This backup would delete 600 of
 def rig(monkeypatch, tmp_path):
     db = ManifestDB(str(tmp_path / "m.db"))
     cfg = SimpleNamespace(
-        dashboard=SimpleNamespace(auth_enabled=True, api_key="secret-key"),
+        dashboard=SimpleNamespace(**ui_login.DASHBOARD),
         approvals=ApprovalsConfig(),
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
     )
@@ -59,7 +60,6 @@ def _approve(rig, aid, phrase="DELETE 600", headers=KEY):
 def test_list_shows_reason_numbers_and_phrase(rig):
     aid = _open(rig)
     data = rig.client.get("/approvals", headers=KEY).json()
-    assert data["auth_enabled"] is True
     [row] = data["approvals"]
     assert row["approval_id"] == aid and row["leg"] == "lan" and row["status"] == ap.PENDING
     assert row["phrase"] == "DELETE 600"
@@ -72,7 +72,7 @@ def test_approve_with_phrase_records_who_and_reruns_once_with_approval_id(rig):
     assert resp.status_code == 202, resp.text
     req = rig.db.get_approval(aid)
     assert req["status"] == ap.APPROVED
-    assert "api-key" in req["approved_by"]
+    assert "(session)" in req["approved_by"]
     hours = (pendulum.parse(req["expires_at"]) - pendulum.parse(req["approved_at"])).in_hours()
     assert hours == 12
     assert rig.calls == [{"name": "aam-backup/backup-lan",
@@ -88,17 +88,19 @@ def test_wrong_phrase_changes_nothing(rig, phrase):
     assert rig.calls == []
 
 
-def test_approvals_need_sign_in_enabled(rig):
-    rig.cfg.dashboard = SimpleNamespace(auth_enabled=False, api_key="")
+def test_approvals_refused_until_the_passwords_are_set_up(rig):
+    rig.cfg.dashboard = SimpleNamespace(login_password_hash="", admin_password_hash="")  # fail closed
     aid = _open(rig)
-    resp = _approve(rig, aid, headers={})
-    assert resp.status_code == 403 and "auth_enabled" in resp.json()["detail"]
+    resp = _approve(rig, aid)
+    assert resp.status_code == 503 and "not set up" in resp.json()["detail"]
     assert rig.db.get_approval(aid)["status"] == ap.PENDING and rig.calls == []
 
 
 def test_unauthenticated_is_refused(rig):
     aid = _open(rig)
-    assert _approve(rig, aid, headers={"X-API-Key": "wrong"}).status_code == 401
+    stranger = TestClient(ui.app, cookies={"session": "not-a-session"})
+    resp = stranger.post(f"/approvals/{aid}/approve?wait=false", json={"phrase": "DELETE 600"})
+    assert resp.status_code == 401
     assert rig.db.get_approval(aid)["status"] == ap.PENDING
 
 

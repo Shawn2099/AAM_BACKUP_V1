@@ -100,13 +100,15 @@ class TestHealthConfig:
 
 
 class TestDashboardConfig:
-    def test_api_key_required_when_auth_enabled(self):
+    @pytest.mark.parametrize("removed", [{"api_key": "k"}, {"auth_enabled": False}])
+    def test_removed_login_keys_are_rejected(self, removed):
+        """Plan E: sign-in is always on and the API key is gone (fresh install, no deprecation)."""
         with pytest.raises(ValidationError):
-            DashboardConfig(auth_enabled=True, api_key="")
+            DashboardConfig(**removed)
 
-    def test_api_key_not_required_when_auth_disabled(self):
-        config = DashboardConfig(auth_enabled=False, api_key="")
-        assert config.auth_enabled is False
+    def test_no_password_hash_is_valid_but_nobody_signs_in(self):
+        config = DashboardConfig()
+        assert config.login_password_hash == "" and config.admin_password_hash == ""
 
     def test_port_bounds(self):
         with pytest.raises(ValidationError):

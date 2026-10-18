@@ -8,6 +8,7 @@ round-trip load -> caller edits -> backup -> atomic write (replace retried) ->
 load check -> restore on an invalid result.
 """
 
+from test_support import ui_login  # noqa: E402
 import os
 import subprocess
 import sys
@@ -39,7 +40,7 @@ def _write_config(tmp_path, extra=""):
         "cloud:\n  enabled: false\n"
         "wol:\n  enabled: false\n"
         "budget:\n  lan_max_hours: 4\n"
-        "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n"
+        + ui_login.DASHBOARD_YAML
         + extra,
         encoding="utf-8")
     return cfg

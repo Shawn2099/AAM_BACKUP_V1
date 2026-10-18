@@ -35,7 +35,7 @@ from core.config_file import (ConfigWriteError, config_transaction, load_round_t
                                prune_backups, set_dotted)
 
 LOCKED = frozenset({
-    "dashboard.auth_enabled", "dashboard.api_key", "dashboard.bind_address", "dashboard.port",
+    "dashboard.bind_address", "dashboard.port",
     "dashboard.admin_password_hash", "dashboard.login_password_hash",
     "dashboard.firewall_remote_addresses",
     "paths.runtime_dir", "paths.database_path", "paths.log_directory",

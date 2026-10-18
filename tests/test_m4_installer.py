@@ -42,7 +42,7 @@ def _config(tmp_path, schedule_extra=""):
         "  gcs_key_path: ''\n"
         "cloud:\n  enabled: false\n"
         "wol:\n  enabled: false\n"
-        "dashboard:\n  auth_enabled: false\n"
+        "dashboard: {}\n"
         + schedule_extra, encoding="utf-8")
     return cfg
 

@@ -8,6 +8,7 @@
 - every client-facing time is IST (format_ist; dashboard formatter).
 """
 
+from test_support import ui_login  # noqa: E402
 import json
 import shutil
 import subprocess
@@ -36,7 +37,7 @@ def _write_config(tmp_path, extra=""):
         "cloud:\n  enabled: false\n"
         "wol:\n  enabled: false\n"
         "notifications:\n  recipients: ['a@firm.com']\n"
-        "dashboard:\n  auth_enabled: true\n  api_key: k\n" + extra, encoding="utf-8")
+        + ui_login.DASHBOARD_YAML + extra, encoding="utf-8")
     return cfg
 
 
@@ -84,7 +85,7 @@ class TestLiveValidation:
         assert out["ok"] is False and "run budgets" in out["errors"][0]["message"]
 
     def test_locked_key_is_reported(self, tmp_path):
-        out = ce.validate_changes(str(_write_config(tmp_path)), {"dashboard.api_key": "x"})
+        out = ce.validate_changes(str(_write_config(tmp_path)), {"dashboard.bind_address": "0.0.0.0"})
         assert out["ok"] is False and "config.yaml on the server" in out["errors"][0]["message"]
 
 
@@ -174,7 +175,7 @@ def test_basic_tab_holds_what_a_client_changes_the_rest_is_advanced(tmp_path):
                 "paths.lan_destination", "wol.mac_address", "firm_name"):
         assert f[key]["level"] == "basic", key
     for key in ("guards.max_delete_percent", "watchdog.failure_threshold", "cloud.verify_timeout_seconds",
-                "maintenance.sqlite_synchronous", "schedule.timezone", "dashboard.api_key"):
+                "maintenance.sqlite_synchronous", "schedule.timezone", "dashboard.bind_address"):
         assert f[key]["level"] == "advanced", key
     assert all(k in f for k in ce.BASIC_KEYS)        # no typo in the basic list
 
@@ -198,7 +199,7 @@ class TestManualRollover:
 def rollover_rig(monkeypatch, tmp_path):
     db = ManifestDB(str(tmp_path / "m.db"))
     cfg = SimpleNamespace(
-        dashboard=SimpleNamespace(auth_enabled=True, api_key="k"),
+        dashboard=SimpleNamespace(**ui_login.DASHBOARD),
         paths=SimpleNamespace(source_drive="E:\DATA\FY26-27",
                               lan_destination="\\nas\share\FY26-27"))
     calls = []
@@ -217,7 +218,7 @@ def rollover_rig(monkeypatch, tmp_path):
     db.close()
 
 
-H = {"X-API-Key": "k"}
+H = {}      # the TestClient is signed in already (tests/conftest.py)
 
 
 class TestRolloverEndpoints:

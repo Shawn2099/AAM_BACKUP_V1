@@ -8,7 +8,7 @@ from models.config import DashboardConfig
 
 
 def _dash(**kw):
-    return DashboardConfig(auth_enabled=False, **kw)
+    return DashboardConfig(**kw)
 
 
 def test_login_hash_must_be_a_hash_not_a_password():
@@ -21,15 +21,15 @@ def test_login_hash_must_be_a_hash_not_a_password():
 
 def test_verify_login_password_uses_only_the_login_hash():
     d = _dash(login_password_hash=admin_auth.hash_password("office-pass-1"),
-              admin_password_hash=admin_auth.hash_password("owner-pass-22"), api_key="the-api-key")
+              admin_password_hash=admin_auth.hash_password("owner-pass-22"))
     assert admin_auth.verify_login_password("office-pass-1", d)
     assert not admin_auth.verify_login_password("owner-pass-22", d)      # Advanced password != sign-in
-    assert not admin_auth.verify_login_password("the-api-key", d)        # no API-key login
+    assert not admin_auth.verify_login_password("the-api-key", d)        # no other secret signs in
     assert not admin_auth.verify_login_password("", d)
 
 
 def test_no_login_hash_means_nobody_signs_in():
-    d = _dash(api_key="the-api-key")
+    d = _dash()
     assert not admin_auth.verify_login_password("the-api-key", d)
     assert not admin_auth.verify_login_password("", d)
     assert not admin_auth.credentials_set(d)

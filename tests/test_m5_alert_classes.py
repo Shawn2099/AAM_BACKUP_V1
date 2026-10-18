@@ -23,7 +23,7 @@ def _cfg(tmp_path, port=25, send_on_failure=False) -> AppConfig:
         paths={"source_drive": str(tmp_path), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
-        dashboard={"auth_enabled": False, "public_url": "http://backup-server:8080"},
+        dashboard={"public_url": "http://backup-server:8080"},
         notifications={"smtp_host": "127.0.0.1", "smtp_port": port, "sender": "b@test.local",
                        "recipients": ["ops@test.local"], "smtp_security": "none",
                        "smtp_auth": False, "retry_attempts": 1, "retry_base_seconds": 0.01,

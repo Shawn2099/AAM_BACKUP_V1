@@ -185,7 +185,7 @@ def test_mail_server_down_never_stops_the_backup_and_the_failed_alert_is_recorde
         paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\backup\\FY26-27",
                "runtime_dir": str(tmp_path / "rt"), "gcs_key_path": str(tmp_path / "key.json")},
         wol={"enabled": False}, cloud={"enabled": False},
-        dashboard={"auth_enabled": False},
+        dashboard={},
         notifications={"smtp_host": "127.0.0.1", "smtp_port": _closed_port(),
                        "sender": "b@test.local", "recipients": ["ops@test.local"],
                        "smtp_security": "none", "smtp_auth": False, "retry_attempts": 3,

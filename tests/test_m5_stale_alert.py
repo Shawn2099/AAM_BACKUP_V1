@@ -36,7 +36,7 @@ def _cfg(tmp_path, port=25, cloud=False):
         wol={"enabled": False},
         cloud={"enabled": True, "bucket": "aam-test-bucket", "project_number": "0"}
         if cloud else {"enabled": False},
-        dashboard={"auth_enabled": False, "public_url": "http://backup-server:8080",
+        dashboard={"public_url": "http://backup-server:8080",
                    "stale_after_hours": 26},
         notifications={"smtp_host": "127.0.0.1", "smtp_port": port, "sender": "b@test.local",
                        "recipients": ["ops@test.local"], "smtp_security": "none",

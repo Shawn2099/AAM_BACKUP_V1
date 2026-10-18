@@ -87,7 +87,7 @@ def _app(**kw):
         paths=PathsConfig(source_drive="E:\\DATA\\FY26-27",
                           lan_destination="\\\\nas\\share\\FY26-27"),
         lan=LanConfig(enabled=True), wol=WolConfig(enabled=False),
-        cloud=CloudConfig(enabled=False), dashboard=DashboardConfig(auth_enabled=False),
+        cloud=CloudConfig(enabled=False), dashboard=DashboardConfig(),
     )
     base.update(kw)
     return AppConfig(**base)

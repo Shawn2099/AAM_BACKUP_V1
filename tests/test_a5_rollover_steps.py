@@ -5,6 +5,7 @@ folders are never overwritten, the NAS folder is only created where the share ro
 (F-9), and the config switch is compare-and-set with three outcomes decided under the lock.
 """
 
+from test_support import ui_login  # noqa: E402
 import pytest
 from filelock import FileLock
 
@@ -24,7 +25,7 @@ def _config(tmp_path, source, lan, extra=""):
         "  gcs_key_path: ''\n"
         "cloud:\n  enabled: false\n"
         "wol:\n  enabled: false\n"
-        "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n" + extra,
+        + ui_login.DASHBOARD_YAML + extra,
         encoding="utf-8")
     return cfg
 

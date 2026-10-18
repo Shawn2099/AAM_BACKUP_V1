@@ -16,7 +16,7 @@ let original = {};        // key -> value as loaded
 let values = {};          // key -> value being edited
 let localErrors = {};     // key -> message (browser check)
 let serverOk = true;
-let authEnabled = false;
+let authEnabled = true;     // every page needs a signed-in session
 let validateTimer = null;
 let validateSeq = 0;
 let scheduleTz = TZ;
@@ -555,9 +555,7 @@ async function loadSettings() {
         document.getElementById('sections').innerHTML = '<p style="color:#fca5a5">' + esc(data.detail || 'Could not load settings') + '</p>';
         return;
     }
-    authEnabled = !!data.auth_enabled;
     isAdmin = !!data.admin;
-    document.getElementById('readonly-banner').style.display = authEnabled ? 'none' : 'block';
     catalog = data.sections;
     fields = {}; original = {}; values = {}; localErrors = {}; serverOk = true;
     catalog.forEach(s => s.fields.forEach(f => {
@@ -628,12 +626,21 @@ async function adminLogout() {
     showToast('Advanced is locked.', 'info');
 }
 
-async function changeAdminPassword(ev) {
+let passwordWhich = 'admin';
+function showPasswordForm(which) {
+    passwordWhich = which;
+    document.getElementById('pw-title').textContent =
+        which === 'login' ? 'Change the dashboard password (everyone signs in with it)'
+                          : 'Change the Advanced password';
+    document.getElementById('admin-pw').style.display = 'block';
+}
+
+async function changePassword(ev) {
     ev.preventDefault();
     const body = { current: document.getElementById('pw-current').value,
                    new: document.getElementById('pw-new').value,
                    confirm: document.getElementById('pw-confirm').value };
-    const resp = await fetch('/api/admin/password', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const resp = await fetch(passwordWhich === 'login' ? '/api/admin/dashboard-password' : '/api/admin/password', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body) });
     const data = await resp.json().catch(() => ({}));
     ['pw-current', 'pw-new', 'pw-confirm'].forEach(id => { document.getElementById(id).value = ''; });

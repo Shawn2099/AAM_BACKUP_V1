@@ -8,6 +8,7 @@ Hard guarantees enforced in code (see assert_lab_path):
   * WoL and shutdown paths are disabled AND monkeypatched to raise if ever called
 """
 from __future__ import annotations
+from test_support import ui_login  # noqa: E402
 
 import hashlib
 import os
@@ -219,7 +220,7 @@ def build_config(base: Path, *, source: Path, lan_dest: str, runtime: Path,
             "rollover_cron": "0 6 * * *", "audit_cron": "0 10 * * SUN",
             "timezone": "Asia/Kolkata",
         },
-        "dashboard": {"auth_enabled": False, "api_key": "", "bind_address": "127.0.0.1", "port": 8080},
+        "dashboard": {**ui_login.DASHBOARD, "bind_address": "127.0.0.1", "port": 8080},
         "notifications": {"smtp_host": "", "smtp_port": 587, "smtp_username": "",
                           "smtp_password": "", "sender": "", "recipients": [],
                           "send_on_failure": False, "weekly_enabled": False,

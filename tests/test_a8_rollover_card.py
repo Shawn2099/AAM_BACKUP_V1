@@ -1,6 +1,7 @@
 """Plan A8: the dashboard shows an open rollover step by step, and the manual 'Run FY rollover
 now' can continue an unfinished rollover even after the config already points at the new FY."""
 
+from test_support import ui_login  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,7 +12,7 @@ import ui
 from core import rollover_journal as rj
 from core.manifest import ManifestDB
 
-H = {"X-API-Key": "k"}
+H = {}      # the TestClient is signed in already (tests/conftest.py)
 FROM, TO = "FY26-27", "FY27-28"
 
 
@@ -31,7 +32,7 @@ def rig(monkeypatch, tmp_path):
     db = ManifestDB(str(tmp_path / "m.db"))
     # the config already points at the NEW FY (the switch is done)
     cfg = SimpleNamespace(
-        dashboard=SimpleNamespace(auth_enabled=True, api_key="k"),
+        dashboard=SimpleNamespace(**ui_login.DASHBOARD),
         paths=SimpleNamespace(source_drive="E:\\DATA\\FY27-28",
                               lan_destination="\\\\nas\\share\\FY27-28"))
     calls = []

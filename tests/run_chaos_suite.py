@@ -99,8 +99,6 @@ schedule:
   audit_cron: "0 23 * * SUN"
   timezone: "Asia/Kolkata"
 dashboard:
-  auth_enabled: false
-  api_key: "CHAOS_KEY"
   bind_address: "127.0.0.1"
   port: 8999
 notifications:

@@ -27,7 +27,7 @@ def _cfg(tmp_path, cloud=True) -> AppConfig:
                "runtime_dir": str(tmp_path / "rt"), "gcs_key_path": str(tmp_path / "k.json")},
         wol={"enabled": False},
         cloud={"enabled": cloud, "bucket": "aam-test-bucket", "project_number": "123456"},
-        dashboard={"auth_enabled": False, "public_url": "http://backup-server:8080"},
+        dashboard={"public_url": "http://backup-server:8080"},
         schedule={"lan_cron": "0 21 * * *", "cloud_cron": "0 2 * * *"},
     )
 

@@ -111,7 +111,7 @@ def test_fy_switch_email_reads_as_information(tmp_path):
                                              "lan_destination": "\\\\nas\\s\\FY27-28",
                                              "runtime_dir": str(tmp_path / "rt")},
                     wol={"enabled": False}, cloud={"enabled": False},
-                    dashboard={"auth_enabled": False, "public_url": "http://backup-server:8080"})
+                    dashboard={"public_url": "http://backup-server:8080"})
     event = nt.AlertEvent(key="rollover:done:FY27-28", kind="INFO", mode="rollover",
                           title="New financial year FY27-28 started",
                           message="From today your backups use the new folder FY27-28.",

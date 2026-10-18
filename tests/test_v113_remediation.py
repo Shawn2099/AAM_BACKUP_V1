@@ -59,7 +59,7 @@ def test_f_lan_only_no_key_ok():
                     cloud={"enabled": False, "bucket": "", "project_number": ""},
                     lan={"enabled": True},
                     wol={"enabled": False},
-                    dashboard={"auth_enabled": False})
+                    dashboard={})
     assert cfg.paths.gcs_key_path == ""
 
 
@@ -70,7 +70,7 @@ def test_f_cloud_enabled_no_key_fails():
                   cloud={"enabled": True, "bucket": "bkt-abc", "project_number": "123"},
                   lan={"enabled": False},
                   wol={"enabled": False},
-                  dashboard={"auth_enabled": False})
+                  dashboard={})
 
 
 def test_f_health_requires_key_for_cloud():

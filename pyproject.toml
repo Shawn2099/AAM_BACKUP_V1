@@ -42,6 +42,7 @@ testpaths = ["tests"]
 addopts = "-v --tb=short"
 filterwarnings = ["ignore::DeprecationWarning"]
 pythonpath = ["."]
+markers = ["anonymous: the test uses a TestClient that is NOT signed in (tests of the sign-in itself)"]
 
 [dependency-groups]
 dev = [

@@ -237,9 +237,6 @@ budget:
 # DASHBOARD UI
 # ═══════════════════════════════════════════════════
 dashboard:
-  auth_enabled: true
-  # API key required when auth_enabled is true — change before production
-  api_key: "CHANGE_THIS_STRONG_KEY"
   # Bind address: 127.0.0.1 = localhost only. 0.0.0.0 = all interfaces (LAN accessible)
   bind_address: "127.0.0.1"
   port: 8080
@@ -248,9 +245,10 @@ dashboard:
   stale_after_hours: 26
   # ...or when an alert/report email failed to send within this many days (1–90)
   alert_failure_window_days: 7
-  # Advanced settings have their own login. Empty = its password is the same as
-  # api_key. Change it ONLY on the dashboard (Settings > Advanced > Change admin
-  # password): that stores a salted hash here, never the password itself.
+  # Advanced settings have their own login (a second password). A salted hash, written by
+  # the installer, by Settings > Advanced > Passwords, or by
+  # deploy/11_reset_dashboard_passwords.ps1 - never the password itself. Empty = nobody can
+  # open Advanced.
   admin_password_hash: ""
   # Dashboard sign-in password: a salted hash, written by the installer, by Settings >
   # Advanced > Passwords, or by deploy/11_reset_dashboard_passwords.ps1. Empty = nobody can

@@ -62,8 +62,6 @@ class TestBackupFlowInvocation:
             "  weekly_enabled: true\n"
             "  monthly_enabled: true\n"
             "dashboard:\n"
-            "  auth_enabled: false\n"
-            "  api_key: ''\n"
             "  bind_address: 127.0.0.1\n"
             "  port: 8080\n"
             "maintenance:\n"

@@ -6,6 +6,7 @@ protected; a backup holding the lock blocks the write; every write is
 backed up, atomic, comment-preserving and recorded in the history.
 """
 
+from test_support import ui_login  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,7 +18,7 @@ from core import config_edit as ce
 from core.manifest import ManifestDB
 from models.config import load_config
 
-KEY = {"X-API-Key": "secret-key"}
+KEY = {}      # the TestClient is signed in already (tests/conftest.py)
 
 
 def _write_config(tmp_path):
@@ -38,7 +39,7 @@ def _write_config(tmp_path):
         "budget:\n"
         "  # how long LAN may run\n"
         "  lan_max_hours: 4\n"
-        "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n",
+        + ui_login.DASHBOARD_YAML,
         encoding="utf-8")
     return cfg
 
@@ -71,7 +72,8 @@ class TestCatalog:
         assert fields["notifications.smtp_password"]["value"] is None
         assert fields["notifications.smtp_password"]["is_set"] is True
         assert "old-secret" not in repr(sections)
-        assert fields["dashboard.api_key"]["locked"] is True
+        assert fields["dashboard.bind_address"]["locked"] is True
+        assert "dashboard.login_password_hash" not in fields      # hidden, like the Advanced hash
         assert fields["paths.lan_destination"]["risky"] is True
         assert fields["guards.max_delete_percent"]["risky"] is True
         assert fields["schedule.lan_cron"]["effect"] == ce.AGENT_RESTART
@@ -109,7 +111,7 @@ class TestApply:
         assert "run budgets" in " ".join(x["message"] for x in e.value.extra["errors"])
         assert cfg_file.read_bytes() == before
 
-    @pytest.mark.parametrize("key", ["dashboard.api_key", "dashboard.auth_enabled",
+    @pytest.mark.parametrize("key", ["dashboard.bind_address", "dashboard.login_password_hash",
                                      "paths.runtime_dir", "paths.database_path"])
     def test_lock_out_keys_are_refused(self, cfg_file, key):
         with pytest.raises(ce.ConfigEditError) as e:
@@ -184,8 +186,7 @@ class TestApply:
 def rig(monkeypatch, tmp_path, db):
     cfg_file = _write_config(tmp_path)
     cfg = SimpleNamespace(dashboard=SimpleNamespace(
-        auth_enabled=True, api_key="secret-key", admin_password_hash="",
-        admin_session_minutes=30, admin_password_min_length=10))
+        **ui_login.DASHBOARD, admin_session_minutes=30, admin_password_min_length=10))
     monkeypatch.setattr(ui, "_cfg", lambda: cfg)
     monkeypatch.setattr(ui, "get_db", lambda: db)
     monkeypatch.setattr(ui, "_check_rate_limit", lambda key, max_attempts: True)
@@ -197,9 +198,10 @@ def rig(monkeypatch, tmp_path, db):
 
 
 class TestEndpoints:
+    @pytest.mark.anonymous
     def test_get_needs_sign_in(self, rig):
         assert rig.client.get("/api/settings").status_code == 401
-        body = rig.client.get("/api/settings", headers=KEY).json()
+        body = rig.client.get("/api/settings", headers=ui_login.HEADERS).json()
         assert any(s["name"] == "budget" for s in body["sections"])
 
     def test_save_and_history(self, rig):
@@ -212,7 +214,7 @@ class TestEndpoints:
 
     def test_errors_and_phrase_are_returned_as_json(self, rig):
         assert rig.client.post("/api/admin/login", headers=KEY,
-                               json={"password": "secret-key"}).status_code == 200
+                               json={"password": ui_login.ADMIN_PASSWORD}).status_code == 200
         r = rig.client.post("/api/settings", headers=KEY,
                             json={"changes": {"wol.wake_timeout_seconds": 5}})
         assert r.status_code == 400 and r.json()["errors"][0]["key"] == "wol.wake_timeout_seconds"
@@ -220,10 +222,10 @@ class TestEndpoints:
                             json={"changes": {"guards.max_delete_files": 100}})
         assert r.status_code == 409 and r.json()["confirm_phrase"] == "CHANGE guards.max_delete_files"
 
-    def test_saving_needs_dashboard_sign_in_enabled(self, rig):
-        rig.cfg.dashboard.auth_enabled = False
+    def test_saving_refused_until_the_passwords_are_set_up(self, rig):
+        rig.cfg.dashboard.login_password_hash = ""
         r = rig.client.post("/api/settings", json={"changes": {"budget.lan_max_hours": 3}})
-        assert r.status_code == 403 and "auth_enabled" in r.json()["detail"]
+        assert r.status_code == 503 and "not set up" in r.json()["detail"]
 
     def test_settings_page_renders(self, rig):
         r = rig.client.get("/settings", headers=KEY)

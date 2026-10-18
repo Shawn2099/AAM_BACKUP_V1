@@ -1166,7 +1166,7 @@ def test_w16_config_validation_guards():
         "lan": {"enabled": True},
         "cloud": {"enabled": False},
         "wol": {"enabled": False},
-        "dashboard": {"auth_enabled": False},
+        "dashboard": {},
     }
 
     def _load(cfg_dict):
@@ -1490,8 +1490,8 @@ def _raising_client(exc):
 # W16.14 — ui email report trigger endpoints (new, never tested)
 # ══════════════════════════════════════════════════════════════════════════════
 def test_w16_ui_email_report_triggers(sandbox, monkeypatch):
-    """POST /trigger/report/{weekly,monthly}/email: must return 404 when
-    there are no runs, 500 when SMTP fails, and 200 when the report is sent."""
+    """POST /trigger/report/{weekly,monthly}/email: must attempt the report
+    also when there are no runs (500 here, SMTP is down), 500 when SMTP fails, and 200 when sent."""
     import json
     import time
 
@@ -1540,11 +1540,12 @@ def test_w16_ui_email_report_triggers(sandbox, monkeypatch):
 
     problems = []
 
-    # case 1: no runs → 404
+    # case 1: no runs → the report is still sent (plan C P1: "action needed: no backup ran"),
+    # so with the dead SMTP of this rig it fails like case 2
     with TestClient(ui.app) as client:
         r = client.post("/trigger/report/weekly/email")
-        if r.status_code != 404:
-            problems.append(f"no runs: expected 404, got {r.status_code}")
+        if r.status_code != 500:
+            problems.append(f"no runs: expected 500 (report attempted), got {r.status_code}")
 
     # case 2: runs present but SMTP fails → 500
     from core.manifest import ManifestDB
@@ -1565,10 +1566,10 @@ def test_w16_ui_email_report_triggers(sandbox, monkeypatch):
     ui._RATE_LIMITS.clear()
 
     L.record("W16.ui_email_report_triggers",
-             "POST /trigger/report/{weekly,monthly}/email: 404 on no runs, "
-             "500 on SMTP failure",
+             "POST /trigger/report/{weekly,monthly}/email: an empty period is still "
+             "reported; 500 on SMTP failure",
              f"problems={problems}",
-             "OK — 404 on empty DB, 500 on SMTP failure"
+             "OK — empty DB still attempts the report, 500 on SMTP failure"
              if not problems else f"ISSUE — {problems}")
     assert not problems, problems
 

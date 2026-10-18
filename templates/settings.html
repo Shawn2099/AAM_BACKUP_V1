@@ -67,7 +67,6 @@ details.section > summary { cursor:pointer; padding:0.6rem 0; font-weight:600; }
 <div class="container">
 <h1>Settings</h1>
 <p class="subtitle"><a href="/" style="color:#60a5fa">&larr; Dashboard</a> &middot; Every value is checked by the server while you type, exactly like a service start; Save only works when everything is valid. config.yaml is backed up first. All times are IST.</p>
-<div id="readonly-banner">Read-only: saving settings needs dashboard sign-in (set <code>dashboard.auth_enabled: true</code> with an <code>api_key</code> in config.yaml on the server).</div>
 <div class="tabs">
     <button class="tab active" id="tab-basic" onclick="showTab('basic')">Settings</button>
     <button class="tab" id="tab-advanced" onclick="showTab('advanced')">Advanced</button>
@@ -78,17 +77,19 @@ guards, watchdog and log tuning. The defaults are tested values; change them onl
 Every change is still checked like a service start before it is saved.</div>
 <div id="admin-login">
     <strong>Advanced settings need the admin login.</strong>
-    <p style="color:#9ca3af;margin:0.35rem 0 0.6rem">Until it is changed, the admin password is the same as the
-       dashboard key. Change it inside Advanced once you are signed in.</p>
+    <p style="color:#9ca3af;margin:0.35rem 0 0.6rem">This is a different password from the dashboard sign-in.
+       Forgotten? Ask support to run the reset script on the server.</p>
     <form onsubmit="adminLogin(event)"><input type="password" id="admin-password" autocomplete="current-password"
        placeholder="Admin password"><button class="btn-trigger" type="submit">Open Advanced</button></form>
 </div>
 <div id="admin-bar">
     <span id="admin-bar-text">Advanced is unlocked.</span>
     <button class="btn-small" onclick="adminLogout()">Lock Advanced</button>
-    <button class="btn-small" onclick="document.getElementById('admin-pw').style.display='block'">Change admin password</button>
-    <form id="admin-pw" onsubmit="changeAdminPassword(event)">
-        <input type="password" id="pw-current" autocomplete="current-password" placeholder="Current admin password">
+    <button class="btn-small" onclick="showPasswordForm('login')">Change dashboard password</button>
+    <button class="btn-small" onclick="showPasswordForm('admin')">Change Advanced password</button>
+    <form id="admin-pw" onsubmit="changePassword(event)">
+        <strong id="pw-title"></strong><br>
+        <input type="password" id="pw-current" autocomplete="current-password" placeholder="Current Advanced password">
         <input type="password" id="pw-new" autocomplete="new-password" placeholder="New password">
         <input type="password" id="pw-confirm" autocomplete="new-password" placeholder="New password again">
         <button class="btn-trigger" type="submit">Change password</button>
@@ -123,7 +124,7 @@ Every change is still checked like a service start before it is saved.</div>
 <thead><tr><th>Time</th><th>By</th><th>Setting</th><th>Old</th><th>New</th></tr></thead>
 <tbody id="history-tbody"><tr><td colspan="5" style="color:#6b7280;text-align:center">Loading...</td></tr></tbody>
 </table>
-<div class="info"><p>AAM Backup System{% if auth_enabled %} &middot; <a href='/logout' style='color:#60a5fa'>Logout</a>{% endif %}</p></div>
+<div class="info"><p>AAM Backup System &middot; <a href='/logout' style='color:#60a5fa'>Logout</a></p></div>
 </div>
 <script src="/static/js/settings.js"></script>
 </body>

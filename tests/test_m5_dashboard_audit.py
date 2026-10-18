@@ -7,6 +7,7 @@
 low: fault code + plain title on run rows, no zero badges on blocked rows,
    truthful LAN confirm text, IST integrity time, no dead flash code."""
 
+from test_support import ui_login  # noqa: E402
 import json
 import re
 from pathlib import Path
@@ -28,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 JS = (ROOT / "static" / "js" / "dashboard.js").read_text(encoding="utf-8")
 SETTINGS_JS = (ROOT / "static" / "js" / "settings.js").read_text(encoding="utf-8")
 TEMPLATE = (ROOT / "templates" / "dashboard.html").read_text(encoding="utf-8")
-KEY = {"X-API-Key": "secret-key"}
+KEY = {}      # the TestClient is signed in already (tests/conftest.py)
 UNC = "\\\\nas\\share\\FY26-27"
 
 
@@ -38,8 +39,7 @@ def _cfg(tmp_path, port=25, **dash) -> AppConfig:
         paths={"source_drive": str(tmp_path), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
-        dashboard={"auth_enabled": True, "api_key": "secret-key",
-                   "public_url": "http://backup-server:8080", **dash},
+        dashboard={"public_url": "http://backup-server:8080", **ui_login.DASHBOARD, **dash},
         notifications={"smtp_host": "127.0.0.1", "smtp_port": port, "sender": "b@firm.example",
                        "recipients": ["o@firm.example"], "smtp_security": "none",
                        "smtp_auth": False, "retry_attempts": 1, "retry_base_seconds": 0.01,
@@ -126,6 +126,7 @@ def test_test_email_failure_is_reported(tmp_path, db, monkeypatch):
     assert resp.status_code == 502 and resp.json()["status"] == "failed"
 
 
+@pytest.mark.anonymous
 def test_test_email_needs_sign_in(tmp_path, db, monkeypatch):
     client = _client(monkeypatch, _cfg(tmp_path), db)
     assert client.post("/api/settings/test-email").status_code == 401
@@ -146,7 +147,7 @@ def test_amber_until_changed_mail_settings_were_tested(tmp_path, db):
 # ── 7: rate limits ───────────────────────────────────────────────────────
 
 def test_rate_limits_and_dashboard_timings_are_config_keys():
-    d = DashboardConfig(auth_enabled=False)
+    d = DashboardConfig()
     assert (d.rate_limit_window_seconds, d.rate_limit_triggers, d.rate_limit_logins,
             d.rate_limit_reports, d.rate_limit_settings, d.rate_limit_decisions) == (300, 5, 10, 10, 20, 10)
     assert (d.session_hours, d.config_refresh_seconds, d.trigger_wait_seconds) == (24, 300, 180)

@@ -293,7 +293,7 @@ window.addEventListener('DOMContentLoaded', updateStatus);
 // typed confirmation phrase.
 function escHtml(text) { return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 var _approvalsSig = '';
-function approvalCard(a, authEnabled) {
+function approvalCard(a) {
     var leg = a.leg === 'cloud' ? 'Cloud backup' : (a.leg === 'rollover' ? 'FY rollover' : 'LAN backup');
     var reasons = (a.guards || []).map(function(g) { return '<li>' + escHtml(g.reason) + '</li>'; }).join('');
     var id = escHtml(a.approval_id);
@@ -301,9 +301,7 @@ function approvalCard(a, authEnabled) {
     html += '<h2 style="margin:0 0 0.5rem 0">' + leg + ' blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
     html += '<ul style="margin:0 0 0.5rem 1.25rem">' + reasons + '</ul>';
     html += '<p style="font-size:0.8rem;color:#6b7280">' + (a.leg === 'rollover' ? 'Nothing was changed.' : 'Nothing was copied or deleted.') + ' Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';
-    if (!authEnabled) {
-        html += '<p style="font-weight:600">Approving needs dashboard sign-in: set <code>dashboard.auth_enabled: true</code> in config.yaml.</p>';
-    } else if (a.status === 'PENDING') {
+    if (a.status === 'PENDING') {
         html += '<p>To run this <b>once</b> anyway, type <code>' + escHtml(a.phrase) + '</code> and approve. The backup re-checks first and stops again if anything got worse.</p>';
         html += '<input id="phrase-' + id + '" type="text" autocomplete="off" placeholder="' + escHtml(a.phrase) + '" style="padding:0.4rem;margin-right:0.5rem;min-width:16rem">';
         html += '<button class="btn-trigger" style="background:#dc2626" onclick="approvalAction(\'' + id + '\', \'approve\')">Approve this backup once</button> ';
@@ -324,7 +322,7 @@ async function updateApprovals() {
         if (sig === _approvalsSig) return;          // keep a half-typed phrase
         _approvalsSig = sig;
         var box = document.getElementById('approvals-container');
-        if (box) box.innerHTML = (data.approvals || []).map(function(a) { return approvalCard(a, data.auth_enabled); }).join('');
+        if (box) box.innerHTML = (data.approvals || []).map(function(a) { return approvalCard(a); }).join('');
     } catch (err) { console.error('Failed to load approvals:', err); }
 }
 async function approvalAction(id, action) {

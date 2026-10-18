@@ -24,6 +24,7 @@ core/lan_manifest.py and core/cloud_reporter.py.
 No production module is edited; the same lab seams as the other waves.
 """
 from __future__ import annotations
+from test_support import ui_login  # noqa: E402
 
 import os
 from pathlib import Path
@@ -993,7 +994,7 @@ def test_w13_update_config_yaml_atomic_and_preserving(sandbox, monkeypatch):
         "  runtime_dir: 'C:\\BackupAgent\\runtime'\n"
         # the switch re-loads the written file (plan K): the rest must be valid too
         "wol:\n  enabled: false\ncloud:\n  enabled: false\n"
-        "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n"
+        + ui_login.DASHBOARD_YAML
     )
     cfg_path.write_text(original, encoding="utf-8")
 

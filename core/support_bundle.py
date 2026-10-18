@@ -58,7 +58,7 @@ def redact(text: str, secrets: list[str]) -> str:
 
 
 def _secrets(config) -> list[str]:
-    return [config.notifications.smtp_password, config.dashboard.api_key,
+    return [config.notifications.smtp_password, config.dashboard.login_password_hash,
             config.dashboard.admin_password_hash]
 
 

@@ -214,7 +214,6 @@ def _base_config(**path_overrides):
         cloud=dict(enabled=True, bucket="aam-backup-test", project_number="123"),
         wol=dict(enabled=False),
         lan=dict(enabled=True),
-        dashboard=dict(api_key="testkey12345"),
     )
 
 

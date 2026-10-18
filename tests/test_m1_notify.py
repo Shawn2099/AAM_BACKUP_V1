@@ -24,7 +24,7 @@ def _cfg(tmp_path, port=25, **notif) -> AppConfig:
         paths={"source_drive": str(tmp_path), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
-        dashboard={"auth_enabled": False, "public_url": "http://backup-server:8080"},
+        dashboard={"public_url": "http://backup-server:8080"},
         notifications=n, alerts={"repeat_cooldown_hours": 12, "body_max_chars": 200},
     )
 

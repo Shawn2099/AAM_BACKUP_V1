@@ -21,7 +21,7 @@ def _cfg(tmp_path, **dash) -> AppConfig:
         paths={"source_drive": str(tmp_path), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
-        dashboard={"auth_enabled": False, **dash},
+        dashboard={**dash},
     )
 
 
@@ -56,11 +56,11 @@ def test_dashboard_amber_when_email_link_only_works_on_the_server(tmp_path):
 
 
 def test_firewall_addresses_default_to_the_office_subnet():
-    assert DashboardConfig(auth_enabled=False).firewall_remote_addresses == ["LocalSubnet"]
-    DashboardConfig(auth_enabled=False, firewall_remote_addresses=["10.10.151.0/24", "10.10.152.5"])
+    assert DashboardConfig().firewall_remote_addresses == ["LocalSubnet"]
+    DashboardConfig(firewall_remote_addresses=["10.10.151.0/24", "10.10.152.5"])
     for bad in (["Any"], ["*"], [], ["10.10.151.0/24; Any"]):
         with pytest.raises(ValidationError):
-            DashboardConfig(auth_enabled=False, firewall_remote_addresses=bad)
+            DashboardConfig(firewall_remote_addresses=bad)
 
 
 def test_firewall_addresses_change_only_on_the_server():

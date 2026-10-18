@@ -170,8 +170,6 @@ HELP: dict[str, tuple[str, str]] = {
                              "The link people click in alert emails, e.g. http://backup-server:8080."),
     "dashboard.stale_after_hours": ("Warn when the last good backup is older than", ""),
     "dashboard.alert_failure_window_days": ("Warn about failed emails from the last", ""),
-    "dashboard.auth_enabled": ("Dashboard needs a login", "Changed only on the server."),
-    "dashboard.api_key": ("Dashboard password", "Changed only on the server."),
     "dashboard.login_password_hash": ("Dashboard password (stored)",
                                       "Change it in Advanced > Passwords."),
     "dashboard.bind_address": ("Who can open the dashboard", "Changed only on the server."),

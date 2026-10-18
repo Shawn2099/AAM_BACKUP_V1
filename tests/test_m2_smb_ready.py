@@ -109,7 +109,7 @@ def _wol_cfg(tmp_path, **wol):
     w.update(wol)
     return AppConfig(
         paths={"source_drive": str(tmp_path), "lan_destination": "\\\\10.10.186.231\\share\\FY26-27"},
-        wol=w, cloud={"enabled": False}, dashboard={"auth_enabled": False})
+        wol=w, cloud={"enabled": False}, dashboard={})
 
 
 def test_config_defaults_match_plan(tmp_path):

@@ -4,6 +4,7 @@ Covers: _fy_name, _parent_path, _child_path, update_config_yaml,
 run_archive_transition, detect_rollover.
 """
 
+from test_support import ui_login  # noqa: E402
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -65,7 +66,7 @@ class TestChildPath:
 # the switch now re-loads the written file (plan K): the rest of the file must be valid too
 _VALID_REST = ("wol:\n  enabled: false\n"
                "cloud:\n  enabled: false\n"
-               "dashboard:\n  auth_enabled: true\n  api_key: secret-key\n")
+               + ui_login.DASHBOARD_YAML)
 
 
 class TestUpdateConfigYaml:

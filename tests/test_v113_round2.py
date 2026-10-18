@@ -2,6 +2,7 @@
 
 NOT part of the 29-test v1.1.2 suite. Deterministic; no network/services.
 """
+from test_support import ui_login  # noqa: E402
 import asyncio
 import inspect
 import json
@@ -176,7 +177,7 @@ def test_c_flow_refuses_explicit_disabled_leg(tmp_path):
             f"lan:\n  enabled: {str(lan_on).lower()}\n"
             "wol:\n  enabled: false\n"
             f"cloud:\n  enabled: {str(cloud_on).lower()}\n  bucket: 'bkt-abc'\n  project_number: '123'\n"
-            "dashboard:\n  auth_enabled: false\n",
+            "dashboard: {}\n",
             encoding="utf-8",
         )
         return str(p)
@@ -196,7 +197,7 @@ def test_c_flow_all_mode_runs_enabled_leg_only(tmp_path, monkeypatch):
         f"  runtime_dir: '{str(tmp_path)}'\n  gcs_key_path: ''\n"
         "lan:\n  enabled: true\nwol:\n  enabled: false\n"
         "cloud:\n  enabled: false\n  bucket: ''\n  project_number: ''\n"
-        "dashboard:\n  auth_enabled: false\n",
+        "dashboard: {}\n",
         encoding="utf-8",
     )
     calls = []
@@ -265,10 +266,11 @@ def test_d_unknown_runstate_surfaced(monkeypatch, tmp_path):
     assert data["cloud"]["running"] is False
 
 
+@pytest.mark.anonymous
 def test_e_status_401_unauthorized(monkeypatch):
     from fastapi.testclient import TestClient
     # Real auth path (not patched): enabled dashboard, no session cookie/key.
-    fake_cfg = SimpleNamespace(dashboard=SimpleNamespace(auth_enabled=True, api_key="secret-key"))
+    fake_cfg = SimpleNamespace(dashboard=SimpleNamespace(**ui_login.DASHBOARD))
     monkeypatch.setattr(ui, "_cfg", lambda: fake_cfg)
     client = TestClient(ui.app, raise_server_exceptions=False)
     resp = client.get("/status", headers={"Accept": "application/json"})
