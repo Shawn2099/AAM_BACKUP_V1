@@ -298,7 +298,8 @@ def _cloud_diff_count(manifest: list, before: dict) -> int:
 
 def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
                     occurred_at: str, *, run_id: str | None = None,
-                    sync_result: dict | None = None, fault_code: str | None = None) -> None:
+                    sync_result: dict | None = None, fault_code: str | None = None,
+                    artefacts_dir: str | None = None) -> None:
     """THE failure alert of one run (plan WP8): one per failed run, at the
     terminal decision, through core.notify (delivery recorded, cooldown per
     leg+status, dashboard link). Never raises. The fault code is the one the
@@ -313,6 +314,7 @@ def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
         message=message, status=status,
         exit_code=exit_code if type(exit_code) is int else None,
         occurred_at=occurred_at, fault_code=code, run_id=run_id,
+        artefacts_dir=artefacts_dir,
     ))
 
 
@@ -979,7 +981,7 @@ def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | Non
 
 
 def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
-                        occurred_at: str) -> None:
+                        occurred_at: str, artefacts_dir: str | None = None) -> None:
     """BLOCKED run -> one approval request + ONE attention email (DEC-3).
 
     Never raises: the run row is already written, and the human must be
@@ -1011,6 +1013,7 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
         title=f"{leg.upper()} backup blocked - approval needed",
         message=message, status=f"{leg.upper()}_BLOCKED",
         fault_code=faults.blocked_guard_code(guard_record) or faults.UNKNOWN, run_id=run_id,
+        artefacts_dir=artefacts_dir,
         details={"Blocked by": ", ".join(r.get("guard", "?") for r in blocked),
                  "Run": run_id,
                  "Approval request": approval_id or "could not be recorded - see the logs"},
@@ -1522,7 +1525,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 })
                 _send_run_alert(config, "cloud", status, error_msg,
                                 sync_result.get("exit_code"), started_at,
-                                run_id=run_id, sync_result=sync_result)
+                                run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
                 alert_sent = True
                 raise PartialRun(f"Cloud run ended {status} - {error_msg}")
             phase = "verify"
@@ -1555,7 +1559,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 logger.error(verify_err)
                 _send_run_alert(config, "cloud", status, verify_err,
                                 sync_result.get("exit_code"), started_at,
-                                run_id=run_id, sync_result=sync_result)
+                                run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
                 alert_sent = True
                 raise RuntimeError(verify_err)
 
@@ -1636,7 +1641,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     "work did not complete. rclone sync is resumable; the next scheduled run "
                     "continues from where this one left off.",
                     sync_result.get("exit_code"), started_at,
-                    run_id=run_id, sync_result=sync_result)
+                    run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
                 alert_sent = True
             # Terminal-state policy (single authoritative decision point):
             # a non-success status must never return normally (which the
@@ -1663,7 +1669,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 _send_run_alert(config, "cloud", status,
                                 _failure_alert_text("cloud", status, error_msg),
                                 sync_result.get("exit_code"), started_at,
-                                run_id=run_id, fault_code=fault_code)
+                                run_id=run_id, fault_code=fault_code,
+                                artefacts_dir=artefacts_dir)
                 alert_sent = True
             if extended_metrics is None:
                 # Failure-path telemetry: persist whatever stages were
@@ -1701,7 +1708,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             except Exception as rec_err:
                 logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
             if status == "CLOUD_BLOCKED" and guard_record:
-                _open_block_request(config, "cloud", run_id, guard_record, started_at)
+                _open_block_request(config, "cloud", run_id, guard_record, started_at,
+                                    artefacts_dir)
             elif statuses.is_success(status):
                 _send_recovery_if_needed(config, "cloud", run_id)
 
@@ -1870,7 +1878,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     error_msg = sync_result["error"]
                 _send_run_alert(config, "lan", status, partial_text,
                                 sync_result.get("exit_code"), started_at,
-                                run_id=run_id, sync_result=sync_result)
+                                run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
                 alert_sent = True
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
@@ -1908,7 +1917,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 _send_run_alert(config, "lan", status,
                                 _failure_alert_text("lan", status, error_msg, nas_msg),
                                 sync_result.get("exit_code"), started_at,
-                                run_id=run_id, fault_code=fault_code)
+                                run_id=run_id, fault_code=fault_code,
+                                artefacts_dir=artefacts_dir)
                 alert_sent = True
             if shutdown_on_fail and not isinstance(e, PartialRun):
                 logger.info(
@@ -1948,7 +1958,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             except Exception as rec_err:
                 logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
             if status == "LAN_BLOCKED" and guard_record:
-                _open_block_request(config, "lan", run_id, guard_record, started_at)
+                _open_block_request(config, "lan", run_id, guard_record, started_at,
+                                    artefacts_dir)
             elif statuses.is_success(status):
                 _send_recovery_if_needed(config, "lan", run_id)
 

@@ -184,7 +184,12 @@ HELP: dict[str, tuple[str, str]] = {
     "alerts.repeat_cooldown_hours": ("Repeat the same alert at most every",
                                      "Stops your inbox filling with the same alert."),
     "alerts.body_max_chars": ("Alert text length", "Longer details are attached as a file."),
-    "alerts.attachment_max_kb": ("Largest alert attachment", ""),
+    "alerts.attachments_max_total_kb": ("Largest email attachments (KB)",
+                                        "Support report + logs together; a logs zip that "
+                                        "does not fit is left out."),
+    "alerts.attach_file_names": ("Attach full logs to problem emails",
+                                 "The logs contain client file and folder names."),
+    "alerts.support_log_tail_lines": ("Log lines in the support report", ""),
     "maintenance.concurrency_wait_seconds": ("How long a backup waits for the previous one", ""),
     "maintenance.sqlite_synchronous": ("Database safety level", ""),
     "maintenance.db_retention_days": ("Keep backup history for", ""),

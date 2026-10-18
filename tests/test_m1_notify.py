@@ -148,8 +148,9 @@ def test_long_message_truncated_in_body_and_attached_in_full(tmp_path, db):
         cfg = _cfg(tmp_path, port=srv.server_address[1])
         nt.notify(cfg, _event(message=long), db=db)
     data = _decoded(srv.messages[0]["data"])
-    assert "truncated" in data and "[attachment details.txt]" in data
-    assert "E" * 5000 in data  # full text in the attachment
+    # audit 2026-10-18: the full text is in the support report attachment
+    assert "truncated" in data and "_AAM-LAN-01.txt]" in data and "[attachment AAM-support_" in data
+    assert "E" * 5000 in data
 
 
 def test_notify_never_raises(tmp_path):

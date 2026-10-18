@@ -123,6 +123,7 @@ _UNITS = {
     "watchdog.max_starts_per_window": "starts", "lan.mt_threads": "threads",
     "cloud.transfers": "files at once", "cloud.checkers": "files at once", "audit.checkers": "files at once",
     "cloud.error_tail_lines": "lines", "alerts.body_max_chars": "characters",
+    "alerts.support_log_tail_lines": "lines",
     "dashboard.admin_password_min_length": "characters",
     "maintenance.sqlite_vacuum_freelist_threshold": "pages", "maintenance.config_backups_keep": "copies",
     "guards.max_delete_files": "files", "audit.detail_max_paths": "paths",

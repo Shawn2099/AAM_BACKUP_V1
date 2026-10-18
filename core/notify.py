@@ -21,7 +21,7 @@ from __future__ import annotations
 import smtplib
 import socket
 import ssl
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -81,6 +81,7 @@ class AlertEvent:
     fault_code: str | None = None      # core.faults code (docs/EMAIL_CONTENT_SPEC.md §4)
     run_id: str | None = None          # the run this is about: support reference
     resolved_code: str | None = None   # RECOVERED: the code that was fixed
+    artefacts_dir: str | None = None   # the run's full-log folder (support attachments)
 
 
 @dataclass
@@ -281,22 +282,13 @@ def dashboard_link_problem(config) -> str | None:
 def render_alert(config, event: AlertEvent, db=None) -> tuple[str, str, list[dict]]:
     """Return (subject, html_body, attachments) for an event.
 
-    The text is the plain-language email of core.email_compose (audit
-    2026-10-18); a long message is cut in the body and attached in full."""
+    The text is the plain-language email of core.email_compose; problem emails
+    carry the support report + logs of core.support_bundle (audit 2026-10-18)."""
     from core.email_compose import compose
+    from core.support_bundle import build
 
     subject, body, _text = compose(config, event, db)
-    limit = config.alerts.body_max_chars
-    message = event.message or ""
-    attachments: list[dict] = []
-    full_text = event.attachment_text if event.attachment_text is not None else message
-    if full_text and (len(message) > limit or event.attachment_text is not None):
-        cap = config.alerts.attachment_max_kb * 1024
-        data = full_text.encode("utf-8")
-        if len(data) > cap:
-            data = data[-cap:]
-        attachments.append({"filename": "details.txt", "content": data})
-    return subject, body, attachments
+    return subject, body, build(config, event, db)
 
 
 # ── Public entry point ────────────────────────────────────────────────────
@@ -322,6 +314,9 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
 
 
 def _notify(config, event: AlertEvent, db) -> DeliveryResult:
+    if event.fault_code is None:
+        from core.email_compose import effective_code
+        event = replace(event, fault_code=effective_code(event))
     subject, body, attachments = render_alert(config, event, db)
 
     if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:

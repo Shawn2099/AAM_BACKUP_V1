@@ -357,10 +357,18 @@ alerts:
   # The same alert is re-sent at most once per this many hours while the problem
   # lasts (repeats are recorded as SUPPRESSED). 0 = never suppress.
   repeat_cooldown_hours: 12
-  # Characters of the message shown in the email body; the full text is attached
+  # Characters of the technical message shown in the email's support block; the
+  # full text is in the attached support report
   body_max_chars: 1000
-  # Max size of that attachment (KB)
-  attachment_max_kb: 2048
+  # Every problem email carries a support report (.txt) and the run's full logs
+  # (.zip). All attachments together at most this many KB (100-20480); a logs zip
+  # that does not fit is left out and the report says where the logs are.
+  attachments_max_total_kb: 5120
+  # Attach the run's full logs - they contain client file and folder names
+  # (owner decision D1, 2026-10-18). false = support report only.
+  attach_file_names: true
+  # Lines of each tool log in the support report, error lines first (20-5000)
+  support_log_tail_lines: 200
 
 # ═══════════════════════════════════════════════════
 # HEALTH CHECKS

@@ -248,6 +248,8 @@ Every PROBLEM / ACTION NEEDED / WARNING email carries:
    robocopy log converted to UTF-8, rclone JSON log, our agent log lines for this run, the run row as JSON).
    Not password-protected (Gmail rejects that). Only `.txt/.log/.json` inside.
 3. For AAM-LAN-02 and AAM-AUD-01: **`..._files.csv`** - the list of affected files.
+   **Not built yet (2026-10-18):** the failed files are in the full robocopy log inside the
+   logs zip; the audit's file list stays in its detail. Follow-up.
 
 **Size:** all attachments together at most `alerts.attachments_max_total_kb` (default **5120 KB**; base64 makes
 it ~6.8 MB on the wire, under the common 10 MB company limit and Gmail's 25 MB). If the zip would exceed it,

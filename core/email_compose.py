@@ -156,6 +156,17 @@ def _next_text(config, event, fault, now) -> str:
     return "You get one email when this is resolved."
 
 
+def effective_code(event) -> str | None:
+    """The event's fault code; a backup event without one gets it from its
+    status + exit code, so subject, headers and attachments always agree."""
+    if event.fault_code or event.kind == "RECOVERED":
+        return event.fault_code
+    if event.mode in ("lan", "cloud") and event.status:
+        return faults.classify_run(event.mode, str(event.status),
+                                   sync_result={"exit_code": event.exit_code})
+    return None
+
+
 def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
     """(subject, html body, plain-text body) for one alert event."""
     from core.notify import dashboard_url, html_to_text
@@ -177,11 +188,7 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
                 else (event.message or "The earlier problem is fixed."))
         steps: tuple[str, ...] = ()
     elif event.fault_code is not None or event.status:
-        code = event.fault_code
-        if code is None and event.mode in ("lan", "cloud"):
-            code = faults.classify_run(event.mode, str(event.status),
-                                       sync_result={"exit_code": event.exit_code})
-        fault = faults.get(code)
+        fault = faults.get(effective_code(event))
         severity = fault.severity
         subject = f"[{firm} Backup] {severity}: {label} - {fault.title} ({fault.code})"
         headline = f"{label}: {fault.title}"

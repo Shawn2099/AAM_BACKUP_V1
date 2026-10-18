@@ -33,6 +33,8 @@ _EMAIL = re.compile(r"[^@\s,;]+@[^@\s,;]+\.[A-Za-z]{2,}")
 DEPRECATED_KEYS: dict[str, frozenset[str]] = {
     # F12: no code path ever read it; success emails were removed.
     "notifications": frozenset({"send_on_success"}),
+    # audit 2026-10-18: replaced by attachments_max_total_kb (support attachments)
+    "alerts": frozenset({"attachment_max_kb"}),
 }
 
 
@@ -492,8 +494,19 @@ class AlertsConfig(StrictModel):
     )
     body_max_chars: int = Field(default=1000, ge=100, le=100_000,
                                 description="Inline message length in the email body")
-    attachment_max_kb: int = Field(default=2048, ge=1, le=20_480,
-                                   description="Max size of the full-detail attachment")
+    # Support attachments (docs/EMAIL_CONTENT_SPEC.md §5, audit 2026-10-18)
+    attachments_max_total_kb: int = Field(
+        default=5120, ge=100, le=20_480,
+        description="All attachments of one email together (support report + logs zip). "
+                    "5 MB stays under common 10 MB company mail limits after encoding; a "
+                    "logs zip that does not fit is left out and the report names the folder.")
+    attach_file_names: bool = Field(
+        default=True,
+        description="Attach the run's full logs (they contain client file and folder names). "
+                    "Owner 2026-10-18 (D1): yes. false = support report only.")
+    support_log_tail_lines: int = Field(
+        default=200, ge=20, le=5000,
+        description="Lines of each tool log in the support report (error lines first)")
 
 
 class MaintenanceConfig(StrictModel):
