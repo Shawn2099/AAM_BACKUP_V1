@@ -1,8 +1,10 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-16 (rclone exit codes + bounded sync retries XR-1..6 - see §4e;
-GitNexus scan, tool_runner migration, no-literals sweep - §4d; box review + deploy - §4b).
-**Box not redeployed with §4d / §4e** (owner decides).
+**Last updated:** 2026-10-18 (UI + email audit and rebuild - see §4f; rclone exit codes +
+bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
+**Box not redeployed with §4d / §4e / §4f** (box is at 6adcfb2; owner decides). §4f adds schema
+v3 (one-time in-place upgrade of the box DB) and needs `dashboard.public_url` + bind/firewall
+on deploy day (see §4f).
 
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
@@ -143,6 +145,113 @@ config.yaml `monthly_cron` changed - DEC-7).
    4.4 schedule/time-budget validator with cronsim (WP14), 4.5 installer `uv run --frozen
    --no-sync` + `AAM_CONFIG` + readiness checks (WP16), 4.6 config.example.yaml fully documented.
    (M3 deferral - tool_runner migration of the check tools - DONE 2026-10-16, §4d.)
+
+## 4f. Session 2026-10-18 (UI + email audit, plain-language emails, fault codes)
+
+Box check (read-only): 3 services Running; every night since the 16 Oct deploy recorded truthfully
+(LAN_COMPLETE x3 incl. the approved first copy, CLOUD_NO_CHANGES_COMPLETE x3, weekly audit
+18 Oct VERIFIED both legs); only error = known Prefect `database is locked`.
+Owner asked for a UI + email audit, then: dashboard **office network only** (never public);
+emails easy for a non-technical person with a recommended action, fault codes and attached
+logs so a forwarded email lets support find the reason. **Spec: `docs/EMAIL_CONTENT_SPEC.md`**
+(research + sources, every email's wording, 54 fault codes, attachments, owner decisions D1-D6:
+D1 attach logs with client file names = yes; D2 support contact = not now; D3 auto-send to
+support = not now; D4 subject `[<firm> Backup]`; D5 FY-switch INFO email = yes; D6 English).
+Commits (each test-first, full suite green, GitNexus detect-changes before commit):
+- bf142d2 alert switch: ACTION_REQUIRED/RECOVERED/INFO never silenced; `send_on_failure` is
+  Advanced + typed confirmation; amber banner while off; audit differences = ACTION_REQUIRED.
+- 0f30f00 Message-ID / Date / Auto-Submitted + plain-text part on every email.
+- 9a73268 office-network dashboard: `dashboard_link_problem` (amber + readiness FAIL when the
+  email link is 127.0.0.1/0.0.0.0), new key `dashboard.firewall_remote_addresses` (LocalSubnet,
+  server-only), installer opens only the dashboard port to it; 4200 never opened.
+- a21786a `core/faults.py` (53 codes then, 54 with ROL-03 in 4384349; the commit message says
+  57 - wrong number): codes at
+  raise sites (`faults.coded`), `GuardResult.fault_code`, rclone transport category, status;
+  stored in `extended_metrics.fault_code`. Never parsed from message text.
+- 4384349 `core/email_compose.py`: every email = severity + what happened + "Is my data safe?"
+  + numbered steps + next run (IST) + dashboard link + For-support block; every producer sets
+  its code (watchdog SVC-01..04, overdue SYS-03, abandoned SYS-02, FY ROL-03 ...).
+- a6cd7ee `core/support_bundle.py`: support report .txt + run-folder logs .zip, secrets
+  redacted, `alerts.attachments_max_total_kb` (5120) / `attach_file_names` / 
+  `support_log_tail_lines`; `alerts.attachment_max_kb` deprecated. File-list CSV = follow-up.
+- eaf998d incidents: repeat suppressed only while key AND fault code unchanged and no RESOLVED
+  since; reminders + RESOLVED reply in the incident thread. **Schema v3** (notifications
+  fault_code / message_id / thread_id).
+- 330524e dashboard: "Cannot reach the backup server since ..." banner + Last updated; Settings
+  "Send test email" + amber until changed mail settings are tested; fault code + title on run
+  rows; separate rate-limit buckets; `dashboard.rate_limit_*`, `session_hours`,
+  `config_refresh_seconds`, `trigger_wait_seconds` keys (no literals left in ui.py).
+- 1bc1474 reports: per-leg plain summary, all runs, monthly = previous calendar month, outcome
+  in the subject; once-a-year "New financial year started" INFO email.
+Tests: `tests/` 2142 passed / 0 failed / 19 skipped. **Audit lab at 1bc1474 (21 min): 231 passed /
+7 failed / 3 skipped** (log `agent_runs/audit_lab_2026-10-18_email.log`). No backup/guard/real-tool
+red. Causes: w14 auth + w19 session use removed `ui._SESSION_TTL` (now `dashboard.session_hours`);
+w19 flash test covers the removed dead flash code; w19 email endpoints' fake lacks the new `legs`
+arg; w8 report SMTP-outage seeds this month's runs (monthly = previous month now); w10 coverage
+floor `core/health.py` 44.8% < 45%; **w14 `/report/weekly` + `/report/monthly` 404** - to check:
+probably fixed seed dates (date rot), but `_serve_report` still says "No runs found in the last 30
+days" (wrong for a calendar month) and "Download Monthly Report" mid-month now gives LAST month
+(design question - see 4f-2 topic 3). NOT fixed yet (owner paused for discussion).
+**Deploy-day steps for §4f (owner):** set `dashboard.public_url: "http://<server-name>:8080"`,
+`dashboard.bind_address: "0.0.0.0"` (or the server's office IP), re-run `04_check_readiness.ps1`
+(new check "Dashboard link in emails") and `06_install_services.ps1` (creates the firewall
+rule); then Settings > "Send test email". First alert per open problem after the upgrade may be
+re-sent once (old notification rows have no fault code).
+**Open / follow-up:** file-list CSV attachment (spec §5.3); Gmail shows the RESOLVED email
+outside the thread (own subject, by design); a real Gmail send of each email type on the box.
+
+### 4f-2. Open topics to DISCUSS with the owner before building (2026-10-18)
+
+Owner: "discuss and make a plan before moving forward". Nothing below is built yet.
+Proposed order: 1 -> 2 -> 5 -> 3 (review only, then discuss) -> 4 -> 6 -> 7.
+
+1. **Attachments must never block an email.** Today: 5 MB cap, zip left out if too big, a
+   bundle error falls back to a short text. Gap: if the mail server/filter rejects the whole
+   message (e.g. 552 too large, Sophos refusing .zip) it is a permanent error, not retried -
+   the alert is lost. Proposal: on any permanent rejection of an email WITH attachments, resend
+   at once WITHOUT them, adding "logs could not be attached; they are on the server at <path>";
+   record both attempts.
+2. **Dashboard link by IP, not name.** `http://backup-server:8080` needs name resolution
+   (workgroup without DNS often fails; phones never resolve NetBIOS names). Proposal: installer
+   detects the server's office IP and proposes `public_url: http://<ip>:8080` (owner confirms);
+   readiness checks the IP is static / DHCP-reserved; a daily check that the email link still
+   points at THIS server (amber if the IP changed); emails show "http://<ip>:8080 (or
+   http://<name>:8080)". The NAS IP stays in NAS emails (already); the link must be the main
+   server, where the dashboard runs.
+3. **Reports - verify properly (owner: next).** Note: reports were already changed in 1bc1474.
+   Review: correctness (OK/failed/partial/blocked counting, IST period boundaries vs UTC
+   `cutoff_iso`, runs over midnight, month lengths, empty month, report during a running
+   backup); consistency report = dashboard = CSV = emails; content an accountant needs (GB
+   backed up, files changed, NAS fullness, safety check, growth); timing (Mon 08:00, 1st 08:30);
+   proof: generate real reports from a read-only copy of the box DB and email them to the owner.
+   Findings first, discuss, then fix.
+4. **Settings test email.** "Send test email" is BUILT (330524e, uses the saved settings,
+   amber until tested). Proposed addition: "Test these settings before saving" (connect +
+   login + send with the typed, unsaved values) so a wrong password is caught before save.
+5. **FY rollover failure - real gaps found (read-only check of `rollover_check_flow`).**
+   Covered today: clock behind (CLK-03), clock not proven (ROL-03), final backup incomplete /
+   jump > 1 FY (G6 -> approval card, ROL-01/02). NOT covered: an exception DURING the switch
+   (NAS unreachable creating the new FY folder, config.yaml not writable, backup slot busy) ->
+   no run row, NO email, only a failed Prefect run, and possibly half done (folders created,
+   config not updated). Cloud archive-transition failure -> only a log warning, no email.
+   Proposal: ROLLOVER_FAILED row + email (new codes AAM-ROL-04 switch failed part-way,
+   AAM-ROL-05 archive transition failed), consistency check after the switch (folders + config
+   agree), restore config.yaml from its backup on failure, calendar-simulation tests for each
+   failure on 1 April.
+6. **Date + time in log names.** Today `run_logs/<day>/<flow-run-uuid>-lan/robocopy-sync.log` -
+   undatable once copied/zipped. Proposal: run folder `2026-10-18_2100_lan_<short id>` and files
+   `2026-10-18_2100_lan_robocopy-sync.log`; retention + dashboard + support bundle read the new
+   names (attachments are already dated).
+7. **Other points to decide:**
+   - Recipients: one list gets everything today. Reports to partners, alerts to IT/support, or
+     everyone gets everything? (owner decision)
+   - Preview: send one real sample of every email type to the owner's inbox (preview command)
+     to review in Gmail/Outlook and on a phone before deploy.
+   - Deploy §4d/§4e/§4f to the box: dashboard on the office network, `public_url` = IP, test
+     email, then the M5 5.2 scenario list.
+   - File-list CSV attachment (spec §5.3) - still a follow-up.
+   - Still open from before: Windows Update Active Hours; 36 `uv audit` advisories (transitive
+     via Prefect).
 
 ## 4e. Session 2026-10-16 (rclone exit codes, sync retries - XR-1..XR-6)
 
