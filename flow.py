@@ -138,11 +138,13 @@ def _stable_run_id(mode: str) -> str:
     return f"{uuid.uuid4()}-{mode}"
 
 
-def _open_run_artefacts(config, run_id: str) -> RunArtefacts | None:
-    """Create the run's full-log folder (plan WP2). Never blocks a backup:
-    on failure the tools fall back to a temp folder and the reason is logged."""
+def _open_run_artefacts(config, run_id: str, started_at: str | None = None) -> RunArtefacts | None:
+    """Create the run's full-log folder (plan WP2); its name carries the run's start time (IST)
+    and leg (plan F2). Never blocks a backup: on failure the tools fall back to a temp folder and
+    the reason is logged."""
     try:
-        return RunArtefacts.for_config(config, run_id)
+        started = pendulum.parse(started_at).in_timezone(IST) if started_at else None
+        return RunArtefacts.for_config(config, run_id, started=started)
     except Exception as e:  # noqa: BLE001 - evidence storage must never block a backup
         logger.error(f"Run log folder could not be created ({e}) - full logs for "
                      "this run go to a temporary folder")
@@ -1498,7 +1500,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         files_copied = 0
         bytes_copied = 0
         extended_metrics = None
-        artefacts = _open_run_artefacts(config, run_id)
+        artefacts = _open_run_artefacts(config, run_id, started_at)
         artefacts_dir = str(artefacts.dir) if artefacts else None
         # Failure-path telemetry: accumulate per-stage durations as stages
         # complete so a failed run still records what was measured. Stages
@@ -1844,7 +1846,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         bytes_copied = 0
         files_failed = 0
         extended_metrics = None
-        artefacts = _open_run_artefacts(config, run_id)
+        artefacts = _open_run_artefacts(config, run_id, started_at)
         artefacts_dir = str(artefacts.dir) if artefacts else None
         # Failure-path telemetry (same contract as cloud): measured stages
         # persist even when the run fails; unexecuted stages stay absent.

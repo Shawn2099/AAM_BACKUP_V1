@@ -449,10 +449,10 @@ risk for now; post-MVP).
 - Firewall rule stays LocalSubnet (independent of the IP).
 
 **Tasks:**
-- [ ] **D1** `core/netinfo.py` + tests (route chosen, no network -> hostname fallback, never
+- [x] **D1** `core/netinfo.py` + tests (route chosen, no network -> hostname fallback, never
   127.0.0.1 / 0.0.0.0 in a link).
-- [ ] **D2** `notify.dashboard_url` / `dashboard_link_problem` use it; email link text.
-- [ ] **D3** Readiness + watchdog mismatch check -> amber.
+- [x] **D2** `notify.dashboard_url` / `dashboard_link_problem` use it; email link text.
+- [x] **D3** Readiness + watchdog mismatch check -> amber.
 
 ---
 
@@ -570,7 +570,7 @@ copy of the file (backup, support zip, a mistaken commit - the GitHub repo is pu
   server); `09_restore_from_gcs.bat` documented accordingly.
 
 **Tasks:**
-- [ ] **S1** `core/secrets.py` (protect / unprotect / is_protected) + tests (round trip, wrong
+- [x] **S1** `core/secrets.py` (protect / unprotect / is_protected) + tests (round trip, wrong
   entropy fails, non-Windows guard for CI).
 - [ ] **S2** Model + Settings: `smtp_password` encrypted at rest; a plain value loads with amber
   (no migration, D-16); tests.
@@ -591,8 +591,8 @@ copy of the file (backup, support zip, a mistaken commit - the GitHub repo is pu
 whole day folders; the support zip keeps the names. (No old-name compatibility needed, D-16.)
 
 **Tasks:**
-- [ ] **F1** `RunArtefacts` naming + tests (purge still removes day folders).
-- [ ] **F2** Callers pass started time + leg (`RunArtefacts.for_config`); dashboard + support
+- [x] **F1** `RunArtefacts` naming + tests (purge still removes day folders).
+- [x] **F2** Callers pass started time + leg (`RunArtefacts.for_config`); dashboard + support
   bundle read the new names.
 
 ---
@@ -601,11 +601,11 @@ whole day folders; the support zip keeps the names. (No old-name compatibility n
 
 - [x] **H1** (8806c45; done in step 0b, rev 5 F-5) `uv audit` (36 advisories, all transitive via Prefect):
   `uv lock --upgrade-package <pkg>` one at a time; full suite + audit lab after the set.
-- [ ] **H2** `deploy/03_setup_system.bat`: Active Hours 12:00-06:00 = 18 h is **invalid on
+- [x] **H2** `deploy/03_setup_system.bat`: Active Hours 12:00-06:00 = 18 h is **invalid on
   Windows Server 2016** (max 12 h, Microsoft "waas-restart"). Write a valid 12 h window
   (20:00-08:00); `04_check_readiness.ps1` reports the real Windows Update state (stopped / policy /
   Active Hours) instead of assuming. (Windows Update is stopped on the box now - D-7.)
-- [ ] **H3** `04_check_readiness.ps1` runs `uv sync --frozen` without `--no-dev` -> add `--no-dev`.
+- [x] **H3** `04_check_readiness.ps1` runs `uv sync --frozen` without `--no-dev` -> add `--no-dev`.
 
 ---
 
@@ -620,8 +620,8 @@ whole day folders; the support zip keeps the names. (No old-name compatibility n
   cooldown; `--out` writes `.eml` files.
 
 **Tasks:**
-- [ ] **G1** Sample catalogue + coverage test.
-- [ ] **G2** Preview command + test against the SMTP test server.
+- [x] **G1** Sample catalogue + coverage test.
+- [x] **G2** Preview command + test against the SMTP test server.
 - [ ] **G3** Send to the owner; owner reviews in Gmail / Outlook / phone; fix feedback.
 
 ---

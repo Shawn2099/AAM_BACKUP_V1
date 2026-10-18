@@ -47,7 +47,7 @@ The venv is at `.venv` (Python 3.12, managed by `uv`). Use the venv interpreter 
 - **Shared building blocks (plan §5)**; use these, do not re-implement:
   - `core/statuses.py`: the only place that defines what a status means (success set, category, label, description). The DB "last success" query, reports and dashboard all use it; never classify by string suffix.
   - `core/tool_runner.run_tool`: the only subprocess wrapper for external tools. It streams output to files, kills the whole process tree on timeout, never returns sentinel exit codes, and records to the run manifest.
-  - `core/run_artefacts.py`: per-run full-log folders `<runtime>/run_logs/<day>/<run_id>/`, plus `purge_older_than()` as the single retention function. Pipelines pass the folder **path string** to tasks; tasks call `RunArtefacts.open(path)`.
+  - `core/run_artefacts.py`: per-run full-log folders `<runtime>/run_logs/<day>/<date>_<HHmm>_<leg>_<short id>/` (files `<date>_<HHmm>_<leg>_<step>.log`), plus `purge_older_than()` as the single retention function. Pipelines pass the folder **path string** to tasks; tasks call `RunArtefacts.open(path)`.
   - `ManifestDB.from_config(config)`: the only way to open the SQLite DB in production code.
   - `core/notify.py`: the single alert path (records delivery in `notifications`, cooldown, dashboard link). Built in M1; replaces `report.send_failure_alert` in WP8.
   - `core/guards.py` (G1–G5), `core/approvals.py`, `core/rclone_errors.py`: M2/M3 modules; see the "built, not wired yet" table in `SESSION_HANDOFF.md`. `core/smb_ready.py` is already wired.

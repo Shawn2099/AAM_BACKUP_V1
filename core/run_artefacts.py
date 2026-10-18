@@ -2,11 +2,15 @@
 
 Layout::
 
-    <run_logs_dir>/<YYYY-MM-DD>/<run_id>/
-        manifest.json            every artefact + tool, argv, exit, timing
-        01_rclone-sync.log       full rclone JSON log (--log-file)
-        02_robocopy.log          full robocopy /UNILOG (UTF-16)
+    <run_logs_dir>/<YYYY-MM-DD>/<YYYY-MM-DD>_<HHmm>_<leg>_<short id>/
+        manifest.json                          every artefact + tool, argv, exit, timing
+        <YYYY-MM-DD>_<HHmm>_<leg>_rclone-sync.log     full rclone JSON log (--log-file)
+        <YYYY-MM-DD>_<HHmm>_<leg>_robocopy.log        full robocopy /UNILOG (UTF-16)
         ...
+
+(Plan F: a log file keeps its meaning when it is mailed or copied out of its folder. The DB run
+id is unchanged; retention still removes whole day folders. A tool call outside a run keeps the
+plain run-id folder and numbered files.)
 
 Nothing here decides backup outcomes; it only preserves evidence. Writing
 artefacts must never break a backup: failures are logged and the run is
@@ -32,6 +36,8 @@ from core.time_utils import IST, now_iso
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _DOT_RUNS = re.compile(r"\.{2,}")
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RUN_DIR = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+)_[A-Za-z0-9]+$")
+_LEGS = ("cloud", "lan", "audit", "rollover")
 MANIFEST_NAME = "manifest.json"
 
 
@@ -40,16 +46,34 @@ def _safe(name: str) -> str:
     return cleaned[:120] or "unnamed"
 
 
+def _leg_of(run_id: str) -> str | None:
+    """cloud | lan | rollover from a run id `<uuid>-<mode>`; audit-cloud | audit-lan from an audit
+    id `<uuid>-<mode>-<scope>`; None for anything else (plain folder)."""
+    parts = run_id.rsplit("-", 2)
+    if len(parts) == 3 and parts[1] in ("cloud", "lan") and parts[2] in ("full", "quick"):
+        return f"audit-{parts[1]}"
+    last = run_id.rsplit("-", 1)[-1]
+    return last if last in _LEGS else None
+
+
 class RunArtefacts:
     """Folder holding every artefact of one run (or one ad-hoc tool call)."""
 
-    def __init__(self, root: str | os.PathLike, run_id: str, *, day: str | None = None):
+    def __init__(self, root: str | os.PathLike, run_id: str, *, day: str | None = None,
+                 started=None):
         import pendulum
 
-        day = day or pendulum.now(IST).format("YYYY-MM-DD")
+        started = started or pendulum.now(IST)
+        day = day or started.format("YYYY-MM-DD")
+        leg = _leg_of(str(run_id))
         self.root = Path(root)
         self.run_id = run_id
-        self.dir = self.root / day / _safe(run_id)
+        if leg and day != "adhoc":
+            self._prefix = f"{started.format('YYYY-MM-DD_HHmm')}_{leg}"
+            self.dir = self.root / day / f"{self._prefix}_{_safe(str(run_id)[:8])}"
+        else:
+            self._prefix = None
+            self.dir = self.root / day / _safe(run_id)
         self.dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._seq = 0
@@ -79,13 +103,15 @@ class RunArtefacts:
         except (OSError, ValueError):
             obj._manifest = {"run_id": d.name, "created_at": now_iso(),
                              "degraded": False, "notes": [], "artefacts": []}
+        match = _RUN_DIR.match(d.name)
+        obj._prefix = match.group(1) if match else None
         seqs = [int(p.name[:2]) for p in d.iterdir() if p.name[:2].isdigit()]
         obj._seq = max(seqs, default=0)
         return obj
 
     @classmethod
-    def for_config(cls, config, run_id: str) -> RunArtefacts:
-        artefacts = cls(config.run_logs_dir, run_id)
+    def for_config(cls, config, run_id: str, *, started=None) -> RunArtefacts:
+        artefacts = cls(config.run_logs_dir, run_id, started=started)
         artefacts.check_free_space(config.run_logs.min_free_gb)
         return artefacts
 
@@ -96,11 +122,23 @@ class RunArtefacts:
 
     # ── paths ─────────────────────────────────────────────────────────
     def new_path(self, step: str, ext: str = "log") -> Path:
-        """Reserve a unique, ordered artefact path, e.g. 03_rclone-sync.log."""
+        """Reserve a unique artefact path, e.g. 2026-10-18_2100_lan_rclone-sync.log (a second
+        call for the same step gets -2, -3 ...; outside a run: 03_rclone-sync.log)."""
+        ext = ext.lstrip(".")
         with self._lock:
-            self._seq += 1
-            seq = self._seq
-        return self.dir / f"{seq:02d}_{_safe(step)}.{ext.lstrip('.')}"
+            if self._prefix is None:
+                self._seq += 1
+                return self.dir / f"{self._seq:02d}_{_safe(step)}.{ext}"
+            taken = {p.name for p in self.dir.iterdir()} | getattr(self, "_reserved", set())
+            n = 1
+            while True:
+                tail = _safe(step) if n == 1 else f"{_safe(step)}-{n}"
+                name = f"{self._prefix}_{tail}.{ext}"
+                if name not in taken:
+                    break
+                n += 1
+            self._reserved = getattr(self, "_reserved", set()) | {name}
+            return self.dir / name
 
     # ── manifest ──────────────────────────────────────────────────────
     def record(self, entry: dict) -> None:
