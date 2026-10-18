@@ -68,15 +68,16 @@ def test_audit_differences_need_action_could_not_run_is_a_warning(outcomes, kind
     assert flow._audit_alert_kind(outcomes) == kind
 
 
-def test_no_backups_at_all_report_warning_is_always_sent(tmp_path):
+def test_no_backups_at_all_report_is_always_sent(tmp_path):
+    """The report is not a routine alert: it goes out even with send_on_failure off, and an empty
+    period says so (plan C P1)."""
     with smtp_server() as srv:
         cfg = _cfg(tmp_path, port=srv.server_address[1], send_on_failure=False)
-        with pytest.raises(RuntimeError):
-            flow._send_summary_report(cfg, days=7, period="Weekly")
+        flow._send_summary_report(cfg, days=7, period="Weekly")
     assert len(srv.messages) == 1
     d = ManifestDB.from_config(cfg)
     try:
-        assert d.last_notification("stale:weekly")["status"] == nt.SENT
+        assert d.last_notification("report:weekly")["status"] == nt.SENT
     finally:
         d.close()
 

@@ -905,10 +905,11 @@ class TestReportCharacterization:
         assert "Started At" in text
         assert "'=DANGER" in text  # injection neutralized
 
-    def test_generate_report_html_empty_returns_blank(self, tmp_db):
+    def test_generate_report_html_empty_still_reports(self, tmp_db):
         from core.report import generate_report_html
 
-        assert generate_report_html(tmp_db, "Firm", 7, "Weekly") == ""
+        html = generate_report_html(tmp_db, "Firm", 7, "Weekly")      # plan C P1
+        assert "No backups in" in html and "no backup ran" in html
 
     def test_generate_report_html_with_runs(self, tmp_db):
         from core.report import generate_report_html

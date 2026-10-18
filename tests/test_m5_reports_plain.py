@@ -12,6 +12,7 @@ import pendulum
 import pytest
 
 from core import report as rep
+from core.report_period import ReportPeriod
 from core.manifest import ManifestDB
 from core.time_utils import IST
 
@@ -43,7 +44,8 @@ def _week(db, lan_fail_day=None):
 
 def test_weekly_summary_first_in_plain_words(db):
     _week(db, lan_fail_day=2)
-    html = rep.generate_report_html(db, "AAM", 7, "Weekly", legs=("cloud", "lan"), now=NOW)
+    html = rep.generate_report_html(db, "AAM", 7, "Weekly", legs=("cloud", "lan"), now=NOW,
+                                    report_period=ReportPeriod.previous_week(NOW))
     top = html.split("Recent Backups", 1)[0]
     assert "Online backup (Google Cloud)" in top and "7 of 7 runs OK" in top
     assert "Office NAS backup" in top and "6 of 7 runs OK" in top

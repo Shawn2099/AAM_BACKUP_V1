@@ -26,7 +26,7 @@ def _cfg(enabled=True):
 
 def _run(flow_fn, *, runs, delivery=None):
     db = MagicMock()
-    db.get_runs_since.return_value = runs
+    db.get_runs_between.return_value = runs
     with patch("flow.load_config", return_value=_cfg()), patch("flow.configure_logging"), \
          patch("flow.configure_prefect_bridge"), patch("flow.ManifestDB") as mdb, \
          patch("flow.notify") as notify, \
@@ -64,12 +64,14 @@ def test_failed_delivery_fails_the_flow_and_is_recorded():
     assert db.record_notification.call_args.args[0]["status"] == nt.FAILED
 
 
-def test_no_runs_in_the_period_sends_a_stale_warning_and_fails():
-    out, _db, notify, send = _run(flow.weekly_report_flow, runs=[])
-    assert isinstance(out, RuntimeError) and "No backup runs" in str(out)
-    event = notify.call_args.args[1]
-    assert event.kind == "ACTION_REQUIRED" and event.status == "STALE" and event.key == "stale:weekly"
-    send.assert_not_called()
+def test_no_runs_in_the_period_still_sends_the_report_saying_action_needed():
+    """Plan C P1: the week nothing ran is the week the owner must hear about - one report email."""
+    out, db, notify, send = _run(flow.weekly_report_flow, runs=[])
+    assert not isinstance(out, Exception), out
+    send.assert_called_once()
+    assert "action needed" in send.call_args.args[1] and "no backup ran" in send.call_args.args[1]
+    assert db.record_notification.call_args.args[0]["status"] == nt.SENT
+    notify.assert_not_called()
 
 
 def test_disabled_report_is_skipped_quietly():

@@ -54,6 +54,7 @@ from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
 from core.shutdown import FAILED as SHUTDOWN_FAILED
 from core.shutdown import ShutdownResult, shutdown_from_config
+from core.report_period import ReportPeriod
 from core.time_utils import get_fy_prefix, now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
@@ -2122,24 +2123,33 @@ def _enabled_legs(config) -> tuple[str, ...]:
     return tuple(leg for leg in ("cloud", "lan") if getattr(config, leg).enabled)
 
 
+def _scheduled_time():
+    """Plan C (G-9): when this flow run was SCHEDULED to start, so a report sent late (the agent was
+    down) still covers the right calendar period. A manual run or no flow context: now."""
+    try:
+        from prefect.context import FlowRunContext
+        ctx = FlowRunContext.get()
+        run = ctx.flow_run if ctx else None
+        if run is not None and getattr(run, "auto_scheduled", False) and run.expected_start_time:
+            return pendulum.instance(run.expected_start_time).in_timezone("Asia/Kolkata")
+    except Exception as e:  # noqa: BLE001 - an unreadable schedule means "now", never a missing report
+        logger.warning(f"Scheduled start time unknown ({e}); the report covers the period before now")
+    return pendulum.now("Asia/Kolkata")
+
+
 def _send_summary_report(config, days: int, period: str) -> None:
-    """Send a summary report truthfully (plan WP8): delivery is recorded in
-    the notifications table and a failed delivery FAILS the flow; a period
-    with no runs at all sends a STALE warning instead of skipping silently."""
+    """Send a summary report truthfully (plan WP8, C): the previous calendar week / month of the
+    flow run's scheduled time; delivery is recorded in the notifications table and a failed
+    delivery FAILS the flow. A period with no runs is still reported ("action needed: no backup
+    ran") - the week nothing ran is the week the owner must hear about."""
     db = ManifestDB.from_config(config)
     try:
+        scheduled = _scheduled_time()
+        report_period = (ReportPeriod.previous_month(scheduled) if period == "Monthly"
+                         else ReportPeriod.previous_week(scheduled))
         email = report.build_summary_email(db, config.firm_name, days, period,
-                                           legs=_enabled_legs(config))
-        if email is None:
-            _, label = report.period_runs(db, days, period)
-            msg = (f"No backup runs were recorded in {label} - the {period} report "
-                   "has nothing to report. Check that the backup service and its schedules are "
-                   "running.")
-            notify(config, AlertEvent(
-                key=f"stale:{period.lower()}", kind="ACTION_REQUIRED", mode="report",
-                title=f"No backups in {label}", message=msg, status="STALE",
-                fault_code="AAM-RPT-01"), db=db)
-            raise RuntimeError(msg)
+                                           legs=_enabled_legs(config),
+                                           report_period=report_period)
         subject, body, attachments = email
         rungs, labels = attachment_ladder(attachments or [])
         result = send_email(config.notifications, subject, body, attachment_rungs=rungs or None)

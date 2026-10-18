@@ -1210,16 +1210,14 @@ def trigger_weekly_email(request: Request):
     cfg = _cfg()
     db = get_db()
     from core.report import generate_report_html, send_weekly_report
+    from core.report_period import ReportPeriod
     legs = _enabled_legs(cfg)
-    html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly", legs=legs)
-    if not html_body:
-        return JSONResponse(
-            {"status": "no_data", "detail": "No backup runs in the last 7 days — nothing to send."},
-            status_code=404,
-        )
+    rp = ReportPeriod.last_days(7)        # the dashboard sends the last 7 days up to now
+    html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly", legs=legs,
+                                     report_period=rp)
     try:
         ok = send_weekly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
-                                legs=legs)
+                                legs=legs, report_period=rp)
     except Exception as e:
         logger.exception("Failed to send weekly email report manual trigger")
         return JSONResponse(
@@ -1249,16 +1247,14 @@ def trigger_monthly_email(request: Request):
     cfg = _cfg()
     db = get_db()
     from core.report import generate_report_html, send_monthly_report
+    from core.report_period import ReportPeriod
     legs = _enabled_legs(cfg)
-    html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly", legs=legs)
-    if not html_body:
-        return JSONResponse(
-            {"status": "no_data", "detail": "No backup runs in the last 30 days — nothing to send."},
-            status_code=404,
-        )
+    rp = ReportPeriod.last_days(30)        # the dashboard sends the last 30 days up to now
+    html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly", legs=legs,
+                                     report_period=rp)
     try:
         ok = send_monthly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
-                                 legs=legs)
+                                 legs=legs, report_period=rp)
     except Exception as e:
         logger.exception("Failed to send monthly email report manual trigger")
         return JSONResponse(
@@ -1289,13 +1285,9 @@ def _serve_report(days: int, period: str) -> Response:
 
     db = get_db()
     from core.report import generate_report_html
-    html_body = generate_report_html(db, cfg.firm_name, days, period, legs=_enabled_legs(cfg))
-
-    if not html_body:
-        return HTMLResponse(
-            f"<p>No runs found in the last {days} days.</p>",
-            status_code=404,
-        )
+    from core.report_period import ReportPeriod
+    html_body = generate_report_html(db, cfg.firm_name, days, period, legs=_enabled_legs(cfg),
+                                     report_period=ReportPeriod.last_days(days))
 
     safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', cfg.firm_name)
     filename = f"{safe_firm}_{period}_Report_{pendulum.now(IST).format('YYYY-MM-DD')}.html"

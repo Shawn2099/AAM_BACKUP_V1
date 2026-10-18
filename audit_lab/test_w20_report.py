@@ -30,6 +30,9 @@ class FakeDB:
     def get_runs_since(self, days):
         return self._runs
 
+    def get_runs_between(self, start, end, mode=None):
+        return self._runs
+
     def latest_audit(self, leg):
         v = self._audits.get(leg)
         if isinstance(v, Exception):
@@ -59,6 +62,11 @@ class _FakeSMTP:
         self.logged_in = None
         self.quit_called = False
         self._behaviour = behaviour or []
+
+    esmtp_features: dict = {}        # no SIZE advertised: the richest attachment rung is sent
+
+    def ehlo_or_helo_if_needed(self):
+        return None
 
     def starttls(self, **kw):
         self.tls_started = True
@@ -272,7 +280,8 @@ def test_w20_failure_alert_zero_exit_code(sandbox, monkeypatch):
 def test_w20_report_html_empty(sandbox):
     from core import report as rep
 
-    assert rep.generate_report_html(FakeDB([]), "Firm", 7, "Weekly") == ""
+    # plan C P1: an empty period still gives a report that says so
+    assert "No backups in" in rep.generate_report_html(FakeDB([]), "Firm", 7, "Weekly")
 
 
 def test_w20_report_html_status_variants(sandbox):
@@ -349,9 +358,12 @@ def test_w20_summary_report_no_runs(sandbox, monkeypatch):
     from core import report as rep
 
     cfg, n = _cfg(sandbox)
+    seen = {}
     monkeypatch.setattr(rep, "_send_email_with_attachments",
-                        lambda *a, **k: pytest.fail("must not send"))
-    assert rep.send_summary_report(FakeDB([]), n, "Firm", 7, "Weekly") is False
+                        lambda c, subject, body, att: seen.update(subject=subject, body=body) or True)
+    # plan C P1: an empty period is still reported, as "action needed"
+    assert rep.send_summary_report(FakeDB([]), n, "Firm", 7, "Weekly") is True
+    assert "action needed" in seen["subject"] and "No backups in" in seen["body"]
 
 
 def test_w20_summary_report_regenerates_when_body_falsy(sandbox, monkeypatch):
@@ -409,7 +421,8 @@ def test_w20_weekly_monthly_delegate(sandbox, monkeypatch):
     cfg, n = _cfg(sandbox)
     calls = []
 
-    def fake_summary(db, config, firm, days, period, body_html=None, legs=None):
+    def fake_summary(db, config, firm, days, period, body_html=None, legs=None,
+                     report_period=None):
         calls.append((days, period, body_html))
         return True
 

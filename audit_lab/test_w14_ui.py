@@ -460,8 +460,8 @@ def _raising_client(exc):
 
 
 def test_w14_report_endpoints_without_data(ui_rig):
-    """A missing DB must degrade to 503, and an empty DB to 404 - never an empty
-    200 that looks like a valid report."""
+    """A missing DB must degrade to 503; an empty DB gives a report that says
+    'No backups in <period>' (plan C P1) - never a blank 200."""
     from fastapi.testclient import TestClient
 
     ui = ui_rig["ui"]
@@ -485,7 +485,7 @@ def test_w14_report_endpoints_without_data(ui_rig):
         if r_missing.status_code != 503:
             problems.append(f"a missing DB returned {r_missing.status_code}, want 503")
 
-        # an empty DB -> 404, not an empty report.
+        # an empty DB -> a report that says nothing ran, not a blank page.
         # ManifestDB connects lazily (_conn = None until first _get_conn()),
         # so _seed_db with no rows never creates the file — force one
         # connection (a read) so the file exists, like production would.
@@ -499,13 +499,15 @@ def test_w14_report_endpoints_without_data(ui_rig):
         r_empty = client.get("/report/weekly")
         rows.append(f"empty DB, /report/weekly  -> {r_empty.status_code} "
                     f"{r_empty.text[:80]!r}")
-        if r_empty.status_code != 404:
-            problems.append(f"an empty DB returned {r_empty.status_code}, want 404")
+        # plan C P1: an empty period is still a report, and it says so
+        if r_empty.status_code != 200 or "No backups in" not in r_empty.text:
+            problems.append(f"an empty DB returned {r_empty.status_code}, want a 200 report "
+                            "that says 'No backups in'")
 
     L.record("W14.report_no_data",
               "the report endpoints degrade honestly when there is nothing to report: "
-              "a missing manifest DB answers 503 and an empty one answers 404, so an "
-              "empty 200 can never be mistaken for a valid report",
+              "a missing manifest DB answers 503 and an empty one answers a report that says "
+              "'No backups in <period>' (plan C P1)",
               "\n".join(rows),
               "OK - no-data paths are distinguishable from a real report"
               if not problems else f"ISSUE - {problems[:3]}")
@@ -720,8 +722,8 @@ def test_w14_generate_report_html_branches(ui_rig):
     empty_db = ManifestDB(str(ui_rig["db_path"]))
     empty_html = generate_report_html(empty_db, "LAB", 7, "Weekly")
     rows.append(f"empty DB          -> {empty_html!r}")
-    if empty_html:
-        problems.append(f"an empty DB produced a report: {str(empty_html)[:80]!r}")
+    if "No backups in" not in empty_html:          # plan C P1: an empty period still reports
+        problems.append(f"an empty DB did not say 'No backups in': {str(empty_html)[:80]!r}")
     empty_db.close()
 
     # dates relative to today: a fixed date fell out of the 7-day window

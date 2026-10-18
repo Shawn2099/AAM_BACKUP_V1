@@ -197,20 +197,11 @@ def test_watchdog_codes():
     assert wd._watchdog_fault("restart_failed") == "AAM-SVC-01"
 
 
-def test_no_backups_report_warning_is_rpt_01(tmp_path, monkeypatch):
-    import flow
-    sent = []
-    monkeypatch.setattr(flow, "notify", lambda c, ev, db=None: sent.append(ev))
-    with pytest.raises(RuntimeError):
-        flow._send_summary_report(_cfg(tmp_path), days=7, period="Weekly")
-    assert sent[0].fault_code == "AAM-RPT-01"
-
-
 def test_every_producer_names_a_code():
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
     for path, codes in {
-        "flow.py": ["AAM-NAS-06", "AAM-CLK-03", "AAM-ROL-03", "AAM-RPT-01", "AAM-AUD-01",
+        "flow.py": ["AAM-NAS-06", "AAM-CLK-03", "AAM-ROL-03", "AAM-AUD-01",
                     "AAM-AUD-02", "blocked_guard_code(guard_record)"],
         "watchdog.py": ["AAM-SYS-03", "AAM-SVC-04"],
         "core/backup_repository.py": ["AAM-SYS-02"],

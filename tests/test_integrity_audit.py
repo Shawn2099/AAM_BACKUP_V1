@@ -179,7 +179,8 @@ class TestIntegrityReporting:
                 "bytes_checked": 300, "mismatches": 0,
                 "detail": "clean", "created_at": recent,
             })
-            html_body = report_mod.generate_report_html(db, "TestCA", 7, "Weekly", is_email=False)
+            html_body = report_mod.generate_report_html(db, "TestCA", 7, "Weekly", is_email=False,
+                                                    legs=("cloud", "lan"))
             assert "Integrity Verification" in html_body
             assert "VERIFIED" in html_body
             assert "NOT VERIFIED" in html_body  # lan leg has no audit yet

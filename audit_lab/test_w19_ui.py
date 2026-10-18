@@ -667,11 +667,11 @@ def test_w19_email_report_endpoints(ui_rig):
         gen_args, send_args = [], []
         outcome = {"mode": "ok"}
 
-        def fake_gen(db, firm, d, p, is_email=False, legs=None):
+        def fake_gen(db, firm, d, p, is_email=False, legs=None, report_period=None):
             gen_args.append((d, p))
             return "" if outcome["mode"] == "no_data" else "<html>report</html>"
 
-        def fake_send(db, cfg_, firm, body_html=None, legs=None):
+        def fake_send(db, cfg_, firm, body_html=None, legs=None, report_period=None):
             if outcome["mode"] == "raise":
                 raise OSError("smtp unreachable")
             return outcome["mode"] == "ok"
@@ -696,11 +696,6 @@ def test_w19_email_report_endpoints(ui_rig):
             outcome["mode"] = "raise"
             r = client.post(path)
             assert r.status_code == 500 and "smtp unreachable" in r.json()["detail"]
-
-            # no data -> 404 (never an empty 200 that looks like a report)
-            outcome["mode"] = "no_data"
-            r = client.post(path)
-            assert r.status_code == 404 and r.json()["status"] == "no_data"
 
             # rate limited
             outcome["mode"] = "ok"

@@ -21,10 +21,10 @@ def _recent_iso():
 
 
 class TestGenerateReportHtml:
-    def test_empty_db_returns_empty_string(self, tmp_db):
-        """Empty database → empty string (not None)."""
+    def test_empty_db_still_reports(self, tmp_db):
+        """Empty database -> a report that says no backup ran (plan C, P1)."""
         result = generate_report_html(tmp_db, "Test Firm", 7, "Weekly")
-        assert result == ""
+        assert "No backups in" in result
 
     def test_with_runs(self, populated_db):
         """DB with runs → HTML string."""
