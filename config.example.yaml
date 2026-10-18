@@ -348,6 +348,13 @@ maintenance:
   # config.yaml.bak-* copies kept next to config.yaml (one is made before every
   # settings change on the dashboard and every FY rollover). 5–1000
   config_backups_keep: 50
+  # config.yaml has one locked writer (a lock file beside it). How long a settings
+  # save / password change / FY rollover waits for another writer. 1–600 seconds
+  config_lock_timeout_seconds: 30
+  # Windows refuses to swap in the new config.yaml while another process has it open;
+  # the swap is retried this many extra times, with this pause between tries. 0–200 / 10–5000 ms
+  config_replace_retries: 20
+  config_replace_delay_ms: 50
   # A backup whose process is gone (service stop, reboot, crash) is recorded as
   # ABANDONED - with a failure email - at the next agent start or backup start.
   # Only when that cannot be determined (process not readable) does a run still

@@ -566,6 +566,17 @@ class MaintenanceConfig(StrictModel):
         default=50, ge=5, le=1000,
         description="config.yaml.bak-* copies kept next to config.yaml (one per settings save "
                     "or FY rollover); older ones are deleted after a successful settings save")
+    config_lock_timeout_seconds: int = Field(
+        default=30, ge=1, le=600,
+        description="How long a settings save, password change or FY rollover waits for another "
+                    "writer of config.yaml (lock file beside it) before giving up with an error")
+    config_replace_retries: int = Field(
+        default=20, ge=0, le=200,
+        description="Extra attempts to swap in the new config.yaml when Windows says 'access "
+                    "denied' because another process has the file open")
+    config_replace_delay_ms: int = Field(
+        default=50, ge=10, le=5000,
+        description="Pause between those attempts, in milliseconds")
     abandon_running_after_hours: float = Field(
         default=24, ge=1, le=168,
         description="A run whose process is gone is recorded ABANDONED (with a failure email) "

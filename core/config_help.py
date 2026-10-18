@@ -208,6 +208,11 @@ HELP: dict[str, tuple[str, str]] = {
     "maintenance.sqlite_busy_timeout_ms": ("Database wait time", ""),
     "maintenance.sqlite_vacuum_freelist_threshold": ("Database clean-up threshold", ""),
     "maintenance.config_backups_keep": ("Settings backups to keep", "A copy of the settings is saved before every change."),
+    "maintenance.config_lock_timeout_seconds": (
+        "Wait for another settings change",
+        "If two changes to the settings happen at once, the second waits this long."),
+    "maintenance.config_replace_retries": ("Settings file retries", "Used when Windows has the settings file open."),
+    "maintenance.config_replace_delay_ms": ("Pause between retries", ""),
     "maintenance.abandon_running_after_hours": (
         "Mark a stuck backup as abandoned after",
         "A backup whose process has stopped is marked abandoned (with an email) at once; this "
