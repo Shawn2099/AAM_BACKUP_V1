@@ -55,7 +55,7 @@ from core.run_artefacts import RunArtefacts
 from core.shutdown import FAILED as SHUTDOWN_FAILED
 from core.shutdown import ShutdownResult, shutdown_from_config
 from core.report_period import ReportPeriod
-from core.time_utils import get_fy_prefix, now_iso
+from core.time_utils import IST, get_fy_prefix, now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
 
@@ -2131,10 +2131,10 @@ def _scheduled_time():
         ctx = FlowRunContext.get()
         run = ctx.flow_run if ctx else None
         if run is not None and getattr(run, "auto_scheduled", False) and run.expected_start_time:
-            return pendulum.instance(run.expected_start_time).in_timezone("Asia/Kolkata")
+            return pendulum.instance(run.expected_start_time).in_timezone(IST)
     except Exception as e:  # noqa: BLE001 - an unreadable schedule means "now", never a missing report
         logger.warning(f"Scheduled start time unknown ({e}); the report covers the period before now")
-    return pendulum.now("Asia/Kolkata")
+    return pendulum.now(IST)
 
 
 def _send_summary_report(config, days: int, period: str) -> None:
