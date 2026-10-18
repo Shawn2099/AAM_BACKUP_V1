@@ -21,6 +21,7 @@ from __future__ import annotations
 import smtplib
 import socket
 import ssl
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -91,6 +92,7 @@ class DeliveryResult:
     error: str | None = None
     attempts: int = 0
     message_id: str | None = None
+    rung: int | None = None       # index into attachment_rungs that was delivered (None = no ladder)
 
 
 # ── SMTP transport ────────────────────────────────────────────────────────
@@ -102,7 +104,9 @@ def _smtp_security(notifications) -> str:
     return mode
 
 
-def _send_once(notifications, msg: MIMEMultipart) -> None:
+@contextmanager
+def _smtp_session(notifications):
+    """A connected, TLS-secured, authenticated SMTP session; always quit on exit."""
     security = _smtp_security(notifications)
     timeout = notifications.smtp_timeout_seconds
     if security == "ssl":
@@ -115,12 +119,45 @@ def _send_once(notifications, msg: MIMEMultipart) -> None:
             server.starttls(context=ssl.create_default_context())
         if notifications.smtp_auth:
             server.login(notifications.smtp_username, notifications.smtp_password)
-        server.sendmail(notifications.sender, list(notifications.recipients), msg.as_string())
+        yield server
     finally:
         try:
             server.quit()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _advertised_size(server) -> int:
+    """The server's EHLO `SIZE` limit in bytes; 0 = not advertised or "no limit" (RFC 1870)."""
+    try:
+        server.ehlo_or_helo_if_needed()     # smtplib only greets lazily, inside sendmail
+        return int(server.esmtp_features.get("size", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _send_once(notifications, msgs: list[MIMEMultipart], first: int = 0,
+               state: dict | None = None) -> None:
+    """Send the richest of msgs[first:] that fits the server's advertised SIZE (the poorest if
+    none does; the server then has the last word). `state["rung"]` is set to the index tried
+    BEFORE the data is sent, so a failure can say which rung it was."""
+    with _smtp_session(notifications) as server:
+        limit = _advertised_size(server)
+        sizes = [len(m.as_string()) for m in msgs]
+        pick = next((i for i in range(first, len(msgs)) if not limit or sizes[i] <= limit),
+                    len(msgs) - 1)
+        if state is not None:
+            state["rung"] = pick
+        server.sendmail(notifications.sender, list(notifications.recipients),
+                        msgs[pick].as_string())
+
+
+def _is_attachment_problem(exc: BaseException) -> bool:
+    """A refusal that a smaller message can cure: 552 (too large), a content filter's 554, or a
+    hang-up while the data was being sent (RFC 5321 s.3.8: a server may drop a too-big DATA)."""
+    if isinstance(exc, (smtplib.SMTPServerDisconnected, ConnectionError)):
+        return True
+    return getattr(exc, "smtp_code", None) in (552, 554)
 
 
 def email_config_problem(notifications) -> str | None:
@@ -185,13 +222,26 @@ def html_to_text(body_html: str) -> str:
     return "\n".join(text).strip()
 
 
+def _attach(msg: MIMEMultipart, attachments: list[dict]) -> MIMEMultipart:
+    for att in attachments:
+        part = MIMEApplication(att["content"], Name=att["filename"])
+        part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
+        msg.attach(part)
+    return msg
+
+
 def send_email(notifications, subject: str, body_html: str,
                attachments: list[dict] | None = None, *, body_text: str | None = None,
                headers: dict[str, str] | None = None,
-               message_id: str | None = None) -> DeliveryResult:
+               message_id: str | None = None,
+               attachment_rungs: list[list[dict]] | None = None) -> DeliveryResult:
     """Send one email with retry (tenacity). Never raises.
 
     attachments: [{"filename": str, "content": bytes}]
+    attachment_rungs: the same lists from richest to poorest (the last may be empty). The richest
+    rung that fits the server's advertised SIZE is sent; a refusal that a smaller message can cure
+    (552, a content filter's 554, a hang-up mid-DATA) drops ONE rung and resends at once, so an
+    attachment can never keep an alert from being delivered. `DeliveryResult.rung` says which.
     Every email carries Message-ID (Google requires it from every sender), Date,
     Auto-Submitted (RFC 3834: no out-of-office replies) and a plain-text part
     next to the HTML (audit 2026-10-18). `headers` adds e.g. In-Reply-To.
@@ -203,24 +253,27 @@ def send_email(notifications, subject: str, body_html: str,
 
     domain = notifications.sender.rpartition("@")[2] or "aam-backup"
     message_id = message_id or make_msgid(domain=domain)
-    msg = MIMEMultipart("mixed")
-    msg["Subject"] = subject
-    msg["From"] = notifications.sender
-    msg["To"] = ", ".join(notifications.recipients)
-    msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = message_id
-    msg["Auto-Submitted"] = "auto-generated"
-    for name, value in (headers or {}).items():
-        msg[name] = value
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(body_text if body_text is not None else html_to_text(body_html),
-                        "plain", "utf-8"))
-    alt.attach(MIMEText(body_html, "html", "utf-8"))
-    msg.attach(alt)
-    for att in attachments or []:
-        part = MIMEApplication(att["content"], Name=att["filename"])
-        part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
-        msg.attach(part)
+    ladder = attachment_rungs is not None
+    rungs = list(attachment_rungs) if ladder and attachment_rungs else [attachments or []]
+    text = body_text if body_text is not None else html_to_text(body_html)
+
+    def build(atts: list[dict]) -> MIMEMultipart:
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = subject
+        msg["From"] = notifications.sender
+        msg["To"] = ", ".join(notifications.recipients)
+        msg["Date"] = formatdate(localtime=True)
+        msg["Message-ID"] = message_id
+        msg["Auto-Submitted"] = "auto-generated"
+        for name, value in (headers or {}).items():
+            msg[name] = value
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(text, "plain", "utf-8"))
+        alt.attach(MIMEText(body_html, "html", "utf-8"))
+        msg.attach(alt)
+        return _attach(msg, atts)
+
+    msgs = [build(r) for r in rungs]
 
     from tenacity import (
         RetryError,
@@ -230,25 +283,58 @@ def send_email(notifications, subject: str, body_html: str,
         wait_random_exponential,
     )
 
-    attempts = 0
-    try:
-        for attempt in Retrying(
-            stop=stop_after_attempt(notifications.retry_attempts),
-            wait=wait_random_exponential(multiplier=notifications.retry_base_seconds,
-                                         max=notifications.retry_base_seconds * 8),
-            retry=retry_if_exception(lambda e: not _is_permanent_smtp_error(e)),
-            reraise=True,
-        ):
-            with attempt:
-                attempts = attempt.retry_state.attempt_number
-                _send_once(notifications, msg)
-    except (RetryError, Exception) as e:  # noqa: BLE001
-        kind = "permanent SMTP error, not retried" if _is_permanent_smtp_error(e) \
-            else f"failed after {attempts} attempt(s)"
-        logger.error(f"Email {kind} {subject!r}: {e}")
-        return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts, message_id)
-    logger.info(f"Email sent: {subject!r} (attempt {attempts})")
-    return DeliveryResult(SENT, None, attempts, message_id)
+    attempts, first, state = 0, 0, {"rung": None}
+    while True:
+        state["rung"] = None
+        try:
+            for attempt in Retrying(
+                stop=stop_after_attempt(notifications.retry_attempts),
+                wait=wait_random_exponential(multiplier=notifications.retry_base_seconds,
+                                             max=notifications.retry_base_seconds * 8),
+                retry=retry_if_exception(lambda e: not _is_permanent_smtp_error(e)
+                                         and not _drops_a_rung(e, state, rungs)),
+                reraise=True,
+            ):
+                with attempt:
+                    attempts += 1
+                    _send_once(notifications, msgs, first, state)
+            break
+        except (RetryError, Exception) as e:  # noqa: BLE001
+            used = state["rung"]
+            if used is not None and _drops_a_rung(e, state, rungs):
+                logger.warning(f"Email {subject!r}: rung {used} refused ({type(e).__name__}: {e}); "
+                               f"resending with less attached")
+                first = used + 1
+                continue
+            kind = "permanent SMTP error, not retried" if _is_permanent_smtp_error(e)                 else f"failed after {attempts} attempt(s)"
+            logger.error(f"Email {kind} {subject!r}: {e}")
+            return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts, message_id)
+    rung = state["rung"] if ladder else None
+    logger.info(f"Email sent: {subject!r} (attempt {attempts}"
+                + (f", attachment rung {rung}" if ladder else "") + ")")
+    return DeliveryResult(SENT, None, attempts, message_id, rung)
+
+
+def attachment_ladder(attachments: list[dict]) -> tuple[list[list[dict]], list[str]]:
+    """(rungs, labels) richest to poorest for one alert: everything, the report without the logs
+    .zip, then no attachment. Rungs that would repeat the one before are left out."""
+    if not attachments:
+        return [], []
+    rungs, labels = [list(attachments)], ["full"]
+    report_only = [a for a in attachments if not a["filename"].lower().endswith(".zip")]
+    if report_only and len(report_only) < len(attachments):
+        rungs.append(report_only)
+        labels.append("report-only")
+    rungs.append([])
+    labels.append("none")
+    return rungs, labels
+
+
+def _drops_a_rung(exc: BaseException, state: dict, rungs: list[list[dict]]) -> bool:
+    """True when `exc` happened on a rung that still has attachments AND a poorer rung exists."""
+    used = state["rung"]
+    return (used is not None and used + 1 < len(rungs) and bool(rungs[used])
+            and _is_attachment_problem(exc))
 
 
 # ── Alert rendering ───────────────────────────────────────────────────────
@@ -343,6 +429,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
         first = (db.notification_by_message_id(root) if root else None) or same
         event = replace(event, first_reported_at=first["created_at"])
     subject, body, attachments = render_alert(config, event, db)
+    labels: list[str] = []
 
     if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
         result = DeliveryResult(DISABLED, "notifications.send_on_failure is false "
@@ -360,8 +447,9 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
             if root:      # reminder / RESOLVED: same conversation as the first email
                 headers["In-Reply-To"] = root
                 headers["References"] = root
-            result = send_email(config.notifications, subject, body, attachments,
-                                headers=headers)
+            rungs, labels = attachment_ladder(attachments)
+            result = send_email(config.notifications, subject, body, headers=headers,
+                                attachment_rungs=rungs or None)
 
     try:
         db.record_notification({
@@ -370,6 +458,8 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
             "attempts": result.attempts, "created_at": now_iso(),
             "fault_code": event.fault_code, "message_id": result.message_id,
             "thread_id": (root or result.message_id) if result.status == SENT else None,
+            "attachments_rung": (labels[result.rung] if labels and result.rung is not None
+                                 else None),
         })
     except Exception as e:  # noqa: BLE001
         logger.error(f"Could not record notification outcome for {event.key}: {e}")
