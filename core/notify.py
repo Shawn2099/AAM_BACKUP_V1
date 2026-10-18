@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
+from html.parser import HTMLParser
 
 from loguru import logger
 
@@ -82,6 +84,7 @@ class DeliveryResult:
     status: str
     error: str | None = None
     attempts: int = 0
+    message_id: str | None = None
 
 
 # ── SMTP transport ────────────────────────────────────────────────────────
@@ -127,22 +130,83 @@ def email_config_problem(notifications) -> str | None:
     return None
 
 
+class _TextExtractor(HTMLParser):
+    """Plain-text rendering of our own email HTML (stdlib only)."""
+
+    _BREAKS = {"br", "p", "div", "h1", "h2", "h3", "h4", "tr", "li", "pre", "table", "ul", "ol"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        self._href: str | None = None
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("style", "script", "head"):
+            self._skip += 1
+        elif tag in self._BREAKS:
+            self.out.append("\n")
+        elif tag == "td":
+            self.out.append("  ")
+        elif tag == "a":
+            self._href = dict(attrs).get("href")
+
+    def handle_endtag(self, tag):
+        if tag in ("style", "script", "head"):
+            self._skip = max(0, self._skip - 1)
+        elif tag == "a" and self._href:
+            self.out.append(f" ({self._href})")
+            self._href = None
+        elif tag in self._BREAKS and tag != "br":
+            self.out.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.out.append(data)
+
+
+def html_to_text(body_html: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(body_html)
+    lines = [ln.rstrip() for ln in "".join(parser.out).splitlines()]
+    text, blank = [], False
+    for ln in lines:                       # collapse runs of empty lines
+        if ln.strip() or not blank:
+            text.append(ln)
+        blank = not ln.strip()
+    return "\n".join(text).strip()
+
+
 def send_email(notifications, subject: str, body_html: str,
-               attachments: list[dict] | None = None) -> DeliveryResult:
+               attachments: list[dict] | None = None, *, body_text: str | None = None,
+               headers: dict[str, str] | None = None,
+               message_id: str | None = None) -> DeliveryResult:
     """Send one email with retry (tenacity). Never raises.
 
     attachments: [{"filename": str, "content": bytes}]
+    Every email carries Message-ID (Google requires it from every sender), Date,
+    Auto-Submitted (RFC 3834: no out-of-office replies) and a plain-text part
+    next to the HTML (audit 2026-10-18). `headers` adds e.g. In-Reply-To.
     """
     problem = email_config_problem(notifications)
     if problem:
         logger.error(f"Email not sent ({subject!r}): {problem}")
         return DeliveryResult(FAILED, problem, 0)
 
+    domain = notifications.sender.rpartition("@")[2] or "aam-backup"
+    message_id = message_id or make_msgid(domain=domain)
     msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = notifications.sender
     msg["To"] = ", ".join(notifications.recipients)
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = message_id
+    msg["Auto-Submitted"] = "auto-generated"
+    for name, value in (headers or {}).items():
+        msg[name] = value
     alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(body_text if body_text is not None else html_to_text(body_html),
+                        "plain", "utf-8"))
     alt.attach(MIMEText(body_html, "html", "utf-8"))
     msg.attach(alt)
     for att in attachments or []:
@@ -174,9 +238,9 @@ def send_email(notifications, subject: str, body_html: str,
         kind = "permanent SMTP error, not retried" if _is_permanent_smtp_error(e) \
             else f"failed after {attempts} attempt(s)"
         logger.error(f"Email {kind} {subject!r}: {e}")
-        return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts)
+        return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts, message_id)
     logger.info(f"Email sent: {subject!r} (attempt {attempts})")
-    return DeliveryResult(SENT, None, attempts)
+    return DeliveryResult(SENT, None, attempts, message_id)
 
 
 # ── Alert rendering ───────────────────────────────────────────────────────
