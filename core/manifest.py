@@ -13,7 +13,7 @@ from pathlib import Path
 from loguru import logger
 
 from core import rollover_journal as rj
-from core.time_utils import cutoff_iso, now_iso
+from core.time_utils import IST, cutoff_iso, now_iso
 from models.config import MaintenanceConfig, model_default
 
 # Critical-6: version gate for schema migrations. Bump when DDL or the
@@ -759,6 +759,19 @@ class ManifestDB:
                        ORDER BY started_at DESC""",
                     (cutoff,),
                 ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_runs_between(self, start, end, mode: str | None = None) -> list[dict]:
+        """Runs whose START lies in [start, end), newest first (plan C2). `started_at` is stored
+        as an IST ISO string with its offset, so the bounds are rendered the same way."""
+        lo, hi = start.in_timezone(IST).isoformat(), end.in_timezone(IST).isoformat()
+        sql = "SELECT * FROM run_history WHERE started_at >= ? AND started_at < ?"
+        args: list = [lo, hi]
+        if mode:
+            sql += " AND mode = ?"
+            args.append(mode)
+        with self._lock:
+            rows = self._get_conn().execute(sql + " ORDER BY started_at DESC", args).fetchall()
             return [dict(r) for r in rows]
 
     def last_run(self, mode: str | None = None) -> dict | None:
