@@ -35,7 +35,7 @@ pass for a backup to run, to count as successful, and to be verified.**
  │     polls Prefect /api/health every 60 s; restarts services; honours lock    │
  │                                                                              │
  │  Runtime data (C:\BackupAgent = paths.runtime_dir):                          │
- │     manifest.db  backup.lock  logs\  run_logs\<day>\<run_id>\  .prefect\     │
+ │     manifest.db  backup.lock  logs\  run_logs\<day>\<date>_<HHmm>_<leg>_<id>\  .prefect\     │
  └──────────────────────────────────────────────────────────────────────────────┘
         │ robocopy /MIR (SMB 445)                 │ rclone sync (HTTPS)
         ▼                                         ▼
@@ -84,7 +84,7 @@ backup(mode)
 with _backup_slot(config):                     concurrency slot + backup.lock (acquire_lock)
 │
 ├─ before_dict = ManifestDB.get_cloud_synced_entries()      (for "files copied" metric)
-├─ artefacts   = _open_run_artefacts()  → run_logs\<day>\<run_id>\   (full logs folder)
+├─ artefacts   = _open_run_artefacts()  → run_logs\<day>\<date>_<HHmm>_<leg>_<id>\   (full logs folder)
 │
 ├─ phase "pre"
 │   ├─ health_check_task   → core/health.pre_backup_health()
@@ -334,7 +334,7 @@ until a RECOVERED notification follows.
 | `manifest.db` › `file_entries` | per-file state per leg | record tasks | metrics, dashboard counts |
 | `manifest.db` › `integrity_audits` | weekly audit verdicts | audit flow | ui, reports |
 | `manifest.db` › `notifications` | every alert outcome | `core/notify` (WP8) | dashboard (WP9) |
-| `run_logs\<day>\<run_id>\` | FULL rclone/robocopy logs + `manifest.json`, gzip > `run_logs.compress_after_kb` | tool_runner / run_artefacts | operator, dashboard link |
+| `run_logs\<day>\<date>_<HHmm>_<leg>_<short id>\` | FULL rclone/robocopy logs + `manifest.json`, gzip > `run_logs.compress_after_kb` | tool_runner / run_artefacts | operator, dashboard link |
 | `logs\backup_YYYY-MM-DD.log` | app log (loguru) | all flows | operator |
 | `logs\*_svc*.log` | NSSM stdout/stderr per service | NSSM | operator |
 | `backup.lock` | `PID:create_time` of the running backup | `_backup_slot` | watchdog, launch |
