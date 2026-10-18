@@ -572,9 +572,9 @@ copy of the file (backup, support zip, a mistaken commit - the GitHub repo is pu
 **Tasks:**
 - [x] **S1** `core/secrets.py` (protect / unprotect / is_protected) + tests (round trip, wrong
   entropy fails, non-Windows guard for CI).
-- [ ] **S2** Model + Settings: `smtp_password` encrypted at rest; a plain value loads with amber
+- [x] **S2** Model + Settings: `smtp_password` encrypted at rest; a plain value loads with amber
   (no migration, D-16); tests.
-- [ ] **S3** Google key encrypted; rclone via environment variable (verify with the real binary
+- [x] **S3** (code + tests; real-key proof at step 10) Google key encrypted; rclone via environment variable (verify with the real binary
   that `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` works for sync / check / lsjson / size).
 - [ ] **S4** FY archive step: verify `rclone settier` on GCS with the real binary; switch to it
   (removes the gcloud dependency) or temp-file fallback.
