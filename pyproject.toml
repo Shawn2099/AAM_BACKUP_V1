@@ -23,6 +23,7 @@ dependencies = [
     "python-multipart==0.0.32",
     "cron-descriptor==1.4.5",
     "tenacity>=8.5.0",
+    "filelock==4.2.2",
 ]
 
 [tool.ruff]
