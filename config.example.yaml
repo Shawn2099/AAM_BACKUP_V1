@@ -252,6 +252,10 @@ dashboard:
   # api_key. Change it ONLY on the dashboard (Settings > Advanced > Change admin
   # password): that stores a salted hash here, never the password itself.
   admin_password_hash: ""
+  # Dashboard sign-in password: a salted hash, written by the installer, by Settings >
+  # Advanced > Passwords, or by deploy/11_reset_dashboard_passwords.ps1. Empty = nobody can
+  # sign in (the dashboard shows 'not set up').
+  login_password_hash: ""
   # The Advanced login locks itself after this many minutes (5–480)
   admin_session_minutes: 30
   # Minimum length of a new admin password (8–128)

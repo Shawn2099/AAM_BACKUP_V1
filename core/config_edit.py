@@ -36,12 +36,13 @@ from core.config_file import (ConfigWriteError, config_transaction, load_round_t
 
 LOCKED = frozenset({
     "dashboard.auth_enabled", "dashboard.api_key", "dashboard.bind_address", "dashboard.port",
-    "dashboard.admin_password_hash", "dashboard.firewall_remote_addresses",
+    "dashboard.admin_password_hash", "dashboard.login_password_hash",
+    "dashboard.firewall_remote_addresses",
     "paths.runtime_dir", "paths.database_path", "paths.log_directory",
 })
 SECRET = frozenset({"notifications.smtp_password"})
 # Never listed at all: changed only through "Change admin password".
-HIDDEN = frozenset({"dashboard.admin_password_hash"})
+HIDDEN = frozenset({"dashboard.admin_password_hash", "dashboard.login_password_hash"})
 _RISKY_SECTIONS = frozenset({"guards", "approvals"})
 _RISKY_KEYS = frozenset({
     # what / where is backed up
@@ -432,15 +433,27 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
         return result
 
 
+PASSWORD_KEYS = frozenset({"dashboard.admin_password_hash", "dashboard.login_password_hash"})
+
+
 def set_admin_password_hash(config_path: str, new_hash: str, *, actor: str, db=None,
                             now_iso=None) -> str:
-    """Store a new Advanced-login hash the same safe way as any setting:
-    backup, atomic comment-preserving write, load check (restore on failure),
-    history entry with the value hidden. Returns the backup file name."""
+    return set_password_hash(config_path, "dashboard.admin_password_hash", new_hash,
+                             actor=actor, db=db, now_iso=now_iso)
+
+
+def set_password_hash(config_path: str, key: str, new_hash: str, *, actor: str, db=None,
+                      now_iso=None) -> str:
+    """Store a new login hash (`dashboard.login_password_hash` or
+    `dashboard.admin_password_hash`) the same safe way as any setting: backup, atomic
+    comment-preserving write, load check (restore on failure), history entry with the value
+    hidden. Returns the backup file name."""
+    if key not in PASSWORD_KEYS:
+        raise ValueError(f"{key} is not a password hash key")
     with _WRITE_LOCK:
         try:
             with config_transaction(config_path, tmp_prefix=".config_edit_") as txn:
-                set_dotted(txn.doc, "dashboard.admin_password_hash", new_hash)
+                set_dotted(txn.doc, key, new_hash)
         except ConfigWriteError as e:
             raise ConfigEditError(409 if e.busy else 500, str(e)) from e
         backup, saved = txn.backup, txn.saved
@@ -451,7 +464,7 @@ def set_admin_password_hash(config_path: str, new_hash: str, *, actor: str, db=N
         if db is not None:
             db.record_config_change({
                 "changed_at": now_iso(), "changed_by": actor,
-                "key": "dashboard.admin_password_hash", "old_value": "'(hidden)'",
+                "key": key, "old_value": "'(hidden)'",
                 "new_value": "'(hidden)'", "risky": 1, "backup_file": backup.name,
             })
         return backup.name

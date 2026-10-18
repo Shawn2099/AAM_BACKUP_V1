@@ -873,12 +873,18 @@ class DashboardConfig(StrictModel):
     admin_password_min_length: int = Field(
         default=10, ge=8, le=128, description="Minimum length of a new admin password")
 
-    @field_validator("admin_password_hash")
+    login_password_hash: str = Field(
+        default="",
+        description="Dashboard sign-in password (plan E1): a salted PBKDF2 hash written by the "
+                    "installer, 'Change dashboard password' in Advanced, or the reset script "
+                    "on the server - never the password itself. Empty = nobody can sign in.")
+
+    @field_validator("admin_password_hash", "login_password_hash")
     @classmethod
-    def _valid_admin_hash(cls, v: str) -> str:
+    def _valid_password_hash(cls, v: str) -> str:
         if v and not v.startswith("pbkdf2_sha256$"):
-            raise ValueError("admin_password_hash must be empty or a hash written by the "
-                             "dashboard's 'Change admin password' (never a plain password)")
+            raise ValueError("a password hash must be empty or a hash written by the dashboard "
+                             "or the installer (never a plain password)")
         return v
 
     # Audit 2026-10-18 item 7: one budget per kind of action (a few settings
