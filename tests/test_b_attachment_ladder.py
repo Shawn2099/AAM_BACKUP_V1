@@ -134,3 +134,23 @@ def test_notify_records_the_delivered_rung_and_a_small_server_still_gets_the_ale
     assert result.status == nt.SENT and result.rung == 1       # logs dropped, report kept
     assert row["attachments_rung"] == "report-only"
     assert _attachment_names(srv.messages[0]["data"]) == ["AAM-support.txt"]
+
+
+def test_summary_report_with_csvs_too_big_for_the_server_is_still_delivered_without_them(tmp_path):
+    import flow
+    from core.manifest import ManifestDB
+    from unittest.mock import patch
+
+    csvs = [{"filename": "runs.csv", "content": os.urandom(40 * KB)}]
+    with smtp_server(size_limit=20 * KB) as srv:
+        cfg = _cfg(tmp_path, port=srv.server_address[1])
+        with patch.object(flow.report, "build_summary_email",
+                          return_value=("Weekly report", "<p>summary</p>", csvs)):
+            flow._send_summary_report(cfg, days=7, period="Weekly")
+    db = ManifestDB.from_config(cfg)
+    try:
+        row = db.last_notification("report:weekly", status=nt.SENT)
+    finally:
+        db.close()
+    assert row["attachments_rung"] == "none"
+    assert _attachment_names(srv.messages[0]["data"]) == []

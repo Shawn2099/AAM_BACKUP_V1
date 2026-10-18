@@ -48,7 +48,7 @@ from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
-from core.notify import SENT, AlertEvent, notify, send_email
+from core.notify import SENT, AlertEvent, attachment_ladder, notify, send_email
 from core.process import acquire_lock, read_lock_alive, write_lock
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
@@ -2141,12 +2141,15 @@ def _send_summary_report(config, days: int, period: str) -> None:
                 fault_code="AAM-RPT-01"), db=db)
             raise RuntimeError(msg)
         subject, body, attachments = email
-        result = send_email(config.notifications, subject, body, attachments)
+        rungs, labels = attachment_ladder(attachments or [])
+        result = send_email(config.notifications, subject, body, attachment_rungs=rungs or None)
         try:
             db.record_notification({
                 "event_key": f"report:{period.lower()}", "kind": "REPORT", "mode": "report",
                 "subject": subject, "status": result.status, "error": result.error,
-                "attempts": result.attempts, "created_at": now_iso()})
+                "attempts": result.attempts, "created_at": now_iso(),
+                "attachments_rung": (labels[result.rung] if labels and result.rung is not None
+                                     else None)})
         except Exception as e:  # noqa: BLE001 - the delivery verdict below still stands
             logger.error(f"Could not record {period} report delivery: {e}")
         if result.status != SENT:
