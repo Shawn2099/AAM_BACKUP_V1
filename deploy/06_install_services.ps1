@@ -399,6 +399,31 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  WARNING: $SVC_WATCHDOG failed to start. It will retry automatically." -ForegroundColor Yellow
 }
 
+# ====================================================================
+# DASHBOARD FIREWALL RULE (owner 2026-10-18: office network only)
+# ====================================================================
+# Opens ONLY the dashboard port, ONLY to dashboard.firewall_remote_addresses
+# (default LocalSubnet). Prefect's API (4200, no login) stays on 127.0.0.1 and
+# is never opened. Re-running the installer replaces the rule.
+$FwRuleName = "AAM Backup Dashboard"
+$dashInfo = & $VenvPython -c "from models.config import load_config; d=load_config(r'$ConfigFile').dashboard; print(d.bind_address); print(d.port); print(','.join(d.firewall_remote_addresses))"
+if ($LASTEXITCODE -ne 0 -or $dashInfo.Count -lt 3) {
+    Write-Host "  ERROR: could not read the dashboard settings for the firewall rule." -ForegroundColor Red
+    exit 1
+}
+$dashBind = $dashInfo[0]; $dashPort = $dashInfo[1]; $dashRemote = $dashInfo[2] -split ","
+Get-NetFirewallRule -DisplayName $FwRuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+if ($dashBind -in @("127.0.0.1", "localhost", "::1")) {
+    Write-Host "[OK]   Dashboard only on this server ($dashBind) - no firewall rule needed"
+} else {
+    New-NetFirewallRule -DisplayName $FwRuleName -Direction Inbound -Protocol TCP -LocalPort $dashPort -RemoteAddress $dashRemote -Action Allow -Profile Any | Out-Null
+    if (-not $?) {
+        Write-Host "  ERROR: could not create the firewall rule '$FwRuleName'." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[OK]   Firewall: dashboard port $dashPort open to $($dashRemote -join ', ') only"
+}
+
 Write-Host ""
 Write-Host "==================================================================="
 Write-Host "  INSTALLATION COMPLETE"

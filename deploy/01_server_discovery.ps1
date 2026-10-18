@@ -263,10 +263,10 @@ if ($psPolicy -eq "Restricted") {
 # Firewall
 $fwProfiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $true }
 if ($fwProfiles) {
-    md "- **Windows Firewall:** Active (ports 4200, 8080 may need rules)"
-    md "  - To add firewall rules, run these as Administrator:"
-    md "    netsh advfirewall firewall add rule name=`"AAM Prefect 4200`" dir=in action=allow protocol=tcp localport=4200"
-    md "    netsh advfirewall firewall add rule name=`"AAM Dashboard 8080`" dir=in action=allow protocol=tcp localport=8080"
+    md "- **Windows Firewall:** Active"
+    md "  - 06_install_services.ps1 opens ONLY the dashboard port, ONLY to the office network"
+    md "    (dashboard.firewall_remote_addresses, default LocalSubnet)."
+    md "  - Never open port 4200: the Prefect API has no login and stays on 127.0.0.1."
     json "    `"firewall`": `"active`","
 } else {
     md "- **Windows Firewall:** Inactive"

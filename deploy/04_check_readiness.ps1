@@ -283,6 +283,17 @@ if (Test-Path $venvPy) {
         Check-Item "Config validation" "config.yaml is NOT valid - the services would not start:" $true
         $cfgOut | Select-Object -Last 12 | ForEach-Object { Write-Host "       $_" }
     }
+
+    # 16b. The "open the dashboard" link in every email must work on the office PCs
+    Push-Location $ProjectDir
+    $linkOut = & $venvPy -c "from models.config import load_config; from core.notify import dashboard_link_problem; p = dashboard_link_problem(load_config(r'$cfg')); print(p or 'ok'); raise SystemExit(1 if p else 0)" 2>&1
+    $linkExit = $LASTEXITCODE
+    Pop-Location
+    if ($linkExit -eq 0) {
+        Check-Item "Dashboard link in emails" "works from office PCs" $false
+    } else {
+        Check-Item "Dashboard link in emails" "$($linkOut | Select-Object -Last 1)" $true
+    }
 } else {
     Check-Item "Project Python" "Missing $venvPy (uv sync --frozen failed above?)" $true
 }

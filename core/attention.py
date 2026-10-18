@@ -101,6 +101,13 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            f"Service watchdog: {watchdog.get('subject') or watchdog.get('event_key')} "
                            f"({format_ist(watchdog.get('created_at'))})."))
 
+    from core.notify import dashboard_link_problem   # local: notify imports time_utils only
+
+    link_problem = dashboard_link_problem(config)
+    if link_problem:
+        items.append(_item(AMBER, "email_link",
+                           f"Emails cannot link to this dashboard: {link_problem}."))
+
     if not config.notifications.send_on_failure:
         items.append(_item(AMBER, "alerts_off",
                            "Failure emails are switched off (Settings > Advanced). Decisions, "

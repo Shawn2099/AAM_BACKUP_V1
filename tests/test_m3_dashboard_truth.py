@@ -25,7 +25,8 @@ def _cfg(cloud=True, lan=True, stale=26):
     return SimpleNamespace(
         cloud=SimpleNamespace(enabled=cloud), lan=SimpleNamespace(enabled=lan),
         dashboard=SimpleNamespace(stale_after_hours=stale, alert_failure_window_days=7,
-                                  auth_enabled=False, api_key=""),
+                                  auth_enabled=False, api_key="",
+                                  public_url="http://backup-server:8080"),
         paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
         firm_name="T",
         notifications=SimpleNamespace(send_on_failure=True),

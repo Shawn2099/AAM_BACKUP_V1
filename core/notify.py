@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import html
 import smtplib
+import socket
 import ssl
 from dataclasses import dataclass, field
 from email.mime.application import MIMEApplication
@@ -27,6 +28,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 from loguru import logger
 
@@ -253,11 +255,31 @@ _KIND_LABEL = {
 }
 
 
+_SERVER_ONLY_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "::", ""}
+
+
 def dashboard_url(config) -> str:
     d = config.dashboard
     if getattr(d, "public_url", ""):
         return d.public_url
-    return f"http://{d.bind_address}:{d.port}"
+    host = d.bind_address
+    if host in ("0.0.0.0", "::"):          # "all interfaces" is not an address to open
+        host = socket.gethostname()
+    return f"http://{host}:{d.port}"
+
+
+def dashboard_link_problem(config) -> str | None:
+    """Why the emails' dashboard link would not open on an office PC, or None
+    (owner 2026-10-18: dashboard on the office network only)."""
+    url = dashboard_url(config)
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return f"dashboard.public_url {url!r} is not a link (expected http://<server>:<port>)"
+    if parts.hostname.lower() in _SERVER_ONLY_HOSTS:
+        return (f"the dashboard link in emails is {url}, which opens only on the server "
+                "itself - set dashboard.public_url to the address office PCs use "
+                "(e.g. http://backup-server:8080)")
+    return None
 
 
 def render_alert(config, event: AlertEvent) -> tuple[str, str, list[dict]]:

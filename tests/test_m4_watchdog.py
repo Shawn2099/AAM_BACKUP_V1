@@ -331,7 +331,8 @@ def db(tmp_path):
 def _att_cfg():
     return SimpleNamespace(
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
-        dashboard=SimpleNamespace(stale_after_hours=26, alert_failure_window_days=7),
+        dashboard=SimpleNamespace(stale_after_hours=26, alert_failure_window_days=7,
+                                  public_url="http://backup-server:8080"),
         notifications=SimpleNamespace(send_on_failure=True))
 
 

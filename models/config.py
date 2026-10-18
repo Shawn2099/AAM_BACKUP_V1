@@ -813,6 +813,15 @@ class DashboardConfig(StrictModel):
         description="Dashboard address put into attention emails (e.g. "
                     "http://backup-server:8080). Empty = http://<bind_address>:<port>.",
     )
+    # Owner 2026-10-18: office network only, never public. The installer opens
+    # the dashboard port in Windows Firewall to these remote addresses only.
+    firewall_remote_addresses: list[str] = Field(
+        default_factory=lambda: ["LocalSubnet"], min_length=1,
+        description="Who may open the dashboard over the network (Windows Firewall "
+                    "RemoteAddress): LocalSubnet (the server's own office subnet), an IP, "
+                    "a CIDR (10.10.151.0/24) or a range (10.10.151.10-10.10.151.50). "
+                    "Applied by deploy/06_install_services.ps1 when bind_address is not "
+                    "127.0.0.1.")
     stale_after_hours: float = Field(
         default=26, ge=1, le=720,
         description="Banner + /health turn red when an enabled leg has had no successful "
@@ -840,6 +849,17 @@ class DashboardConfig(StrictModel):
             raise ValueError("admin_password_hash must be empty or a hash written by the "
                              "dashboard's 'Change admin password' (never a plain password)")
         return v
+
+    @field_validator("firewall_remote_addresses")
+    @classmethod
+    def _office_addresses_only(cls, v: list[str]) -> list[str]:
+        ip = r"\d{1,3}(?:\.\d{1,3}){3}"
+        allowed = re.compile(rf"^(?:LocalSubnet|{ip}(?:/\d{{1,2}})?|{ip}-{ip})$")
+        bad = [a for a in v if not allowed.fullmatch(a.strip())]
+        if bad:
+            raise ValueError("office addresses only (LocalSubnet, an IP, a CIDR or a range), "
+                             "never Any: " + ", ".join(repr(b) for b in bad))
+        return [a.strip() for a in v]
 
     @model_validator(mode="after")
     def api_key_required_when_auth_enabled(self) -> "DashboardConfig":

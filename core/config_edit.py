@@ -36,7 +36,7 @@ from core.config_file import (backup_config_file, load_round_trip, prune_backups
 
 LOCKED = frozenset({
     "dashboard.auth_enabled", "dashboard.api_key", "dashboard.bind_address", "dashboard.port",
-    "dashboard.admin_password_hash",
+    "dashboard.admin_password_hash", "dashboard.firewall_remote_addresses",
     "paths.runtime_dir", "paths.database_path", "paths.log_directory",
 })
 SECRET = frozenset({"notifications.smtp_password"})

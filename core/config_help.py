@@ -173,6 +173,9 @@ HELP: dict[str, tuple[str, str]] = {
     "dashboard.auth_enabled": ("Dashboard needs a login", "Changed only on the server."),
     "dashboard.api_key": ("Dashboard password", "Changed only on the server."),
     "dashboard.bind_address": ("Who can open the dashboard", "Changed only on the server."),
+    "dashboard.firewall_remote_addresses": ("Office PCs allowed to open the dashboard",
+                                            "Windows Firewall addresses (LocalSubnet = the "
+                                            "office network). Changed only on the server."),
     "dashboard.port": ("Dashboard port", "Changed only on the server."),
     "dashboard.admin_session_minutes": ("Advanced login locks after", ""),
     "dashboard.admin_password_min_length": ("Shortest admin password", ""),
