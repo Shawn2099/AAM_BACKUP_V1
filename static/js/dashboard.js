@@ -343,10 +343,48 @@ function renderLegVisuals(data) {
         var safety = document.getElementById('safety-' + mode);
         if (safety) safety.textContent = safetyText(d && d.integrity);
     });
+    updateVerifyUi(data);
     var free = document.getElementById('stat-free');
     if (free && data.health && !data.health.error) free.textContent = data.health.source_free_gb + ' GB';
     var fy = document.getElementById('source-fy');
     if (fy) fy.textContent = data.fy_prefix;
+}
+
+// ── Safety check (read-only audit): start it by hand, show that it is running ─
+var _VERIFY_NAME = { lan: 'the office copy', cloud: 'the online copy', all: 'both copies' };
+async function triggerVerify(mode) {
+    var msg = 'Run the safety check on ' + _VERIFY_NAME[mode] + ' now?\n\nIt compares every file with your original and can take several hours. '
+        + 'Nothing is changed. Backups wait until it has finished.';
+    if (!confirm(msg)) return;
+    var btn = document.getElementById('btn-verify-' + mode);
+    if (btn) { btn.disabled = true; btn.innerText = 'Starting...'; }
+    try {
+        const response = await fetch('/trigger/verify/' + mode, { method: 'POST' });
+        const data = await response.json();
+        showToast(data.detail || (response.ok ? 'Safety check started.' : 'Could not start the safety check.'), response.ok ? 'success' : 'error');
+    } catch (err) { showToast('Network connection error: ' + err.message, 'error'); }
+    await updateStatus();
+}
+function updateVerifyUi(data) {
+    var busyBackup = !!((data.cloud && data.cloud.running) || (data.lan && data.lan.running));
+    var checking = !!data.verify_running;
+    ['lan', 'cloud', 'all'].forEach(function(mode) {
+        var btn = document.getElementById('btn-verify-' + mode);
+        if (!btn) return;
+        var leg = data[mode];
+        var off = mode !== 'all' && leg && leg.enabled === false;
+        btn.disabled = off || checking || busyBackup;
+        btn.innerText = checking ? 'Checking...' : (mode === 'all' ? 'Check both copies now' : 'Check now');
+        btn.title = off ? 'This copy is switched off in the settings.'
+            : (checking ? 'A safety check is running.' : (busyBackup ? 'A backup is running. Try again when it has finished.' : btn.title));
+    });
+    var note = document.getElementById('verify-note');
+    if (note) note.textContent = checking ? 'A safety check is running now. The result appears on each copy when it finishes.'
+        : 'Runs by itself every Sunday. You can also run it now.';
+    if (checking) ['cloud', 'lan'].forEach(function(mode) {
+        var safety = document.getElementById('safety-' + mode);
+        if (safety) safety.textContent = 'Safety check: running now...';
+    });
 }
 
 // ── Recent backups: a timeline, one plain line per run ───────────────────

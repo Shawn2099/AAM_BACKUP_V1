@@ -547,11 +547,14 @@ async def status(request: Request):
     # every 2 s and does truthiness on it.
     cloud_fields = _run_state_fields(await _is_running("cloud"))
     lan_fields = _run_state_fields(await _is_running("lan"))
+    # the manual / weekly safety check (read-only audit); None (Prefect unreachable) shows as "not running"
+    verify_running = (await _is_verify_running()) is True
 
     return JSONResponse({
         "firm": cfg.firm_name,
         "fy_prefix": fy_rollover.effective_fy_prefix(cfg.paths.source_drive),
         "attention": _attention(db, cfg),
+        "verify_running": verify_running,
         "schedule": {
             "cloud_cron": cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
             "lan_cron": cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),

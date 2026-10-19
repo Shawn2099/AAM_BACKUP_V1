@@ -214,6 +214,11 @@ aside section:last-child { border-bottom: none; }
 .stat b { font-weight: 600; }
 .when { display: grid; grid-template-columns: auto 1fr; gap: .35rem 1rem; font-size: .95rem; }
 .when dt { color: var(--ink-3); }
+.rail-note { color: var(--ink-2); font-size: .92rem; margin-bottom: .6rem; }
+.btn-secondary.small, .btn-trigger.small { padding: .4rem .95rem; font-size: .9rem; }
+.dest footer .verify-btn { margin: 0 0 0 auto; }
+.dest footer { gap: .5rem; }
+.verify-btn:disabled { opacity: .55; cursor: not-allowed; }
 .guide p { color: var(--ink-2); font-size: .95rem; }
 .guide p + p { margin-top: .5rem; }
 .guide .x { background: none; border: none; color: var(--navy); font-weight: 600; margin-top: .6rem; padding: 0; }

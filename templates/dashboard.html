@@ -60,6 +60,7 @@
                     <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
                     <footer>
                         <details><summary>Details</summary><div class="more"><p id="lan-last-success">Last success: Loading...</p><p id="integrity-lan">Integrity: Loading...</p></div></details>
+                        <button class="btn-secondary small verify-btn" id="btn-verify-lan" data-leg="lan" onclick="triggerVerify('lan')" title="Compares every file in this copy with your original. Nothing is changed.">Check now</button>
                         {% if not lan_enabled %}
                         <p class="note-warn">LAN backup is disabled in configuration — manual runs are rejected by the server.</p>
                         {% else %}
@@ -78,6 +79,7 @@
                     <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
                     <footer>
                         <details><summary>Details</summary><div class="more"><p id="cloud-last-success">Last success: Loading...</p><p id="integrity-cloud">Integrity: Loading...</p></div></details>
+                        <button class="btn-secondary small verify-btn" id="btn-verify-cloud" data-leg="cloud" onclick="triggerVerify('cloud')" title="Compares every file in this copy with your original. Nothing is changed.">Check now</button>
                         {% if not cloud_enabled %}
                         <p class="note-warn">Cloud backup is disabled in configuration — manual runs are rejected by the server.</p>
                         {% else %}
@@ -104,6 +106,11 @@
         <div class="stat"><span>Files in the cloud</span><b id="stat-cloud-files">...</b></div>
         <div class="stat"><span>Financial year</span><b id="stat-fy-prefix">{{ fy_prefix }}</b></div>
         <div class="stat"><span>Free space on main drive</span><b id="stat-free">...</b></div>
+    </section>
+    <section>
+        <div class="rail-h">Safety check <span class="help" title="Compares every file in the copies with your original to make sure nothing is missing or damaged. Nothing is changed. It also runs by itself every Sunday.">?</span></div>
+        <p class="rail-note" id="verify-note">Runs by itself every Sunday. You can also run it now.</p>
+        <button class="btn-secondary small verify-btn" id="btn-verify-all" data-leg="all" onclick="triggerVerify('all')">Check both copies now</button>
     </section>
     <section class="guide" id="guide">
         <div class="rail-h">New here?</div>
