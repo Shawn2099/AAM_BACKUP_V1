@@ -358,7 +358,9 @@ if ($ServiceAccount) {
                 Start-Sleep -Seconds 2
                 $state = (Get-ScheduledTask -TaskName $taskName).State
                 $info = Get-ScheduledTaskInfo -TaskName $taskName
-            } while (($state -eq "Running" -or $info.LastRunTime -lt $started) -and (Get-Date) -lt $deadline)
+            # LastRunTime has whole-second resolution: compare with a 2 s tolerance, otherwise a probe
+            # that started within the same second as $started is "not run yet" until the deadline
+            } while (($state -eq "Running" -or $info.LastRunTime -lt $started.AddSeconds(-2)) -and (Get-Date) -lt $deadline)
             $p = [pscustomobject]@{ ExitCode = $info.LastTaskResult }
             if (Test-Path $resultFile) {
                 foreach ($line in Get-Content $resultFile) {
@@ -411,7 +413,7 @@ if (Test-Path $venvPy) {
             Start-Sleep -Seconds 2
             $state = (Get-ScheduledTask -TaskName $sysTask).State
             $info = Get-ScheduledTaskInfo -TaskName $sysTask
-        } while (($state -eq "Running" -or $info.LastRunTime -lt $started) -and (Get-Date) -lt $deadline)
+        } while (($state -eq "Running" -or $info.LastRunTime -lt $started.AddSeconds(-2)) -and (Get-Date) -lt $deadline)
         if (Test-Path $sysResult) {
             $parts = (Get-Content $sysResult -TotalCount 1) -split ' ', 2
             Check-Item "as LocalSystem" $parts[1] ($parts[0] -ne "OK")
