@@ -360,7 +360,8 @@ def _nas_host(config) -> str | None:
 def _detected_ip(config) -> str | None:
     """The office address of this server (plan D1), looked up at most every
     dashboard.link_cache_seconds."""
-    ttl = getattr(config.dashboard, "link_cache_seconds", 60)
+    from models.config import DashboardConfig, model_default
+    ttl = getattr(config.dashboard, "link_cache_seconds", model_default(DashboardConfig, "link_cache_seconds"))
     hit = _link_cache.get("ip")
     if hit and ttl and time.monotonic() - hit[0] < ttl:
         return hit[1]

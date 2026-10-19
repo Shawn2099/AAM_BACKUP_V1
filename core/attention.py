@@ -109,6 +109,11 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            f"Emails cannot link to this dashboard: {link_problem}."))
 
     smtp_pw = getattr(getattr(config, "notifications", None), "smtp_password", "")
+    if getattr(smtp_pw, "undecryptable", False):
+        items.append(_item(RED, "smtp_password_undecryptable",
+                           "The mail password in config.yaml cannot be decrypted on this server "
+                           "(copied from another machine?) - alert emails cannot be sent. Enter it "
+                           "again in Settings."))
     if smtp_pw and not getattr(smtp_pw, "protected", True):
         from core import secrets as secrets_store
         if secrets_store.available():

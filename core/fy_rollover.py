@@ -351,6 +351,12 @@ def run_archive_transition(
             "Install the Google Cloud SDK (setup_system.bat), then re-run the transition."
         )
         return False
+    from core import gcs_key
+    if gcs_key.is_protected(gcs_key_path):
+        logger.error("FY rollover: the Google key is stored DPAPI-protected, but the archive step "
+                     "still needs the key as a file for gcloud (plan S4 is not done) - archive "
+                     "transition NOT run")
+        return False
     artefacts = artefacts or RunArtefacts.ephemeral("fy-archive")
     # Stateless auth: the key path is injected per call; no persistent login.
     env = os.environ.copy()

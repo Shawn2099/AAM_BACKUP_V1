@@ -36,6 +36,9 @@ DEPRECATED_KEYS: dict[str, frozenset[str]] = {
     "notifications": frozenset({"send_on_success"}),
     # audit 2026-10-18: replaced by attachments_max_total_kb (support attachments)
     "alerts": frozenset({"attachment_max_kb"}),
+    # plan E: sign-in is always on and the API key is gone. An upgraded server's config.yaml still
+    # lists them: drop with a warning (code review 2026-10-19) instead of refusing to start.
+    "dashboard": frozenset({"api_key", "auth_enabled"}),
 }
 
 
@@ -418,14 +421,16 @@ class SecretText(str):
     False = it was a plain value (dev / tests; the dashboard shows amber on a server)."""
 
     protected: bool = True
+    undecryptable: bool = False
 
-    def __new__(cls, value: str = "", protected: bool = True):
+    def __new__(cls, value: str = "", protected: bool = True, undecryptable: bool = False):
         obj = super().__new__(cls, value)
         obj.protected = protected
+        obj.undecryptable = undecryptable
         return obj
 
     def __getnewargs__(self):                 # copy / deepcopy / pickle (pydantic model_copy)
-        return (str(self), self.protected)
+        return (str(self), self.protected, self.undecryptable)
 
     def __repr__(self) -> str:
         return "'***'"
@@ -452,7 +457,7 @@ class NotificationConfig(StrictModel):
         except secrets_store.SecretsError as e:
             logger.error(f"notifications.smtp_password cannot be decrypted on this server ({e}) - "
                          "enter the mail password again in Settings")
-            return SecretText("", protected=True)
+            return SecretText("", protected=True, undecryptable=True)
     sender: str = ""
     recipients: list[str] = Field(default_factory=list)
     # F12: the old `send_on_success` flag was removed — no code path ever

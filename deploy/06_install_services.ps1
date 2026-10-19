@@ -190,7 +190,7 @@ if ($pwExit -ne 0) {
 $AgentPassword = $null
 if ($KeepServiceAccount) {
     $current = (Get-CimInstance Win32_Service -Filter "Name='AamBackupAgent'" -ErrorAction SilentlyContinue).StartName
-    if (-not $current -or $current -eq "LocalSystem") {
+    if (-not $current -or $current -match '^(LocalSystem|NT AUTHORITY\\)') {
         Write-Host "  ERROR: -KeepServiceAccount: AamBackupAgent does not run as a dedicated account ('$current')." -ForegroundColor Red
         Write-Host "  Install it once with -ServiceAccount .\<account>. Services were NOT changed." -ForegroundColor Red
         exit 1

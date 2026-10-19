@@ -27,4 +27,11 @@ Push-Location $ProjectDir
 & $VenvPython (Join-Path $PSScriptRoot "set_dashboard_passwords.py") --config $ConfigFile --which $Which
 $code = $LASTEXITCODE
 Pop-Location
+# the config store replaces config.yaml atomically as Administrator: give the agent's account its
+# Modify right on the new file again (Settings saves, password changes and the FY switch need it)
+$agent = (Get-CimInstance Win32_Service -Filter "Name='AamBackupAgent'" -ErrorAction SilentlyContinue).StartName
+if ($agent -and $agent -ne "LocalSystem") {
+    $acl = if ($agent.StartsWith(".\")) { "$env:COMPUTERNAME\" + $agent.Substring(2) } else { $agent }
+    icacls $ConfigFile /grant "${acl}:M" | Out-Null
+}
 exit $code

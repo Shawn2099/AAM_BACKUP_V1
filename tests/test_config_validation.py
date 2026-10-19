@@ -101,8 +101,10 @@ class TestHealthConfig:
 
 class TestDashboardConfig:
     @pytest.mark.parametrize("removed", [{"api_key": "k"}, {"auth_enabled": False}])
-    def test_removed_login_keys_are_rejected(self, removed):
-        """Plan E: sign-in is always on and the API key is gone (fresh install, no deprecation)."""
+    def test_removed_login_keys_are_not_model_fields_any_more(self, removed):
+        """Plan E: sign-in is always on and the API key is gone. The model itself is strict; a
+        config.yaml from an older release is cleaned by DEPRECATED_KEYS before it gets here
+        (code review 2026-10-19, see tests/test_review_2026_10_19.py)."""
         with pytest.raises(ValidationError):
             DashboardConfig(**removed)
 

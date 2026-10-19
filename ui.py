@@ -4,11 +4,10 @@ FastAPI server bound to configurable host:port. Safety-first:
   - Lock file per pipeline prevents concurrent runs
   - Confirmation required for trigger
   - Buttons disabled while pipeline is running
-  - API key auth via session cookie or X-API-Key header
+  - Sign-in always on: dashboard password -> session cookie; Advanced has its own password
 """
 
 import asyncio
-import hmac
 import html
 import json
 import re
@@ -21,6 +20,7 @@ from pathlib import Path
 
 import pendulum
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -431,7 +431,7 @@ async def login_submit(request: Request):
     if not admin_auth.credentials_set(dashboard):
         return RedirectResponse("/login", status_code=303)
     form = await request.form()
-    if admin_auth.verify_login_password(str(form.get("password", "")), dashboard):
+    if await run_in_threadpool(admin_auth.verify_login_password, str(form.get("password", "")), dashboard):
         token = _create_session()
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(
@@ -450,8 +450,11 @@ def logout(request: Request):
     token = request.cookies.get("session")
     if token:
         _sessions.pop(token, None)
+    # signing out also locks Advanced: on a shared PC the next person must not inherit it
+    _admin_sessions.pop(request.cookies.get("admin_session") or "", None)
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie("session")
+    resp.delete_cookie("admin_session")
     return resp
 
 
@@ -885,7 +888,7 @@ async def admin_login(request: Request):
         password = str((await request.json()).get("password", ""))
     except Exception:  # noqa: BLE001
         password = ""
-    if not admin_auth.verify_admin_password(password, _cfg().dashboard):
+    if not await run_in_threadpool(admin_auth.verify_admin_password, password, _cfg().dashboard):
         logger.warning(f"Advanced login refused for {client_ip}")
         raise HTTPException(status_code=401, detail="Wrong admin password.")
     token = secrets.token_hex(32)
@@ -925,7 +928,7 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
     except Exception:  # noqa: BLE001
         body = {}
     dashboard = _cfg().dashboard
-    if not admin_auth.verify_admin_password(str(body.get("current", "")), dashboard):
+    if not await run_in_threadpool(admin_auth.verify_admin_password, str(body.get("current", "")), dashboard):
         raise HTTPException(status_code=400, detail="The current Advanced password is wrong.")
     new = str(body.get("new", ""))
     problem = admin_auth.new_password_problem(new, str(body.get("confirm", "")),
@@ -933,13 +936,13 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
     if problem:
         raise HTTPException(status_code=400, detail=problem)
     other = dashboard.login_password_hash if which == "admin" else dashboard.admin_password_hash
-    if other and admin_auth._check_hash(new, other):
+    if other and await run_in_threadpool(admin_auth._check_hash, new, other):
         raise HTTPException(status_code=400, detail="The dashboard password and the Advanced "
                                                     "password must be different.")
     key, name = (("dashboard.admin_password_hash", "Advanced") if which == "admin"
                  else ("dashboard.login_password_hash", "Dashboard"))
     actor = _approval_actor(request)
-    new_hash = admin_auth.hash_password(new)
+    new_hash = await run_in_threadpool(admin_auth.hash_password, new)
     try:
         config_edit.set_password_hash(_settings_config_path(), key, new_hash,
                                       actor=actor, db=get_db(), now_iso=now_iso)
@@ -960,7 +963,7 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
         if keep in _sessions:
             _sessions[keep]["fp"] = fresh
     logger.warning(f"{name} password changed by {actor}")
-    _announce_password_change(request, name, actor)
+    await run_in_threadpool(_announce_password_change, request, name, actor)
     return {"status": "changed", "detail": f"{name} password changed. Everyone else who was "
                                            f"signed in with the old one was signed out."}
 

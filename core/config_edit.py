@@ -310,7 +310,7 @@ def _load_candidate(config_path: str, changes: dict):
 
     yaml, doc = load_round_trip(config_path)
     for key, value in changes.items():
-        set_dotted(doc, key, value)
+        set_dotted(doc, key, _stored_form(key, value))     # a secret is encrypted even in the check copy
     tmp_dir = tempfile.mkdtemp(prefix="aam_cfg_check_")
     try:
         candidate = Path(tmp_dir) / "config.yaml"
