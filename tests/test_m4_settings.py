@@ -137,9 +137,16 @@ class TestApply:
             _apply(cfg_file, {"guards.max_delete_files": 100, "guards.max_delete_percent": 5})
         assert e.value.extra["confirm_phrase"] == "APPROVE"
 
+    def test_email_settings_need_the_typed_word(self, cfg_file):
+        for change in ({"notifications.recipients": ["a@firm.com"]}, {"notifications.smtp_host": "smtp.firm.com"},
+                       {"notifications.smtp_password": "x"}):
+            with pytest.raises(ce.ConfigEditError) as e:
+                _apply(cfg_file, change)
+            assert e.value.status == 409 and e.value.extra["confirm_phrase"] == "APPROVE"
+
     def test_secret_is_write_only(self, cfg_file, db):
         assert _apply(cfg_file, {"notifications.smtp_password": ""}, db=db).changed == []
-        _apply(cfg_file, {"notifications.smtp_password": "new-secret"}, db=db)
+        _apply(cfg_file, {"notifications.smtp_password": "new-secret"}, phrase="APPROVE", db=db)
         assert load_config(str(cfg_file)).notifications.smtp_password == "new-secret"
         [row] = db.config_changes()
         assert row["old_value"] == "'(hidden)'" and row["new_value"] == "'(hidden)'"

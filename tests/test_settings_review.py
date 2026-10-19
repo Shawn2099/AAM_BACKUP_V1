@@ -20,8 +20,6 @@ def test_the_typed_word_is_approve_for_one_or_many_important_settings():
 @pytest.mark.parametrize("key, word", [
     ("schedule.lan_cron", "when backups"),
     ("budget.lan_max_hours", "how long"),
-    ("notifications.recipients", "who receives alerts"),
-    ("notifications.smtp_password", "who receives alerts"),
 ])
 def test_notable_settings_carry_a_plain_note_but_need_no_typed_word(key, word):
     assert word in ce.note_for(key) and not ce.is_risky(key)
@@ -32,6 +30,10 @@ def test_notable_settings_carry_a_plain_note_but_need_no_typed_word(key, word):
     ("guards.max_delete_files", "safety check"),
     ("wol.enabled", "NAS is switched"),
     ("notifications.send_on_failure", "failure emails"),
+    ("notifications.recipients", "who receives alerts"),
+    ("notifications.smtp_host", "who receives alerts"),
+    ("notifications.smtp_password", "who receives alerts"),
+    ("notifications.weekly_enabled", "which emails are sent"),
 ])
 def test_risky_settings_carry_a_plain_note_and_need_the_word(key, word):
     assert word in ce.note_for(key) and ce.is_risky(key)

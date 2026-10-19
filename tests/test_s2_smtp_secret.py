@@ -48,7 +48,7 @@ def test_a_value_that_cannot_be_decrypted_here_loads_empty_not_crashing(monkeypa
 @windows
 def test_saving_the_password_in_settings_writes_it_encrypted(tmp_path):
     path = _cfg_file(tmp_path, "")
-    ce.apply_changes(str(path), {"notifications.smtp_password": "Typed-In-Settings-9"}, phrase=None,
+    ce.apply_changes(str(path), {"notifications.smtp_password": "Typed-In-Settings-9"}, phrase="APPROVE",
                      actor="t", lock_busy=lambda: None, now_iso=lambda: "2026-10-19T10:00:00")
     text = path.read_text(encoding="utf-8")
     assert "Typed-In-Settings-9" not in text and "smtp_password: 'dpapi:" in text

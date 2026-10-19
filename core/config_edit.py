@@ -43,7 +43,8 @@ LOCKED = frozenset({
 SECRET = frozenset({"notifications.smtp_password"})
 # Never listed at all: changed only through "Change admin password".
 HIDDEN = frozenset({"dashboard.admin_password_hash", "dashboard.login_password_hash"})
-_RISKY_SECTIONS = frozenset({"guards", "approvals"})
+# the whole email section: it decides who hears about a failure (owner 2026-10-19)
+_RISKY_SECTIONS = frozenset({"guards", "approvals", "notifications"})
 _RISKY_KEYS = frozenset({
     # what / where is backed up
     "paths.source_drive", "paths.lan_destination", "paths.gcs_key_path",
@@ -296,22 +297,23 @@ def confirmation_phrase(risky_keys: list[str]) -> str:
     return approvals.APPROVE_PHRASE
 
 
+_EMAIL_DELIVERY = frozenset({
+    "notifications.recipients", "notifications.sender", "notifications.smtp_host",
+    "notifications.smtp_port", "notifications.smtp_username", "notifications.smtp_password",
+    "notifications.smtp_security"})
 # Not dangerous, but worth a second look before saving: shown with a note in the review dialog.
 _NOTABLE_NOTES = (
     (lambda k: k.startswith("schedule."), "Changes when backups and reports run."),
     (lambda k: k.startswith("budget."), "Changes how long a backup or check may run."),
-    (lambda k: k in ("notifications.recipients", "notifications.sender", "notifications.smtp_host",
-                     "notifications.smtp_port", "notifications.smtp_username",
-                     "notifications.smtp_password", "notifications.smtp_security"),
-     "Changes who receives alerts and how they are sent. Send the test email afterwards."),
-    (lambda k: k.startswith("notifications."), "Changes which emails are sent."),
 )
 _RISKY_NOTES = (
     (lambda k: k.split(".", 1)[0] in ("guards", "approvals"), "Changes a data-safety check."),
     (lambda k: k.startswith(("wol.", "lan.shutdown")), "Changes how the NAS is switched on or off."),
     (lambda k: k.startswith("paths."), "Changes what is backed up or where it is stored."),
     (lambda k: k.startswith(("cloud.", "lan.")), "Changes where a copy is stored or whether it runs."),
-    (lambda k: k.startswith("notifications."), "Switches off failure emails."),
+    (lambda k: k == "notifications.send_on_failure", "Switches off failure emails."),
+    (lambda k: k in _EMAIL_DELIVERY, "Changes who receives alerts and how they are sent. Send the test email afterwards."),
+    (lambda k: k.startswith("notifications."), "Changes which emails are sent."),
 )
 
 
