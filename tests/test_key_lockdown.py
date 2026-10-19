@@ -93,3 +93,13 @@ def test_the_installer_locks_the_key_before_it_touches_a_service():
     assert "paths.gcs_key_path" in INSTALLER
     block = INSTALLER.split("lock_gcs_key.ps1", 1)[1][:600]
     assert "exit 1" in block and "Services were NOT changed" in block
+
+
+@windows_only
+def test_a_renamed_service_account_does_not_keep_the_old_ones_access(key):
+    """The account name is a parameter, not hardcoded: locking again for another account (or none)
+    leaves only the new list; the previous account's entry is gone."""
+    me = f"{os.environ['COMPUTERNAME']}\\{getpass.getuser()}"
+    assert _run(key, me).returncode == 0 and f"{getpass.getuser()}:(R)" in _acl(key)
+    assert _run(key).returncode == 0
+    assert getpass.getuser() not in _acl(key)
