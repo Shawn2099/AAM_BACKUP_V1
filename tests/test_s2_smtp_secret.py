@@ -74,3 +74,22 @@ def test_dashboard_is_amber_while_the_password_is_stored_plain(tmp_path, monkeyp
         assert not [i for i in compute_attention(db, empty) if i["code"] == "smtp_password_plain"]
     finally:
         db.close()
+
+
+def test_a_config_can_be_deep_copied_and_pickled_keeping_the_flag():
+    """Found by the audit lab: model_copy(deep=True) must survive the secret wrapper."""
+    import copy
+    import pickle
+
+    cfg = load_config_with_plain_password()
+    for clone in (cfg.model_copy(deep=True), copy.deepcopy(cfg), pickle.loads(pickle.dumps(cfg))):
+        assert clone.notifications.smtp_password == "Plain-Pass-1"
+        assert clone.notifications.smtp_password.protected is False
+
+
+def load_config_with_plain_password():
+    from models.config import AppConfig
+    import tempfile
+    from pathlib import Path
+    tmp = Path(tempfile.mkdtemp())
+    return load_config(str(_cfg_file(tmp, "Plain-Pass-1")))

@@ -419,10 +419,13 @@ class SecretText(str):
 
     protected: bool = True
 
-    def __new__(cls, value: str, protected: bool):
+    def __new__(cls, value: str = "", protected: bool = True):
         obj = super().__new__(cls, value)
         obj.protected = protected
         return obj
+
+    def __getnewargs__(self):                 # copy / deepcopy / pickle (pydantic model_copy)
+        return (str(self), self.protected)
 
     def __repr__(self) -> str:
         return "'***'"
