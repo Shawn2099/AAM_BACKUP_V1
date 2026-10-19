@@ -33,7 +33,7 @@ class TestCrossFieldValidation:
         (PathsConfig.is_unc_path rejects this first, unconditionally; the
         AppConfig-level UNC rule is the backstop for a UNC-shaped value that
         still isn't a share.)"""
-        with pytest.raises(ValidationError, match="UNC"):
+        with pytest.raises(ValidationError, match="Enter the NAS folder"):
             AppConfig(
                 paths=PathsConfig(
                     source_drive="E:\\",
@@ -45,7 +45,7 @@ class TestCrossFieldValidation:
 
     def test_cloud_enabled_without_key(self):
         """Cloud enabled without GCS key → error (AppConfig-level rule)."""
-        with pytest.raises(ValidationError, match="gcs_key_path"):
+        with pytest.raises(ValidationError, match="Google Cloud key file"):
             AppConfig(
                 paths=PathsConfig(
                     source_drive="E:\\",
@@ -60,7 +60,7 @@ class TestCrossFieldValidation:
 
     def test_both_legs_disabled(self):
         """Both LAN and cloud disabled → error."""
-        with pytest.raises(ValidationError, match="At least one"):
+        with pytest.raises(ValidationError, match="Switch on the LAN backup or the cloud backup"):
             AppConfig(
                 paths=PathsConfig(
                     source_drive="E:\\",

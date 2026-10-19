@@ -68,7 +68,7 @@ def test_stale_and_never_succeeded_legs_are_red(db):
     items = compute_attention(db, _cfg())
     assert _codes(items, RED) == {"stale:cloud", "stale:lan"}
     msgs = " ".join(i["message"] for i in items)
-    assert "264 h" in msgs and "no successful backup" in msgs.lower()
+    assert "264 h" in msgs and "never completed successfully" in msgs.lower()
 
 
 def test_disabled_leg_is_never_stale(db):

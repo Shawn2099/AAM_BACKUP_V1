@@ -34,7 +34,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import (admin_auth, app_restart, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
+from core import (admin_auth, app_restart, messages, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
                   statuses)
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
@@ -362,23 +362,23 @@ def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
             return JSONResponse({
                 "status": "completed",
                 "flow_run_id": run_id,
-                "detail": f"{label} {noun} completed (flow run {run_id}).",
+                "detail": messages.act(f"Open Recent backups to see the result", f"The {label} {noun} completed", f"run {run_id}"),
             })
         if state_type in (StateType.CANCELLED, StateType.CANCELLING):
             return JSONResponse({
                 "status": "cancelled",
                 "flow_run_id": run_id,
-                "detail": f"{label} {noun} was cancelled (flow run {run_id}).",
+                "detail": messages.act("Start it again when you are ready", f"The {label} {noun} was cancelled", f"run {run_id}"),
             }, status_code=409)
         return JSONResponse({
             "status": "failed",
             "flow_run_id": run_id,
-            "detail": f"{label} {noun} run {state.name if state else 'failed'} (flow run {run_id}).",
+            "detail": messages.act("Open Recent backups to see why", f"The {label} {noun} ended as {state.name if state else 'failed'}", f"run {run_id}"),
         }, status_code=500)
     return JSONResponse({
         "status": "running",
         "flow_run_id": run_id,
-        "detail": f"{label} {noun} started (flow run {run_id}).",
+        "detail": messages.act("Leave this page open to follow it", f"The {label} {noun} started", f"run {run_id}"),
     }, status_code=202)
 
 
@@ -435,7 +435,7 @@ def login_page(error: str = ""):
 async def login_submit(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"login:{client_ip}", _dash("rate_limit_logins")):
-        raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_SIGN_INS)
     dashboard = _cfg().dashboard
     if not admin_auth.credentials_set(dashboard):
         return RedirectResponse("/login", status_code=303)
@@ -639,19 +639,19 @@ async def trigger_cloud(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _dash("rate_limit_triggers")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     if not _cfg().cloud.enabled:
-        return JSONResponse({"status": "disabled", "detail": "Cloud backup leg is disabled in configuration; not started."}, status_code=409)
+        return JSONResponse({"status": "disabled", "detail": messages.leg_off("cloud")}, status_code=409)
     cloud_running = await _is_running("cloud")
     if cloud_running is None:
         # H3: fail-CLOSED. The old code treated an unreachable API as
         # "nothing running" and queued a duplicate backup.
         raise HTTPException(
             status_code=503,
-            detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+            detail=messages.SCHEDULER_NOT_ANSWERING,
         )
     if cloud_running:
-        return JSONResponse({"status": "already_running", "detail": "Cloud backup is already in progress."}, status_code=400)
+        return JSONResponse({"status": "already_running", "detail": messages.leg_running("cloud")}, status_code=400)
     # G15: await the actual deployment run creation before answering. The
     # old code returned 200 via background_tasks BEFORE arun_deployment
     # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
@@ -666,7 +666,7 @@ async def trigger_cloud(request: Request):
         logger.error(f"Manual cloud trigger failed: {e}")
         return JSONResponse(
             {"status": "trigger_failed",
-             "detail": f"Could not start the cloud backup run: {e}"},
+             "detail": messages.could_not_start("cloud backup", e)},
             status_code=500,
         )
     return _trigger_result("Cloud", flow_run)
@@ -677,17 +677,17 @@ async def trigger_lan(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _dash("rate_limit_triggers")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     if not _cfg().lan.enabled:
-        return JSONResponse({"status": "disabled", "detail": "LAN backup leg is disabled in configuration; not started."}, status_code=409)
+        return JSONResponse({"status": "disabled", "detail": messages.leg_off("lan")}, status_code=409)
     lan_running = await _is_running("lan")
     if lan_running is None:
         raise HTTPException(
             status_code=503,
-            detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+            detail=messages.SCHEDULER_NOT_ANSWERING,
         )
     if lan_running:
-        return JSONResponse({"status": "already_running", "detail": "LAN backup is already in progress."}, status_code=400)
+        return JSONResponse({"status": "already_running", "detail": messages.leg_running("lan")}, status_code=400)
     try:
         flow_run = await arun_deployment(
             name="aam-backup/backup-lan",
@@ -697,7 +697,7 @@ async def trigger_lan(request: Request):
         logger.error(f"Manual LAN trigger failed: {e}")
         return JSONResponse(
             {"status": "trigger_failed",
-             "detail": f"Could not start the LAN backup run: {e}"},
+             "detail": messages.could_not_start("LAN backup", e)},
             status_code=500,
         )
     return _trigger_result("LAN", flow_run)
@@ -727,7 +727,7 @@ def _require_approval_rights(request: Request) -> None:
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"decision:{client_ip}", _dash("rate_limit_decisions")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
 
 
 def _approval_view(req: dict) -> dict:
@@ -746,23 +746,21 @@ def _approval_view(req: dict) -> dict:
 def _load_open_approval(approval_id: str) -> dict:
     req = get_db().get_approval(approval_id)
     if req is None:
-        raise HTTPException(status_code=404, detail=f"No approval request {approval_id}")
+        raise HTTPException(status_code=404, detail=messages.act("Refresh the page", "This approval request no longer exists"))
     return req
 
 
 async def _ensure_leg_idle(leg: str) -> None:
     if leg not in _APPROVAL_TARGETS:
-        raise HTTPException(status_code=409, detail=f"Unknown approval target {leg!r}.")
+        raise HTTPException(status_code=409, detail=messages.act("Refresh the page", f"The approval target {leg!r} is not known"))
     if _APPROVAL_TARGETS[leg][2] and not getattr(_cfg(), leg).enabled:
         raise HTTPException(status_code=409,
-                            detail=f"The {leg} backup leg is disabled in configuration.")
+                            detail=messages.leg_off(leg, "changed"))
     running = await _is_running(leg)
     if running is None:
-        raise HTTPException(status_code=503, detail="Prefect API unavailable - cannot verify "
-                                                    "active runs; nothing was changed.")
+        raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
     if running:
-        raise HTTPException(status_code=409, detail=f"A {leg} backup is already in progress; "
-                                                    "nothing was changed. Try again after it ends.")
+        raise HTTPException(status_code=409, detail=messages.leg_running(leg))
 
 
 async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
@@ -778,8 +776,8 @@ async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
         logger.error(f"Approved {leg} re-run could not be started: {e}")
         return JSONResponse({
             "status": "trigger_failed",
-            "detail": f"Approved, but the {label} backup could not be started: {e}. "
-                      "Use 'Run approved backup' to retry before the approval expires.",
+            "detail": messages.act("Press 'Run approved backup' to try again before the approval expires",
+                                   f"The {label} backup could not be started: {e}"),
         }, status_code=500)
     return _trigger_result(label, flow_run, noun="backup (approved re-run)")
 
@@ -800,18 +798,17 @@ async def approve_blocked_run(approval_id: str, request: Request):
         typed = ""
     req = _load_open_approval(approval_id)
     if req["status"] != approvals.PENDING:
-        raise HTTPException(status_code=409, detail=f"This request is {req['status']}; "
-                                                    "only a pending request can be approved.")
+        raise HTTPException(status_code=409, detail=messages.act("Refresh the page", f"This request is already {req['status']}, so it cannot be approved again"))
     if not approvals.phrase_matches(approvals.APPROVE_PHRASE, typed):
         raise HTTPException(status_code=400,
-                            detail=f"To approve, type exactly: {approvals.APPROVE_PHRASE}")
+                            detail=messages.act(f"Type {approvals.APPROVE_PHRASE} exactly, then press Approve", "The word typed did not match"))
     await _ensure_leg_idle(req["leg"])
     approved_at = now_iso()
     actor = _approval_actor(request)
     if not get_db().approve_request(
             approval_id, approved_by=actor, approved_at=approved_at,
             expires_at=approvals.expires_at(approved_at, _cfg().approvals.expiry_hours)):
-        raise HTTPException(status_code=409, detail="This request changed meanwhile; refresh.")
+        raise HTTPException(status_code=409, detail=messages.act("Refresh the page and try again", "Someone changed this request a moment ago"))
     logger.warning(f"Approval {approval_id} ({req['leg']}: "
                    f"{', '.join(g['guard'] for g in req['guards'])}) given by {actor}")
     return await _start_approved_run(get_db().get_approval(approval_id), request)
@@ -823,12 +820,10 @@ async def run_approved_backup(approval_id: str, request: Request):
     req = _load_open_approval(approval_id)
     view = _approval_view(req)
     if req["status"] != approvals.APPROVED:
-        raise HTTPException(status_code=409, detail=f"This request is {req['status']}; "
-                                                    "only an approved, unused one can be run.")
+        raise HTTPException(status_code=409, detail=messages.act("Refresh the page", f"This request is {req['status']}; only an approved one can be run"))
     if view["expired"]:
-        raise HTTPException(status_code=409, detail=f"The approval expired at "
-                                                    f"{req['expires_at']}; wait for the next "
-                                                    "block and approve again.")
+        raise HTTPException(status_code=409, detail=messages.act("Wait for the next blocked backup and approve it again",
+                                                    f"This approval expired at {req['expires_at']}"))
     await _ensure_leg_idle(req["leg"])
     return await _start_approved_run(req, request)
 
@@ -839,11 +834,10 @@ def dismiss_blocked_run(approval_id: str, request: Request):
     _load_open_approval(approval_id)
     actor = _approval_actor(request)
     if not get_db().dismiss_request(approval_id, dismissed_by=actor, dismissed_at=now_iso()):
-        raise HTTPException(status_code=409, detail="Only a pending or approved, unused "
-                                                    "request can be dismissed.")
+        raise HTTPException(status_code=409, detail=messages.act("Refresh the page", "This request was already handled"))
     logger.warning(f"Approval request {approval_id} dismissed by {actor}")
-    return {"status": "dismissed", "detail": "Dismissed. Nothing will run on this request; "
-                                             "the next scheduled run re-checks the guards."}
+    return {"status": "dismissed", "detail": messages.act("Nothing more to do",
+                                    "Dismissed. Nothing will run on this request; the next scheduled backup checks again")}
 
 
 # ── Settings (owner decision DEC-9) ──────────────────────────
@@ -873,7 +867,7 @@ def _require_settings_rights(request: Request) -> None:
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"settings:{client_ip}", _dash("rate_limit_settings")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
 
 
 # ── Advanced-settings login (owner 2026-10-15) ───────────────
@@ -911,14 +905,14 @@ async def admin_login(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"admin_login:{client_ip}", _dash("rate_limit_logins")):
-        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_SIGN_INS)
     try:
         password = str((await request.json()).get("password", ""))
     except Exception:  # noqa: BLE001
         password = ""
     if not await run_in_threadpool(admin_auth.verify_admin_password, password, _cfg().dashboard):
         logger.warning(f"Advanced login refused for {client_ip}")
-        raise HTTPException(status_code=401, detail="Wrong admin password.")
+        raise HTTPException(status_code=401, detail=messages.act("Type the Advanced password again", "The one entered is wrong"))
     token = secrets.token_hex(32)
     _admin_sessions[token] = {"created_at": time.time(), "fp": _admin_fingerprint()}
     logger.warning(f"Advanced login by {_approval_actor(request)}")
@@ -950,14 +944,14 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
     ends (plan E2) while the person who changed it stays signed in."""
     _require_settings_rights(request)
     if not _is_admin(request):
-        raise HTTPException(status_code=403, detail="Sign in to Advanced first.")
+        raise HTTPException(status_code=403, detail=messages.act("Open the Advanced tab and sign in first", "Passwords can only be changed there"))
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
     dashboard = _cfg().dashboard
     if not await run_in_threadpool(admin_auth.verify_admin_password, str(body.get("current", "")), dashboard):
-        raise HTTPException(status_code=400, detail="The current Advanced password is wrong.")
+        raise HTTPException(status_code=400, detail=messages.act("Type the current Advanced password again", "The one entered is wrong"))
     new = str(body.get("new", ""))
     problem = admin_auth.new_password_problem(new, str(body.get("confirm", "")),
                                               dashboard.admin_password_min_length)
@@ -965,8 +959,7 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
         raise HTTPException(status_code=400, detail=problem)
     other = dashboard.login_password_hash if which == "admin" else dashboard.admin_password_hash
     if other and await run_in_threadpool(admin_auth._check_hash, new, other):
-        raise HTTPException(status_code=400, detail="The dashboard password and the Advanced "
-                                                    "password must be different.")
+        raise HTTPException(status_code=400, detail=messages.act("Choose a different password", "The dashboard password and the Advanced password must not be the same"))
     key, name = (("dashboard.admin_password_hash", "Advanced") if which == "admin"
                  else ("dashboard.login_password_hash", "Dashboard"))
     actor = _approval_actor(request)
@@ -992,8 +985,8 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
             _sessions[keep]["fp"] = fresh
     logger.warning(f"{name} password changed by {actor}")
     await run_in_threadpool(_announce_password_change, request, name, actor)
-    return {"status": "changed", "detail": f"{name} password changed. Everyone else who was "
-                                           f"signed in with the old one was signed out."}
+    return {"status": "changed", "detail": messages.act("Use the new password from now on",
+                                    f"The {name} password was changed and everyone else who used the old one was signed out")}
 
 
 def _announce_password_change(request: Request, name: str, actor: str) -> None:
@@ -1038,7 +1031,7 @@ def get_settings(request: Request):
     try:
         current = load_config(_settings_config_path())
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"config.yaml does not load: {e}") from e
+        raise HTTPException(status_code=500, detail=messages.act("Ask support to fix config.yaml on the server", f"It does not load: {e}")) from e
     admin = _is_admin(request)
     return {"admin": admin,
             "sections": config_edit.catalog(current, include_advanced=admin),
@@ -1145,7 +1138,7 @@ async def apply_settings(request: Request):
     if busy:
         raise HTTPException(
             status_code=409,
-            detail=f"Not applied - {busy}. Nothing was restarted; try again when it has finished.")
+            detail=messages.act("Try again when it has finished", f"Nothing was restarted because {busy}"))
     actor = _approval_actor(request)
     get_db().record_config_change({
         "changed_at": now_iso(), "changed_by": actor, "key": "service.restart",
@@ -1224,16 +1217,15 @@ async def run_rollover_now(request: Request):
         raise HTTPException(status_code=409, detail=state["message"])
     running = await _is_running("rollover")
     if running is None:
-        raise HTTPException(status_code=503, detail="Prefect API unavailable - cannot check "
-                                                    "for a running rollover; nothing was started.")
+        raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
     if running:
-        raise HTTPException(status_code=409, detail="A rollover check is already running.")
+        raise HTTPException(status_code=409, detail=messages.act("Wait for the running rollover check to finish", "Only one can run at a time"))
     try:
         flow_run = await arun_deployment(name="rollover-check/rollover-check",
                                          timeout=_trigger_timeout(request))
     except Exception as e:
         logger.error(f"Manual rollover run could not be started: {e}")
-        raise HTTPException(status_code=500, detail=f"Could not start the rollover check: {e}") from e
+        raise HTTPException(status_code=500, detail=messages.could_not_start("rollover check", e)) from e
     logger.warning(f"FY rollover check started manually by {_approval_actor(request)}")
     return _trigger_result("FY rollover", flow_run, noun="check")
 
@@ -1254,9 +1246,10 @@ def send_test_email(request: Request):
                  "backup emails reach you. Nothing to do.")), db=get_db())
     recipients = ", ".join(_cfg().notifications.recipients)
     if result.status == SENT:
-        return {"status": "sent", "detail": f"Test email sent to {recipients}."}
+        return {"status": "sent", "detail": messages.act("Check that it arrived", f"The test email was sent to {recipients}")}
     return JSONResponse({"status": "failed",
-                         "detail": f"The test email was NOT delivered: {result.error}"},
+                         "detail": messages.act("Check the mail settings (server, port, user and password), then send it again",
+                                    f"The test email was NOT delivered: {result.error}")},
                         status_code=502)
 
 
@@ -1279,34 +1272,34 @@ async def trigger_verify(mode: str, request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"trigger:{client_ip}", _dash("rate_limit_triggers")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     mode = mode.lower()
     if mode not in ("lan", "cloud", "all"):
-        raise HTTPException(status_code=400, detail=f"Invalid mode '{mode}'. Must be one of: lan, cloud, all.")
+        raise HTTPException(status_code=400, detail=messages.act("Use lan, cloud or all", f"'{mode}' is not a safety-check option"))
     cfg = _cfg()
     if mode == "lan" and not cfg.lan.enabled:
-        return JSONResponse({"status": "disabled", "detail": "LAN leg is disabled in configuration; verification not started."}, status_code=409)
+        return JSONResponse({"status": "disabled", "detail": messages.leg_off("lan", "checked")}, status_code=409)
     if mode == "cloud" and not cfg.cloud.enabled:
-        return JSONResponse({"status": "disabled", "detail": "Cloud leg is disabled in configuration; verification not started."}, status_code=409)
+        return JSONResponse({"status": "disabled", "detail": messages.leg_off("cloud", "checked")}, status_code=409)
     if mode == "all" and not (cfg.lan.enabled or cfg.cloud.enabled):
-        return JSONResponse({"status": "disabled", "detail": "Both legs are disabled in configuration; verification not started."}, status_code=409)
+        return JSONResponse({"status": "disabled", "detail": messages.act("Switch on the LAN or the cloud backup in Settings, then try again", "Both are turned off, so there is nothing to check")}, status_code=409)
     for leg in ("lan", "cloud"):
         running = await _is_running(leg)
         if running is None:
             raise HTTPException(
                 status_code=503,
-                detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+                detail=messages.SCHEDULER_NOT_ANSWERING,
             )
         if running:
-            return JSONResponse({"status": "already_running", "detail": "A backup is already in progress; verification refused to avoid lock contention."}, status_code=400)
+            return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running backup to finish, then check again", "The safety check and a backup cannot run at the same time")}, status_code=400)
     verifying = await _is_verify_running()
     if verifying is None:
         raise HTTPException(
             status_code=503,
-            detail="Prefect API unavailable - cannot verify active runs; trigger refused. Retry shortly.",
+            detail=messages.SCHEDULER_NOT_ANSWERING,
         )
     if verifying:
-        return JSONResponse({"status": "already_running", "detail": "A verification audit is already in progress."}, status_code=400)
+        return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running safety check to finish", "Only one can run at a time")}, status_code=400)
     try:
         flow_run = await arun_deployment(
             name="integrity-audit/integrity-audit",
@@ -1317,7 +1310,7 @@ async def trigger_verify(mode: str, request: Request):
         logger.error(f"Manual verification trigger failed: {e}")
         return JSONResponse(
             {"status": "trigger_failed",
-             "detail": f"Could not start the verification run: {e}"},
+             "detail": messages.could_not_start("safety check", e)},
             status_code=500,
         )
     label = {"lan": "LAN", "cloud": "Cloud", "all": "Full"}[mode]
@@ -1333,7 +1326,7 @@ def report_weekly(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     return _serve_report(7, "Weekly")
 
 
@@ -1343,7 +1336,7 @@ def report_monthly(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     return _serve_report(30, "Monthly")
 
 
@@ -1359,7 +1352,7 @@ def trigger_weekly_email(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     cfg = _cfg()
     db = get_db()
     from core.report import generate_report_html, send_weekly_report
@@ -1374,14 +1367,14 @@ def trigger_weekly_email(request: Request):
     except Exception as e:
         logger.exception("Failed to send weekly email report manual trigger")
         return JSONResponse(
-            {"status": "failed", "detail": f"SMTP / Network Error: {str(e)}"},
+            {"status": "failed", "detail": messages.act("Check the mail settings in Settings, then try again", f"The email could not be sent: {e}")},
             status_code=500,
         )
     if ok:
         recipients = ", ".join(cfg.notifications.recipients)
         return JSONResponse({"status": "sent", "detail": f"Weekly report emailed to: {recipients}"})
     return JSONResponse(
-        {"status": "failed", "detail": "Failed to send email. Check SMTP settings in config.yaml and server logs."},
+        {"status": "failed", "detail": messages.act("Check the mail settings in Settings, then try again", "The report email was not sent; the agent log has the details")},
         status_code=500,
     )
 
@@ -1396,7 +1389,7 @@ def trigger_monthly_email(request: Request):
     _require_auth(request)
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(f"report:{client_ip}", _dash("rate_limit_reports")):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     cfg = _cfg()
     db = get_db()
     from core.report import generate_report_html, send_monthly_report
@@ -1411,14 +1404,14 @@ def trigger_monthly_email(request: Request):
     except Exception as e:
         logger.exception("Failed to send monthly email report manual trigger")
         return JSONResponse(
-            {"status": "failed", "detail": f"SMTP / Network Error: {str(e)}"},
+            {"status": "failed", "detail": messages.act("Check the mail settings in Settings, then try again", f"The email could not be sent: {e}")},
             status_code=500,
         )
     if ok:
         recipients = ", ".join(cfg.notifications.recipients)
         return JSONResponse({"status": "sent", "detail": f"Monthly report emailed to: {recipients}"})
     return JSONResponse(
-        {"status": "failed", "detail": "Failed to send email. Check SMTP settings in config.yaml and server logs."},
+        {"status": "failed", "detail": messages.act("Check the mail settings in Settings, then try again", "The report email was not sent; the agent log has the details")},
         status_code=500,
     )
 

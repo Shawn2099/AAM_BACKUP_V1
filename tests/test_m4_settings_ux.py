@@ -49,16 +49,16 @@ class TestEmailValidation:
     @pytest.mark.parametrize("bad", [["not-an-email"], ["a@firm"], ["a@firm.com, b@firm.com"],
                                      ["a @firm.com"], [""]])
     def test_invalid_recipients_are_refused(self, bad):
-        with pytest.raises(ValidationError, match="not an email address"):
+        with pytest.raises(ValidationError, match="name@domain.tld"):
             NotificationConfig(recipients=bad)
 
     def test_duplicates_are_refused(self):
-        with pytest.raises(ValidationError, match="more than once"):
+        with pytest.raises(ValidationError, match="Remove the duplicate"):
             NotificationConfig(recipients=["a@firm.com", "a@firm.com"])
 
     def test_sender_must_be_an_address_when_set(self):
         assert NotificationConfig(sender="").sender == ""
-        with pytest.raises(ValidationError, match="not an email address"):
+        with pytest.raises(ValidationError, match="name@domain.tld"):
             NotificationConfig(sender="backup-server")
 
 

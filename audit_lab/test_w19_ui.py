@@ -370,7 +370,7 @@ def test_w19_trigger_cloud_branches(ui_rig):
     seen = _prep_triggers(ui_rig, running=None)
     with TestClient(ui.app) as client:
         r = client.post("/trigger/cloud")
-        assert r.status_code == 503 and "cannot verify active runs" in r.json()["detail"]
+        assert r.status_code == 503 and "scheduler is not answering" in r.json()["detail"]
 
     # already running -> 400
     _prep_triggers(ui_rig, running=True)
@@ -436,7 +436,7 @@ def test_w19_trigger_verify_branches(ui_rig):
     with TestClient(ui.app) as client:
         # invalid mode
         r = client.post("/trigger/verify/banana")
-        assert r.status_code == 400 and "Invalid mode" in r.json()["detail"]
+        assert r.status_code == 400 and "not a safety-check option" in r.json()["detail"]
 
         # lan disabled
         ui_rig["cfg"].lan.enabled = False
@@ -455,13 +455,13 @@ def test_w19_trigger_verify_branches(ui_rig):
     seen = _prep_triggers(ui_rig, running=True, verify=False)
     with TestClient(ui.app) as client:
         r = client.post("/trigger/verify/all")
-        assert r.status_code == 400 and "backup is already in progress" in r.json()["detail"]
+        assert r.status_code == 400 and "cannot run at the same time" in r.json()["detail"]
 
     # an audit already running -> refused
     seen = _prep_triggers(ui_rig, running=False, verify=True)
     with TestClient(ui.app) as client:
         r = client.post("/trigger/verify/all")
-        assert r.status_code == 400 and "verification audit is already" in r.json()["detail"]
+        assert r.status_code == 400 and "running safety check" in r.json()["detail"]
 
     # Prefect unreachable at the verify check -> 503
     seen = _prep_triggers(ui_rig, running=False, verify=None)
@@ -624,7 +624,7 @@ def test_w19_health_endpoint(ui_rig):
     with TestClient(ui.app) as client:
         r = client.get("/health")
         assert r.status_code == 503 and r.json()["status"] == "attention"
-        assert any("no successful backup" in m for m in r.json()["reasons"])
+        assert any("never completed successfully" in m for m in r.json()["reasons"])
         assert "source_drive" not in r.json()
 
     # 2. fresh successful runs on every enabled leg -> 200 healthy

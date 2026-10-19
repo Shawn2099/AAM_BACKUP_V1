@@ -21,6 +21,7 @@ whole year of cron occurrences with cronsim.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -28,8 +29,12 @@ from zoneinfo import ZoneInfo
 
 from cronsim import CronSim
 
-
+# Names as the Settings page shows them.
 _JOB_NAMES = {"lan": "LAN backup", "cloud": "Cloud backup", "audit": "weekly safety check"}
+_BUDGET_KEY = {"lan": "budget.lan_max_hours", "cloud": "budget.cloud_max_hours",
+               "audit": "budget.audit_max_hours"}
+_CRON_KEY = {"lan": "schedule.lan_cron", "cloud": "schedule.cloud_cron", "audit": "schedule.audit_cron"}
+_ROUND_TO_MINUTES = 15
 
 
 class BudgetExceeded(RuntimeError):
@@ -71,14 +76,108 @@ def late_seconds(expected: float, actual: float) -> float:
     return max(0.0, actual - expected)
 
 
+def _hours(seconds: float) -> str:
+    return f"{seconds / 3600:g} h"
+
+
+def _round_up(moment: datetime) -> datetime:
+    """The next quarter hour at or after `moment` (a start time people can type)."""
+    step = _ROUND_TO_MINUTES * 60
+    stamp = math.ceil(moment.timestamp() / step) * step
+    return datetime.fromtimestamp(stamp, tz=moment.tzinfo)
+
+
+def _round_down(moment: datetime) -> datetime:
+    step = _ROUND_TO_MINUTES * 60
+    stamp = math.floor(moment.timestamp() / step) * step
+    return datetime.fromtimestamp(stamp, tz=moment.tzinfo)
+
+
+def _clock(moment: datetime, relative_to: datetime) -> str:
+    """HH:MM, with the weekday when it is not the same day as `relative_to`."""
+    return f"{moment:%H:%M}" if moment.date() == relative_to.date() else f"{moment:%a %H:%M}"
+
+
+def _with_start_time(cron: str, hour: int, minute: int) -> str | None:
+    """`cron` with its minute and hour replaced (only for plain numeric minute/hour fields)."""
+    parts = cron.split()
+    if len(parts) != 5 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    return f"{minute} {hour} {parts[2]} {parts[3]} {parts[4]}"
+
+
+def _hard_problems(jobs, timezone: str, wait_seconds: float, days: int = 366) -> int:
+    return len(schedule_problems(jobs, timezone, wait_seconds, days=days, _suggest=False))
+
+
+# Daily and weekly jobs repeat within a few weeks: a short window finds the candidates quickly,
+# the full year then confirms the one chosen.
+_QUICK_DAYS = 35
+
+
+def _nearest_working_time(jobs: dict[str, tuple[str, float]], name: str, timezone: str,
+                          wait_seconds: float) -> tuple[int, int] | None:
+    """The (hour, minute) closest to `name`'s current start at which the WHOLE schedule fits,
+    trying every quarter hour; None when no time of day works (or the cron is not simple)."""
+    cron, budget_s = jobs[name]
+    parts = cron.split()
+    if len(parts) != 5 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    now_min = int(parts[1]) * 60 + int(parts[0])
+    steps = sorted((s for s in range(0, 24 * 60, _ROUND_TO_MINUTES) if s != now_min),
+                   key=lambda s: min(abs(s - now_min), 24 * 60 - abs(s - now_min)))
+    for step in steps:
+        candidate = _with_start_time(cron, step // 60, step % 60)
+        trial = {**jobs, name: (candidate, budget_s)}
+        if (candidate and _hard_problems(trial, timezone, wait_seconds, _QUICK_DAYS) == 0
+                and _hard_problems(trial, timezone, wait_seconds) == 0):
+            return step // 60, step % 60
+    return None
+
+
+def _overlap_message(name: str, nxt: str, t: datetime, t_next: datetime, budget_s: float,
+                     wait_s: float, cron: str, next_cron: str, move_earlier: bool,
+                     fix: tuple[int, int] | None) -> str:
+    """Action first, then the reason, then the technical detail for support.
+
+    `move_earlier`: the earlier job (`name`) is the one that runs less often (e.g. the weekly
+    safety check), so moving it disturbs the least; otherwise the later job is moved. `fix` is
+    the nearest start time at which the whole schedule fits (None = none found)."""
+    this, other = _JOB_NAMES.get(name, name), _JOB_NAMES.get(nxt, nxt)
+    mover, mover_at = (this, t) if move_earlier else (other, t_next)
+    gap = (t_next - t).total_seconds()
+    latest_end = t + timedelta(seconds=budget_s)
+    if fix is not None:
+        move = (f"Move the {mover} to start at {fix[0]:02d}:{fix[1]:02d} "
+                f"(it is {mover_at:%H:%M} now; this is the closest time that fits your other backups)")
+    elif move_earlier:
+        latest_start = _round_down(t_next + timedelta(seconds=wait_s - budget_s))
+        move = f"Start the {this} at {_clock(latest_start, t)} or earlier (it is set to {t:%a %H:%M})"
+    else:
+        earliest = _round_up(t + timedelta(seconds=budget_s - wait_s))
+        move = f"Start the {other} at {_clock(earliest, t_next)} or later (it is set to {t_next:%H:%M})"
+    # the longest time the earlier job may be given so that the later one still gets its turn
+    allowed = math.floor((gap + wait_s) / 1800) * 1800
+    shorten = (f"set the {this}'s maximum running time to {_hours(allowed)} or less "
+               "(Advanced settings, Run time limits)" if allowed >= 1800 else
+               f"give the {this} a different day or time")
+    return (
+        f"{move}, or {shorten}. "
+        f"Why: the {this} starts {t:%a %H:%M} and may run for up to {_hours(budget_s)} "
+        f"(until {latest_end:%a %H:%M}); the {other} starts {t_next:%a %H:%M} and waits only "
+        f"{_hours(wait_s)} for it, so it could be skipped. "
+        f"[{_CRON_KEY[name]} {cron!r}, {_CRON_KEY[nxt]} {next_cron!r}: "
+        f"{_hours(budget_s)} > {_hours(gap)} + {_hours(wait_s)}]")
+
+
 def schedule_problems(jobs: dict[str, tuple[str, float]], timezone: str,
                       wait_seconds: float, *, start: datetime | None = None,
-                      days: int = 366) -> list[str]:
+                      days: int = 366, _suggest: bool = True) -> list[str]:
     """Check the pairwise rule over `days` of cron occurrences.
 
     jobs: {name: (cron, budget_seconds)} for every job that takes the slot.
     Returns human-readable violations (empty = the schedule is provably fine);
-    one message per offending job pair, with the arithmetic.
+    one message per offending job pair: what to do, why, then the arithmetic.
     """
     tz = ZoneInfo(timezone)
     start = start or datetime(2027, 1, 1, tzinfo=tz)
@@ -87,9 +186,9 @@ def schedule_problems(jobs: dict[str, tuple[str, float]], timezone: str,
     for name, (_, budget_s) in jobs.items():
         if budget_s <= wait_seconds:
             problems.append(
-                f"budget.{name}_max_hours ({budget_s / 3600:g} h) must be longer than "
-                f"maintenance.concurrency_wait_seconds ({wait_seconds / 3600:g} h): a run that "
-                "waits the full time for the slot would have no time left")
+                f"Set {_BUDGET_KEY.get(name, name)} above {_hours(wait_seconds)} "
+                f"(it is {_hours(budget_s)}), or shorten maintenance.concurrency_wait_seconds. "
+                "Why: a run that waits the full time for the backup slot would have no time left.")
     occurrences: list[tuple[datetime, str]] = []
     for name, (cron, _) in jobs.items():
         for t in CronSim(cron, start):
@@ -97,19 +196,22 @@ def schedule_problems(jobs: dict[str, tuple[str, float]], timezone: str,
                 break
             occurrences.append((t, name))
     occurrences.sort()
+    per_year = {n: sum(1 for _, o in occurrences if o == n) for n in jobs}
     seen: set[tuple[str, str]] = set()
     for (t, name), (t_next, nxt) in zip(occurrences, occurrences[1:]):
         budget_s = jobs[name][1]
         gap = (t_next - t).total_seconds()
         if budget_s > gap + wait_seconds and (name, nxt) not in seen:
             seen.add((name, nxt))
-            latest_end = t + timedelta(seconds=budget_s)
-            this, other = _JOB_NAMES.get(name, name), _JOB_NAMES.get(nxt, nxt)
-            problems.append(
-                f"The {this} starts {t:%a %H:%M} and may run until {latest_end:%a %H:%M} "
-                f"({budget_s / 3600:g} h), but the {other} starts at {t_next:%a %H:%M} and can wait "
-                f"only {wait_seconds / 3600:g} h for it - so the {other} could be skipped. "
-                f"Move one of them further apart, or shorten the {this}'s maximum running time. "
-                f"[schedule.{name}_cron {jobs[name][0]!r} vs schedule.{nxt}_cron {jobs[nxt][0]!r}: "
-                f"{budget_s / 3600:g} h > {gap / 3600:g} h + {wait_seconds / 3600:g} h]")
+            move_earlier = per_year[name] < per_year[nxt]
+            fix = None
+            if _suggest:
+                try:   # advice only: a failure here must never change the verdict or break saving
+                    fix = _nearest_working_time(jobs, name if move_earlier else nxt, timezone,
+                                                wait_seconds)
+                except Exception:  # noqa: BLE001
+                    fix = None
+            problems.append(_overlap_message(
+                name, nxt, t, t_next, budget_s, wait_seconds, jobs[name][0], jobs[nxt][0],
+                move_earlier=move_earlier, fix=fix))
     return problems

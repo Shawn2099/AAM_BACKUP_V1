@@ -79,7 +79,7 @@ class TestSchedule:
 
     def test_budget_must_exceed_the_slot_wait(self):
         problems = schedule_problems({"lan": ("0 1 * * *", H)}, "Asia/Kolkata", H)
-        assert any("must be longer than" in p for p in problems)
+        assert any(p.startswith("Set budget.lan_max_hours above") for p in problems)
 
 
 def _app(**kw):
@@ -241,3 +241,34 @@ def test_audit_with_no_budget_left_is_incomplete_and_does_not_wake_the_nas(monke
 def test_manual_budget_override_is_bounded():
     with pytest.raises(ValueError, match="budget_hours"):
         flow.backup.fn("x.yaml", "cloud", budget_hours=0)
+
+
+class TestSuggestions:
+    """The 'move it to HH:MM' advice is only advice: the verdict never depends on it, and the time
+    it offers really makes the whole schedule fit."""
+
+    JOBS = {"cloud": ("0 2 * * *", 6 * 3600), "lan": ("0 11 * * *", 4 * 3600),
+            "audit": ("0 10 * * SUN", 8 * 3600)}
+
+    def test_the_offered_time_clears_every_problem(self):
+        import re
+        [msg] = schedule_problems(self.JOBS, "Asia/Kolkata", H)
+        assert msg.startswith("Move the weekly safety check to start at ")
+        hh, mm = map(int, re.search(r"start at (\d\d):(\d\d)", msg).groups())
+        moved = {**self.JOBS, "audit": (f"{mm} {hh} * * SUN", 8 * 3600)}
+        assert schedule_problems(moved, "Asia/Kolkata", H) == []
+
+    def test_the_rarer_job_is_the_one_asked_to_move(self):
+        [msg] = schedule_problems(self.JOBS, "Asia/Kolkata", H)
+        assert msg.startswith("Move the weekly safety check")    # not the daily LAN backup
+
+    def test_a_failing_suggestion_search_does_not_change_the_verdict(self, monkeypatch):
+        import core.budget as b
+        monkeypatch.setattr(b, "_nearest_working_time", lambda *a, **k: 1 / 0)
+        problems = schedule_problems(self.JOBS, "Asia/Kolkata", H)
+        assert len(problems) == 1 and "could be skipped" in problems[0]
+
+    def test_every_message_says_what_to_do_first(self):
+        for jobs in (self.JOBS, {"cloud": ("0 2 * * *", 6 * 3600), "lan": ("0 6 * * *", 4 * 3600)}):
+            for msg in schedule_problems(jobs, "Asia/Kolkata", H):
+                assert msg.index("Why:") > 0 and msg.split()[0] in ("Move", "Start")

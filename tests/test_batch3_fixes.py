@@ -240,7 +240,7 @@ class TestFourDigitFY:
 class TestConditionalValidation:
     def test_enabled_cloud_requires_bucket(self):
         from pydantic import ValidationError
-        with pytest.raises(ValidationError, match="cloud.bucket"):
+        with pytest.raises(ValidationError, match="Google Cloud bucket name"):
             CloudConfig(enabled=True)
 
     def test_disabled_cloud_allows_empty_bucket(self):
@@ -248,7 +248,7 @@ class TestConditionalValidation:
 
     def test_enabled_wol_requires_mac(self):
         from pydantic import ValidationError
-        with pytest.raises(ValidationError, match="wol.mac_address"):
+        with pytest.raises(ValidationError, match="MAC"):
             WolConfig(enabled=True)
 
     def test_disabled_wol_allows_empty_mac(self):

@@ -72,7 +72,7 @@ class TestHashing:
         assert (got is None) if problem is None else (problem in got)
 
     def test_a_plain_password_in_config_yaml_is_refused(self):
-        with pytest.raises(ValidationError, match="never a plain password"):
+        with pytest.raises(ValidationError, match="Never type a plain password"):
             DashboardConfig(admin_password_hash="hunter2")
 
 
@@ -111,7 +111,7 @@ class TestAdminEndpoints:
         assert data["admin"] is False
         assert "budget.lan_max_hours" in keys and "guards.max_delete_files" not in keys
         r = rig.client.post("/api/settings", headers=KEY, json={"changes": {"guards.max_delete_files": 100}})
-        assert r.status_code == 403 and "Advanced login" in r.json()["detail"]
+        assert r.status_code == 403 and "Advanced password" in r.json()["detail"]
         v = rig.client.post("/api/settings/validate", headers=KEY,
                             json={"changes": {"guards.max_delete_files": 100}}).json()
         assert v["ok"] is False
@@ -257,5 +257,6 @@ class TestPlainLanguage:
         from core.budget import schedule_problems
         [p] = schedule_problems({"cloud": ("0 22 * * *", 6 * 3600), "lan": ("0 21 * * *", 4 * 3600),
                                  "audit": ("0 10 * * SUN", 8 * 3600)}, "Asia/Kolkata", 3600)
-        assert p.startswith("The LAN backup starts") and "could be skipped" in p
-        assert "may run until Sat 01:00" in p or "may run until" in p
+        # action first, then the reason; the nearest working time is offered
+        assert p.startswith("Move the ") and "Why: the " in p and "could be skipped" in p
+        assert p.index("Move the ") < p.index("Why:")

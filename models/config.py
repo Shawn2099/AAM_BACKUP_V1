@@ -92,7 +92,7 @@ class PathsConfig(StrictModel):
         if not self.database_path:
             self.database_path = str(rt / "manifest.db")
         if not self.database_path.endswith(".db"):
-            raise ValueError(f"database_path must end with .db: {self.database_path}")
+            raise ValueError(f"Use a file name ending in .db (now: {self.database_path}). The history database must be a .db file.")
         return self
 
     @property
@@ -109,14 +109,14 @@ class PathsConfig(StrictModel):
     @classmethod
     def source_drive_not_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("source_drive must not be empty")
+            raise ValueError("Enter the folder to back up. Without it there is nothing to copy.")
         return v.strip()
 
     @field_validator("lan_destination")
     @classmethod
     def is_unc_path(cls, v: str) -> str:
         if not re.match(r"^\\\\.+\\", v):
-            raise ValueError(f"LAN destination must be a UNC path (\\\\server\\share): {v}")
+            raise ValueError(f"Enter the NAS folder as \\\\server\\share\\folder (now: {v}). The NAS is reached over the network, so a drive letter does not work.")
         return v
 
     @field_validator("gcs_key_path")
@@ -234,22 +234,23 @@ class WolConfig(StrictModel):
         # F11: an empty MAC is allowed here; enabled-ness is checked in the
         # model validator below (field validators can't see sibling fields).
         if v and not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", v):
-            raise ValueError(f"Invalid MAC address format: {v}")
+            raise ValueError(f"Enter the NAS network address like 00:11:22:AA:BB:CC (now: {v}). Wake-on-LAN needs the exact address.")
         return v
 
     @model_validator(mode="after")
     def _mac_required_when_enabled(self) -> "WolConfig":
         if self.enabled and not self.mac_address:
-            raise ValueError("wol.mac_address is required when wol.enabled is true")
+            raise ValueError("Enter the NAS network (MAC) address, or switch Wake-on-LAN off. The NAS cannot be woken without it.")
         return self
 
     @model_validator(mode="after")
     def _verify_window_outlasts_delay(self) -> "WolConfig":
         if self.shutdown_verify_timeout_seconds <= self.shutdown_delay_seconds:
             raise ValueError(
-                f"wol.shutdown_verify_timeout_seconds ({self.shutdown_verify_timeout_seconds}) "
-                f"must be longer than wol.shutdown_delay_seconds ({self.shutdown_delay_seconds}): "
-                "the NAS only powers off after the delay")
+                f"Raise the time to wait for the NAS to switch off above the shutdown delay "
+                f"(wol.shutdown_verify_timeout_seconds {self.shutdown_verify_timeout_seconds} s, "
+                f"wol.shutdown_delay_seconds {self.shutdown_delay_seconds} s). "
+                "The NAS only powers off after the delay, so the check would give up too early.")
         return self
 
     @field_validator("server_ip")
@@ -258,7 +259,7 @@ class WolConfig(StrictModel):
         try:
             ipaddress.IPv4Address(v)
         except ipaddress.AddressValueError:
-            raise ValueError(f"Invalid IPv4 address: {v}")
+            raise ValueError(f"Enter a valid IP address like 192.168.1.20 (now: {v}).")
         return v
 
     @field_validator("broadcast_address")
@@ -270,8 +271,8 @@ class WolConfig(StrictModel):
                 ipaddress.IPv4Address(v)
             except ipaddress.AddressValueError:
                 raise ValueError(
-                    f"Invalid broadcast_address IPv4 '{v}'. "
-                    "Set to empty string to auto-derive from server_ip."
+                    f"Enter a valid broadcast address like 192.168.1.255, or leave it empty "
+                    f"to work it out automatically (now: '{v}')."
                 )
         return v
 
@@ -382,21 +383,20 @@ class CloudConfig(StrictModel):
         # F11: empty is legal here; the enabled-ness check lives in the model
         # validator (a field validator cannot see `enabled`).
         if v and not re.match(r"^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$", v):
-            raise ValueError(f"Invalid bucket name: {v}")
+            raise ValueError(f"Use 3 to 63 lower-case letters, digits or hyphens for the bucket name (now: {v}). Google Cloud rejects other names.")
         return v
 
     @model_validator(mode="after")
     def _bucket_required_when_enabled(self) -> "CloudConfig":
         if self.enabled and not re.match(r"^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$", self.bucket):
             raise ValueError(
-                "cloud.bucket is required when cloud.enabled is true — "
-                f"got {self.bucket!r}. Set it to the real GCS bucket name."
+                "Enter the Google Cloud bucket name, or switch the cloud backup off. "
+                f"The cloud backup cannot run without it (now: {self.bucket!r})."
             )
         if self.enabled and not self.project_number.strip():
             raise ValueError(
-                "cloud.project_number is required when cloud.enabled is true — "
-                "got empty. Set it to the real GCP project number; "
-                "LAN-only deployments should set cloud.enabled=false instead."
+                "Enter the Google Cloud project number, or switch the cloud backup off. "
+                "The cloud backup cannot run without it."
             )
         return self
 
@@ -405,14 +405,14 @@ class CloudConfig(StrictModel):
     def valid_storage_class(cls, v: str) -> str:
         valid = {"STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE"}
         if v.upper() not in valid:
-            raise ValueError(f"Invalid storage_class '{v}'. Must be one of: {sorted(valid)}")
+            raise ValueError(f"Choose one of {', '.join(sorted(valid))} (now: '{v}').")
         return v.upper()
 
     @field_validator("bandwidth_limit")
     @classmethod
     def valid_bandwidth(cls, v: str) -> str:
         if not re.match(r"^\d+[kMG]$", v):
-            raise ValueError(f"Invalid bandwidth_limit '{v}'. Format: 10M, 500k, 1G")
+            raise ValueError(f"Enter the speed limit like 10M, 500k or 1G (now: '{v}').")
         return v
 
 
@@ -488,7 +488,7 @@ class NotificationConfig(StrictModel):
     @classmethod
     def valid_port(cls, v: int) -> int:
         if not 1 <= v <= 65535:
-            raise ValueError(f"Invalid SMTP port: {v}")
+            raise ValueError(f"Enter a mail port between 1 and 65535 (now: {v}). Common ones are 587 and 465.")
         return v
 
     # DEC-9 follow-up: an address typo meant alerts silently went nowhere.
@@ -496,7 +496,7 @@ class NotificationConfig(StrictModel):
     @classmethod
     def valid_sender(cls, v: str) -> str:
         if v and not _EMAIL.fullmatch(v):
-            raise ValueError(f"'{v}' is not an email address (expected name@domain.tld)")
+            raise ValueError(f"Enter the sender as name@domain.tld (now: '{v}'). Mail servers reject other forms.")
         return v
 
     @field_validator("recipients")
@@ -505,11 +505,11 @@ class NotificationConfig(StrictModel):
         cleaned = [r.strip() for r in v]
         bad = [r for r in cleaned if not _EMAIL.fullmatch(r)]
         if bad:
-            raise ValueError("not an email address (expected name@domain.tld): "
-                             + ", ".join(repr(b) for b in bad))
+            raise ValueError("Fix or remove: " + ", ".join(repr(b) for b in bad)
+                             + ". Each recipient must look like name@domain.tld, or alerts go nowhere.")
         dupes = sorted({r for r in cleaned if cleaned.count(r) > 1})
         if dupes:
-            raise ValueError(f"listed more than once: {', '.join(dupes)}")
+            raise ValueError(f"Remove the duplicate: {', '.join(dupes)}. Each address should be listed once.")
         return cleaned
 
     def __repr__(self) -> str:
@@ -728,7 +728,7 @@ class AuditConfig(StrictModel):
             try:
                 re.compile(pattern)
             except re.error as e:
-                raise ValueError(f"audit.network_error_patterns: invalid regex {pattern!r}: {e}")
+                raise ValueError(f"Fix the pattern {pattern!r} in audit.network_error_patterns. It is not a valid regular expression: {e}")
         return v
 
 
@@ -753,7 +753,7 @@ class RolloverConfig(StrictModel):
     @classmethod
     def plain_file_name(cls, v: str) -> str:
         if any(c in v for c in "\\/:") or v.strip(".") == "":
-            raise ValueError(f"rollover.source_placeholder_name must be a plain file name, got {v!r}")
+            raise ValueError(f"Use a plain file name without / \\ or : (now: {v!r}). The file is created inside the source folder.")
         return v
 
 
@@ -922,8 +922,8 @@ class DashboardConfig(StrictModel):
     @classmethod
     def _valid_password_hash(cls, v: str) -> str:
         if v and not v.startswith("pbkdf2_sha256$"):
-            raise ValueError("a password hash must be empty or a hash written by the dashboard "
-                             "or the installer (never a plain password)")
+            raise ValueError("Leave it empty or use a hash created by the dashboard or the installer. "
+                             "Never type a plain password here.")
         return v
 
     # Audit 2026-10-18 item 7: one budget per kind of action (a few settings
@@ -985,8 +985,9 @@ class DashboardConfig(StrictModel):
         allowed = re.compile(rf"^(?:LocalSubnet|{ip}(?:/\d{{1,2}})?|{ip}-{ip})$")
         bad = [a for a in v if not allowed.fullmatch(a.strip())]
         if bad:
-            raise ValueError("office addresses only (LocalSubnet, an IP, a CIDR or a range), "
-                             "never Any: " + ", ".join(repr(b) for b in bad))
+            raise ValueError("Use LocalSubnet, an IP address, a CIDR or a range instead of "
+                             + ", ".join(repr(b) for b in bad)
+                             + ". The dashboard must never be open to everyone (Any).")
         return [a.strip() for a in v]
 
     def __repr__(self) -> str:
@@ -1021,7 +1022,7 @@ class ScheduleConfig(StrictModel):
     def valid_cron(cls, v: str) -> str:
         parts = v.strip().split()
         if len(parts) != 5:
-            raise ValueError(f"Invalid cron expression '{v}': expected 5 fields (min hour dom month dow)")
+            raise ValueError(f"Pick the time with the schedule picker, or enter 5 fields like '0 21 * * *' (now: '{v}').")
         return v
 
     @model_validator(mode="after")
@@ -1047,8 +1048,9 @@ class ScheduleConfig(StrictModel):
                 CronSchedule(cron=getattr(self, field_name), timezone=self.timezone)
             except Exception as e:
                 raise ValueError(
-                    f"schedule.{field_name}={getattr(self, field_name)!r} "
-                    f"(timezone={self.timezone!r}) rejected by Prefect's scheduler: {e}"
+                    f"Change schedule.{field_name} to a valid schedule (now "
+                    f"{getattr(self, field_name)!r}, timezone {self.timezone!r}). "
+                    f"The scheduler rejected it: {e}"
                 ) from e
         return self
 
@@ -1089,8 +1091,8 @@ class AppConfig(StrictModel):
         problems = schedule_problems(jobs, self.schedule.timezone,
                                      self.maintenance.concurrency_wait_seconds)
         if problems:
-            raise ValueError("schedule does not fit the run budgets (plan WP14):\n  - "
-                             + "\n  - ".join(problems))
+            raise ValueError("Change the start times: the schedule does not fit the run budgets "
+                             "(the maximum running times).\n  - " + "\n  - ".join(problems))
         return self
 
     @property
@@ -1103,11 +1105,11 @@ class AppConfig(StrictModel):
     @model_validator(mode="after")
     def cross_field_validation(self) -> "AppConfig":
         if self.lan.enabled and not self.paths.lan_destination.startswith("\\\\"):
-            raise ValueError("paths.lan_destination must be a UNC path when LAN is enabled")
+            raise ValueError("Enter the NAS folder as \\\\server\\share, or switch the LAN backup off. The LAN backup needs a network folder.")
         if self.cloud.enabled and not self.paths.gcs_key_path:
-            raise ValueError("paths.gcs_key_path is required when cloud is enabled")
+            raise ValueError("Choose the Google Cloud key file, or switch the cloud backup off. The cloud backup cannot sign in without it.")
         if not self.lan.enabled and not self.cloud.enabled:
-            raise ValueError("At least one destination (lan or cloud) must be enabled")
+            raise ValueError("Switch on the LAN backup or the cloud backup. With both off, nothing is backed up.")
 
         # FY Mismatch Safety Guard:
         # Prevent mirroring FY24-25 into FY23-24 if a human typo occurs.
@@ -1123,11 +1125,10 @@ class AppConfig(StrictModel):
                 seg = seg.strip()
                 if fy_4digit.search(seg):
                     raise ValueError(
-                        f"paths.{path_name} uses a 4-digit FY name ({seg!r}) — "
-                        "fiscal-year rollover only supports the 2-digit convention "
-                        "(FY25-26). Rename the FY folder: a 4-digit name silently "
-                        "disables rollover forever, and every run after the FY "
-                        "boundary would keep overwriting the previous year's data."
+                        f"Rename the folder {seg!r} (paths.{path_name}) to the two-digit form "
+                        "like FY25-26. The yearly switch to a new financial year only understands "
+                        "that form; with a 4-digit name it would silently never happen and every "
+                        "run after the year end would overwrite the previous year's data."
                     )
         src_parts = self.paths.source_drive.replace("\\", "/").rstrip("/").split("/")
         src_fy = src_parts[-1].upper() if fy_pattern.match(src_parts[-1]) else None
@@ -1137,10 +1138,9 @@ class AppConfig(StrictModel):
 
         if src_fy and lan_fy and src_fy != lan_fy:
             raise ValueError(
-                f"CRITICAL DATA LOSS PREVENTION: source_drive FY ({src_fy}) and "
-                f"lan_destination FY ({lan_fy}) do not match! "
-                "The system refuses to start because syncing would overwrite the old FY data with the new FY data. "
-                "Please manually correct config.yaml so both paths point to the identical FY folder."
+                f"Make both paths end in the same FY folder (source {src_fy}, NAS {lan_fy}). "
+                "The system refuses to start otherwise: the backup would overwrite the old "
+                "year's data with the new year's."
             )
 
         return self

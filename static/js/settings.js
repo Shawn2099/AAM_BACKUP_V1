@@ -457,7 +457,7 @@ async function runRollover() {
         const data = await resp.json().catch(() => ({}));
         showToast(data.detail || ('HTTP ' + resp.status), resp.ok ? 'success' : 'error');
     } catch (e) {
-        showToast('Could not start the rollover check: ' + e, 'error');
+        showToast('Try again, and ask support if it keeps failing. The rollover check could not be started: ' + e, 'error');
     }
     loadRollover();
 }
@@ -527,7 +527,7 @@ async function saveSettings(phrase) {
         if (resp.status === 409 && data.confirm_phrase) {
             const typed = window.prompt(data.detail + '\n\nSettings: ' + (data.risky || []).join(', ') + '\n\nType the phrase to confirm:');
             if (typed) return saveSettings(typed);
-            showToast('Not saved (no confirmation).', 'warning');
+            showToast('Press Save again and type the confirmation to apply these settings. Nothing was saved.', 'warning');
         } else if (resp.status === 400 && data.errors) {
             const byKey = {}; data.errors.forEach(e => { if (e.key) byKey[e.key] = e.message; });
             showErrors(byKey, data.detail);
@@ -541,10 +541,10 @@ async function saveSettings(phrase) {
         } else if (resp.status === 401) {
             window.location.href = '/login';
         } else {
-            showToast(data.detail || ('Save failed (HTTP ' + resp.status + ')'), 'error');
+            showToast(data.detail || ('Try again, and ask support if it keeps failing. The save failed (HTTP ' + resp.status + ').'), 'error');
         }
     } catch (e) {
-        showToast('Save failed: ' + e, 'error');
+        showToast('Try saving again. The page could not reach the server (' + e + ').', 'error');
     }
     updateSaveButton();
 }
@@ -593,7 +593,7 @@ function discardChanges() { loadSettings(); }
 // Audit 2026-10-18: prove the SAVED mail settings through the real alert path.
 async function sendTestEmail() {
     if (Object.keys(changes()).length) {
-        showToast('Save your changes first - the test uses the saved mail settings.', 'warning');
+        showToast('Save your changes first, then send the test. The test uses the saved mail settings.', 'warning');
         return;
     }
     const btn = document.getElementById('btn-test-email');
@@ -604,7 +604,7 @@ async function sendTestEmail() {
         const data = await resp.json().catch(() => ({}));
         showToast(data.detail || ('HTTP ' + resp.status), resp.ok ? 'success' : 'error');
     } catch (e) {
-        showToast('Send test email failed: ' + e, 'error');
+        showToast('Try again. The page could not reach the server (' + e + ').', 'error');
     }
     btn.disabled = false;
 }
@@ -617,7 +617,7 @@ async function adminLogin(ev) {
         body: JSON.stringify({ password: pw.value }) });
     const data = await resp.json().catch(() => ({}));
     pw.value = '';
-    if (!resp.ok) { showToast(data.detail || 'Sign-in failed.', 'error'); return; }
+    if (!resp.ok) { showToast(data.detail || 'Check the password and try again. Sign-in failed.', 'error'); return; }
     adminMinutes = data.session_minutes || adminMinutes;
     document.getElementById('admin-bar-text').textContent =
         'Advanced is unlocked (locks itself after ' + adminMinutes + ' minutes).';
@@ -698,7 +698,7 @@ async function applyChanges() {
         if (data.status === 'nothing_to_apply') { showToast('Nothing is waiting to be applied.', 'info'); await loadSettings(); btn.disabled = false; return; }
         await waitForRestart(bootId);
     } catch (e) {
-        showToast('Could not apply: ' + e, 'error');
+        showToast('Try again. The page could not reach the server (' + e + ').', 'error');
         btn.disabled = false;
     }
 }
@@ -719,7 +719,7 @@ async function waitForRestart(oldBootId) {
         } catch (e) { /* the service is down while it restarts */ }
     }
     document.getElementById('restart-overlay').style.display = 'none';
-    showToast('The backup service did not come back within ' + Math.round(applyCfg.timeout_seconds / 60) +
-        ' minutes. The dashboard warns you if it stays down; the support team can check the server.', 'error');
+    showToast('Ask support to check the server. The backup service did not come back within ' + Math.round(applyCfg.timeout_seconds / 60) +
+        ' minutes; this dashboard warns you if it stays down.', 'error');
     document.getElementById('btn-apply').disabled = false;
 }

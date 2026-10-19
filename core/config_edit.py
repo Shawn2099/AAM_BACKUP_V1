@@ -29,7 +29,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
-from core import approvals
+from core import approvals, messages
 from core.config_help import SECTION_TITLES, label_and_help
 from core.config_file import (ConfigWriteError, config_transaction, load_round_trip,
                                prune_backups, set_dotted)
@@ -304,6 +304,9 @@ def _validation_messages(err: ValidationError) -> list[dict]:
         msg = str(e.get("msg", "invalid value"))
         if msg.startswith("Value error, "):
             msg = msg[len("Value error, "):]
+        elif e.get("type") != "value_error":
+            msg = messages.validation_text(str(e.get("type")), e.get("ctx"), msg,
+                                           unit_of(loc) or "")
         out.append({"key": loc or None, "message": msg})
     return out
 
@@ -339,19 +342,21 @@ def _prepare(config_path: str, changes: dict, allow_advanced: bool = True):
     from models.config import load_config
 
     if not isinstance(changes, dict) or not changes:
-        raise ConfigEditError(400, "No changes were sent.")
+        raise ConfigEditError(400, messages.act("Change a setting first", "No changes were sent"))
     known = _known_keys()
     unknown = sorted(k for k in changes if k not in known)
     if unknown:
-        raise ConfigEditError(400, f"Unknown setting(s): {', '.join(unknown)}")
+        raise ConfigEditError(400, messages.act("Reload the page and try again", f"This version does not know the setting(s): {', '.join(unknown)}"))
     locked = sorted(k for k in changes if k in LOCKED)
     if locked:
-        raise ConfigEditError(403, f"{', '.join(locked)} can only be changed in config.yaml on "
-                                   "the server (a mistake here could lock everyone out).")
+        raise ConfigEditError(403, messages.act(
+            f"Ask support to change {', '.join(locked)} in config.yaml on the server",
+            "A mistake here could lock everyone out, so it cannot be changed from this page"))
     advanced = sorted(k for k in changes if k not in BASIC_KEYS)
     if advanced and not allow_advanced:
-        raise ConfigEditError(403, f"{', '.join(advanced)}: Advanced settings need the "
-                                   "Advanced login.")
+        raise ConfigEditError(403, messages.act(
+            "Open the Advanced tab and sign in with the Advanced password",
+            f"{', '.join(advanced)} can only be changed there"))
     current = load_config(config_path)
     # an empty secret field means "keep the stored one"
     wanted = {k: v for k, v in changes.items()
@@ -362,7 +367,7 @@ def _prepare(config_path: str, changes: dict, allow_advanced: bool = True):
     try:
         candidate = _load_candidate(config_path, wanted)
     except ValidationError as e:
-        raise ConfigEditError(400, "Not saved - the new settings are not valid.",
+        raise ConfigEditError(400, messages.act("Fix the highlighted settings, then save again", "Nothing was saved because a value is not valid"),
                               errors=_validation_messages(e)) from e
     # the typed values the services will actually see ("3" -> 3)
     typed = {k: _current_value(candidate, k) for k in wanted}
@@ -399,13 +404,13 @@ def apply_changes(config_path: str, changes: dict, *, phrase: str | None, actor:
         if risky:
             expected = confirmation_phrase(risky)
             if not approvals.phrase_matches(expected, phrase or ""):
-                raise ConfigEditError(409, f"These settings change what or where is backed up, "
-                                           f"a data-safety check or the NAS power. To save, type "
-                                           f"exactly: {expected}",
+                raise ConfigEditError(409, messages.act(
+                    f"Type exactly: {expected}, then save again",
+                    "These settings change what or where is backed up, a safety check or the NAS power"),
                                       confirm_phrase=expected, risky=risky)
         busy = lock_busy()
         if busy:
-            raise ConfigEditError(409, f"Not saved - {busy}. Try again when it has finished.")
+            raise ConfigEditError(409, messages.act("Save again when the run has finished", f"Nothing was saved because {busy}"))
 
         try:
             with config_transaction(config_path, tmp_prefix=".config_edit_") as txn:

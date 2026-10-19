@@ -369,4 +369,4 @@ def test_endpoint_creation_failure_is_500_trigger_failed(monkeypatch):
     assert resp.status_code == 500
     body = _body(resp)
     assert body["status"] == "trigger_failed"
-    assert "Could not start" in body["detail"]
+    assert "could not be started" in body["detail"]

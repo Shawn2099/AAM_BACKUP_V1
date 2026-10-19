@@ -117,7 +117,7 @@ def test_send_test_email_goes_through_the_alert_path(tmp_path, db, monkeypatch):
     assert len(srv.messages) == 1                        # sent although send_on_failure is off
     row = db.latest_notification_for_mode("test", 1)
     assert row["status"] == nt.SENT and row["kind"] == "INFO"
-    assert "Send test email" in SETTINGS_JS
+    assert "sendTestEmail" in SETTINGS_JS
 
 
 def test_test_email_failure_is_reported(tmp_path, db, monkeypatch):

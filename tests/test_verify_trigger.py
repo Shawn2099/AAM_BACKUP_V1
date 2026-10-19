@@ -50,7 +50,7 @@ def _idle(monkeypatch):
 def test_invalid_mode_rejected(monkeypatch):
     _patch_auth(monkeypatch)
     monkeypatch.setattr(ui, "_cfg", lambda: _fake_cfg())
-    with pytest.raises(HTTPException, match="Invalid mode"):
+    with pytest.raises(HTTPException, match="not a safety-check option"):
         asyncio.run(ui.trigger_verify("gcs", _fake_request()))
 
 
@@ -125,7 +125,7 @@ def test_prefect_unreachable_fails_closed(monkeypatch):
     _patch_auth(monkeypatch)
     monkeypatch.setattr(ui, "_cfg", lambda: _fake_cfg(True, True))
     monkeypatch.setattr(ui, "_is_running", AsyncMock(return_value=None))
-    with pytest.raises(HTTPException, match="Prefect API unavailable"):
+    with pytest.raises(HTTPException, match="scheduler is not answering"):
         asyncio.run(ui.trigger_verify("lan", _fake_request()))
 
 

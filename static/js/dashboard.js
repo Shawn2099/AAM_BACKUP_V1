@@ -24,9 +24,9 @@ async function triggerBackup(event, mode) {
     try {
         const response = await fetch('/trigger/' + mode, { method: 'POST' });
         const data = await response.json();
-        if (response.ok) { showToast(data.detail || 'Backup started successfully!', 'success'); }
-        else { showToast(data.detail || 'Failed to start backup.', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
-    } catch (err) { showToast('Network connection error: ' + err.message, 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
+        if (response.ok) { showToast(data.detail || 'Leave this page open to follow it. The backup started.', 'success'); }
+        else { showToast(data.detail || 'Try again, and ask support if it keeps failing. The backup did not start.', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
+    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
     await updateStatus();
 }
 
@@ -361,8 +361,8 @@ async function triggerVerify(mode) {
     try {
         const response = await fetch('/trigger/verify/' + mode, { method: 'POST' });
         const data = await response.json();
-        showToast(data.detail || (response.ok ? 'Safety check started.' : 'Could not start the safety check.'), response.ok ? 'success' : 'error');
-    } catch (err) { showToast('Network connection error: ' + err.message, 'error'); }
+        showToast(data.detail || (response.ok ? 'The result appears on each copy when it finishes. The safety check started.' : 'Try again later. The safety check did not start.'), response.ok ? 'success' : 'error');
+    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
     await updateStatus();
 }
 function updateVerifyUi(data) {
@@ -493,8 +493,8 @@ async function approvalAction(id, action) {
     try {
         const response = await fetch('/approvals/' + encodeURIComponent(id) + '/' + action + '?wait=false', opts);
         const data = await response.json();
-        showToast(data.detail || (response.ok ? 'Done.' : 'Request failed.'), response.ok ? 'success' : 'error');
-    } catch (err) { showToast('Network connection error: ' + err.message, 'error'); }
+        showToast(data.detail || (response.ok ? 'Done.' : 'Refresh the page and try again. The request failed.'), response.ok ? 'success' : 'error');
+    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
     _approvalsSig = '';
     await updateApprovals();
     await updateStatus();
