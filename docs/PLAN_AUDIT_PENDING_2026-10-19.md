@@ -1,6 +1,6 @@
 # Plan: the safety check tells "not backed up yet" apart from "wrong" (2026-10-19)
 
-Status: **approved by the owner 2026-10-19; in progress (see section 11).** Owner decisions of 2026-10-19 are in section 7.
+Status: **steps 1-4 done and proven on the trial box (2026-10-19); step 5 deferred (section 11).** Owner decisions of 2026-10-19 are in section 7.
 Follows the project rules: fail closed, every tunable is a config key, reuse the shared building
 blocks, tests first, one commit per step.
 
@@ -177,8 +177,10 @@ Step 3 - manual Check now
 
 Step 4 - prove on the box
 - [ ] T4.1 Full suite + audit lab green; deploy to the box
-- [ ] T4.2 30 new + 16 changed seed files give PENDING_BACKUP, no email, amber note (owner informed before touching data)
-- [ ] T4.3 Real-corruption case stays red (on a COPY test folder, owner informed first)
-- [ ] T4.4 Update `docs/ARCHITECTURE.md` section 10, `SESSION_HANDOFF.md`
+- [x] T4.2 30 new + 16 changed seed files give PENDING_BACKUP, no email, amber note (owner informed before touching data)
+- [x] T4.3 Real-corruption case stays red (on a COPY test folder, owner informed first)
+- [x] T4.4 Update `docs/ARCHITECTURE.md` section 10, `SESSION_HANDOFF.md`
 
 Step 5 - weekly chain (section 6): built later, after one real week of data. Not part of this checklist.
+
+Proof on the box (2026-10-19 16:14, code 9186fb6): the real LAN check gave PENDING_BACKUP "46 newer files wait (30 new, 16 changed)", no email, /health healthy with the amber note. In a scratch folder (rclone on the box, no backup data touched): an old file with other bytes, an old file missing from the copy and a same-time/other-bytes copy were all REAL (red); new and edited files stayed PENDING.

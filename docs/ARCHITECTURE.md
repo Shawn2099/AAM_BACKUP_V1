@@ -179,7 +179,7 @@ with _backup_slot(config):
 | D4 | robocopy result | `core/lan_sync.decide_lan_result` | exit bitmask + completed job summary in log | bit16 FAILED · no summary SUSPECT · bit8 PARTIAL · 0-7 COMPLETE (failed>0 → SUSPECT) |
 | D5 | Terminal status → Prefect state | `flow` terminal policy + `core/statuses.py` | row status | success set → COMPLETED, else raise |
 | D6 | Status meaning everywhere | `core/statuses.py` (`category/label/describe`) | status string | used by DB "last success", reports, dashboard |
-| D7 | Integrity audit verdict | `core/integrity._run_rclone_check` | rclone check (hash) diff + summary | VERIFIED / VERIFICATION_FAILED |
+| D7 | Integrity audit verdict | `core/integrity._run_rclone_check` + `core/audit_pending.classify` | rclone check (hash) diff + summary; then each difference is PENDING (source proves a change after the leg's last good backup) or REAL | VERIFIED / PENDING_BACKUP (amber, no email) / VERIFICATION_FAILED |
 | D8 | FY rollover needed? | `core/fy_rollover.detect_rollover` | FY leaf of paths vs date | rollover / no-op |
 | D9 | Shutdown NAS? | `flow._run_lan_pipeline` | status + `lan.shutdown_*` + `wol.enabled` | shutdown / skip |
 | D10 | Watchdog action | `watchdog.main` | API health, lock alive, rclone/robocopy running, SCM state, time in STOP_PENDING | wait / defer / start / ordered restart / kill stuck service (no lock only) |
@@ -213,7 +213,10 @@ The others are built but not wired yet.
 load_config → ManifestDB.from_config
 with _backup_slot:
   cloud: temp_rclone_config → integrity.audit_cloud()  rclone check (hash, no --size-only)
-         → db.record_audit(); not VERIFIED → collect error
+         → db.record_audit(); not VERIFIED and not PENDING_BACKUP → collect error
+         (pending=_pending_context: reference = start of the leg's last successful run;
+          only a completed check WITH differences reaches core/audit_pending; delete tripwire =
+          guards.max_delete_files/percent; unknown reference/time/stat error = REAL)
   lan:   wol_check_task → integrity.audit_lan() (rclone check local↔UNC, hash)
          → lan_shutdown_task (if configured) → db.record_audit()
   errors → send_failure_alert + raise ExceptionGroup

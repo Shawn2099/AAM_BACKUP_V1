@@ -7,6 +7,8 @@ bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
 v3 (one-time in-place upgrade of the box DB) and needs `dashboard.public_url` + bind/firewall
 on deploy day (see §4f).
 
+> **2026-10-19 update:** the safety check now separates "newer files wait for the next backup" (`PENDING_BACKUP`, amber, no email) from real faults - plan `docs/PLAN_AUDIT_PENDING_2026-10-19.md` (steps 1-4 done and proven on the box at 9186fb6; the weekly "backup first" chain, step 5, is deferred until a real week of data). New key `audit.backup_first_prompt_minutes`. Accepted by the owner (do not work on): locked files / no VSS, nothing alerts if the server is down, in-place ransomware, size-only daily cloud check. Restore drill + restore-script key handling (`.dpapi` vs plain key, hardcoded bucket fallback) is deferred to LAST.
+
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
 
