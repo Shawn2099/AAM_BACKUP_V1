@@ -183,6 +183,10 @@ sign-in always on, `api_key`/`auth_enabled`/`X-API-Key` removed, sessions carry 
 Unit suite 2290 passed. **Milestone lab after B, C, E: 241 passed / 3 skipped / 2 failed -> both (W8 raw httpx clients without a session) fixed and re-run green.** The full lab now takes ~50 min.
 Also done: D1 `core/netinfo.py`, S1 `core/secrets.py` (DPAPI), H2/H3 deploy scripts, G1/G2 `core/email_samples.py` + `tools/preview_emails.py`.
 **Done after that (2026-10-19):** D2/D3 (`notify.dashboard_urls`, new key `dashboard.link_cache_seconds`), F1/F2 (dated run-log folder + file names), S2 (smtp_password DPAPI, `SecretText`), S3 (`core/gcs_key.py`, `.dpapi` key via rclone env var; rclone 1.74.3 accepts it), G1/G2 (incl. report samples). Unit suite 2353 passed. Full lab NOT re-run since D/F/S (do it at step 10.1).
+**DEPLOYED to the trial box 2026-10-19 (fresh install, release 10d3054+):** everything is in `docs/DEPLOY_LOG_2026-10-19.md`
+(backup `C:\AAM_backup_20261019` on the box; 6 deploy bugs found and fixed; cloud `CLOUD_NO_CHANGES_COMPLETE`, LAN `LAN_COMPLETE`,
+real test email with the DPAPI mail password; dashboard + Advanced use the owner's chosen password (same for both); agent still runs as
+`.ambackup`, installed with `06_install_services.ps1 -KeepServiceAccount`). Branch pushed to origin/mvp-hardening.
 **Still open (all need the trial box / owner):** S4 (verify `rclone settier ARCHIVE` on the real bucket; the FY archive step still needs the key as a FILE - do NOT switch the box to the `.dpapi` key before S4), S5 (installer encrypts key + SMTP password, readiness decrypt checks as service account and LocalSystem), C7 (real-DB reports emailed), G3 (previews to the owner), step 10 (release: suite + lab + code review, docs, fresh install, M5 incl. the real NAS shutdown ONLY with the owner next to it, 7 nights).
 **Open:** C7 (email real reports built from a read-only copy of the box DB) waits for step 10.
 **Next:** group **E** (two passwords, remove X-API-Key/auth_enabled/api_key, E10 sign-in always on)

@@ -111,7 +111,7 @@ adds deploy risk), a mail library (smtplib already gives SIZE / reply codes).
 | 7 | **F** Dated log names | S | [ ] |
 | 8 | **H** Older items | S-M | [ ] |
 | 9 | **G** Email preview -> owner review -> fix feedback | S | [ ] |
-| 10 | Release: suite + audit lab + code review -> deploy -> M5 -> 7 nights | - | [ ] |
+| 10 | Release: suite + audit lab + code review -> deploy -> M5 -> 7 nights | - | [~] 10.1, 10.3 done 2026-10-19; M5, 7 nights, S4/S5, G3, C7 open |
 
 ---
 
@@ -628,12 +628,12 @@ whole day folders; the support zip keeps the names. (No old-name compatibility n
 
 ## Step 10 - Release
 
-- [ ] **10.1** Full unit suite 0 failed; full audit lab 0 red; `/code-review` of the whole diff
+- [x] **10.1** (2026-10-19: unit 2364 passed; lab 242/3/1->fixed; independent review fixed in 10d3054) Full unit suite 0 failed; full audit lab 0 red; `/code-review` of the whole diff
   since 781cf01; findings fixed or triaged with the owner.
 - [ ] **10.2** Update `docs/ARCHITECTURE.md` (§10 gates, rollover journal, report model,
   credentials, interruption), `docs/EMAIL_CONTENT_SPEC.md`, `config.example.yaml`,
   `docs/DEPLOY_RUNBOOK.md`.
-- [ ] **10.3** **Fresh install** on the box (D-16; full control): stop + uninstall the old services,
+- [x] **10.3** (2026-10-19, see docs/DEPLOY_LOG_2026-10-19.md; agent account kept via -KeepServiceAccount) **Fresh install** on the box (D-16; full control): stop + uninstall the old services,
   keep the old install + runtime folders renamed as reference only (like `C:\AAMBackup_v113`),
   fresh clone, `uv sync`, NEW config.yaml from `config.example.yaml` (old config only as
   reference), new empty runtime / database, `public_url` empty
