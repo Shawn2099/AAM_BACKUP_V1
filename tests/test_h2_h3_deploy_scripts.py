@@ -21,3 +21,10 @@ def test_readiness_checks_the_same_window_and_reports_the_update_state():
 def test_readiness_syncs_without_dev_tools():
     ps1 = (DEPLOY / "04_check_readiness.ps1").read_text(encoding="utf-8", errors="replace")
     assert "sync --frozen --no-dev --link-mode copy" in ps1
+
+
+def test_readiness_reads_the_optional_update_policy_value_safely_under_strict_mode():
+    """Found on the box: $wuPolicy.NoAutoUpdate threw PropertyNotFoundStrict when the value is absent."""
+    ps1 = (DEPLOY / "04_check_readiness.ps1").read_text(encoding="utf-8", errors="replace")
+    assert 'PSObject.Properties["NoAutoUpdate"]' in ps1
+    assert "$wuPolicy.NoAutoUpdate -eq 1" not in ps1

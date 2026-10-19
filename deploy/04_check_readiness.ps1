@@ -172,9 +172,11 @@ if ($ar -and $ar.NoAutoRebootWithLoggedOnUsers -eq 1) {
 # server) nothing reboots the box, and Active Hours are informational.
 $wu = Get-Service wuauserv -ErrorAction SilentlyContinue
 $wuPolicy = Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -ErrorAction SilentlyContinue
-$wuOff = ($wu -and $wu.StartType -eq "Disabled") -or ($wuPolicy -and $wuPolicy.NoAutoUpdate -eq 1)
+# (StrictMode: read a registry value that may not exist only through PSObject.Properties)
+$wuNoAuto = if ($wuPolicy -and $wuPolicy.PSObject.Properties["NoAutoUpdate"]) { $wuPolicy.NoAutoUpdate } else { $null }
+$wuOff = [bool](($wu -and $wu.StartType -eq "Disabled") -or ($wuNoAuto -eq 1))
 $wuState = if (-not $wu) { "service not found" } else { "service $($wu.Status), start type $($wu.StartType)" }
-if ($wuPolicy -and $wuPolicy.NoAutoUpdate -eq 1) { $wuState += ", policy NoAutoUpdate=1" }
+if ($wuNoAuto -eq 1) { $wuState += ", policy NoAutoUpdate=1" }
 $ah = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" -ErrorAction SilentlyContinue
 if ($ah -and $ah.Start -eq 20 -and $ah.End -eq 8) {
     Check-Item "Update Active Hours" "20:00-08:00 (12 h, backup nights protected); Windows Update: $wuState" $false
