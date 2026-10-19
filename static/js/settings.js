@@ -53,46 +53,106 @@ function showToast(message, type) {
 function fid(key) { return key.replace(/[^a-zA-Z0-9_]/g, '_'); }
 function disabledAttr(f) { return (f.locked || !authEnabled) ? ' disabled' : ''; }
 
-// ── schedules: cron <-> "every day / week / month at HH:MM" ─────────────────
+// ── schedules: cron <-> plain choices (every day / week / chosen days / several times a day / month) ──
+const DOW_ORDER = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
 function parseCron(cron) {
-    const m = /^(\d{1,2}) (\d{1,2}) (\*|\d{1,2}) \* (\*|[A-Za-z]{3}|[0-7])$/.exec((cron || '').trim());
+    const word = '(?:[A-Za-z]{3}|[0-7])';
+    const re = new RegExp('^(\\d{1,2}) (\\d{1,2}(?:,\\d{1,2})*) (\\*|\\d{1,2}) \\* (\\*|' + word + '(?:,' + word + ')*)$');
+    const m = re.exec((cron || '').trim());
     if (!m) return { freq: 'custom', cron: cron };
-    const time = String(m[2]).padStart(2, '0') + ':' + String(m[1]).padStart(2, '0');
-    if (m[3] === '*' && m[4] === '*') return { freq: 'daily', time: time };
-    if (m[3] === '*') return { freq: 'weekly', time: time, dow: (DOW_NUM[m[4]] || m[4]).toUpperCase() };
-    if (m[4] === '*' && +m[3] >= 1 && +m[3] <= 28) return { freq: 'monthly', time: time, dom: +m[3] };
+    const pad = n => String(n).padStart(2, '0');
+    const hours = m[2].split(',').map(Number);
+    const time = pad(hours[0]) + ':' + pad(m[1]);
+    const days = m[4] === '*' ? [] : m[4].split(',').map(d => (DOW_NUM[d] || d).toUpperCase());
+    if (days.some(d => DOW_ORDER.indexOf(d) < 0)) return { freq: 'custom', cron: cron };
+    if (hours.length > 1) {
+        if (m[3] !== '*' || days.length) return { freq: 'custom', cron: cron };
+        return { freq: 'times', times: hours.map(h => pad(h) + ':' + pad(m[1])) };
+    }
+    if (m[3] === '*' && !days.length) return { freq: 'daily', time: time };
+    if (m[3] === '*' && days.length === 1) return { freq: 'weekly', time: time, dow: days[0] };
+    if (m[3] === '*') return { freq: 'days', time: time, days: DOW_ORDER.filter(d => days.indexOf(d) >= 0) };
+    if (!days.length && +m[3] >= 1 && +m[3] <= 28) return { freq: 'monthly', time: time, dom: +m[3] };
     return { freq: 'custom', cron: cron };
 }
 
 function buildCron(p) {
     if (p.freq === 'custom') return p.cron;
+    if (p.freq === 'times') {
+        const ts = (p.times || []).filter(t => t).map(t => t.split(':').map(Number));
+        const hours = ts.map(t => t[0]).sort((a, b) => a - b).filter((h, i, a) => a.indexOf(h) === i);
+        return (ts.length ? ts[0][1] : 0) + ' ' + (hours.length ? hours.join(',') : 0) + ' * * *';
+    }
     const [h, mi] = (p.time || '00:00').split(':').map(Number);
     if (p.freq === 'daily') return mi + ' ' + h + ' * * *';
     if (p.freq === 'weekly') return mi + ' ' + h + ' * * ' + p.dow;
+    if (p.freq === 'days') return mi + ' ' + h + ' * * ' + (p.days && p.days.length ? p.days.join(',') : 'MON');
     return mi + ' ' + h + ' ' + p.dom + ' * *';
+}
+
+function shortDays(days) {
+    return days.map(d => (DOW.find(x => x[0] === d) || [d, d])[1].slice(0, 3)).join(', ');
 }
 
 function scheduleHtml(f) {
     const id = fid(f.key), p = parseCron(f.value), dis = disabledAttr(f);
-    const freq = '<select id="freq-' + id + '"' + dis + '>' +
-        [['daily', 'Every day'], ['weekly', 'Every week'], ['monthly', 'Every month'], ['custom', 'Custom (advanced)']]
-            .map(o => '<option value="' + o[0] + '"' + (p.freq === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') +
-        '</select>';
+    const options = [['daily', 'Every day'], ['weekly', 'Every week'], ['days', 'On chosen days'],
+                     ['times', 'Several times a day'], ['monthly', 'Every month']];
+    if (p.freq === 'custom') options.push(['custom', 'Other (set by support)']);
+    const freq = '<select id="freq-' + id + '"' + dis + '>' + options.map(o =>
+        '<option value="' + o[0] + '"' + (p.freq === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
     const dow = '<select id="dow-' + id + '"' + dis + '>' + DOW.map(d =>
         '<option value="' + d[0] + '"' + (p.dow === d[0] ? ' selected' : '') + '>' + d[1] + '</option>').join('') + '</select>';
+    const chips = '<span class="chips" id="days-' + id + '">' + DOW.map(d =>
+        '<label class="chip"><input type="checkbox" value="' + d[0] + '"' + dis +
+        ((p.days || []).indexOf(d[0]) >= 0 ? ' checked' : '') + '><span>' + d[1].slice(0, 3) + '</span></label>').join('') + '</span>';
     let domOpts = '';
     for (let i = 1; i <= 28; i++) domOpts += '<option' + (p.dom === i ? ' selected' : '') + '>' + i + '</option>';
     const dom = '<select id="dom-' + id + '"' + dis + '>' + domOpts + '</select>';
     const time = '<input type="time" step="60" id="time-' + id + '" value="' + esc(p.time || '21:00') + '"' + dis + '>';
+    const times = '<span id="times-' + id + '">' + (p.times || ['09:00', '21:00']).map(t => timeRow(t, dis)).join('') + '</span>' +
+        (dis ? '' : ' <button type="button" class="btn-small" onclick="addTimeRow(\'' + f.key + '\')">+ Add time</button>');
     const custom = '<input type="text" id="cron-' + id + '" value="' + esc(f.value) + '" placeholder="min hour day month weekday"' + dis + '>';
     return '<div class="sched">' + freq + ' <span id="wrap-dow-' + id + '">on ' + dow + '</span>' +
+        '<span id="wrap-days-' + id + '">' + chips + '</span>' +
         '<span id="wrap-dom-' + id + '">on day ' + dom + '</span>' +
         '<span id="wrap-time-' + id + '"> at ' + time + ' <span class="tz">' + esc(tzLabel()) + '</span></span>' +
+        '<span id="wrap-times-' + id + '"> at ' + times + ' <span class="tz">' + esc(tzLabel()) + '</span></span>' +
         '<span id="wrap-cron-' + id + '">' + custom + '</span></div>' +
         '<div class="meta" id="human-' + id + '"></div>';
 }
 
+function timeRow(t, dis) {
+    return '<span class="trow"><input type="time" step="60" value="' + esc(t) + '"' + dis + '>' +
+        (dis ? '' : '<button type="button" class="btn-small btn-x" title="Remove this time" onclick="removeTimeRow(this)">&times;</button>') +
+        '</span>';
+}
+
+function addTimeRow(key) {
+    const box = document.getElementById('times-' + fid(key));
+    box.insertAdjacentHTML('beforeend', timeRow('12:00', ''));
+    onEdit();
+}
+
+function removeTimeRow(btn) {
+    const box = btn.parentElement.parentElement;
+    if (box.children.length > 1) btn.parentElement.remove();
+    onEdit();
+}
+
 function tzLabel() { return scheduleTz === TZ ? 'IST' : scheduleTz; }
+
+// One sentence a person can read: "every day at 21:00 IST". Used under the picker and in the review.
+function scheduleSentence(p) {
+    const tz = ' ' + tzLabel();
+    if (p.freq === 'daily') return 'every day at ' + p.time + tz;
+    if (p.freq === 'weekly') return 'every ' + (DOW.find(d => d[0] === p.dow) || ['', p.dow])[1] + ' at ' + p.time + tz;
+    if (p.freq === 'days') return 'every ' + shortDays(p.days) + ' at ' + p.time + tz;
+    if (p.freq === 'times') return 'every day at ' + p.times.join(' and ') + tz;
+    if (p.freq === 'monthly') return 'on day ' + p.dom + ' of every month at ' + p.time + tz;
+    return null;
+}
 
 function syncSchedule(f) {
     const id = fid(f.key);
@@ -100,19 +160,31 @@ function syncSchedule(f) {
                 dow: document.getElementById('dow-' + id).value,
                 dom: +document.getElementById('dom-' + id).value,
                 time: document.getElementById('time-' + id).value,
+                days: [...document.querySelectorAll('#days-' + id + ' input:checked')].map(i => i.value),
+                times: [...document.querySelectorAll('#times-' + id + ' input')].map(i => i.value).filter(t => t),
                 cron: document.getElementById('cron-' + id).value.trim() };
-    if (p.freq !== 'custom' && !p.time) { localErrors[f.key] = 'Pick a time.'; }
-    document.getElementById('wrap-dow-' + id).style.display = p.freq === 'weekly' ? '' : 'none';
-    document.getElementById('wrap-dom-' + id).style.display = p.freq === 'monthly' ? '' : 'none';
-    document.getElementById('wrap-time-' + id).style.display = p.freq === 'custom' ? 'none' : '';
-    document.getElementById('wrap-cron-' + id).style.display = p.freq === 'custom' ? '' : 'none';
-    if (p.freq !== 'custom') document.getElementById('cron-' + id).value = buildCron(p);
-    values[f.key] = p.freq === 'custom' ? p.cron : buildCron(p);
-    const when = { daily: 'every day', weekly: 'every ' + (DOW.find(d => d[0] === p.dow) || ['', p.dow])[1],
-                   monthly: 'on day ' + p.dom + ' of every month' }[p.freq];
-    document.getElementById('human-' + id).textContent = p.freq === 'custom'
-        ? 'Custom timing (cron): ' + values[f.key]
-        : 'Runs ' + when + ' at ' + p.time + ' ' + tzLabel() + '.';
+    const show = (name, on) => { document.getElementById('wrap-' + name + '-' + id).style.display = on ? '' : 'none'; };
+    show('dow', p.freq === 'weekly');
+    show('days', p.freq === 'days');
+    show('dom', p.freq === 'monthly');
+    show('time', ['daily', 'weekly', 'days', 'monthly'].indexOf(p.freq) >= 0);
+    show('times', p.freq === 'times');
+    show('cron', p.freq === 'custom');
+    if (['daily', 'weekly', 'days', 'monthly'].indexOf(p.freq) >= 0 && !p.time) localErrors[f.key] = 'Pick a time.';
+    if (p.freq === 'days' && !p.days.length) localErrors[f.key] = 'Tick at least one day.';
+    if (p.freq === 'times') {
+        const minutes = p.times.map(t => t.split(':')[1]);
+        if (!p.times.length) localErrors[f.key] = 'Add at least one time.';
+        else if (minutes.some(x => x !== minutes[0])) {
+            localErrors[f.key] = 'Use the same minutes for every time (for example 09:30 and 21:30).';
+        } else if (p.times.filter((t, i, a) => a.indexOf(t) !== i).length) localErrors[f.key] = 'Remove the repeated time.';
+    }
+    const cron = p.freq === 'custom' ? p.cron : buildCron(p);
+    if (p.freq !== 'custom') document.getElementById('cron-' + id).value = cron;
+    values[f.key] = cron;
+    const sentence = scheduleSentence(parseCron(cron));
+    document.getElementById('human-' + id).textContent = sentence
+        ? 'Runs ' + sentence + '.' : 'Runs on a custom timing written by support: ' + cron;
     renderOverview();
 }
 
@@ -128,21 +200,24 @@ const OVERVIEW_JOBS = [
 function renderOverview() {
     const box = document.getElementById('overview');
     if (!box) return;
-    const items = OVERVIEW_JOBS.filter(j => fields[j[0]]).map(j => {
+    const items = OVERVIEW_JOBS.filter(j => fields[j[0]]).flatMap(j => {
         const p = parseCron(values[j[0]]);
-        if (p.freq === 'custom') return { mins: 9999, html: '<b>' + esc(j[1]) + '</b>: custom timing' };
-        const [h, m] = p.time.split(':').map(Number);
-        const when = { daily: 'every day', weekly: 'every ' + (DOW.find(d => d[0] === p.dow) || ['', p.dow])[1],
-                       monthly: 'on day ' + p.dom + ' of the month' }[p.freq];
-        let until = '';
+        if (p.freq === 'custom') return [{ mins: 9999, html: '<b>' + esc(j[1]) + '</b>: custom timing' }];
         const hours = j[2] ? Number(values[j[2]]) : null;
-        if (hours) {
-            const end = (h * 60 + m + Math.round(hours * 60)) % (24 * 60);
-            until = ' &rarr; finished by ' + String(Math.floor(end / 60)).padStart(2, '0') + ':' +
-                String(end % 60).padStart(2, '0') + ' at the latest (' + hours + ' h)';
-        }
-        return { mins: h * 60 + m, html: '<b>' + p.time + '</b> ' + esc(j[1]) + ' <span class="hint">(' +
-            when + ')</span>' + until };
+        const when = { daily: 'every day', weekly: 'every ' + (DOW.find(d => d[0] === p.dow) || ['', p.dow])[1],
+                       days: 'every ' + (p.days ? shortDays(p.days) : ''), times: 'every day',
+                       monthly: 'on day ' + p.dom + ' of the month' }[p.freq];
+        return (p.times || [p.time]).map(t => {
+            const [h, m] = t.split(':').map(Number);
+            let until = '';
+            if (hours) {
+                const end = (h * 60 + m + Math.round(hours * 60)) % (24 * 60);
+                until = ' &rarr; finished by ' + String(Math.floor(end / 60)).padStart(2, '0') + ':' +
+                    String(end % 60).padStart(2, '0') + ' at the latest (' + hours + ' h)';
+            }
+            return { mins: h * 60 + m, html: '<b>' + t + '</b> ' + esc(j[1]) + ' <span class="hint">(' +
+                when + ')</span>' + until };
+        });
     }).sort((a, b) => a.mins - b.mins);
     box.innerHTML = '<div class="label">Your timetable at a glance (' + esc(tzLabel()) +
         ')</div>' + items.map(i => '<div style="margin:0.15rem 0">' + i.html + '</div>').join('') +
@@ -311,11 +386,9 @@ function render() {
     Object.values(fields).forEach(f => {
         const id = fid(f.key);
         if (f.widget === 'schedule') {
-            ['freq-', 'dow-', 'dom-', 'time-', 'cron-'].forEach(p => {
-                const el = document.getElementById(p + id);
-                el.addEventListener('input', onEdit);
-                el.addEventListener('change', onEdit);
-            });
+            const box = document.getElementById('freq-' + id).closest('.sched');
+            box.addEventListener('input', onEdit);
+            box.addEventListener('change', onEdit);
             syncSchedule(f);
         } else if (f.widget !== 'email_list' && f.widget !== 'text_list') {
             const el = document.getElementById('in-' + id);
@@ -739,11 +812,7 @@ let reviewWord = 'APPROVE';
 const DOW_NAME = Object.fromEntries(DOW);
 
 function scheduleText(cron) {
-    const p = parseCron(cron);
-    if (p.freq === 'daily') return 'every day at ' + p.time + ' ' + tzLabel();
-    if (p.freq === 'weekly') return 'every ' + (DOW_NAME[p.dow] || p.dow) + ' at ' + p.time + ' ' + tzLabel();
-    if (p.freq === 'monthly') return 'on day ' + p.dom + ' of every month at ' + p.time + ' ' + tzLabel();
-    return cron;
+    return scheduleSentence(parseCron(cron)) || cron;
 }
 
 function valueText(f, v, isOld) {

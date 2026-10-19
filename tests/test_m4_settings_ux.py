@@ -150,6 +150,29 @@ class TestBrowserCode:
         for c in ("0 21 * * *", "30 8 1 * *", "0 10 * * SUN", "0 9 * * MON"):
             assert out[c][1] == c
 
+    def test_schedule_picker_has_plain_choices_for_days_and_several_times(self):
+        js = ROOT / "static" / "js" / "settings.js"
+        consts = "\n".join(line for line in js.read_text(encoding="utf-8").splitlines()
+                           if line.startswith("const DOW") or line.startswith("             ['FRI"))
+        script = (consts + "\n" + _js_function(js, "parseCron") + "\n" + _js_function(js, "buildCron") +
+                  "\nconst crons = ['0 22 * * MON,WED,FRI', '30 9 * * 1,3', '30 9,21 * * *',"
+                  " '0 9,21 * * MON', '0 9,21 1 * *', '0 22 * * FUNNY,MON'];"
+                  "\nconsole.log(JSON.stringify(crons.map(c => [c, parseCron(c), buildCron(parseCron(c))])));")
+        out = {c: (p, built) for c, p, built in json.loads(_node(script))}
+        assert out["0 22 * * MON,WED,FRI"][0] == {"freq": "days", "time": "22:00", "days": ["MON", "WED", "FRI"]}
+        assert out["0 22 * * MON,WED,FRI"][1] == "0 22 * * MON,WED,FRI"
+        assert out["30 9 * * 1,3"][1] == "30 9 * * MON,WED"            # numbers become names
+        assert out["30 9,21 * * *"][0] == {"freq": "times", "times": ["09:30", "21:30"]}
+        assert out["30 9,21 * * *"][1] == "30 9,21 * * *"
+        # shapes the page cannot draw stay untouched (shown as text, never rewritten)
+        for odd in ("0 9,21 * * MON", "0 9,21 1 * *", "0 22 * * FUNNY,MON"):
+            assert out[odd][0]["freq"] == "custom" and out[odd][1] == odd
+
+    def test_custom_is_offered_only_for_schedules_the_page_cannot_draw(self):
+        text = (ROOT / "static" / "js" / "settings.js").read_text(encoding="utf-8")
+        assert "Custom (advanced)" not in text
+        assert "if (p.freq === 'custom') options.push(" in text
+
     def test_dashboard_dates_are_ist_even_on_a_foreign_browser(self):
         fn = _js_function(ROOT / "static" / "js" / "dashboard.js", "formatFullDate")
         out = _node(fn + "\nconsole.log(formatFullDate('2026-10-15T15:35:00Z'));")

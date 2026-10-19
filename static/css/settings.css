@@ -109,3 +109,13 @@ dialog#review-dialog::backdrop { background: rgba(10, 20, 35, .55); }
 #review-confirm input { width: 100%; }
 .review-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
 .review-actions button { margin-right: 0; }
+
+/* schedule picker: weekday chips and several start times */
+.sched .chips { display: inline-flex; flex-wrap: wrap; gap: .3rem; margin: .15rem .2rem; vertical-align: middle; }
+.sched .chip { position: relative; }
+.sched .chip input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.sched .chip span { display: inline-block; min-width: 2.8rem; text-align: center; padding: .35rem .6rem; border: 1px solid var(--hair);
+    border-radius: 999px; background: var(--panel); color: var(--ink-2); font-size: .9rem; }
+.sched .chip input:checked + span { background: var(--navy); border-color: var(--navy); color: #fff; font-weight: 600; }
+.sched .chip input:focus-visible + span { outline: 2px solid var(--navy); outline-offset: 2px; }
+.sched .trow { display: inline-flex; align-items: center; gap: .2rem; margin-right: .5rem; }
