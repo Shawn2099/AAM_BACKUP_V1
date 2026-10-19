@@ -174,3 +174,11 @@ def test_dashboard_js_words_pending_backup_in_both_renderers():
     # never worded as a match or as a failure
     assert "every file matches" not in re.search(r"PENDING_BACKUP'.*", safety).group(0)
     assert "FAILED" not in re.search(r"PENDING_BACKUP'.*", integrity).group(0)
+
+
+def test_failed_check_banner_says_what_to_do_then_press_check_now(db):
+    _fresh_runs(db)
+    _record(db, "lan", status="VERIFICATION_FAILED", detail="content-changed=1")
+    [item] = [i for i in compute_attention(db, _cfg()) if i["code"] == "audit:lan"]
+    assert item["level"] == RED and looks_action_first(item["message"])
+    assert item["message"].startswith("Open the LAN backup details") and "Check now" in item["message"]

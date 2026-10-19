@@ -165,11 +165,11 @@ Step 1 - verdict plumbing
 - [x] T1.2 `AuditStatus.PENDING_BACKUP`, `record_audit` allow-list, flow exemption, attention amber, report row, dashboard.js texts
 
 Step 2 - classifier
-- [ ] T2.1 Read the delete limits in `models/config.py` (`guards.max_delete_files/percent`); fix the exact tripwire rule
-- [ ] T2.2 Tests `tests/test_audit_pending.py` with real temp files and `os.utime` (new, edited, moved, deleted, unchanged-differs, same-mtime LAN, future time, stat failure, no reference, delete tripwire, mixed)
-- [ ] T2.3 `core/audit_pending.py` (pure classifier)
-- [ ] T2.4 Call site in `_run_rclone_check` / audit flow: reference time from `last_successful_run`; verdict PENDING_BACKUP; fail-closed branches untouched
-- [ ] T2.5 Failed-check text: "Press Check now to re-check once the cause is fixed"
+- [x] T2.1 Read the delete limits in `models/config.py` (`guards.max_delete_files/percent`); fix the exact tripwire rule
+- [x] T2.2 Tests `tests/test_audit_pending.py` with real temp files and `os.utime` (new, edited, moved, deleted, unchanged-differs, same-mtime LAN, future time, stat failure, no reference, delete tripwire, mixed)
+- [x] T2.3 `core/audit_pending.py` (pure classifier)
+- [x] T2.4 Call site in `_run_rclone_check` / audit flow: reference time from `last_successful_run`; verdict PENDING_BACKUP; fail-closed branches untouched
+- [x] T2.5 Failed-check text: "Press Check now to re-check once the cause is fixed"
 
 Step 3 - manual Check now
 - [ ] T3.1 Tests: 409 `backup_first` when the last backup is older than the stale limit, passes when recent, text action-first

@@ -1369,6 +1369,27 @@ def _audit_settings(config) -> dict:
             "network_error_patterns": tuple(a.network_error_patterns)}
 
 
+def _pending_context(config, db, leg: str):
+    """What the safety check needs to tell "waiting for the next backup" from "wrong": the start
+    of this leg's last SUCCESSFUL backup (the shared success definition). Unknown (no backup, an
+    unreadable time, a database error) leaves the reference empty, so every difference is real."""
+    from core import audit_pending
+
+    try:
+        last = db.last_successful_run(leg)
+        started = last.get("started_at") if isinstance(last, dict) else None
+    except Exception as e:  # noqa: BLE001 - unknown means "no reference", never a crash
+        logger.warning(f"Last successful {leg} backup unknown for the safety check: {e}")
+        started = None
+    return audit_pending.PendingContext(
+        source_root=config.paths.source_drive,
+        dest_root=config.paths.lan_destination if leg == "lan" else None,
+        reference=audit_pending.reference_epoch(started), now=time.time(),
+        modify_window_seconds=config.audit.modify_window_seconds,
+        max_delete_files=config.guards.max_delete_files,
+        max_delete_percent=config.guards.max_delete_percent, files_checked=None)
+
+
 def _audit_outcome_text(leg: str, result: dict) -> str:
     """Truthful audit outcome: 'could not run' is never called divergence."""
     if result.get("status") == "AUDIT_INCOMPLETE":
@@ -2691,6 +2712,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                     config.paths.source_drive, config.cloud.bucket,
                     _effective_fy_prefix(config), rclone_cfg,
                     timeout=cloud_timeout, artefacts=audit_artefacts,
+                    pending=_pending_context(config, db, "cloud"),
                     **_audit_settings(config),
                 )
         finally:
@@ -2707,7 +2729,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         try:
             return audit_lan(
                 config.paths.source_drive, config.paths.lan_destination,
-                timeout=lan_timeout, artefacts=audit_artefacts, **_audit_settings(config),
+                timeout=lan_timeout, artefacts=audit_artefacts,
+                pending=_pending_context(config, db, "lan"), **_audit_settings(config),
             )
         finally:
             # Only after a successful wake; a failed shutdown never replaces the verdict.

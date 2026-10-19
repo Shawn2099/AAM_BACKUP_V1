@@ -37,10 +37,12 @@ import re
 import tempfile
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path, PureWindowsPath
 
 from loguru import logger
 
+from core import audit_pending
 from core.process import resolve_binary
 from core.rclone_errors import DEFAULT_PATTERNS, find_transport_failure
 from core.run_artefacts import RunArtefacts
@@ -180,6 +182,7 @@ def _run_rclone_check(
     network_error_patterns: tuple[str, ...] | list[str] = (),
     modify_window_seconds: int = _AUDIT["modify_window_seconds"],
     artefacts: RunArtefacts | None = None,
+    pending: audit_pending.PendingContext | None = None,
 ) -> dict:
     """Run one read-only `rclone check --combined` and classify the result.
 
@@ -356,7 +359,24 @@ def _run_rclone_check(
                 # truthful and the divergent paths are preserved.
                 status = "VERIFIED" if mismatches == 0 else "VERIFICATION_FAILED"
                 detail_paths = (added + modified + removed)[:detail_max_paths]
-                if mismatches == 0:
+                waiting = None
+                if mismatches and pending is not None:
+                    # Only a completed check that found differences reaches the classifier; every
+                    # fail-closed branch above was decided without it.
+                    waiting = audit_pending.classify(
+                        [p for p in added], [p for p in modified], [p for p in removed],
+                        replace(pending, now=time.time(), files_checked=files_checked))
+                    mismatches = waiting.real_count
+                    detail_paths = waiting.real_paths[:detail_max_paths]
+                    if mismatches == 0:
+                        status = "PENDING_BACKUP"
+                if status == "PENDING_BACKUP":
+                    detail = (
+                        f"capability={capability} every backed-up file matches; "
+                        f"{waiting.pending_count} newer file(s) wait for the next backup "
+                        f"({waiting.summary}; checked={files_checked} elapsed_s={elapsed:.0f})"
+                    )
+                elif mismatches == 0:
                     detail = (
                         f"capability={capability} verified clean "
                         f"(checked={files_checked}"
@@ -375,11 +395,26 @@ def _run_rclone_check(
                         f" raw_mismatches={raw_mismatches}"
                         if canary_excluded else ""
                     )
+                    real_kinds = ([k for k, _ in waiting.real] if waiting is not None else None)
+                    counts = (
+                        f"missing-from-dest={real_kinds.count('new')} "
+                        f"extra-in-dest={real_kinds.count('removed')} "
+                        f"content-changed={real_kinds.count('changed')}"
+                        if real_kinds is not None else
+                        f"missing-from-dest={len(added)} extra-in-dest={len(removed)} "
+                        f"content-changed={len(modified)}"
+                    )
+                    waiting_note = ""
+                    if waiting is not None and waiting.pending_count:
+                        waiting_note = (f" {waiting.pending_count} more file(s) wait for the "
+                                        "next backup.")
+                    if waiting is not None and waiting.tripwire:
+                        waiting_note += f" {waiting.tripwire}."
                     detail = (
                         f"capability={capability} content mismatch detected "
-                        f"(missing-from-dest={len(added)} "
-                        f"extra-in-dest={len(removed)} content-changed={len(modified)} "
+                        f"({counts} "
                         f"elapsed_s={elapsed:.0f}{canary_note} paths={detail_paths})"
+                        f"{waiting_note}"
                     )
         logger.info(f"Integrity audit ({scope}) {status}: {detail}")
         return {
