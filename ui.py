@@ -1129,8 +1129,13 @@ async def apply_settings(request: Request):
     cfg = _cfg()
     if app_restart.restart_pending():
         return {"status": "restarting", "boot_id": app_restart.BOOT_ID}
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - no body = a normal "apply"
+        body = {}
+    manual = bool(isinstance(body, dict) and body.get("force"))
     pending = await run_in_threadpool(_pending_restart_keys)
-    if not pending:
+    if not pending and not manual:
         return {"status": "nothing_to_apply", "boot_id": app_restart.BOOT_ID}
     busy = _settings_lock_busy() or await _prefect_busy_reason(
         cfg.dashboard.apply_block_before_run_seconds)
@@ -1141,10 +1146,11 @@ async def apply_settings(request: Request):
     actor = _approval_actor(request)
     get_db().record_config_change({
         "changed_at": now_iso(), "changed_by": actor, "key": "service.restart",
-        "old_value": "''", "new_value": repr(", ".join(pending)), "risky": 0, "backup_file": ""})
+        "old_value": "''", "new_value": repr(", ".join(pending) or "(manual restart)"), "risky": 0,
+        "backup_file": ""})
     app_restart.request_restart(delay_s=cfg.dashboard.apply_delay_seconds,
                                 force_exit_s=cfg.dashboard.apply_force_exit_seconds, actor=actor)
-    logger.warning(f"Apply changes by {actor}: restarting for {', '.join(pending)}")
+    logger.warning(f"Apply changes by {actor}: restarting for {', '.join(pending) or 'a manual restart'}")
     return {"status": "restarting", "boot_id": app_restart.BOOT_ID, "applied": pending}
 
 

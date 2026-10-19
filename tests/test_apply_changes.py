@@ -95,6 +95,15 @@ class TestApplyEndpoint:
         r = rig.client.post("/api/settings/apply", headers=KEY)
         assert r.json()["status"] == "nothing_to_apply" and rig.started == []
 
+    def test_manual_restart_works_with_nothing_pending_but_is_still_gated(self, rig, monkeypatch):
+        r = rig.client.post("/api/settings/apply", headers=KEY, json={"force": True})
+        assert r.status_code == 200 and r.json()["status"] == "restarting" and len(rig.started) == 1
+        assert "(manual restart)" in rig.db.config_changes(limit=1)[0]["new_value"]
+        rig.started.clear()
+        monkeypatch.setattr(ui, "_settings_lock_busy", lambda: "a backup is running")
+        r = rig.client.post("/api/settings/apply", headers=KEY, json={"force": True})
+        assert r.status_code == 409 and rig.started == []
+
     def test_restarts_and_records_who_and_what(self, rig):
         _change(rig.db, "schedule.lan_cron")
         r = rig.client.post("/api/settings/apply", headers=KEY)
@@ -220,3 +229,12 @@ def test_colour_mixing_is_only_used_behind_a_support_check():
         css = (Path(ui.__file__).parent / "static" / "css" / name).read_text(encoding="utf-8")
         outside = re.sub(r"@supports \(background: color-mix[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", css)
         assert "color-mix(" not in outside, name
+
+
+def test_the_apply_bar_is_always_shown_with_the_right_button():
+    from pathlib import Path
+    root = Path(ui.__file__).parent
+    js = (root / "static" / "js" / "settings.js").read_text(encoding="utf-8")
+    css = (root / "static" / "css" / "settings.css").read_text(encoding="utf-8")
+    assert "Restart service" in js and "Apply changes" in js and "force: manual" in js
+    assert "#apply-bar { display: flex;" in css          # never hidden by the stylesheet

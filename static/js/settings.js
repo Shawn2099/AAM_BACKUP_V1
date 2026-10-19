@@ -662,12 +662,18 @@ loadHistory();
 function renderApplyBar() {
     const bar = document.getElementById('apply-bar');
     if (!bar) return;
-    bar.style.display = pendingRestart.length ? 'flex' : 'none';
+    // always visible: "Apply changes" when something waits, otherwise a plain manual restart
+    const waiting = pendingRestart.length > 0;
+    bar.style.display = 'flex';
+    bar.className = waiting ? '' : 'idle';
     const names = pendingRestart.map(k => (fields[k] || {}).label || k);
-    document.getElementById('apply-text').textContent = pendingRestart.length
+    document.getElementById('apply-text').textContent = waiting
         ? (pendingRestart.length === 1 ? '1 saved change is waiting' : pendingRestart.length + ' saved changes are waiting')
           + ' for a restart: ' + names.join(', ') + '.'
-        : '';
+        : 'Nothing is waiting: every saved setting is already in use. You can still restart the backup service.';
+    const btn = document.getElementById('btn-apply');
+    btn.textContent = waiting ? 'Apply changes' : 'Restart service';
+    btn.className = waiting ? 'btn-trigger' : 'btn-secondary';
 }
 
 function showRestartOverlay(text) {
@@ -677,12 +683,15 @@ function showRestartOverlay(text) {
 }
 
 async function applyChanges() {
-    if (!window.confirm('Restart the backup service now?\n\nIt is only restarted when no backup, check or rollover is running. ' +
+    const manual = pendingRestart.length === 0;
+    if (!window.confirm((manual ? 'Restart the backup service now?' : 'Apply the saved changes by restarting the backup service now?') +
+        '\n\nIt is only restarted when no backup, check or rollover is running. ' +
         'The dashboard is unavailable for about a minute.')) return;
     const btn = document.getElementById('btn-apply');
     btn.disabled = true;
     try {
-        const resp = await fetch('/api/settings/apply', { method: 'POST' });
+        const resp = await fetch('/api/settings/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: manual }) });
         const data = await resp.json().catch(() => ({}));
         if (resp.status === 401) { window.location.href = '/login'; return; }
         if (!resp.ok) { showToast(data.detail || ('Could not apply (HTTP ' + resp.status + ')'), 'error'); btn.disabled = false; return; }
