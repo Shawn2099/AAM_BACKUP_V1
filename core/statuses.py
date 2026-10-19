@@ -50,6 +50,10 @@ class AuditStatus(StrEnum):
 
     VERIFIED = "VERIFIED"
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
+    # Every file that was already backed up matches; some newer files wait for the next backup
+    # (core/audit_pending). Not a success verdict (it never reads "every file matches") and not
+    # a failure (no email, no red banner).
+    PENDING_BACKUP = "PENDING_BACKUP"
     # The audit could not reach a verdict (network/listing/process error).
     # Never shown as divergence.
     AUDIT_INCOMPLETE = "AUDIT_INCOMPLETE"

@@ -13,6 +13,7 @@ from pathlib import Path
 from loguru import logger
 
 from core import rollover_journal as rj
+from core.statuses import AuditStatus
 from core.time_utils import IST, cutoff_iso, now_iso
 from models.config import MaintenanceConfig, model_default
 
@@ -95,7 +96,7 @@ CREATE TABLE IF NOT EXISTS integrity_audits (
     scope           TEXT NOT NULL DEFAULT 'full',
     started_at      TEXT NOT NULL,
     ended_at        TEXT,
-    status          TEXT NOT NULL,          -- 'VERIFIED' | 'VERIFICATION_FAILED'
+    status          TEXT NOT NULL,          -- 'VERIFIED' | 'VERIFICATION_FAILED' | 'AUDIT_INCOMPLETE' | 'PENDING_BACKUP'
     files_checked   INTEGER DEFAULT 0,
     bytes_checked   INTEGER DEFAULT 0,
     mismatches      INTEGER DEFAULT 0,
@@ -870,7 +871,8 @@ class ManifestDB:
         missing = [k for k in required if k not in data]
         if missing:
             raise KeyError(f"record_audit missing required keys: {missing}")
-        if data["status"] not in ("VERIFIED", "VERIFICATION_FAILED", "AUDIT_INCOMPLETE"):
+        if data["status"] not in (AuditStatus.VERIFIED, AuditStatus.VERIFICATION_FAILED,
+                                  AuditStatus.AUDIT_INCOMPLETE, AuditStatus.PENDING_BACKUP):
             raise ValueError(f"invalid audit status: {data['status']!r}")
         with self._lock:
             conn = self._get_conn()

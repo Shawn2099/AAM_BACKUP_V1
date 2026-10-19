@@ -63,7 +63,7 @@ def test_leg_success_sets():
 
 def test_audit_statuses():
     assert {a.value for a in AuditStatus} == {
-        "VERIFIED", "VERIFICATION_FAILED", "AUDIT_INCOMPLETE", "NOT_VERIFIED"}
+        "VERIFIED", "VERIFICATION_FAILED", "AUDIT_INCOMPLETE", "NOT_VERIFIED", "PENDING_BACKUP"}
 
 
 def test_no_suffix_based_status_classification_left_in_consumers():

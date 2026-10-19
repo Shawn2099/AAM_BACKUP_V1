@@ -274,6 +274,8 @@ def _audit_row(db, leg: str) -> dict:
     if status_text == "AUDIT_INCOMPLETE":
         # WP7: "could not run" (network/TLS/DNS/process) is never divergence
         status_text = "AUDIT COULD NOT RUN"
+    if status_text == "PENDING_BACKUP":
+        status_text = "NEWER FILES WAIT FOR THE NEXT BACKUP"
     return {"leg": leg, "status": status_text,
             "checked": format_ist(audit.get("ended_at") or audit.get("started_at")),
             "detail": str(audit.get("detail") or "-")}

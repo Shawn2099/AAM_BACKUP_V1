@@ -98,6 +98,7 @@ function integrityText(integrity) {
     var when = integrity.checked_at ? ' (checked ' + formatFullDate(integrity.checked_at) + ')' : '';
     if (s === 'VERIFIED') return 'Integrity: VERIFIED' + when;
     if (s === 'VERIFICATION_FAILED') return 'Integrity: VERIFICATION FAILED' + when + ' — see audit detail';
+    if (s === 'PENDING_BACKUP') return 'Integrity: NEWER FILES WAIT FOR THE NEXT BACKUP' + when + (integrity.detail ? ' — ' + integrity.detail : '');
     // WP7: the audit could not reach a verdict (network/TLS/DNS/process) - not divergence
     if (s === 'AUDIT_INCOMPLETE') return 'Integrity: AUDIT COULD NOT RUN' + when + (integrity.detail ? ' — ' + integrity.detail : '');
     return 'Integrity: NOT VERIFIED — no audit recorded';
@@ -322,6 +323,7 @@ function safetyText(integrity) {
     var when = integrity.checked_at ? ' (checked ' + formatFullDate(integrity.checked_at) + ')' : '';
     if (integrity.status === 'VERIFIED') return 'Safety check: every file matches' + when;
     if (integrity.status === 'VERIFICATION_FAILED') return 'Safety check found differences - open Details';
+    if (integrity.status === 'PENDING_BACKUP') return 'Safety check: newer files wait for the next backup' + when;
     if (integrity.status === 'AUDIT_INCOMPLETE') return 'Safety check could not run - open Details';
     return 'Safety check: not run yet';
 }

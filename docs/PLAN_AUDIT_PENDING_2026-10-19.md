@@ -1,6 +1,6 @@
 # Plan: the safety check tells "not backed up yet" apart from "wrong" (2026-10-19)
 
-Status: **proposed, not started.** Owner decisions of 2026-10-19 are in section 7.
+Status: **approved by the owner 2026-10-19; in progress (see section 11).** Owner decisions of 2026-10-19 are in section 7.
 Follows the project rules: fail closed, every tunable is a config key, reuse the shared building
 blocks, tests first, one commit per step.
 
@@ -62,11 +62,12 @@ creating an entry always updates the containing folder's time. This makes rename
 Always REAL: no `reference` (the leg never succeeded), a future time, any `stat()` failure,
 a path that cannot be resolved. Unknown = red (fail closed).
 
-**Mass-change tripwire (keeps the accidental ransomware/mass-delete signal):** if the PENDING
-count exceeds the EXISTING guard limits (`guards.max_delete_files` / `guards.max_delete_percent`
-for `-`, `guards.max_source_shrink_percent` spirit for the rest; exact keys fixed in step 2 by
-reading `core/guards.py`), the whole result stays REAL with the detail "unusually many files
-changed since the last backup". No new setting.
+**Mass-change tripwire (deleted files only):** if the number of PENDING `-` differences exceeds the
+EXISTING `guards.max_delete_files` / `guards.max_delete_percent` (percent of the copy's file count),
+the whole result stays REAL with the detail "unusually many files deleted since the last backup".
+Changed or added files have no guard limit and get none: in-place encryption by ransomware is an
+accepted risk (owner, 2026-10-19), and a new key would be a new tunable for no accepted threat.
+No new setting.
 
 Bounded delay: a file skipped silently by a backup is PENDING only until the next successful
 backup starts; then it is REAL. So a hidden miss lasts at most one backup cycle.
@@ -151,8 +152,33 @@ New config keys: none in steps 1-4 (reuses `audit.modify_window_seconds` and the
 
 * A copy that is corrupted and then edited at the source is PENDING until the next backup
   overwrites it (nothing is lost; the next backup replaces the copy).
-* Ransomware rewrites mtimes: caught only by the mass-change limit and the backup-time guards,
-  same as today's G2/G3 (ransomware against the LAN mirror is an accepted risk).
+* Ransomware that rewrites files in place is not caught (accepted risk, owner 2026-10-19); mass
+  deletes are still caught by the delete limits, same as G3.
 * A copy-overwrite that keeps an old creation time can stay REAL (false alarm on the safe side).
 * The classifier trusts source times from the server clock; a wrong clock is already a red
   clock check on the cloud leg.
+
+## 11. Task checklist (tick when committed)
+
+Step 1 - verdict plumbing
+- [x] T1.1 Tests `tests/test_audit_pending_verdict.py` (verdict stored, no email, amber, report, both renderers)
+- [x] T1.2 `AuditStatus.PENDING_BACKUP`, `record_audit` allow-list, flow exemption, attention amber, report row, dashboard.js texts
+
+Step 2 - classifier
+- [ ] T2.1 Read the delete limits in `models/config.py` (`guards.max_delete_files/percent`); fix the exact tripwire rule
+- [ ] T2.2 Tests `tests/test_audit_pending.py` with real temp files and `os.utime` (new, edited, moved, deleted, unchanged-differs, same-mtime LAN, future time, stat failure, no reference, delete tripwire, mixed)
+- [ ] T2.3 `core/audit_pending.py` (pure classifier)
+- [ ] T2.4 Call site in `_run_rclone_check` / audit flow: reference time from `last_successful_run`; verdict PENDING_BACKUP; fail-closed branches untouched
+- [ ] T2.5 Failed-check text: "Press Check now to re-check once the cause is fixed"
+
+Step 3 - manual Check now
+- [ ] T3.1 Tests: 409 `backup_first` when the last backup is older than the stale limit, passes when recent, text action-first
+- [ ] T3.2 `ui.py` `trigger_verify` pre-check and the page's two buttons (Back up now / Check anyway)
+
+Step 4 - prove on the box
+- [ ] T4.1 Full suite + audit lab green; deploy to the box
+- [ ] T4.2 30 new + 16 changed seed files give PENDING_BACKUP, no email, amber note (owner informed before touching data)
+- [ ] T4.3 Real-corruption case stays red (on a COPY test folder, owner informed first)
+- [ ] T4.4 Update `docs/ARCHITECTURE.md` section 10, `SESSION_HANDOFF.md`
+
+Step 5 - weekly chain (section 6): built later, after one real week of data. Not part of this checklist.

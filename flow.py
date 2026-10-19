@@ -2670,7 +2670,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         except Exception as e:
             excs.append(RuntimeError(f"{name} audit persistence failed: {e}"))
             outcomes.append(f"{leg}=NOT_RECORDED")
-        if result["status"] != "VERIFIED":
+        if result["status"] not in (statuses.AuditStatus.VERIFIED, statuses.AuditStatus.PENDING_BACKUP):
             excs.append(RuntimeError(_audit_outcome_text(name, result)))
             outcomes.append(f"{leg}={result['status']}")
 
@@ -2757,7 +2757,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 title="Integrity audit did not verify", message=error_summary,
                 status="NOT_VERIFIED"))
             raise ExceptionGroup("Integrity audit did not verify", excs)
-        logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
+        logger.info("AAM integrity audit finished - no enabled leg has a real difference "
+                    "(newer files may wait for the next backup)")
     finally:
         db.close()
 

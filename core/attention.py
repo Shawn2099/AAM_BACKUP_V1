@@ -90,6 +90,11 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                act(f"Open the {_PHRASE.get(leg, leg)} details and check the differences",
                                    "The safety check found files that do not match "
                                    f"({audit.get('detail') or 'see the audit detail'})")))
+        elif audit and audit.get("status") == "PENDING_BACKUP":
+            items.append(_item(AMBER, f"audit:{leg}",
+                               act("Nothing to do",
+                                   f"Newer files will be copied by the next {_PHRASE.get(leg, leg)}",
+                                   audit.get("detail") or "")))
         elif audit and audit.get("status") == "AUDIT_INCOMPLETE":
             items.append(_item(AMBER, f"audit:{leg}",
                                act("Run the safety check again later with Check now",
