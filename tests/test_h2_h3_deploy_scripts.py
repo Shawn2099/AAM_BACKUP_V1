@@ -30,3 +30,10 @@ def test_readiness_reads_the_optional_update_policy_value_safely_under_strict_mo
     ps1 = (DEPLOY / "04_check_readiness.ps1").read_text(encoding="utf-8", errors="replace")
     assert 'PSObject.Properties["NoAutoUpdate"]' in ps1
     assert "$wuPolicy.NoAutoUpdate -eq 1" not in ps1
+
+
+def test_installer_grants_use_computer_slash_name_because_icacls_rejects_dot_slash():
+    ps1 = (DEPLOY / "06_install_services.ps1").read_text(encoding="utf-8", errors="replace")
+    assert '$AclAccount = if ($ServiceAccount.StartsWith(".\\"))' in ps1
+    assert ':(OI)(CI)M" /T /C /Q' in ps1 and '${AclAccount}:(OI)(CI)M' in ps1
+    assert '${ServiceAccount}:(OI)(CI)M' not in ps1

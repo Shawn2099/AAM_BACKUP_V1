@@ -217,13 +217,17 @@ if ($ServiceAccount) {
     # /T: also the files that ALREADY exist (an upgrade: logs and the DB were
     # created by LocalSystem; without it NSSM could not open agent_svc.log as
     # the account and the agent did not start - trial box 2026-10-15).
-    icacls $RuntimeDir /grant "${ServiceAccount}:(OI)(CI)M" /T /C /Q | Out-Null
+    # icacls does not resolve ".
+ame": use COMPUTER
+ame (found on the box, plan E/10)
+    $AclAccount = if ($ServiceAccount.StartsWith(".\")) { "$env:COMPUTERNAME\" + $ServiceAccount.Substring(2) } else { $ServiceAccount }
+    icacls $RuntimeDir /grant "${AclAccount}:(OI)(CI)M" /T /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: could not give $ServiceAccount Modify on $RuntimeDir. Services were NOT changed." -ForegroundColor Red
         exit 1
     }
-    icacls $ProjectDir /grant "${ServiceAccount}:M" | Out-Null
-    icacls $ConfigFile /grant "${ServiceAccount}:M" | Out-Null
+    icacls $ProjectDir /grant "${AclAccount}:M" | Out-Null
+    icacls $ConfigFile /grant "${AclAccount}:M" | Out-Null
     Write-Host "[OK]   $ServiceAccount granted Modify on $RuntimeDir, and on $ConfigFile + its folder"
 } else {
     Write-Host "[WARN] No -ServiceAccount: AamBackupAgent runs as LocalSystem, which cannot" -ForegroundColor Yellow
