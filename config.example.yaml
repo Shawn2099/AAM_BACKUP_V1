@@ -512,6 +512,9 @@ audit:
   modify_window_seconds: 2
   # Most file paths listed in an audit result (the counts are always complete)
   detail_max_paths: 100
+  # 'Check now' offers a backup first when the last good backup of a copy started more than
+  # this many minutes ago (0 = always ask). The check never starts a backup by itself.
+  backup_first_prompt_minutes: 60
   # Extra error texts (regular expressions) that mean "the audit could not run",
   # added to the built-in network/TLS/DNS/auth/listing signatures. Example:
   #   - "SOPHOS BLOCKPAGE"

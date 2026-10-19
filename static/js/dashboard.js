@@ -361,8 +361,18 @@ async function triggerVerify(mode) {
     var btn = document.getElementById('btn-verify-' + mode);
     if (btn) { btn.disabled = true; btn.innerText = 'Starting...'; }
     try {
-        const response = await fetch('/trigger/verify/' + mode, { method: 'POST' });
-        const data = await response.json();
+        var response = await fetch('/trigger/verify/' + mode, { method: 'POST' });
+        var data = await response.json();
+        if (response.status === 409 && data.status === 'backup_first') {
+            // The check never backs up by itself: tell the person, let them choose.
+            if (!confirm(data.detail + '\n\nPress OK to check anyway (files not backed up yet are shown as waiting, not as faults). '
+                + 'Press Cancel, then use the backup button of the copy.')) {
+                if (btn) { btn.disabled = false; btn.innerText = mode === 'all' ? 'Check both copies now' : 'Check now'; }
+                return;
+            }
+            response = await fetch('/trigger/verify/' + mode + '?anyway=1', { method: 'POST' });
+            data = await response.json();
+        }
         showToast(data.detail || (response.ok ? 'The result appears on each copy when it finishes. The safety check started.' : 'Try again later. The safety check did not start.'), response.ok ? 'success' : 'error');
     } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
     await updateStatus();

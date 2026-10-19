@@ -714,6 +714,11 @@ class AuditConfig(StrictModel):
     detail_max_paths: int = Field(default=100, ge=1, le=10_000,
                                   description="Max divergent paths listed in the audit detail "
                                               "(counts are always complete)")
+    backup_first_prompt_minutes: int = Field(
+        default=60, ge=0, le=10_080,
+        description="'Check now' asks whether to back up first when the last good backup of a "
+                    "copy started more than this many minutes ago (0 = always ask). The check "
+                    "never starts a backup by itself.")
     network_error_patterns: list[str] = Field(
         default_factory=list,
         description="Extra regular expressions (case-insensitive) that mark an audit as "

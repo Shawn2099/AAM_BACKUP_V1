@@ -1267,6 +1267,35 @@ def settings_history(request: Request):
 # audit is already running.
 
 
+def _backup_first_question(cfg, mode: str) -> str | None:
+    """Why "Check now" should wait for a backup, or None. The check never backs up by itself: this
+    only informs and the person chooses. Advisory, so any failure here lets the check start (the
+    check classifies files that are not backed up yet, so it stays safe)."""
+    try:
+        limit = cfg.audit.backup_first_prompt_minutes
+        db = get_db()
+        now = pendulum.now(IST)
+        old = []
+        for leg in ("lan", "cloud"):
+            if mode not in (leg, "all") or not getattr(cfg, leg).enabled:
+                continue
+            last = db.last_successful_run(leg)
+            started = last.get("started_at") if isinstance(last, dict) else None
+            name = "LAN" if leg == "lan" else "cloud"
+            if not started:
+                old.append(f"there is no successful {name} backup yet")
+            elif (now - pendulum.parse(started)).total_seconds() > limit * 60:
+                old.append(f"the last {name} backup was at {format_ist(started)}")
+        if not old:
+            return None
+        return messages.act("Back up now first, then check again",
+                            "Files changed since the last backup are not copied yet: "
+                            + " and ".join(old))
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.warning(f"Check-now pre-check skipped: {e}")
+        return None
+
+
 @app.post("/trigger/verify/{mode}")
 async def trigger_verify(mode: str, request: Request):
     _require_auth(request)
@@ -1300,6 +1329,10 @@ async def trigger_verify(mode: str, request: Request):
         )
     if verifying:
         return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running safety check to finish", "Only one can run at a time")}, status_code=400)
+    if request.query_params.get("anyway") != "1":
+        ask = _backup_first_question(cfg, mode)
+        if ask:
+            return JSONResponse({"status": "backup_first", "detail": ask}, status_code=409)
     try:
         flow_run = await arun_deployment(
             name="integrity-audit/integrity-audit",

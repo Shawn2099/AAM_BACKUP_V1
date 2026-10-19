@@ -172,8 +172,8 @@ Step 2 - classifier
 - [x] T2.5 Failed-check text: "Press Check now to re-check once the cause is fixed"
 
 Step 3 - manual Check now
-- [ ] T3.1 Tests: 409 `backup_first` when the last backup is older than the stale limit, passes when recent, text action-first
-- [ ] T3.2 `ui.py` `trigger_verify` pre-check and the page's two buttons (Back up now / Check anyway)
+- [x] T3.1 Tests: 409 `backup_first` when the last backup is older than the stale limit, passes when recent, text action-first
+- [x] T3.2 `ui.py` `trigger_verify` pre-check and the page's two buttons (OK = check anyway, Cancel = back up first; new key `audit.backup_first_prompt_minutes`, default 60)
 
 Step 4 - prove on the box
 - [ ] T4.1 Full suite + audit lab green; deploy to the box

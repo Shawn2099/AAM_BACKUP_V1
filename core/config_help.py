@@ -257,6 +257,9 @@ HELP: dict[str, tuple[str, str]] = {
     "audit.retries_sleep_seconds": ("Wait between retries", ""),
     "audit.modify_window_seconds": ("Time difference treated as equal",
                                     "File times closer than this count as the same."),
+    "audit.backup_first_prompt_minutes": (
+        "Offer a backup before 'Check now' when the last backup is older than",
+        "Files changed since then are reported as waiting for the next backup, not as faults."),
     "audit.detail_max_paths": ("File names listed in a result", ""),
     "audit.network_error_patterns": ("Extra 'could not run' messages", "For the support team."),
 
