@@ -136,6 +136,31 @@ def _resolve_paths() -> None:
         logger.warning(f"Could not load config.yaml ({exc}) - using default paths and settings")
 
 
+def _config_mtime() -> float | None:
+    try:
+        from models.config import CONFIG_PATH
+        return Path(CONFIG_PATH).stat().st_mtime
+    except OSError:
+        return None
+
+
+def _reload_tunables(last_mtime: float | None) -> float | None:
+    """Re-read the `watchdog:` tunables when config.yaml changed, so a setting saved on the
+    dashboard applies on the next check (no service restart). A config that does not load
+    keeps the values in use. Returns the mtime to remember."""
+    mtime = _config_mtime()
+    if mtime == last_mtime:
+        return last_mtime
+    try:
+        from models.config import CONFIG_PATH, load_config
+        cfg = load_config(CONFIG_PATH)
+        _apply_config(cfg.watchdog, cfg.run_logs)
+        logger.info("config.yaml changed - watchdog settings reloaded")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Could not reload config.yaml ({exc}) - keeping the current settings")
+    return mtime
+
+
 def _configure_logging() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.remove()
@@ -523,7 +548,9 @@ def main() -> None:
 
     next_stale_check = time.monotonic()   # first check right at start (e.g. after a reboot)
 
+    config_mtime = _config_mtime()
     while True:
+        config_mtime = _reload_tunables(config_mtime)
         try:
             # Independent of the API state: a stale leg matters most when the
             # scheduler is broken.

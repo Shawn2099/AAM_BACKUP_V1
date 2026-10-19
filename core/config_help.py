@@ -183,6 +183,11 @@ HELP: dict[str, tuple[str, str]] = {
     "dashboard.link_cache_seconds": ("Look up the dashboard address in emails every", ""),
     "dashboard.config_refresh_seconds": ("Dashboard re-reads settings every", ""),
     "dashboard.trigger_wait_seconds": ("Wait for a started run", "Before the page answers; the run continues."),
+    "dashboard.apply_delay_seconds": ("Restart this long after pressing Apply", ""),
+    "dashboard.apply_force_exit_seconds": ("Force the restart if the service has not stopped after", ""),
+    "dashboard.apply_block_before_run_seconds": ("Refuse Apply when a run is due within", ""),
+    "dashboard.apply_reconnect_timeout_seconds": ("Wait for the restart for up to", ""),
+    "dashboard.apply_poll_seconds": ("Check whether the service is back every", ""),
     "dashboard.firewall_remote_addresses": ("Office PCs allowed to open the dashboard",
                                             "Windows Firewall addresses (LocalSubnet = the "
                                             "office network). Changed only on the server."),

@@ -34,7 +34,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import (admin_auth, approvals, config_edit, faults, fy_rollover, rollover_journal,
+from core import (admin_auth, app_restart, approvals, config_edit, faults, fy_rollover, rollover_journal,
                   statuses)
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
@@ -596,15 +596,16 @@ async def health():
     try:
         items = compute_attention(get_db(), _cfg())
     except Exception as e:  # noqa: BLE001
-        return JSONResponse({"status": "unknown",
+        return JSONResponse({"status": "unknown", "boot_id": app_restart.BOOT_ID,
                              "reasons": [f"health could not be evaluated ({type(e).__name__})"]},
                             status_code=503)
     red = [i["message"] for i in items if i["level"] == RED]
     warnings = [i["message"] for i in items if i["level"] != RED]
     if red:
-        return JSONResponse({"status": "attention", "reasons": red, "warnings": warnings},
-                            status_code=503)
-    return JSONResponse({"status": "healthy", "warnings": warnings})
+        return JSONResponse({"status": "attention", "boot_id": app_restart.BOOT_ID,
+                             "reasons": red, "warnings": warnings}, status_code=503)
+    return JSONResponse({"status": "healthy", "boot_id": app_restart.BOOT_ID,
+                         "warnings": warnings})
 
 
 @app.post("/trigger/cloud")
@@ -1014,7 +1015,12 @@ def get_settings(request: Request):
     admin = _is_admin(request)
     return {"admin": admin,
             "sections": config_edit.catalog(current, include_advanced=admin),
-            "effects": config_edit.EFFECT_TEXT}
+            "effects": config_edit.EFFECT_TEXT,
+            "pending_restart": _pending_restart_keys(),
+            "restart_requested": app_restart.restart_pending(),
+            "boot_id": app_restart.BOOT_ID,
+            "apply": {"poll_seconds": current.dashboard.apply_poll_seconds,
+                      "timeout_seconds": current.dashboard.apply_reconnect_timeout_seconds}}
 
 
 @app.post("/api/settings")
@@ -1040,6 +1046,82 @@ async def save_settings(request: Request):
                        f"{', '.join(c['key'] for c in result.changed)} (backup {result.backup})")
     return {"status": "saved" if result.changed else "unchanged", "changed": result.changed,
             "effects": result.effects, "backup": result.backup}
+
+
+def _pending_restart_keys() -> list[str]:
+    """Saved settings that only a restart of the backup service puts into effect: every
+    restart-effect change in the history newer than this process. Read from the database,
+    so it survives a page reload and is correct for every signed-in person."""
+    started = pendulum.parse(app_restart.STARTED_AT)
+    keys: set[str] = set()
+    for row in get_db().config_changes(limit=200):
+        try:
+            newer = pendulum.parse(row["changed_at"]) >= started
+        except Exception:  # noqa: BLE001 - an unreadable timestamp must not hide a change
+            newer = True
+        if newer and config_edit.effect_of(row["key"]) == config_edit.AGENT_RESTART:
+            keys.add(row["key"])
+    return sorted(keys)
+
+
+async def _prefect_busy_reason(due_within_s: int) -> str | None:
+    """Why the backup service must not be restarted now: ANY flow run (backup, audit,
+    rollover check, report) running or queued, or one due within `due_within_s`.
+    Prefect unreachable counts as busy (fail closed)."""
+    try:
+        async with get_client() as client:
+            runs = await client.read_flow_runs(
+                flow_run_filter=FlowRunFilter(
+                    state=FlowRunFilterState(
+                        type=FlowRunFilterStateType(
+                            any_=[StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]))),
+                limit=200)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Failed to query Prefect API: {e}")
+        return "the scheduler could not be asked whether a run is active"
+    horizon = datetime.now(timezone.utc) + timedelta(seconds=due_within_s)
+    for run in runs:
+        state = getattr(run, "state", None)
+        state_type = getattr(state, "type", None) or getattr(run, "state_type", None)
+        name = getattr(run, "name", None) or "a run"
+        if state_type in (StateType.RUNNING, StateType.PENDING):
+            return f"{name} is running"
+        nxt = getattr(run, "next_scheduled_start_time", None)
+        if nxt is None:
+            return f"{name} is about to start"
+        nxt = nxt if nxt.tzinfo else nxt.replace(tzinfo=timezone.utc)
+        if nxt <= horizon:
+            return f"{name} is due to start within {due_within_s // 60 or 1} minute(s)"
+    return None
+
+
+@app.post("/api/settings/apply")
+async def apply_settings(request: Request):
+    """Restart the backup service so saved settings that need it take effect.
+
+    Never queued: refused (409) while any backup / audit / rollover is running or about to
+    start, so a restart can never cut a run short."""
+    _require_settings_rights(request)
+    cfg = _cfg()
+    if app_restart.restart_pending():
+        return {"status": "restarting", "boot_id": app_restart.BOOT_ID}
+    pending = await run_in_threadpool(_pending_restart_keys)
+    if not pending:
+        return {"status": "nothing_to_apply", "boot_id": app_restart.BOOT_ID}
+    busy = _settings_lock_busy() or await _prefect_busy_reason(
+        cfg.dashboard.apply_block_before_run_seconds)
+    if busy:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Not applied - {busy}. Nothing was restarted; try again when it has finished.")
+    actor = _approval_actor(request)
+    get_db().record_config_change({
+        "changed_at": now_iso(), "changed_by": actor, "key": "service.restart",
+        "old_value": "''", "new_value": repr(", ".join(pending)), "risky": 0, "backup_file": ""})
+    app_restart.request_restart(delay_s=cfg.dashboard.apply_delay_seconds,
+                                force_exit_s=cfg.dashboard.apply_force_exit_seconds, actor=actor)
+    logger.warning(f"Apply changes by {actor}: restarting for {', '.join(pending)}")
+    return {"status": "restarting", "boot_id": app_restart.BOOT_ID, "applied": pending}
 
 
 @app.post("/api/settings/validate")

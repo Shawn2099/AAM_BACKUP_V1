@@ -957,6 +957,23 @@ class DashboardConfig(StrictModel):
         default=180, ge=0, le=600,
         description="A manual start waits this long for the run's first result before "
                     "answering (the run continues afterwards)")
+    apply_delay_seconds: int = Field(
+        default=2, ge=1, le=30,
+        description="'Apply changes' restarts the backup service this long after the page "
+                    "has been answered")
+    apply_force_exit_seconds: int = Field(
+        default=120, ge=30, le=600,
+        description="If the service has not stopped this long after 'Apply changes', it is "
+                    "ended (the service manager then starts it again)")
+    apply_block_before_run_seconds: int = Field(
+        default=120, ge=0, le=3600,
+        description="'Apply changes' is refused when a scheduled run is due within this time")
+    apply_reconnect_timeout_seconds: int = Field(
+        default=300, ge=60, le=1800,
+        description="The Settings page waits this long for the restarted service to answer")
+    apply_poll_seconds: int = Field(
+        default=3, ge=1, le=30,
+        description="The Settings page asks every this often whether the service is back")
 
     @field_validator("firewall_remote_addresses")
     @classmethod

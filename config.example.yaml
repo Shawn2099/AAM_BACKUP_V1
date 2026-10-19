@@ -292,6 +292,18 @@ dashboard:
   # A manual start waits this long for the run's first result before the page
   # answers; the run continues afterwards (0-600 seconds)
   trigger_wait_seconds: 180
+  # "Apply changes" on the Settings page restarts the backup service this long after
+  # the page has been answered (1-30 seconds)
+  apply_delay_seconds: 2
+  # If the service has not stopped this long after "Apply changes" it is ended; the
+  # service manager then starts it again (30-600 seconds)
+  apply_force_exit_seconds: 120
+  # "Apply changes" is refused when a scheduled run is due within this time (0-3600 seconds)
+  apply_block_before_run_seconds: 120
+  # The Settings page waits this long for the restarted service (60-1800 seconds)
+  apply_reconnect_timeout_seconds: 300
+  # ...and asks every this often whether it is back (1-30 seconds)
+  apply_poll_seconds: 3
 
 # ═══════════════════════════════════════════════════
 # EMAIL NOTIFICATIONS

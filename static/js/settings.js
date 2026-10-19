@@ -23,6 +23,9 @@ let scheduleTz = TZ;
 let currentTab = 'basic';
 let isAdmin = false;
 let adminMinutes = 30;
+let pendingRestart = [];   // saved settings waiting for "Apply changes"
+let bootId = '';
+let applyCfg = { poll_seconds: 3, timeout_seconds: 300 };
 
 function esc(text) {
     return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -285,7 +288,7 @@ function render() {
             const badges = [];
             if (f.locked) badges.push('<span class="tag badge-locked">changed only on the server</span>');
             if (f.risky) badges.push('<span class="tag badge-risky">important - asks you to confirm</span>');
-            if (f.effect === 'agent_restart' || f.effect === 'watchdog_restart') badges.push('<span class="tag badge-restart">needs a restart</span>');
+            if (f.effect === 'agent_restart') badges.push('<span class="tag badge-restart">applies with Apply changes</span>');
             const meta = [];
             if (f.ge != null || f.le != null) meta.push('allowed ' + (f.ge != null ? f.ge : '...') + ' to ' + (f.le != null ? f.le : '...') + (f.unit ? ' ' + f.unit : ''));
             if (!f.secret && f.default != null && f.default !== '' && f.widget !== 'schedule') {
@@ -556,6 +559,9 @@ async function loadSettings() {
         return;
     }
     isAdmin = !!data.admin;
+    pendingRestart = data.pending_restart || [];
+    bootId = data.boot_id || '';
+    applyCfg = data.apply || applyCfg;
     catalog = data.sections;
     fields = {}; original = {}; values = {}; localErrors = {}; serverOk = true;
     catalog.forEach(s => s.fields.forEach(f => {
@@ -569,6 +575,7 @@ async function loadSettings() {
     Object.values(fields).forEach(f => { if (f.widget === 'schedule') original[f.key] = values[f.key]; });
     showErrors({}, '');
     updateSaveButton();
+    renderApplyBar();
 }
 
 async function loadHistory() {
@@ -650,3 +657,63 @@ async function changePassword(ev) {
 
 loadSettings();
 loadHistory();
+
+
+// ── Apply changes: restart the backup service so saved schedule / on-off settings take effect ──
+function renderApplyBar() {
+    const bar = document.getElementById('apply-bar');
+    if (!bar) return;
+    bar.style.display = pendingRestart.length ? 'flex' : 'none';
+    const names = pendingRestart.map(k => (fields[k] || {}).label || k);
+    document.getElementById('apply-text').textContent = pendingRestart.length
+        ? (pendingRestart.length === 1 ? '1 saved change is waiting' : pendingRestart.length + ' saved changes are waiting')
+          + ' for a restart: ' + names.join(', ') + '.'
+        : '';
+}
+
+function showRestartOverlay(text) {
+    const o = document.getElementById('restart-overlay');
+    o.style.display = 'flex';
+    document.getElementById('restart-text').textContent = text;
+}
+
+async function applyChanges() {
+    if (!window.confirm('Restart the backup service now?
+
+It is only restarted when no backup, check or rollover is running. ' +
+        'The dashboard is unavailable for about a minute.')) return;
+    const btn = document.getElementById('btn-apply');
+    btn.disabled = true;
+    try {
+        const resp = await fetch('/api/settings/apply', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.status === 401) { window.location.href = '/login'; return; }
+        if (!resp.ok) { showToast(data.detail || ('Could not apply (HTTP ' + resp.status + ')'), 'error'); btn.disabled = false; return; }
+        if (data.status === 'nothing_to_apply') { showToast('Nothing is waiting to be applied.', 'info'); await loadSettings(); btn.disabled = false; return; }
+        await waitForRestart(bootId);
+    } catch (e) {
+        showToast('Could not apply: ' + e, 'error');
+        btn.disabled = false;
+    }
+}
+
+async function waitForRestart(oldBootId) {
+    showRestartOverlay('Restarting the backup service...');
+    const deadline = Date.now() + applyCfg.timeout_seconds * 1000;
+    while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, applyCfg.poll_seconds * 1000));
+        try {
+            const h = await fetch('/health', { cache: 'no-store' });
+            const body = await h.json().catch(() => ({}));
+            if (body.boot_id && body.boot_id !== oldBootId) {
+                showRestartOverlay('Back online. Loading the page...');
+                window.location.reload();
+                return;
+            }
+        } catch (e) { /* the service is down while it restarts */ }
+    }
+    document.getElementById('restart-overlay').style.display = 'none';
+    showToast('The backup service did not come back within ' + Math.round(applyCfg.timeout_seconds / 60) +
+        ' minutes. The dashboard warns you if it stays down; the support team can check the server.', 'error');
+    document.getElementById('btn-apply').disabled = false;
+}

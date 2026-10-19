@@ -60,15 +60,18 @@ _RISKY_KEYS = frozenset({
     "lan.shutdown_after_backup", "lan.shutdown_on_all_retries_exhausted",
 })
 
+# Read once when the backup service starts (serve.py / launch.py), not at every run.
+_START_ONLY_KEYS = frozenset({"cloud.enabled", "lan.enabled"})
+
 NEXT_RUN = "next_run"
 AGENT_RESTART = "agent_restart"
-WATCHDOG_RESTART = "watchdog_restart"
+WATCHDOG_RELOAD = "watchdog_reload"
 DASHBOARD = "dashboard"
 EFFECT_TEXT = {
     NEXT_RUN: "Takes effect from the next backup.",
-    AGENT_RESTART: "Takes effect after the backup service is restarted (on the server: "
-                   "deploy\\07_restart_services.bat).",
-    WATCHDOG_RESTART: "Takes effect after the watchdog service is restarted.",
+    AGENT_RESTART: "Takes effect when you press Apply changes (restarts the backup service).",
+    WATCHDOG_RELOAD: "The watchdog picks it up on its next check (log size and log "
+                     "retention: after the next server restart).",
     DASHBOARD: "The dashboard uses it within 5 minutes.",
 }
 
@@ -172,10 +175,11 @@ def is_risky(key: str) -> bool:
 
 def effect_of(key: str) -> str:
     section = key.split(".", 1)[0]
-    if section == "schedule":
+    # the scheduler registers its deployments (schedules, enabled legs) once, at start
+    if section == "schedule" or key in _START_ONLY_KEYS:
         return AGENT_RESTART
     if section == "watchdog":
-        return WATCHDOG_RESTART
+        return WATCHDOG_RELOAD
     if section == "dashboard":
         return DASHBOARD
     return NEXT_RUN
