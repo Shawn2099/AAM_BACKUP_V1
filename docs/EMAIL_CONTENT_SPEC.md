@@ -1,7 +1,8 @@
-# Email content specification (draft for owner review, 2026-10-18)
+# Email content specification (owner decisions 2026-10-18; updated 2026-10-19)
 
-Status: **APPROVED for build** (owner decisions D1-D6 answered 2026-10-18, see §9). Built
-test-first (plan §2 rules). Source of truth for every email the system sends.
+Status: **BUILT** (owner decisions D1-D6 answered 2026-10-18, see §9; attachment ladder, calendar
+report periods and the preview tool added 2026-10-19). Source of truth for every email the system
+sends. The file-list CSV (§5, item 3) is not built (post-MVP).
 
 Goal (owner, 2026-10-18): every email is easy for a non-technical person, says what to
 do, and carries enough evidence (fault code + logs) that, when it is forwarded to
@@ -258,7 +259,17 @@ Every PROBLEM / ACTION NEEDED / WARNING email carries:
 it ~6.8 MB on the wire, under the common 10 MB company limit and Gmail's 25 MB). If the zip would exceed it,
 it is left out and the support report says so and gives the folder path on the server.
 
-**Never attached / always removed:** the SMTP password, dashboard API key and admin hash, the Google key file and
+**Attachment ladder (built, plan B):** the mail server is asked what it accepts (RFC 1870 `SIZE` in the
+EHLO reply). The message is measured (base64 about 4/3) against min(server SIZE,
+`alerts.attachments_max_total_kb`) and sent with the richest rung that fits: **full** (support report +
+logs zip) -> **report only** -> **none** (the email says "Logs could not be attached; they are on the
+server at <path>"). A 5xx rejection of a message with attachments (552 too large, or a filter refusing
+the zip with 550/554) or a hang-up during DATA steps ONE rung down and resends at once, so an
+attachment problem can never stop an alert. The rung delivered is stored in
+`notifications.attachments_rung` and named in the "For support" block. Reports with a CSV use the
+same ladder.
+
+**Never attached / always removed:** the SMTP password, the dashboard password hashes, the Google key file and
 anything that looks like a private key or token (redaction pass on every attachment, with a test that plants each
 secret and checks it never appears).
 
@@ -454,7 +465,20 @@ Open items                        none   (or: "1 backup waiting for your decisio
 What to do: Nothing.   (or the steps of the open item)
 ```
 Then: per-leg table of every run of the period (not "last 10"), the CSV attachment, and the support line
-(server, version). Monthly = the previous calendar month (1st-last day), not "last 30 days".
+(server, version). Periods (plan C, `core/report_period.py`):
+- **Scheduled emails** = calendar periods, computed from the flow run's scheduled time: weekly = the
+  previous Monday-Sunday, monthly = the previous calendar month (IST).
+- **Dashboard downloads and the dashboard "send email" buttons** = the last 7 / 30 days up to now.
+- A problem counts as resolved when a later good run exists in the FULL history, not only inside the
+  period; rollover rows are not counted as backups; files are shown per leg, never summed across
+  legs; an integrity row is shown only for an enabled leg.
+- Every scheduled report is recorded in `notifications` (mode `report`); a failed delivery shows on
+  the dashboard.
+
+Previewing: `tools/preview_emails.py --to <address>` sends one sample of every email kind, fault
+code, reminder / RESOLVED, report, password notice and attachment rung through the real composer and
+transport with `[PREVIEW]` in the subject (no notification row, no cooldown); `--out <dir>` writes
+`.eml` files. Samples live in `core/email_samples.py` (a test fails when a fault code has none).
 
 ### 7.14 No backups recorded (retired)
 Replaced (plan C, P1): the weekly / monthly report is sent even when nothing ran; its subject and top banner say "action needed: <leg> - no backup ran" and the table row says "No backup ran in this period."

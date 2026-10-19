@@ -143,7 +143,7 @@ Until both exist the dashboard shows only "not set up" (nothing opens).
   (re-enter the Advanced password). Everyone else signed in with the old one is signed out, and
   the recipients get an INFO email (no password in it).
 * Forgotten: on the server, as administrator, run
-  `deploy	_reset_dashboard_passwords.ps1` (`-Which login` or `-Which admin` for just one).
+  `deploy\11_reset_dashboard_passwords.ps1` (`-Which login` or `-Which admin` for just one).
   No restart needed; the agent signs everyone out on its next config refresh
   (`dashboard.config_refresh_seconds`, 5 minutes by default).
 
@@ -154,7 +154,24 @@ dashboard login and the runtime/database paths can be changed there: the page
 checks the new values exactly like a service start before saving, asks you to
 type a confirmation for risky ones (paths, NAS, guards), backs up config.yaml
 and shows when the change applies (next run / after a service restart).
-Schedules apply after `deploy\07_restart_services.bat`.
+Changes that need a restart show an amber bar "N saved changes are waiting for a restart":
+press **Apply changes**. The agent restarts itself and NSSM starts it again (about 30 seconds);
+the page reconnects. It is refused while a backup is running or one is due within
+`dashboard.apply_block_before_run_seconds`, so press it in the daytime.
+`deploy\07_restart_services.bat` still works as the manual way.
+
+### Mail password and Google key
+
+* The installer (`06_install_services.ps1`) encrypts a plain `notifications.smtp_password` with
+  Windows DPAPI (machine scope; `deploy\encrypt_secrets.py`). Saving it in Settings encrypts it
+  too. `04_check_readiness.ps1` checks that it decrypts as the service account and as
+  LocalSystem (the watchdog sends the alert emails).
+* **Server lost / config.yaml copied to another server:** the encrypted password cannot be read
+  there. The mail password then loads empty and mail reports it: enter it again in Settings
+  (use Settings > "Send test email").
+* The Google key file stays a plain JSON file by decision; the installer restricts who can read
+  it (`deploy\lock_gcs_key.ps1`: SYSTEM, Administrators, the service account). Keep the original
+  key offline, outside the server, for disaster recovery.
 
 ## 8. First backups
 
@@ -193,6 +210,13 @@ back in `config.yaml` if you changed it.
       (not "missing files")
 - [ ] `sc stop AamBackupAgent` stops within ~3 min (no STOP_PENDING) and
       `backup.lock` is gone
+- [ ] Reboot mid-run (nobody at the NAS needed): the interrupted row becomes ABANDONED with ONE
+      email, the next run completes, no false guard block
+- [ ] FY rollover on a simulated date with the NAS off after the final backup: the new NAS
+      folder is created by the next LAN run, first new-FY night COMPLETE without approval
+- [ ] Password change in Settings > Advanced: other sessions signed out, INFO email received
+- [ ] Settings > Apply changes restarts the agent and the page reconnects (when no run is due)
+- [ ] Real NAS shutdown: ONLY with the owner next to the NAS
 - [ ] Restore test: `deploy\09_restore_from_gcs.bat` restores a sample folder;
       files open
 - [ ] 7 nights in a row with truthful results (dashboard vs run_logs)

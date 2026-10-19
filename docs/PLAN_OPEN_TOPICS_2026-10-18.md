@@ -576,10 +576,13 @@ copy of the file (backup, support zip, a mistaken commit - the GitHub repo is pu
   (no migration, D-16); tests.
 - [x] **S3** (code + tests; real-key proof at step 10) Google key encrypted; rclone via environment variable (verify with the real binary
   that `RCLONE_GCS_SERVICE_ACCOUNT_CREDENTIALS` works for sync / check / lsjson / size).
-- [ ] **S4** FY archive step: verify `rclone settier` on GCS with the real binary; switch to it
-  (removes the gcloud dependency) or temp-file fallback.
-- [ ] **S5** Installer encrypts the key file + SMTP password; readiness checks both decrypt as
-  the service account AND as LocalSystem; runbook DR section.
+- [x] **S4** (closed 2026-10-19) `rclone settier` does NOT work on GCS (tried on the real bucket).
+  The FY archive step stays on gcloud with the key as a file (58a61e0); `deploy/lock_gcs_key.ps1`
+  restricts the key. Still to prove under the service account: step 10.4.
+- [x] **S5** (owner 2026-10-19: the Google key is NOT encrypted, only the SMTP password)
+  Installer encrypts the SMTP password (`deploy/encrypt_secrets.py`, `core/secret_setup.py`);
+  readiness checks it decrypts as the service account (`probe_service_account.py`) AND as
+  LocalSystem (`probe_mail_secret.py`); runbook DR section. Proof on the box: step 10.4.
 
 ---
 
@@ -630,7 +633,7 @@ whole day folders; the support zip keeps the names. (No old-name compatibility n
 
 - [x] **10.1** (2026-10-19: unit 2364 passed; lab 242/3/1->fixed; independent review fixed in 10d3054) Full unit suite 0 failed; full audit lab 0 red; `/code-review` of the whole diff
   since 781cf01; findings fixed or triaged with the owner.
-- [ ] **10.2** Update `docs/ARCHITECTURE.md` (§10 gates, rollover journal, report model,
+- [x] **10.2** (2026-10-19) Update `docs/ARCHITECTURE.md` (§10 gates, rollover journal, report model,
   credentials, interruption), `docs/EMAIL_CONTENT_SPEC.md`, `config.example.yaml`,
   `docs/DEPLOY_RUNBOOK.md`.
 - [x] **10.3** (2026-10-19, see docs/DEPLOY_LOG_2026-10-19.md; agent account kept via -KeepServiceAccount) **Fresh install** on the box (D-16; full control): stop + uninstall the old services,

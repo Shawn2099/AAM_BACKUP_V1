@@ -394,6 +394,38 @@ if ($ServiceAccount) {
     Write-Host "       run as a dedicated account that also exists (same password) on the NAS."
 }
 
+# 18. Mail password readable by LocalSystem (the watchdog sends the alert emails; plan S5).
+# The agent account is covered by the probe above.
+if (Test-Path $venvPy) {
+    $sysResult = Join-Path $env:SystemRoot ("Temp\aam_mail_probe_" + [guid]::NewGuid().ToString("N") + ".txt")
+    $sysTask = "AAM_readiness_mail_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+    try {
+        $action = New-ScheduledTaskAction -Execute $venvPy -WorkingDirectory $ProjectDir `
+                  -Argument "`"$(Join-Path $ScriptDir 'probe_mail_secret.py')`" `"$cfg`" `"$sysResult`""
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Limited
+        Register-ScheduledTask -TaskName $sysTask -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+        $started = Get-Date
+        Start-ScheduledTask -TaskName $sysTask -ErrorAction Stop
+        $deadline = $started.AddMinutes(2)
+        do {
+            Start-Sleep -Seconds 2
+            $state = (Get-ScheduledTask -TaskName $sysTask).State
+            $info = Get-ScheduledTaskInfo -TaskName $sysTask
+        } while (($state -eq "Running" -or $info.LastRunTime -lt $started) -and (Get-Date) -lt $deadline)
+        if (Test-Path $sysResult) {
+            $parts = (Get-Content $sysResult -TotalCount 1) -split ' ', 2
+            Check-Item "as LocalSystem" $parts[1] ($parts[0] -ne "OK")
+            Remove-Item $sysResult -Force -ErrorAction SilentlyContinue
+        } else {
+            Check-Item "as LocalSystem" "the mail password probe produced no result (exit $($info.LastTaskResult))" $true
+        }
+    } catch {
+        Check-Item "as LocalSystem" "could not run the mail password probe as LocalSystem: $_" $true
+    } finally {
+        Unregister-ScheduledTask -TaskName $sysTask -Confirm:$false -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host ""
 if ($passed) {
     Write-Host ">>> SUCCESS: All readiness checks passed! You may proceed to 05_test_config.bat." -ForegroundColor Green

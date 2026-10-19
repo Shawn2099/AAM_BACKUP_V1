@@ -51,6 +51,9 @@ def run_checks(config_path: str) -> list[tuple[str, str, str]]:
         return results
     results.append(("OK", "config", f"{config_path} is valid (schedule fits the run budgets)"))
 
+    from core import secret_setup
+    check("mail password", lambda: secret_setup.check_smtp_password(config.notifications))
+
     def runtime_write() -> str:
         runtime = Path(config.paths.runtime_dir)
         probe = runtime / f".aam_account_probe_{uuid.uuid4().hex}"

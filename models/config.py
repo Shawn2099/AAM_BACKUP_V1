@@ -886,7 +886,9 @@ class DashboardConfig(StrictModel):
     public_url: str = Field(
         default="",
         description="Dashboard address put into attention emails (e.g. "
-                    "http://backup-server:8080). Empty = http://<bind_address>:<port>.",
+                    "http://backup-server:8080). Empty = automatic: with bind_address "
+                    "0.0.0.0 the office address of this server is detected for every email, "
+                    "otherwise http://<bind_address>:<port>.",
     )
     # Owner 2026-10-18: office network only, never public. The installer opens
     # the dashboard port in Windows Firewall to these remote addresses only.

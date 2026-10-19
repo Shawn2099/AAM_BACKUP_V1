@@ -1,8 +1,10 @@
 # AAM Backup Automation — How the program works
 
-**State described:** branch `mvp-hardening` @ M1 complete + M2 building blocks (2026-10-14).
-Items marked **[built, not wired yet]** exist as tested modules but are not yet called by the
-flow — they are wired in during M2/M3 (see `MVP_HARDENING_PLAN.md` §13).
+**State described:** branch `mvp-hardening`, all development groups of
+`docs/PLAN_OPEN_TOPICS_2026-10-18.md` built and wired (2026-10-19). Everything in `core/` is
+called by the flows or the dashboard; the old "built, not wired yet" markers are gone.
+Sections 5.2 (rollover journal), 5.3 (report model), 5.6 (interruption), 5.7 (emails) and
+5.8 (passwords and secrets) describe the open-topics work.
 
 Reading guide: §1 big picture → §2 schedules → §3 the nightly backup step by step →
 §4 every decision point (where you tune logic) → §5 the other flows → §6 file-by-file map →
@@ -49,10 +51,14 @@ pass for a backup to run, to count as successful, and to be verified.**
 |---|---|---|---|
 | `aam-backup/backup-cloud` | `backup(mode="cloud")` | `0 18 * * *` | rclone sync to GCS + size check |
 | `aam-backup/backup-lan` | `backup(mode="lan")` | `0 1 * * *` | WoL → robocopy /MIR to NAS → shutdown |
-| `weekly-report/weekly-report` | `weekly_report_flow` | `0 8 * * MON` | email 7-day summary + CSV |
-| `monthly-report/monthly-report` | `monthly_report_flow` | `0 8 1 * *` | email 30-day summary + CSV |
-| `rollover-check/rollover-check` | `rollover_check_flow` | `0 6 * * *` | **log retention** + FY rollover on April 1 |
-| `integrity-audit/integrity-audit` | `integrity_audit_flow(mode="all")` | `0 3 * * SUN` | hash-level source↔backup audit |
+| `weekly-report/weekly-report` | `weekly_report_flow` | `0 8 * * MON` | email report of the previous calendar week (Mon-Sun) + CSV |
+| `monthly-report/monthly-report` | `monthly_report_flow` | `30 8 1 * *` | email report of the previous calendar month + CSV |
+| `rollover-check/rollover-check` | `rollover_check_flow` | `0 6 * * *` | **log retention** + the FY rollover resumer (§5.2) |
+| `integrity-audit/integrity-audit` | `integrity_audit_flow(mode="all")` | `0 10 * * SUN` | hash-level source↔backup audit |
+
+The crons above are the model defaults. The trial box runs cloud at 02:00 and LAN at 21:00.
+At load, `core.budget.schedule_problems` refuses a schedule whose run budgets could overlap
+(§8 `budget`).
 
 All backup-type work (cloud, LAN, audit) takes ONE global slot: Prefect concurrency limit
 `aam-backup` (limit 1, created by `launch._ensure_concurrency_limit`) + the PID file
@@ -223,24 +229,55 @@ with _backup_slot:
 ```
 
 ### 5.2 `rollover_check_flow` — daily 06:00
+The rollover is a **persisted, resumable step journal** (saga): table `rollover_journal` +
+`rollover_journal_steps` (one journal per `from_fy`→`to_fy`; per step a state `pending / done /
+failed / skipped`, attempts, last error, `first_failed_at`). Step vocabulary and rules are pure
+data in `core/rollover_journal.py`; the step functions are in `core/fy_rollover.py`; the resumer
+is `flow._rollover_resume`.
 ```
 log_retention_task(config)          purge run_logs (run_logs.retention_days)
                                     + NSSM service logs (run_logs.service_log_retention_days)
-fy_rollover.rollover()
-  detect_rollover (FY leaf != date FY)  → no: return
-  run_final_backup  (run_cloud_sync + run_lan_sync to OLD FY)  — NOT in the slot today (WP11)
-  run_archive_transition (gcloud: old FY → ARCHIVE class)
-  create_new_fy_folders (source + NAS + canary)
-  update_config_yaml (atomic, ruamel keeps comments)
-RolloverError → alert + FAILED
+rollover_incomplete() FIRST         an open journal is resumed before anything is classified
+                                    (after the switch config already says the new FY)
+else classify: only exactly the next FY on the clock proof; clock behind / unproven →
+               CLK-03 / ROL-03; a jump of more than one FY → approval card
+steps, in order (each idempotent):
+  1 final_backups   final backup of the closing FY on every enabled leg through the normal
+                    pipelines (own slot hold; the LAN one does NOT shut the NAS down), then G6.
+                    A retry that still has to switch repeats this step first (D-17).
+  2 source_folder   new source FY folder + placeholder file (exist_ok)
+  3 nas_folder      NAS woken / SMB ready as in the LAN leg, new NAS FY folder + mount marker
+  4 config_switch   compare-and-set inside config_transaction: at from_fy → switch; already at
+                    to_fy → done; anything else → refuse (ROL-04). Validate, restore on failure.
+  5 archive         old FY objects to ARCHIVE (gcloud, key as a file; §5.8). Failure = ROL-05,
+                    retried every morning, ACTION_REQUIRED after rollover.archive_alert_after_days
+  6 nas_shutdown    only if configured and the NAS step was reached
+  7 announce        INFO email; says "nothing to do" only when every step is finished
+BLOCKING steps (1, 2, 4) stop the run on failure; the others do not (a NAS that is off must not
+stop the switch - the cloud protects the new FY from day 1). A pending nas_folder is completed by
+the next LAN pipeline (`_complete_pending_rollover_nas_folder`, before the guards, only when the
+config already points at the new folder and the share root exists).
+Rows: ROLLOVER_RUNNING (swept as ABANDONED after a crash), ROLLOVER_COMPLETE, ROLLOVER_FAILED
+(never counted as a backup's "last success"). Dashboard: Settings > FY rollover step card.
 ```
-`launch.main()` also calls `rollover()` once at agent start (removed in WP11).
 
 ### 5.3 Reports — `weekly_report_flow` / `monthly_report_flow`
+One model, many renderers.
 ```
-notifications.*_enabled? → core/report.send_weekly_report / send_monthly_report
-   → generate_report_html (counts via core/statuses) + CSV of run_history → SMTP
+ReportPeriod (core/report_period.py)   IST start/end, label, kind
+   scheduled emails:  previous_week() / previous_month(), computed from the flow run's
+                      SCHEDULED time (a report sent late still covers the right period)
+   dashboard download + "send email" buttons:  last_days(7) / last_days(30), up to now
+ManifestDB.get_runs_between(start, end)
+report.build_report_model(...)         per-leg backup totals (backup modes only, rollover rows
+                                       excluded), last good copy, problems with "resolved"
+                                       checked against the FULL history, latest audit per
+                                       ENABLED leg, open decisions, data copied per leg
+render_report_html / CSV / subject     render the model only
 ```
+An empty period still reports ("action needed: no backup ran"). Scheduled report emails are
+recorded in `notifications` (mode `report`, excluded from incident threading and the banner), so
+a failed delivery is visible on the dashboard. Status meaning always comes from `core/statuses`.
 
 ### 5.4 Dashboard — `ui.py` (thread inside the agent)
 ```
@@ -272,6 +309,68 @@ All tunables: config `watchdog:`. Own log: logs/watchdog_app.log.
 Every CRITICAL → core.notify (ACTION_REQUIRED, mode watchdog) → red banner
 until a RECOVERED notification follows.
 ```
+
+### 5.6 Interruption — a reboot or power cut mid-run resumes on the next run
+- The `aam-backup` slot is a Prefect concurrency lease (300 s, renewed while held): a dead process
+  frees it by itself. `backup.lock` holds `PID:create_time`; a dead owner is not honoured.
+- robocopy runs with `/Z` (restartable), GCS uploads are atomic, so the next run continues.
+- `backup_repository.sweep_abandoned_runs` (agent start and every pipeline start) marks a RUNNING
+  row whose owner process is dead as ABANDONED and sends ONE email (wording per mode: backup,
+  audit, "FY rollover interrupted").
+- The run budget counts from the flow run's SCHEDULED start (`core/budget.RunBudget`; manual runs
+  from the actual start). A run Prefect starts late (e.g. 09:30 after a reboot) gets only what is
+  left; nothing left → `*_MISSED` row + WARNING email, the next night continues. Several missed
+  nights give one `missed:<leg>` incident, not one email per night. Rollover final backups count
+  from their own start; report flows have no budget.
+- Proven with real tools in the audit lab (W22: hard-kill mid-sync, mid-audit, mid-rollover).
+
+### 5.7 Emails — `core/notify.py`, `core/email_compose.py`, `core/support_bundle.py`
+```
+producer (flow, watchdog, rollover, reports, password change)
+  → faults.coded(...)  fault code (never parsed from text)
+  → email_compose      severity + what happened + "Is my data safe?" + numbered steps + next run
+                       (IST) + dashboard link + "For support" block
+  → notify.send        cooldown / incident threading (key + fault code), record in `notifications`
+  → _smtp_session      connect, EHLO, read the RFC 1870 SIZE limit
+  → attachment ladder  full (support report + logs zip) → report only → none, sized to
+                       min(server SIZE, alerts.attachments_max_total_kb); a 5xx or a hang-up
+                       during DATA steps ONE rung down and resends at once; the rung delivered
+                       is stored in `notifications.attachments_rung`
+```
+- ACTION_REQUIRED / RECOVERED / INFO are never silenced by `alerts.send_on_failure`.
+- The dashboard link is resolved per email (`core/netinfo.py`: default-route address, else the
+  route to the NAS, else the host name; never 127.x / 169.254.x / 0.0.0.0; cached
+  `dashboard.link_cache_seconds`). A manual `dashboard.public_url` that differs from the detected
+  address makes readiness and the watchdog amber.
+- `core/email_samples.py` holds one sample per email kind and fault code; `tools/preview_emails.py
+  --to <address>` sends them through the real composer and transport marked `[PREVIEW]`.
+- Wording for every email: `docs/EMAIL_CONTENT_SPEC.md`.
+
+### 5.8 Passwords and secrets
+- **Two dashboard passwords** (sign-in always on): `dashboard.login_password_hash` (dashboard)
+  and `dashboard.admin_password_hash` (Advanced settings), PBKDF2-SHA256 600k, stored only as
+  hashes. Changed in Settings > Advanced > Passwords (current Advanced password required, INFO
+  email); set at install by `deploy/set_dashboard_passwords.py`; forgotten →
+  `deploy/11_reset_dashboard_passwords.ps1` on the server. Sessions carry a fingerprint of the
+  hash they were opened with and are checked against the current config, so a change or a reset
+  signs everyone else out. No hash = a "not set up" page (fail closed). No API key, no
+  `X-API-Key` header. `/health` is unauthenticated.
+- **config.yaml is written by one locked writer**: `core/config_file.config_transaction` (cross
+  process `filelock` beside the file, backup, atomic replace with bounded retry, reload and
+  validate, restore on failure). Dashboard settings, password changes, the rollover switch and
+  the installer all use it.
+- **SMTP password**: encrypted with Windows DPAPI, machine scope (`core/secrets.py`,
+  `dpapi:<base64>` in config.yaml, decrypted in memory by the model, never written back plain).
+  The installer runs `deploy/encrypt_secrets.py` (`core/secret_setup.py`) which encrypts a plain
+  value; Settings encrypts on save. Readiness checks it decrypts as the service account
+  (`probe_service_account.py`) and as LocalSystem (`probe_mail_secret.py`, the watchdog sends the
+  alerts). A copy of config.yaml on another server cannot be decrypted: the mail password loads
+  empty and mail reports it; enter it again in Settings.
+- **Google key**: stays a PLAIN JSON file (owner decision 2026-10-19). `deploy/lock_gcs_key.ps1`
+  (run by the installer) leaves read access only to SYSTEM, Administrators and the service
+  account. `core/gcs_key.py` can read a `.dpapi` copy but the installer does not create one.
+  The FY archive step cannot use `rclone settier` (not supported on GCS); it runs gcloud with the
+  key as a file (`CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`), config in `<runtime>/gcloud`.
 
 ---
 
@@ -318,11 +417,20 @@ until a RECOVERED notification follows.
 | `logging.py` | loguru setup + Prefect bridge | flows |
 | `time_utils.py` | IST time, FY prefix, cron text | many |
 | `hashing.py` | md5 helpers | tests/legacy |
-| `notify.py` | **[built, not wired yet]** single alert path, delivery recorded, cooldown | (WP8) |
-| `guards.py` | G1–G4 wired via `flow.lan_guards_task` / `cloud_guards_task` (2.2); `enforce`, `GuardBlocked`, `max_delete_allowance`, `require_source_files`; G5 not wired yet | (M2 2.3 for G5) |
+| `notify.py` | single alert path: cooldown, incident threading, delivery recorded, SMTP session + attachment ladder, dashboard link | flow, watchdog, report, ui |
+| `guards.py` | G1–G5 (`enforce`, `GuardBlocked`, `max_delete_allowance`, `require_source_files`, mount marker) | `flow.lan_guards_task` / `cloud_guards_task` |
 | `approvals.py` | approval decisions: statuses PENDING/APPROVED/DISMISSED/USED/SUPERSEDED, `request_phrase`, `evaluate_request`, `evaluate_approval`; storage in `ManifestDB` (`approvals` table) | `flow._apply_approval`, `flow._open_block_request`, `ui` |
-| `smb_ready.py` | **[built, not wired yet]** NAS readiness | (M2 2.5) |
-| `rclone_errors.py` | **[built, not wired yet]** transport-failure classifier | (WP7) |
+| `smb_ready.py` | NAS readiness (port 445 + share) | LAN pipeline, rollover `nas_folder` |
+| `rclone_errors.py` | transport-failure classifier (TLS/DNS/AUTH/NETWORK/LISTING) | integrity, cloud probe |
+| `rollover_journal.py` | rollover step vocabulary and rules (pure data) | `fy_rollover`, `flow._rollover_resume` |
+| `report_period.py` | `ReportPeriod` (calendar and rolling periods, IST) | `report`, `ui`, report flows |
+| `faults.py` | fault codes (AAM-xxx-nn) at raise sites | everything that alerts |
+| `email_compose.py`, `email_samples.py`, `support_bundle.py` | email layout, one sample per kind, support report + logs zip | `notify`, `tools/preview_emails.py` |
+| `admin_auth.py`, `password_setup.py` | PBKDF2 hashes, the two passwords, sessions | `ui`, `deploy/set_dashboard_passwords.py` |
+| `config_file.py`, `config_edit.py`, `config_help.py` | the locked config writer; settings catalog / validation / history; plain-language help | `ui`, `fy_rollover`, installer |
+| `secrets.py`, `secret_setup.py`, `gcs_key.py` | DPAPI; mail password encryption + readiness check; Google key reader | model, installer, probes, `rclone_config` |
+| `netinfo.py`, `attention.py`, `night_strip.py`, `app_restart.py` | dashboard address; banner and `/health`; 30-night strips; "Apply changes" restart | `notify`, `ui` |
+| `audit_pending.py`, `budget.py` | audit "newer files wait for the next backup"; run budgets and the schedule proof | `integrity`, `flow`, `models.config` |
 
 `models/config.py` — every setting, validated (pydantic, unknown keys rejected).
 `test_support/` — test-only: sandbox config, fake tool runner, real SMTP test server.
@@ -336,7 +444,9 @@ until a RECOVERED notification follows.
 | `manifest.db` › `run_history` | one row per leg run: status, exit, files/bytes, error (bounded), extended_metrics JSON (stage timings, artefacts_dir) | `flow._record_run` | ui, reports, `last_successful_run` |
 | `manifest.db` › `file_entries` | per-file state per leg | record tasks | metrics, dashboard counts |
 | `manifest.db` › `integrity_audits` | weekly audit verdicts | audit flow | ui, reports |
-| `manifest.db` › `notifications` | every alert outcome | `core/notify` (WP8) | dashboard (WP9) |
+| `manifest.db` › `notifications` | every alert and report email outcome: fault code, thread, attachment rung | `core/notify` | dashboard, banner |
+| `manifest.db` › `approvals`, `config_changes` | approval requests and decisions; every settings change | `core/approvals`, `core/config_edit` | dashboard |
+| `manifest.db` › `rollover_journal`, `rollover_journal_steps` | the FY rollover steps and their state | `core/fy_rollover`, `flow` | the daily resumer, dashboard step card |
 | `run_logs\<day>\<date>_<HHmm>_<leg>_<short id>\` | FULL rclone/robocopy logs + `manifest.json`, gzip > `run_logs.compress_after_kb` | tool_runner / run_artefacts | operator, dashboard link |
 | `logs\backup_YYYY-MM-DD.log` | app log (loguru) | all flows | operator |
 | `logs\*_svc*.log` | NSSM stdout/stderr per service | NSSM | operator |
@@ -357,7 +467,8 @@ until a RECOVERED notification follows.
 | `budget` | per-job run budgets `cloud/lan/audit_max_hours` (from job start, slot wait included) + `cloud_verify_reserve_minutes`, `lan_post_reserve_minutes`. The long steps get `RunBudget.cap(...)`: cloud upload = rclone `--max-duration`, robocopy / checks = timeout. Budget stop = `*_PARTIAL` + `budget_stopped` (cloud: not verified, not recorded as bucket state), audit = `AUDIT_INCOMPLETE`; `extended_metrics.budget` on every run. Manual override: `backup(budget_hours=...)` | flow, core/budget |
 | `notifications` | SMTP host/port/security/auth/timeout/retries, recipients, enable flags | report, notify |
 | `alerts` | cooldown, body/attachment size | notify |
-| `dashboard` | auth, api key, bind, port, `public_url` (used in emails) | ui, notify |
+| `dashboard` | the two password hashes, bind, port, `public_url` (empty = auto), session/rate-limit/refresh, "Apply changes" timings, history nights | ui, notify |
+| `rollover` | `archive_alert_after_days` | fy_rollover |
 | `maintenance` | DB retention, log retention, SQLite busy/vacuum/sync, slot wait | manifest, flow |
 | `health` | clock skew limit/timeout, `ntp_server`, `w32tm_timeout_seconds`, `clock_unverified_policy`, min free source GB, rollover gcloud timeouts | health, fy_rollover |
 | `run_logs` | full-log folder, retention 90 d, compression, min free GB, service-log retention | run_artefacts, flow |
@@ -366,18 +477,18 @@ until a RECOVERED notification follows.
 
 ---
 
-## 9. What changes next (so you can review logic before it lands)
+## 9. Not built (post-MVP) and accepted risks
 
-1. **M2 wiring** — guards G1–G5 run in preflight before any transfer; a BLOCK writes
-   `*_BLOCKED`, emails "open the dashboard", and the dashboard shows Approve/Dismiss;
-   approval re-runs the deployment once. Readiness check replaces the 2 s probe. Rollover
-   runs inside the slot, forward-only. Preflight checks `/ZB` privilege + destination write.
-2. **M3 truth** — one terminal-status function (no success row on a failed run),
-   metrics from rclone/robocopy's own counters, "Size check" wording, audit
-   `AUDIT_INCOMPLETE` for network failures, one alert per failure via `core/notify`,
-   dashboard staleness banner + truthful `/health`.
-3. **M4 operations** — shutdown verified, clock tri-state, watchdog restart order,
-   schedule/time-budget validation, installer runs services as a dedicated account.
+- Not built: file-list CSV attachment, separate recipient lists, "test mail settings before
+  saving", HTTPS for the dashboard (plain HTTP on the office network, firewall `LocalSubnet`),
+  Postgres for Prefect (the SQLite `database is locked` messages are accepted), the LAN leg on
+  rclone, an approval for the clock-check "block" policy (it stays a FAILED backup), the weekly
+  "backup first" audit chain, encryption of the Google key file.
+- Accepted by the owner: ransomware versus the LAN mirror, GCS lifecycle keeping about 2
+  versions, locked files (no VSS), no alert when the whole server is down, the size-only daily
+  cloud check, the Google key readable by SYSTEM / Administrators / the service account.
+- The guards, approvals, truthful statuses and operations work (M2-M4) are described in
+  §3, §4 and §10.
 
 ---
 
@@ -480,7 +591,8 @@ own completed summary; content verification is the weekly audit (V3).
 | # | Condition | Today | Plan |
 |---|---|---|---|
 | R1 | Source/NAS paths end in a 2-digit FY folder (`FY26-27`); otherwise rollover is permanently off | yes | — |
-| R2 | Rollover happens when that FY differs from the FY of today's date (IST, April 1 boundary) | yes — **also rolls backwards if the clock is behind** | only exactly the next FY; anything else BLOCKED + approval (WP11) |
-| R3 | Final backup of the closing FY must succeed on every enabled leg (cloud COMPLETE/NO_CHANGES, LAN COMPLETE), else `ROLLOVER_BLOCKED` alert, retried daily | yes — but **outside the backup slot** | runs through the normal pipelines inside the slot (WP11) |
-| R4 | Archive the old FY in GCS (`gcloud ... --storage-class=ARCHIVE`) | best effort, 600 s | timeout from config; failure = warning + dashboard flag |
-| R5 | Create the new FY folder on source + NAS (+ canary on NAS); rewrite `config.yaml` atomically | yes (NAS failure tolerated) | + placeholder file in the new source folder; config backup first |
+| R2 | Rollover happens when that FY differs from the FY of today's date (IST, April 1 boundary) | only exactly the next FY on a proven clock; clock behind (CLK-03), not proven (ROL-03) or a jump of more than one FY (G6 → approval card) stop it | done |
+| R3 | Final backup of the closing FY must succeed on every enabled leg (cloud COMPLETE/NO_CHANGES, LAN COMPLETE) + G6, else the step fails (ROL-01/02), retried daily; the LAN one does not shut the NAS down | through the normal pipelines inside the slot; a retry repeats it (D-17) | done |
+| R4 | Archive the old FY in GCS (gcloud, key as a file, `ARCHIVE` class) | failure = ROL-05 WARNING, retried every morning, ACTION_REQUIRED after `rollover.archive_alert_after_days` | done |
+| R5 | New source FY folder + placeholder; NAS folder + mount marker; `config.yaml` switched by compare-and-set under the config lock (backup, validate, restore on failure) | each step journaled and resumable; a failure before the switch = ROL-04 ACTION_REQUIRED; a NAS that is off does not stop the switch (the next LAN pipeline completes the folder) | done |
+| R6 | Every step state is persisted (`rollover_journal`); a crash is swept as ABANDONED; the INFO email says "nothing to do" only when every step is finished | — | done |

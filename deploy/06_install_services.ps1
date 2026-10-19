@@ -183,6 +183,19 @@ if ($pwExit -ne 0) {
     exit 1
 }
 
+# -- Mail password (plan S5) ------------------------------------------
+# A plain notifications.smtp_password is encrypted with Windows DPAPI (machine scope: the agent,
+# the watchdog and this installer can all read it; a copy of config.yaml elsewhere cannot).
+# The Google key file stays plain on purpose (owner decision); lock_gcs_key.ps1 restricts it.
+Push-Location $ProjectDir
+& $VenvPython (Join-Path $ProjectDir "deploy\encrypt_secrets.py") --config $ConfigFile
+$secExit = $LASTEXITCODE
+Pop-Location
+if ($secExit -ne 0) {
+    Write-Host "  ERROR: the mail password was not encrypted. Re-run this installer. Services were NOT changed." -ForegroundColor Red
+    exit 1
+}
+
 # -- Service account (agent only) -------------------------------------
 # AamBackupAgent touches the NAS, so it runs as the dedicated account.
 # AamPrefectServer (local API) and AamWatchdog (must stop/start services,
