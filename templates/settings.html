@@ -75,8 +75,22 @@ Every change is still checked like a service start before it is saved.</div>
 <div id="restart-overlay" role="status" aria-live="polite">
     <div id="restart-text">Restarting...</div>
 </div>
+<dialog id="review-dialog" aria-labelledby="review-title">
+    <h2 id="review-title">Review your changes</h2>
+    <p class="hint" id="review-intro">Nothing is saved until you press Save changes.</p>
+    <ul id="review-list"></ul>
+    <div id="review-confirm" hidden>
+        <label for="review-phrase">Some of these changes are important. Type <code id="review-word">APPROVE</code> to save them.</label>
+        <input type="text" id="review-phrase" autocomplete="off" placeholder="APPROVE">
+    </div>
+    <p class="load-error" id="review-error" role="alert"></p>
+    <div class="review-actions">
+        <button type="button" class="btn-secondary" id="review-cancel" onclick="closeReview()">Cancel</button>
+        <button type="button" class="btn-trigger" id="review-ok" onclick="confirmReview()">Save changes</button>
+    </div>
+</dialog>
 <div id="savebar">
-    <button class="btn-trigger" id="btn-save" disabled onclick="saveSettings()">No changes</button>
+    <button class="btn-trigger" id="btn-save" disabled onclick="reviewAndSave()">No changes</button>
     <button class="btn-secondary" id="btn-reset" onclick="discardChanges()">Discard changes</button>
     <button class="btn-secondary" id="btn-test-email" onclick="sendTestEmail()" title="Uses the saved mail settings">Send test email</button>
     <div><div id="save-note"></div><div id="general-error"></div></div>

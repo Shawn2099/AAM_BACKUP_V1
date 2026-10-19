@@ -231,7 +231,7 @@ def _field_entry(key: str, info, value) -> dict:
         "description": (info.description or "").strip(),
         "default": None if secret or default is ... or repr(default) == "PydanticUndefined"
         else default,
-        "risky": is_risky(key), "secret": secret, "locked": key in LOCKED,
+        "risky": is_risky(key), "note": note_for(key), "secret": secret, "locked": key in LOCKED,
         "effect": effect_of(key), "effect_text": EFFECT_TEXT[effect_of(key)],
         "widget": _widget(key, kind),
         "level": "basic" if key in BASIC_KEYS else "advanced",
@@ -292,9 +292,35 @@ def _known_keys() -> set[str]:
 
 
 def confirmation_phrase(risky_keys: list[str]) -> str:
-    if len(risky_keys) == 1:
-        return f"CHANGE {risky_keys[0]}"
-    return f"CHANGE {len(risky_keys)} SETTINGS"
+    """What is typed to save an important setting: one word, as for every approval."""
+    return approvals.APPROVE_PHRASE
+
+
+# Not dangerous, but worth a second look before saving: shown with a note in the review dialog.
+_NOTABLE_NOTES = (
+    (lambda k: k.startswith("schedule."), "Changes when backups and reports run."),
+    (lambda k: k.startswith("budget."), "Changes how long a backup or check may run."),
+    (lambda k: k in ("notifications.recipients", "notifications.sender", "notifications.smtp_host",
+                     "notifications.smtp_port", "notifications.smtp_username",
+                     "notifications.smtp_password", "notifications.smtp_security"),
+     "Changes who receives alerts and how they are sent. Send the test email afterwards."),
+    (lambda k: k.startswith("notifications."), "Changes which emails are sent."),
+)
+_RISKY_NOTES = (
+    (lambda k: k.split(".", 1)[0] in ("guards", "approvals"), "Changes a data-safety check."),
+    (lambda k: k.startswith(("wol.", "lan.shutdown")), "Changes how the NAS is switched on or off."),
+    (lambda k: k.startswith("paths."), "Changes what is backed up or where it is stored."),
+    (lambda k: k.startswith(("cloud.", "lan.")), "Changes where a copy is stored or whether it runs."),
+    (lambda k: k.startswith("notifications."), "Switches off failure emails."),
+)
+
+
+def note_for(key: str) -> str:
+    """One plain sentence on why a change matters ('' for an ordinary setting)."""
+    for test, text in (_RISKY_NOTES if is_risky(key) else _NOTABLE_NOTES):
+        if test(key):
+            return text
+    return "Changes a data-safety setting." if is_risky(key) else ""
 
 
 def _validation_messages(err: ValidationError) -> list[dict]:

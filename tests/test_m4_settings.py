@@ -128,14 +128,14 @@ class TestApply:
         with pytest.raises(ce.ConfigEditError) as e:
             _apply(cfg_file, {"paths.lan_destination": new})
         assert e.value.status == 409
-        assert e.value.extra["confirm_phrase"] == "CHANGE paths.lan_destination"
-        _apply(cfg_file, {"paths.lan_destination": new}, phrase="CHANGE paths.lan_destination")
+        assert e.value.extra["confirm_phrase"] == "APPROVE"
+        _apply(cfg_file, {"paths.lan_destination": new}, phrase="APPROVE")
         assert load_config(str(cfg_file)).paths.lan_destination == new
 
     def test_several_risky_changes_need_a_count_phrase(self, cfg_file):
         with pytest.raises(ce.ConfigEditError) as e:
             _apply(cfg_file, {"guards.max_delete_files": 100, "guards.max_delete_percent": 5})
-        assert e.value.extra["confirm_phrase"] == "CHANGE 2 SETTINGS"
+        assert e.value.extra["confirm_phrase"] == "APPROVE"
 
     def test_secret_is_write_only(self, cfg_file, db):
         assert _apply(cfg_file, {"notifications.smtp_password": ""}, db=db).changed == []
@@ -220,7 +220,7 @@ class TestEndpoints:
         assert r.status_code == 400 and r.json()["errors"][0]["key"] == "wol.wake_timeout_seconds"
         r = rig.client.post("/api/settings", headers=KEY,
                             json={"changes": {"guards.max_delete_files": 100}})
-        assert r.status_code == 409 and r.json()["confirm_phrase"] == "CHANGE guards.max_delete_files"
+        assert r.status_code == 409 and r.json()["confirm_phrase"] == "APPROVE"
 
     def test_saving_refused_until_the_passwords_are_set_up(self, rig):
         rig.cfg.dashboard.login_password_hash = ""

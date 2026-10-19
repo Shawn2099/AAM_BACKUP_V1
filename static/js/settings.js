@@ -489,8 +489,9 @@ async function serverValidate(c) {
         if (data.ok) {
             serverOk = true;
             showErrors({}, '');
+            reviewWord = data.confirm_phrase || reviewWord;
             document.getElementById('save-note').textContent = data.confirm_phrase
-                ? 'Valid. Saving will ask you to type: ' + data.confirm_phrase : 'Valid.';
+                ? 'Valid. You will review the changes and type ' + data.confirm_phrase + ' to save.' : 'Valid. You will review the changes before they are saved.';
         } else {
             serverOk = false;
             const byKey = {}, general = [];
@@ -511,7 +512,7 @@ function updateSaveButton() {
     const n = Object.keys(changes()).length;
     const btn = document.getElementById('btn-save');
     btn.disabled = n === 0 || !authEnabled || !serverOk || Object.keys(localErrors).length > 0;
-    btn.textContent = n === 0 ? 'No changes' : 'Save ' + n + ' change' + (n > 1 ? 's' : '');
+    btn.textContent = n === 0 ? 'No changes' : 'Review ' + n + ' change' + (n > 1 ? 's' : '');
     if (n === 0) document.getElementById('save-note').textContent = '';
 }
 
@@ -524,16 +525,23 @@ async function saveSettings(phrase) {
         const resp = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ changes: c, phrase: phrase || null }) });
         const data = await resp.json().catch(() => ({}));
-        if (resp.status === 409 && data.confirm_phrase) {
+        if (resp.status === 409 && data.confirm_phrase && reviewOpen()) {
+            document.getElementById('review-error').textContent = data.detail;
+            document.getElementById('review-ok').disabled = false;
+            btn.disabled = false;
+            return;
+        } else if (resp.status === 409 && data.confirm_phrase) {
             const typed = window.prompt(data.detail + '\n\nSettings: ' + (data.risky || []).join(', ') + '\n\nType the phrase to confirm:');
             if (typed) return saveSettings(typed);
             showToast('Press Save again and type the confirmation to apply these settings. Nothing was saved.', 'warning');
         } else if (resp.status === 400 && data.errors) {
+            closeReview();
             const byKey = {}; data.errors.forEach(e => { if (e.key) byKey[e.key] = e.message; });
             showErrors(byKey, data.detail);
             showToast(data.detail, 'error');
         } else if (resp.ok) {
             const n = (data.changed || []).length;
+            closeReview();
             showToast(n ? 'Saved ' + n + ' setting(s).\n' + (data.effects || []).join('\n') : 'Nothing changed.', 'success');
             await loadSettings();
             await loadHistory();
@@ -541,6 +549,7 @@ async function saveSettings(phrase) {
         } else if (resp.status === 401) {
             window.location.href = '/login';
         } else {
+            closeReview();
             showToast(data.detail || ('Try again, and ask support if it keeps failing. The save failed (HTTP ' + resp.status + ').'), 'error');
         }
     } catch (e) {
@@ -722,4 +731,74 @@ async function waitForRestart(oldBootId) {
     showToast('Ask support to check the server. The backup service did not come back within ' + Math.round(applyCfg.timeout_seconds / 60) +
         ' minutes; this dashboard warns you if it stays down.', 'error');
     document.getElementById('btn-apply').disabled = false;
+}
+
+
+// ── Review dialog: every save is read through by a person first ──────────────
+let reviewWord = 'APPROVE';
+const DOW_NAME = Object.fromEntries(DOW);
+
+function scheduleText(cron) {
+    const p = parseCron(cron);
+    if (p.freq === 'daily') return 'every day at ' + p.time + ' ' + tzLabel();
+    if (p.freq === 'weekly') return 'every ' + (DOW_NAME[p.dow] || p.dow) + ' at ' + p.time + ' ' + tzLabel();
+    if (p.freq === 'monthly') return 'on day ' + p.dom + ' of every month at ' + p.time + ' ' + tzLabel();
+    return cron;
+}
+
+function valueText(f, v, isOld) {
+    if (f.secret) return isOld ? (f.is_set ? '(set)' : '(not set)') : '(new value, hidden)';
+    if (v === null || v === undefined || v === '') return '(empty)';
+    if (f.widget === 'schedule') return scheduleText(v);
+    if (typeof v === 'boolean') return v ? 'On' : 'Off';
+    if (Array.isArray(v)) return v.length ? v.join(', ') : '(none)';
+    return String(v) + (f.unit && typeof v === 'number' ? ' ' + f.unit : '');
+}
+
+function reviewOpen() {
+    const d = document.getElementById('review-dialog');
+    return !!(d && d.open);
+}
+
+function reviewAndSave() {
+    const c = changes();
+    if (!Object.keys(c).length) return;
+    const d = document.getElementById('review-dialog');
+    if (!d || typeof d.showModal !== 'function') return saveSettings();     // very old browser: the older prompt flow
+    let anyRisky = false;
+    document.getElementById('review-list').innerHTML = Object.keys(c).map(k => {
+        const f = fields[k];
+        const tier = f.risky ? 'risky' : (f.note ? 'notable' : '');
+        if (f.risky) anyRisky = true;
+        return '<li class="' + tier + '"><div class="rv-label">' + esc(f.label) + '</div>' +
+            '<div class="rv-change"><span class="rv-old">' + esc(valueText(f, original[k], true)) + '</span> &rarr; ' +
+            '<span class="rv-new">' + esc(valueText(f, c[k], false)) + '</span></div>' +
+            (f.note ? '<div class="rv-note">' + esc(f.note) + '</div>' : '') +
+            (f.effect === 'agent_restart' ? '<div class="rv-note">Takes effect when you press Apply changes.</div>' : '') + '</li>';
+    }).join('');
+    document.getElementById('review-confirm').hidden = !anyRisky;
+    document.getElementById('review-word').textContent = reviewWord;
+    document.getElementById('review-phrase').placeholder = reviewWord;
+    document.getElementById('review-phrase').value = '';
+    document.getElementById('review-error').textContent = '';
+    document.getElementById('review-ok').disabled = false;
+    d.showModal();
+}
+
+function closeReview() {
+    const d = document.getElementById('review-dialog');
+    if (d && d.open) d.close();
+}
+
+async function confirmReview() {
+    const needWord = !document.getElementById('review-confirm').hidden;
+    const typed = document.getElementById('review-phrase').value;
+    if (needWord && typed.trim().toUpperCase() !== reviewWord) {
+        document.getElementById('review-error').textContent = 'Type ' + reviewWord + ' exactly, then press Save changes.';
+        return;
+    }
+    document.getElementById('review-error').textContent = '';
+    document.getElementById('review-ok').disabled = true;
+    await saveSettings(needWord ? typed : null);
+    if (reviewOpen()) document.getElementById('review-ok').disabled = false;   // a refusal keeps the dialog open
 }

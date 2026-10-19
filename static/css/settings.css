@@ -89,3 +89,23 @@ details.section > .field:first-of-type { border-top: none; }
 @supports (background: color-mix(in srgb, white 50%, black)) {
     #savebar { background: color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter: blur(10px); }
 }
+
+/* review dialog: every save is checked by a person first */
+dialog#review-dialog { margin: auto; border: 1px solid var(--hair); border-radius: 18px; padding: 1.5rem; width: min(40rem, calc(100% - 2rem));
+    background: var(--panel); color: var(--ink); box-shadow: 0 30px 80px -20px var(--lift); }
+dialog#review-dialog::backdrop { background: rgba(10, 20, 35, .55); }
+#review-title { font-size: 1.3rem; font-weight: 650; margin-bottom: .25rem; }
+#review-list { list-style: none; margin: 1rem 0; display: grid; gap: .6rem; max-height: 50vh; overflow-y: auto; }
+#review-list li { border: 1px solid var(--hair); border-radius: var(--radius-sm); padding: .7rem .9rem; background: var(--bg); }
+#review-list li.risky { border-color: var(--bad-line); background: var(--bad-bg); }
+#review-list li.notable { border-color: var(--warn-line); background: var(--warn-bg); }
+#review-list .rv-label { font-weight: 600; }
+#review-list .rv-change { margin-top: .2rem; font-size: .95rem; overflow-wrap: anywhere; }
+#review-list .rv-old { color: var(--ink-3); text-decoration: line-through; }
+#review-list .rv-new { font-weight: 600; }
+#review-list .rv-note { margin-top: .25rem; font-size: .88rem; color: var(--ink-2); }
+#review-confirm { margin: .5rem 0; }
+#review-confirm label { display: block; margin-bottom: .35rem; }
+#review-confirm input { width: 100%; }
+.review-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+.review-actions button { margin-right: 0; }

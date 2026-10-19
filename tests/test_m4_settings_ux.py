@@ -68,7 +68,7 @@ class TestLiveValidation:
         before = cfg.read_bytes()
         out = ce.validate_changes(str(cfg), {"guards.max_delete_files": 100})
         assert out == {"ok": True, "changes": 1, "risky": ["guards.max_delete_files"],
-                       "confirm_phrase": "CHANGE guards.max_delete_files"}
+                       "confirm_phrase": "APPROVE"}
         assert cfg.read_bytes() == before           # nothing written
 
     def test_invalid_email_is_reported_on_its_key(self, tmp_path):
