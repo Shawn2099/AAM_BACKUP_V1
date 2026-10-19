@@ -5,16 +5,18 @@ from pathlib import Path
 DEPLOY = Path(__file__).resolve().parent.parent / "deploy"
 
 
-def test_active_hours_are_a_valid_twelve_hour_window():
+def test_active_hours_are_a_valid_twelve_hour_window_in_the_keys_windows_really_reads():
     bat = (DEPLOY / "03_setup_system.bat").read_text(encoding="utf-8", errors="replace")
-    start = int(re.search(r"ActiveHours\" /v Start /t REG_DWORD /d (\d+)", bat).group(1))
-    end = int(re.search(r"ActiveHours\" /v End /t REG_DWORD /d (\d+)", bat).group(1))
+    assert "ISM\\ActiveHours\" /v" not in bat           # that key does not exist on Windows
+    start = int(re.search(r"UX\\Settings\" /v ActiveHoursStart /t REG_DWORD /d (\d+)", bat).group(1))
+    end = int(re.search(r"UX\\Settings\" /v ActiveHoursEnd /t REG_DWORD /d (\d+)", bat).group(1))
     assert (end - start) % 24 == 12 and (start, end) == (20, 8)       # max 12 h on Server 2016
+    assert "SetActiveHours /t REG_DWORD /d 1" in bat
 
 
 def test_readiness_checks_the_same_window_and_reports_the_update_state():
     ps1 = (DEPLOY / "04_check_readiness.ps1").read_text(encoding="utf-8", errors="replace")
-    assert "$ah.Start -eq 20 -and $ah.End -eq 8" in ps1
+    assert "$ahStart -eq 20 -and $ahEnd -eq 8" in ps1 and "UX\\Settings" in ps1
     assert "wuauserv" in ps1 and "NoAutoUpdate" in ps1
 
 

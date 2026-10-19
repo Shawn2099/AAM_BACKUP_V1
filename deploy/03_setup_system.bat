@@ -155,15 +155,21 @@ if %ERRORLEVEL% equ 0 (
 :: allows at most 12 hours (Microsoft "waas-restart"): a longer window such as 12:00-06:00 (18 h)
 :: is INVALID and ignored (plan H2). Protected = 20:00 to next 08:00 (12 h), which covers the
 :: nightly LAN and cloud backups; a pending reboot can happen 08:00-20:00.
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v Start /t REG_DWORD /d 20 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v End /t REG_DWORD /d 8 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v ActiveHoursSource /t REG_DWORD /d 2 /f >nul 2>&1
+:: The real values (checked on the trial box, plan H2): the Settings value
+:: HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings ActiveHoursStart/End, and the policy
+:: HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate SetActiveHours/ActiveHoursStart/End.
+:: (The older key ...\UX\ISM\ActiveHours does not exist on Windows.)
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" /v ActiveHoursStart /t REG_DWORD /d 20 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" /v ActiveHoursEnd /t REG_DWORD /d 8 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v SetActiveHours /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ActiveHoursStart /t REG_DWORD /d 20 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ActiveHoursEnd /t REG_DWORD /d 8 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Update Active Hours set to 20:00-08:00 (12 h, the maximum). Reboots can only happen 08:00-20:00.
 ) else (
     echo [WARN] Active Hours registry write failed. Set manually:
-    echo        HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours
-    echo        Start=20  End=8  ActiveHoursSource=2
+    echo        HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings
+    echo        ActiveHoursStart=20  ActiveHoursEnd=8
 )
 
 :: ====================================================================

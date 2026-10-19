@@ -177,8 +177,14 @@ $wuNoAuto = if ($wuPolicy -and $wuPolicy.PSObject.Properties["NoAutoUpdate"]) { 
 $wuOff = [bool](($wu -and $wu.StartType -eq "Disabled") -or ($wuNoAuto -eq 1))
 $wuState = if (-not $wu) { "service not found" } else { "service $($wu.Status), start type $($wu.StartType)" }
 if ($wuNoAuto -eq 1) { $wuState += ", policy NoAutoUpdate=1" }
-$ah = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" -ErrorAction SilentlyContinue
-if ($ah -and $ah.Start -eq 20 -and $ah.End -eq 8) {
+$ahUx = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" -ErrorAction SilentlyContinue
+$ahPol = Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -ErrorAction SilentlyContinue
+$ahStart = if ($ahUx -and $ahUx.PSObject.Properties["ActiveHoursStart"]) { $ahUx.ActiveHoursStart } else { $null }
+$ahEnd = if ($ahUx -and $ahUx.PSObject.Properties["ActiveHoursEnd"]) { $ahUx.ActiveHoursEnd } else { $null }
+if ($ahPol -and $ahPol.PSObject.Properties["SetActiveHours"] -and $ahPol.SetActiveHours -eq 1 -and $ahPol.PSObject.Properties["ActiveHoursStart"]) {
+    $ahStart = $ahPol.ActiveHoursStart; $ahEnd = $ahPol.ActiveHoursEnd      # the policy wins over the Settings value
+}
+if ($ahStart -eq 20 -and $ahEnd -eq 8) {
     Check-Item "Update Active Hours" "20:00-08:00 (12 h, backup nights protected); Windows Update: $wuState" $false
 } elseif ($wuOff) {
     Check-Item "Update Active Hours" "Not set, but Windows Update is off ($wuState) - nothing reboots the server" $false
