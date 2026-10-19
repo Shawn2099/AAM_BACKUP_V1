@@ -37,3 +37,11 @@ def test_installer_grants_use_computer_slash_name_because_icacls_rejects_dot_sla
     assert '$AclAccount = if ($ServiceAccount.StartsWith(".\\"))' in ps1
     assert ':(OI)(CI)M" /T /C /Q' in ps1 and '${AclAccount}:(OI)(CI)M' in ps1
     assert '${ServiceAccount}:(OI)(CI)M' not in ps1
+
+
+def test_readiness_resets_the_venv_acls_after_uv_sync():
+    """Found on the box: uv copied _rust.pyd with an Administrators-only ACL; the service account
+    could not load it (agent crash-looped with 'DLL load failed ... Access is denied')."""
+    ps1 = (DEPLOY / "04_check_readiness.ps1").read_text(encoding="utf-8", errors="replace")
+    sync = ps1.index("sync --frozen --no-dev --link-mode copy")
+    assert 'icacls (Join-Path $ProjectDir ".venv") /reset /T /C /Q' in ps1[sync:sync + 1500]

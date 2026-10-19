@@ -98,6 +98,11 @@ if ($uvPath) {
     $sync = cmd /c "`"$uvPath`" sync --frozen --no-dev --link-mode copy --directory `"$ProjectDir`" 2>&1"
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[OK]" -ForegroundColor Green
+        # uv copies some files WITH the restrictive ACL of its cache (SYSTEM/Administrators only,
+        # not inherited): the service account then gets "DLL load failed ... Access is denied" for
+        # e.g. cryptography\_rust.pyd (found on the trial box 2026-10-19). Give every file in .venv
+        # the ACL inherited from the project folder again.
+        icacls (Join-Path $ProjectDir ".venv") /reset /T /C /Q | Out-Null
     } else {
         Write-Host "[FAIL]" -ForegroundColor Red
         Check-Item "Dependencies" "Failed to install Python libraries. Check internet." $true
