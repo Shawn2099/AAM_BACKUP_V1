@@ -386,14 +386,13 @@ def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
 
 
 _LOGIN_STYLE = """
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-.login { background: #1f2937; padding: 2rem; border-radius: 0.5rem; width: 340px; }
-h1 { font-size: 1.25rem; margin-bottom: 1.5rem; text-align: center; }
-label { display: block; font-size: 0.875rem; color: #9ca3af; margin-bottom: 0.25rem; }
-input { width: 100%; padding: 0.5rem; border: 1px solid #374151; border-radius: 0.375rem; background: #111827; color: #e5e7eb; margin-bottom: 1rem; }
-button { width: 100%; padding: 0.5rem; border: none; border-radius: 0.375rem; background: #2563eb; color: #fff; font-weight: 600; cursor: pointer; }
-button:hover { background: #1d4ed8; }
+body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
+.login { background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 2rem; width: min(24rem, 100%); }
+.login h1 { font-family: var(--serif); font-weight: 500; font-size: 1.6rem; line-height: 1.2; padding-bottom: 0.75rem; margin-bottom: 1.25rem; border-bottom: 3px double var(--rule-strong); }
+label { display: block; font-size: 0.9rem; color: var(--ink-2); margin-bottom: 0.25rem; }
+input { width: 100%; margin-bottom: 1rem; }
+button { width: 100%; margin-right: 0; background: var(--action); color: var(--on-action); }
+button:hover { background: var(--action-hover); }
 p { line-height: 1.5; }
 """
 
@@ -404,16 +403,20 @@ NOT_SET_UP = ("The dashboard passwords are not set up yet. On the server, run th
 
 def _login_html(body: str) -> str:
     return (f"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-            f"<title>AAM Backup - Sign in</title><style>{_LOGIN_STYLE}</style></head><body>"
-            f"<div class=\"login\"><h1>AAM Backup Dashboard</h1>{body}</div></body></html>")
+            f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            f"<meta name=\"color-scheme\" content=\"light dark\">"
+            f"<title>AAM Backup - Sign in</title>"
+            f"<link rel=\"stylesheet\" href=\"/static/css/dashboard.css\">"
+            f"<style>{_LOGIN_STYLE}</style></head><body>"
+            f"<div class=\"login\"><h1>Sign in to AAM Backup</h1>{body}</div></body></html>")
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(error: str = ""):
     if not admin_auth.credentials_set(_cfg().dashboard):
-        return HTMLResponse(_login_html(f"<p style=\"color:#fbbf24\">{html.escape(NOT_SET_UP)}</p>"),
+        return HTMLResponse(_login_html(f"<p class=\"banner amber\">{html.escape(NOT_SET_UP)}</p>"),
                             status_code=503)
-    error_html = f'<p style="color:#ef4444;margin-bottom:1rem">{html.escape(error)}</p>' if error else ""
+    error_html = f'<p class="banner red">{html.escape(error)}</p>' if error else ""
     return _login_html(f"""{error_html}
 <form action="/login" method="post">
 <label for="password">Password</label>

@@ -190,3 +190,22 @@ class TestWatchdogReload:
         monkeypatch.setattr(watchdog, "_config_mtime", lambda: 9.0)
         monkeypatch.setattr(mc, "load_config", lambda path: (_ for _ in ()).throw(ValueError("bad")))
         assert watchdog._reload_tunables(1.0) == 9.0 and applied == []
+
+
+class TestPageAssets:
+    @pytest.mark.parametrize("name", ["settings.js", "dashboard.js", "report.js"])
+    def test_scripts_parse(self, name):
+        import shutil
+        import subprocess
+        from pathlib import Path
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node is not installed")
+        script = Path(ui.__file__).parent / "static" / "js" / name
+        res = subprocess.run([node, "--check", str(script)], capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+
+    def test_the_restart_overlay_is_hidden_until_a_restart_starts(self):
+        from pathlib import Path
+        css = (Path(ui.__file__).parent / "static" / "css" / "settings.css").read_text(encoding="utf-8")
+        assert "#restart-overlay { display: none;" in css

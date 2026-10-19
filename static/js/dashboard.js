@@ -1,23 +1,11 @@
 function showToast(message, type = 'info') {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
-    toast.style.background = type === 'success' ? 'rgba(16, 185, 129, 0.95)' : (type === 'error' ? 'rgba(239, 68, 68, 0.95)' : 'rgba(30, 41, 59, 0.95)');
-    toast.style.color = '#fff';
-    toast.style.padding = '0.85rem 1.25rem';
-    toast.style.borderRadius = '12px';
-    toast.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.3)';
-    toast.style.backdropFilter = 'blur(10px)';
-    toast.style.border = '1px solid rgba(255,255,255,0.1)';
-    toast.style.fontFamily = "'Plus Jakarta Sans', sans-serif";
-    toast.style.fontSize = '0.85rem';
-    toast.style.fontWeight = '500';
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(-10px)';
-    toast.style.transition = 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
-    toast.innerText = message;
+    toast.className = 'toast ' + type;
+    toast.textContent = message;
     container.appendChild(toast);
-    setTimeout(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; }, 50);
-    setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateY(-10px)'; setTimeout(() => { toast.remove(); }, 300); }, 5000);
+    setTimeout(() => { toast.classList.add('shown'); }, 50);
+    setTimeout(() => { toast.classList.remove('shown'); setTimeout(() => { toast.remove(); }, 300); }, 5000);
 }
 
 async function triggerBackup(event, mode) {
@@ -80,6 +68,7 @@ function setServerUnreachable(down, why) {
             (_lastOk ? formatFullDate(_lastOk.toISOString()) : 'this page opened') +
             ' (' + why + '). The information below may be out of date.';
     }
+    setHero('unknown', 'Backup status is unavailable', 'This page cannot reach the backup server right now.');
     ['cloud', 'lan'].forEach(function(mode) {
         var card = document.getElementById('card-' + mode);
         var badge = document.getElementById('badge-' + mode);
@@ -91,6 +80,7 @@ function setSessionExpired(expired) {
     var banner = document.getElementById('session-banner');
     if (banner) banner.style.display = expired ? 'block' : 'none';
     if (!expired) return;
+    setHero('unknown', 'Sign in again to see your backups', 'Your session has expired.');
     ['cloud', 'lan'].forEach(function(mode) {
         var badge = document.getElementById('badge-' + mode);
         var desc = document.getElementById('desc-' + mode);
@@ -117,10 +107,61 @@ function renderAttention(items) {
     if (!items || !items.length) { box.innerHTML = ''; return; }
     box.innerHTML = items.map(function(i) {
         var red = i.level === 'red';
-        return '<div style="border-radius:0.5rem;padding:0.6rem 1rem;margin-bottom:0.5rem;font-size:0.9rem;'
-            + (red ? 'background:#7f1d1d;color:#fee2e2' : 'background:#78350f;color:#fef3c7') + '">'
-            + (red ? '&#9888; ' : '') + escHtml(i.message) + '</div>';
+        return '<div class="banner ' + (red ? 'red' : 'amber') + '">' + escHtml(i.message) + '</div>';
     }).join('');
+}
+
+// The one sentence at the top: what a partner needs to know without reading the cards.
+// Built only from what the server already decided (status categories, attention items).
+var _OK_CATEGORIES = ['success', 'no-changes'];
+function agoText(iso) {
+    var ms = Date.now() - new Date(iso).getTime();
+    if (isNaN(ms) || ms < 0) return 'recently';
+    var h = Math.floor(ms / 3600000);
+    if (h < 1) return 'less than an hour ago';
+    if (h < 48) return h + (h === 1 ? ' hour ago' : ' hours ago');
+    return Math.floor(h / 24) + ' days ago';
+}
+function setHero(tone, line, sub) {
+    var hero = document.getElementById('hero');
+    if (!hero) return;
+    hero.setAttribute('data-tone', tone);
+    document.getElementById('hero-line').textContent = line;
+    document.getElementById('hero-sub').textContent = sub;
+}
+function renderHero(data) {
+    var legs = [['cloud', 'The cloud backup'], ['lan', 'The office NAS backup']].filter(function(l) {
+        return data[l[0]] && data[l[0]].enabled !== false;
+    });
+    if (!legs.length) { setHero('unknown', 'Backups are switched off', 'Both backups are disabled in the settings.'); return; }
+    var attention = data.attention || [];
+    var hasRed = attention.some(function(i) { return i.level === 'red'; });
+    var problems = [], running = [], unknown = [], partial = [];
+    legs.forEach(function(l) {
+        var d = data[l[0]];
+        var cat = d.last_run ? d.last_run.status_category : 'unknown';
+        if (d.running) running.push(l[1]);
+        else if (d.run_state === 'unknown') unknown.push(l[1]);
+        else if (cat === 'partial') partial.push(l[1]);
+        else if (_OK_CATEGORIES.indexOf(cat) < 0) problems.push(l[1] + ': ' + (d.last_run ? d.last_run.status_label : 'no backup yet'));
+    });
+    if (problems.length || hasRed) {
+        setHero('bad', 'Your backups need attention', problems.length ? problems.join('. ') + '.' : 'Read the notice below.');
+    } else if (unknown.length) {
+        setHero('unknown', 'Backup status is unavailable', 'The server could not say what is running. This page tries again every few seconds.');
+    } else if (partial.length) {
+        setHero('warn', 'A backup finished only partly', partial.join(' and ') + ' copied some of the files; the rest follows on the next run.');
+    } else if (running.length) {
+        setHero('warn', 'A backup is running now', running.join(' and ') + ' is copying files at the moment.');
+    } else if (attention.length) {
+        setHero('warn', 'The latest backups succeeded, with a warning', 'Read the notice below.');
+    } else {
+        var parts = legs.map(function(l) {
+            var ls = data[l[0]].last_success;
+            return l[1] + ' last succeeded ' + (ls ? agoText(ls) : 'never');
+        });
+        setHero('ok', 'Everything is backed up', parts.join('. ') + '.');
+    }
 }
 async function updateStatus() {
     try {
@@ -132,6 +173,7 @@ async function updateStatus() {
         _lastStatusErr = 0;
         const data = await response.json();
         renderAttention(data.attention);
+        renderHero(data);
 
         function agoClass(diffDays) {
             if (diffDays < 1) return 'success-ago';
@@ -156,9 +198,9 @@ async function updateStatus() {
                 return;
             }
             var cls = agoClass(diffDays);
-            var prefix = diffDays < 1 ? '[OK]' : (diffDays < 2 ? '[WARN]' : '[ERR]');
+            var prefix = diffDays < 1 ? '' : (diffDays < 2 ? 'Late - ' : 'Overdue - ');
             var fullDate = formatFullDate(lastSuccess);
-            el.textContent = prefix + ' Last success: ' + fullDate;
+            el.textContent = prefix + 'Last success: ' + fullDate;
             el.className = cls;
         }
 
@@ -183,7 +225,7 @@ async function updateStatus() {
             } else {
                 const isCloudRunning = data.cloud.running;
                 const cloudUnknown = data.cloud.run_state === 'unknown';
-                badgeCloud.innerText = isCloudRunning ? 'Running' : (cloudUnknown ? 'Unknown' : 'Idle');
+                badgeCloud.innerText = isCloudRunning ? 'Running' : (cloudUnknown ? 'Unknown' : (data.cloud.last_run ? data.cloud.last_run.status_label : 'No backup yet'));
                 if (btnCloud) {
                     if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
                     else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
@@ -212,7 +254,7 @@ async function updateStatus() {
             } else {
                 const isLanRunning = data.lan.running;
                 const lanUnknown = data.lan.run_state === 'unknown';
-                badgeLan.innerText = isLanRunning ? 'Running' : (lanUnknown ? 'Unknown' : 'Idle');
+                badgeLan.innerText = isLanRunning ? 'Running' : (lanUnknown ? 'Unknown' : (data.lan.last_run ? data.lan.last_run.status_label : 'No backup yet'));
                 if (btnLan) {
                     if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
                     else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
@@ -240,7 +282,7 @@ async function updateStatus() {
                 const sTag = '<span class="tag ' + safeCategory(r.status_category) + '" title="' + escapeHtml(r.status) + '">' + escapeHtml(r.status_label || r.status) + '</span>';
                 // plain title + fault code first (audit 2026-10-18); the raw error stays in the tooltip
                 const errText = r.fault_title ? r.fault_title + ' (' + r.fault_code + ')' : r.error;
-                const errCell = errText ? '<td style="color:#fca5a5;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.error || errText) + '">' + escapeHtml(errText) + '</td>' : '<td>-</td>';
+                const errCell = errText ? '<td class="err-cell" title="' + escapeHtml(r.error || errText) + '">' + escapeHtml(errText) + '</td>' : '<td>-</td>';
                 
                 let expandableClass = '';
                 let expandIcon = '';
@@ -277,7 +319,7 @@ async function updateStatus() {
             });
             tbody.innerHTML = rowsHtml;
         } else if (tbody && data.recent_runs && data.recent_runs.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="color:#6b7280; text-align: center;">No backup runs recorded yet</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="empty">No backup runs recorded yet. The first scheduled backup will appear here.</td></tr>';
         }
     } catch (err) {
         setServerUnreachable(true, 'no answer');
@@ -297,19 +339,19 @@ function approvalCard(a) {
     var leg = a.leg === 'cloud' ? 'Cloud backup' : (a.leg === 'rollover' ? 'FY rollover' : 'LAN backup');
     var reasons = (a.guards || []).map(function(g) { return '<li>' + escHtml(g.reason) + '</li>'; }).join('');
     var id = escHtml(a.approval_id);
-    var html = '<div class="approval-card ' + (a.status === 'APPROVED' ? 'approved' : 'pending') + '" style="border:2px solid ' + (a.status === 'APPROVED' ? '#d97706' : '#dc2626') + ';border-radius:0.75rem;padding:1rem 1.25rem;margin-bottom:1rem;background:rgba(220,38,38,0.06)">';
-    html += '<h2 style="margin:0 0 0.5rem 0">' + leg + ' blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
-    html += '<ul style="margin:0 0 0.5rem 1.25rem">' + reasons + '</ul>';
-    html += '<p style="font-size:0.8rem;color:#6b7280">' + (a.leg === 'rollover' ? 'Nothing was changed.' : 'Nothing was copied or deleted.') + ' Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';
+    var html = '<div class="approval-card ' + (a.status === 'APPROVED' ? 'approved' : 'pending') + '">';
+    html += '<h2>' + leg + ' blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
+    html += '<ul>' + reasons + '</ul>';
+    html += '<p class="fine">' + (a.leg === 'rollover' ? 'Nothing was changed.' : 'Nothing was copied or deleted.') + ' Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';
     if (a.status === 'PENDING') {
         html += '<p>To run this <b>once</b> anyway, type <code>' + escHtml(a.phrase) + '</code> and approve. The backup re-checks first and stops again if anything got worse.</p>';
-        html += '<input id="phrase-' + id + '" type="text" autocomplete="off" placeholder="' + escHtml(a.phrase) + '" style="padding:0.4rem;margin-right:0.5rem;min-width:16rem">';
-        html += '<button class="btn-trigger" style="background:#dc2626" onclick="approvalAction(\'' + id + '\', \'approve\')">Approve this backup once</button> ';
-        html += '<button class="btn-trigger" style="background:#4b5563" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';
+        html += '<input id="phrase-' + id + '" type="text" autocomplete="off" placeholder="' + escHtml(a.phrase) + '"><br>';
+        html += '<button class="btn-danger" onclick="approvalAction(\'' + id + '\', \'approve\')">Approve this backup once</button> ';
+        html += '<button class="btn-secondary" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';
     } else {
         html += '<p>Approved by ' + escHtml(a.approved_by) + ' on ' + escHtml(formatFullDate(a.approved_at)) + (a.expired ? ' — <b>expired</b>.' : '; valid until ' + escHtml(formatFullDate(a.expires_at)) + '.') + '</p>';
-        if (!a.expired) html += '<button class="btn-trigger" style="background:#d97706" onclick="approvalAction(\'' + id + '\', \'run\')">Run approved backup</button> ';
-        html += '<button class="btn-trigger" style="background:#4b5563" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';
+        if (!a.expired) html += '<button class="btn-warn" onclick="approvalAction(\'' + id + '\', \'run\')">Run approved backup</button> ';
+        html += '<button class="btn-secondary" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';
     }
     return html + '</div>';
 }

@@ -201,6 +201,34 @@ used to depend on test order (fixed). Write patch scripts with the Write tool in
 never heredocs with backslashes. Print `^FAILED` lines (not `tail`) after suite runs; check
 `git status --short` before every commit.
 
+## 4i. Session 2026-10-19 (later): "Apply changes" + dashboard redesign
+
+Owner: users must not need .bat files; the UI needs a real design pass (frontend-design skill).
+- **Apply changes (0c4554b + fix in the redesign commit):** Settings shows an amber bar "N saved
+  changes are waiting for a restart" + **Apply changes** (`POST /api/settings/apply`). Pending =
+  restart-effect keys in `config_changes` newer than this process (`core/app_restart.STARTED_AT`),
+  so it survives a reload. Restart = clean SIGINT of the agent after the reply; **NSSM AppExit
+  default = Restart (30 s delay, verified on the box)** brings it back; hard `os._exit` after
+  `dashboard.apply_force_exit_seconds`. Refused (409, never queued) while the backup lock is held
+  or ANY Prefect run is running / queued / due within `apply_block_before_run_seconds`; Prefect
+  unreachable = busy. `/health` carries `boot_id`; the page polls until it changes.
+  New keys `dashboard.apply_*` (5). `cloud.enabled`/`lan.enabled` are now start-only (needs Apply).
+  Watchdog keys: `watchdog.py` reloads its tunables when config.yaml's mtime changes (no restart;
+  log size/retention still need a service restart). Effect texts no longer mention the .bat.
+  **NOT yet proven on the real box:** the SIGINT -> NSSM restart chain and the "watchdog does not
+  react to the 30 s gap" assumption (watchdog treats START_PENDING as NSSM handling it). Test on
+  the box after deploy (tell the owner first - it restarts the agent; do it when no run is due).
+- **Redesign:** "ledger" look (pale green paper, ink-green text, blue-ink actions, double rules
+  under headings, serif figures, light + dark via `prefers-color-scheme`, system fonts only - the
+  dashboard may be offline). Dashboard opens with one sentence computed from the server's status
+  categories (`renderHero`). All inline hex colours moved into `static/css/dashboard.css` /
+  `settings.css` tokens; toasts/banners/approval cards are classes; status badges carry a mark
+  (check, half, dot, cross, triangle) so colour is never the only signal; the card badge now shows the
+  last result ("Failed"), not "Idle". Login page restyled. Preview: build the pages with a fetch
+  stub and screenshot with headless Chrome (see git history of this note; scripts were in the session
+  scratchpad). Lesson: a shell heredoc turned `\n` inside a JS string into a real newline and
+  broke settings.js (caught only by `node --check`; test added: `TestPageAssets`).
+
 ## 4g. AGREED PLAN (owner 2026-10-18) - §4f-2 topics + older items
 
 Principles: one source of truth per concern (one report model, one SMTP path, one rollover

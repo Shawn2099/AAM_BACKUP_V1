@@ -3,74 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>AAM Backup Settings</title>
 <link rel="stylesheet" href="/static/css/dashboard.css">
-<style>
-details.section { background:#1f2937; border-radius:0.5rem; margin-bottom:0.75rem; padding:0.25rem 1rem; }
-details.section > summary { cursor:pointer; padding:0.6rem 0; font-weight:600; }
-.field { display:grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1.2fr); gap:0.75rem;
-         padding:0.6rem 0; border-top:1px solid #374151; }
-.field .label { font-size:0.9rem; font-weight:600; color:#f3f4f6; }
-.field .name { font-family: ui-monospace, monospace; font-size:0.65rem; color:#4b5563; word-break:break-all; margin-top:0.2rem; }
-.field .tech { font-size:0.7rem; color:#6b7280; margin-top:0.2rem; }
-.overview { background:#111827; border:1px solid #374151; border-radius:0.5rem; padding:0.75rem 1rem;
-            margin:0.5rem 0 0.75rem; font-size:0.85rem; }
-.field .desc { font-size:0.8rem; color:#d1d5db; margin-top:0.25rem; }
-.field .meta { font-size:0.7rem; color:#6b7280; margin-top:0.25rem; }
-.field input[type=text], .field input[type=number], .field input[type=password], .field select, .field textarea {
-    width:100%; background:#111827; color:#e5e7eb; border:1px solid #4b5563; border-radius:0.375rem;
-    padding:0.4rem 0.5rem; font-size:0.85rem; }
-.field textarea { min-height:4rem; font-family: ui-monospace, monospace; }
-.field.changed { background:#172554; }
-.field.error { background:#450a0a; }
-.field .err { color:#fca5a5; font-size:0.75rem; margin-top:0.25rem; }
-.badge-risky { background:#7c2d12; color:#fed7aa; }
-.badge-restart { background:#1e3a8a; color:#bfdbfe; }
-.badge-locked { background:#374151; color:#9ca3af; }
-#savebar { position:sticky; bottom:0; background:#111827; padding:0.75rem 0; border-top:1px solid #374151;
-           display:flex; gap:0.75rem; align-items:center; }
-.list-row { display:flex; gap:0.4rem; margin-bottom:0.35rem; }
-.list-row input { flex:1; }
-.field input.bad { border-color:#ef4444; }
-.btn-small { background:#374151; color:#e5e7eb; border:1px solid #4b5563; border-radius:0.375rem;
-             padding:0.25rem 0.6rem; font-size:0.8rem; cursor:pointer; }
-.btn-small:hover { background:#4b5563; }
-.btn-x { color:#fca5a5; font-size:1rem; line-height:1; }
-.sched select, .sched input[type=time] { width:auto; display:inline-block; margin:0.15rem 0.2rem 0.15rem 0; }
-.sched input[type=text] { margin-top:0.25rem; }
-.sched .tz { font-size:0.75rem; color:#9ca3af; }
-.toggle { display:inline-flex; gap:0.4rem; align-items:center; cursor:pointer; font-size:0.85rem; }
-#general-error { color:#fca5a5; font-size:0.8rem; white-space:pre-line; }
-.tabs { display:flex; gap:0.5rem; margin-bottom:1rem; }
-.tab { background:#1f2937; color:#9ca3af; border:1px solid #374151; border-radius:0.375rem;
-       padding:0.45rem 1rem; cursor:pointer; font-size:0.875rem; }
-.tab.active { background:#2563eb; color:#fff; border-color:#2563eb; }
-#advanced-banner { display:none; background:#3b0764; color:#e9d5ff; padding:0.75rem 1rem;
-                   border-radius:0.5rem; margin-bottom:1rem; font-size:0.875rem; }
-#rollover-panel { display:none; background:#1f2937; border-radius:0.5rem; padding:1.25rem; }
-#rollover-panel .row { margin:0.35rem 0; font-size:0.9rem; }
-#rollover-panel .k { color:#9ca3af; display:inline-block; min-width:12rem; }
-.with-unit { display:flex; align-items:center; gap:0.5rem; }
-.with-unit input { flex:1; }
-.with-unit .unit { color:#9ca3af; font-size:0.8rem; white-space:nowrap; min-width:5.5rem; }
-#admin-login, #admin-bar { display:none; background:#1f2937; border-radius:0.5rem; padding:1rem 1.25rem;
-                         margin-bottom:1rem; font-size:0.875rem; }
-#admin-login input, #admin-pw input { background:#111827; color:#e5e7eb; border:1px solid #4b5563;
-                         border-radius:0.375rem; padding:0.4rem 0.5rem; font-size:0.85rem; margin:0.25rem 0.4rem 0.25rem 0; }
-#admin-pw { display:none; margin-top:0.75rem; }
-#readonly-banner { display:none; background:#78350f; color:#fde68a; padding:0.75rem 1rem;
-                   border-radius:0.5rem; margin-bottom:1rem; font-size:0.875rem; }
-#apply-bar { display:none; align-items:center; gap:1rem; flex-wrap:wrap; background:#78350f; color:#fde68a;
-             padding:0.75rem 1rem; border-radius:0.5rem; margin:1rem 0 0.5rem; font-size:0.875rem; }
-#restart-overlay { position:fixed; inset:0; background:rgba(17,24,39,.92); z-index:20000; align-items:center;
-                   justify-content:center; font-size:1.1rem; color:#f9fafb; }
-</style>
+<link rel="stylesheet" href="/static/css/settings.css">
 </head>
 <body>
-<div id="toast-container" style="position: fixed; top: 1.5rem; right: 1.5rem; z-index: 10000; display: flex; flex-direction: column; gap: 0.75rem; max-width: 380px;"></div>
+<div id="toast-container" role="status" aria-live="polite"></div>
 <div class="container">
-<h1>Settings</h1>
-<p class="subtitle"><a href="/" style="color:#60a5fa">&larr; Dashboard</a> &middot; Every value is checked by the server while you type, exactly like a service start; Save only works when everything is valid. config.yaml is backed up first. All times are IST.</p>
+<header class="masthead">
+    <span class="brand">AAM Backup</span>
+    <nav aria-label="Pages"><a href="/">Dashboard</a><a href="/logout">Sign out</a></nav>
+</header>
+<h1 class="page-title">Settings</h1>
+<p class="page-note">Every value is checked by the server while you type, exactly as when the service starts. You can only save when everything is valid. config.yaml is backed up first. All times are IST.</p>
+<div id="apply-bar">
+    <span id="apply-text"></span>
+    <button class="btn-trigger" id="btn-apply" onclick="applyChanges()">Apply changes</button>
+</div>
 <div class="tabs">
     <button class="tab active" id="tab-basic" onclick="showTab('basic')">Settings</button>
     <button class="tab" id="tab-advanced" onclick="showTab('advanced')">Advanced</button>
@@ -81,7 +31,7 @@ guards, watchdog and log tuning. The defaults are tested values; change them onl
 Every change is still checked like a service start before it is saved.</div>
 <div id="admin-login">
     <strong>Advanced settings need the admin login.</strong>
-    <p style="color:#9ca3af;margin:0.35rem 0 0.6rem">This is a different password from the dashboard sign-in.
+    <p>This is a different password from the dashboard sign-in.
        Forgotten? Ask support to run the reset script on the server.</p>
     <form onsubmit="adminLogin(event)"><input type="password" id="admin-password" autocomplete="current-password"
        placeholder="Admin password"><button class="btn-trigger" type="submit">Open Advanced</button></form>
@@ -99,43 +49,41 @@ Every change is still checked like a service start before it is saved.</div>
         <button class="btn-trigger" type="submit">Change password</button>
     </form>
 </div>
-<div id="sections"><p style="color:#9ca3af">Loading settings...</p></div>
+<div id="sections"><p class="loading">Loading settings...</p></div>
 <div id="rollover-panel">
     <div class="row"><span class="k">Backups are using</span><strong id="ro-configured">...</strong></div>
     <div class="row"><span class="k">Current FY (server date)</span><strong id="ro-current">...</strong></div>
     <div class="row"><span class="k">Last rollover attempt</span><span id="ro-last">...</span></div>
-    <div id="ro-steps" style="display:none;margin:0.9rem 0">
+    <div id="ro-steps">
         <div class="row"><span class="k">Rollover in progress</span><strong id="ro-steps-title"></strong></div>
-        <ul id="ro-steps-list" style="list-style:none;margin:0.4rem 0 0;padding:0;font-size:0.9rem"></ul>
+        <ul id="ro-steps-list"></ul>
     </div>
-    <p id="ro-message" style="margin:0.9rem 0;font-size:0.9rem"></p>
-    <p id="ro-approval" style="display:none;margin-bottom:0.9rem;color:#fdba74;font-size:0.9rem">A blocked rollover is
-       waiting for your decision: <a href="/" style="color:#60a5fa">open the dashboard</a> and approve it there
+    <p id="ro-message"></p>
+    <p id="ro-approval">A blocked rollover is
+       waiting for your decision: <a href="/">open the dashboard</a> and approve it there
        (you will type a confirmation) - that is how a blocked rollover is forced.</p>
     <button class="btn-trigger" id="btn-rollover" disabled onclick="runRollover()">Run FY rollover now</button>
-    <p style="margin-top:0.75rem;font-size:0.75rem;color:#9ca3af">Runs the same check as the automatic 06:00
+    <p class="fine-print">Runs the same check as the automatic 06:00
        run, with all its safety rules: the final backup of the old FY first, never more than one FY ahead
        without approval, never backwards. Use it when the automatic rollover failed or the server was off.</p>
 </div>
-<div id="apply-bar" style="display:none">
-    <span id="apply-text"></span>
-    <button class="btn-trigger" id="btn-apply" onclick="applyChanges()">Apply changes</button>
-</div>
-<div id="restart-overlay" style="display:none" role="status" aria-live="polite">
+<div id="restart-overlay" role="status" aria-live="polite">
     <div id="restart-text">Restarting...</div>
 </div>
 <div id="savebar">
     <button class="btn-trigger" id="btn-save" disabled onclick="saveSettings()">No changes</button>
-    <button class="btn-trigger" id="btn-reset" style="background:#374151" onclick="discardChanges()">Discard changes</button>
-    <button class="btn-trigger" id="btn-test-email" style="background:#0e7490" onclick="sendTestEmail()" title="Uses the saved mail settings">Send test email</button>
-    <div><div id="save-note" style="font-size:0.8rem;color:#9ca3af"></div><div id="general-error"></div></div>
+    <button class="btn-secondary" id="btn-reset" onclick="discardChanges()">Discard changes</button>
+    <button class="btn-secondary" id="btn-test-email" onclick="sendTestEmail()" title="Uses the saved mail settings">Send test email</button>
+    <div><div id="save-note"></div><div id="general-error"></div></div>
 </div>
-<h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Change history</h2>
+<h2 class="section-title">Change history</h2>
+<div class="table-wrap">
 <table>
 <thead><tr><th>Time</th><th>By</th><th>Setting</th><th>Old</th><th>New</th></tr></thead>
-<tbody id="history-tbody"><tr><td colspan="5" style="color:#6b7280;text-align:center">Loading...</td></tr></tbody>
+<tbody id="history-tbody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
 </table>
-<div class="info"><p>AAM Backup System &middot; <a href='/logout' style='color:#60a5fa'>Logout</a></p></div>
+</div>
+<div class="info"><p>Changes to schedules and on/off switches need Apply changes; everything else takes effect by itself.</p></div>
 </div>
 <script src="/static/js/settings.js"></script>
 </body>

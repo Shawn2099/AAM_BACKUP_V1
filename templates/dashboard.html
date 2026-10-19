@@ -3,70 +3,82 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>AAM Backup Dashboard</title>
 <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
 <body>
-<div id="toast-container" style="position: fixed; top: 1.5rem; right: 1.5rem; z-index: 10000; display: flex; flex-direction: column; gap: 0.75rem; max-width: 350px;"></div>
+<div id="toast-container" role="status" aria-live="polite"></div>
 <div class="container">
-<h1>AAM Backup Dashboard</h1>
-<p class="subtitle">Secure Automated Sequential Multi-Destination Backups</p>
-<div id="server-banner" style="display:none;background:#7f1d1d;color:#fecaca;padding:0.75rem 1rem;border-radius:0.5rem;margin-bottom:1rem;font-size:0.875rem"></div>
-<div id="session-banner" style="display:none;background:#7f1d1d;color:#fecaca;padding:0.75rem 1rem;border-radius:0.5rem;margin-bottom:1rem;font-size:0.875rem">Session expired — status unavailable. Refresh the page and sign in again to view current backup state.</div>
+<header class="masthead">
+    <span class="brand">AAM Backup</span>
+    <nav aria-label="Pages">
+        <a href="/settings">Settings</a>
+        <a href="/logout">Sign out</a>
+    </nav>
+</header>
+<section class="hero" id="hero" data-tone="unknown" aria-live="polite">
+    <h1 id="hero-line">Checking your backups...</h1>
+    <p id="hero-sub">Reading the latest results from the server.</p>
+</section>
+<div id="server-banner" class="banner red" style="display:none"></div>
+<div id="session-banner" class="banner red" style="display:none">Session expired — status unavailable. Refresh the page and sign in again to view current backup state.</div>
 <div id="attention-banner"></div>
 <div id="approvals-container"></div>
 <div class="stats">
-    <div class="stat"><div class="num" id="stat-lan-files">...</div><div class="label">Files on NAS</div></div>
-    <div class="stat"><div class="num" id="stat-cloud-files">...</div><div class="label">Files on Cloud</div></div>
-    <div class="stat"><div class="num" id="stat-fy-prefix">{{ fy_prefix }}</div><div class="label">Fiscal Year</div></div>
+    <div class="stat"><div class="num" id="stat-lan-files">...</div><div class="label">Files on the office NAS</div></div>
+    <div class="stat"><div class="num" id="stat-cloud-files">...</div><div class="label">Files in the cloud</div></div>
+    <div class="stat"><div class="num" id="stat-fy-prefix">{{ fy_prefix }}</div><div class="label">Financial year</div></div>
 </div>
 <div class="grid">
     <div class="card unknown" id="card-cloud">
-        <h2>Cloud Backup <span class="status-badge unknown" id="badge-cloud">Loading...</span></h2>
+        <h2>Cloud backup <span class="status-badge unknown" id="badge-cloud">Loading...</span></h2>
         <p id="desc-cloud">Fetching status...</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-cloud">Last backup: Loading...</p>
+        <p id="last-cloud">Last backup: Loading...</p>
         <p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p>
-        <p style="font-size:0.75rem;color:#6b7280" id="cloud-last-success">Last success: Loading...</p>
-        <p style="font-size:0.75rem;color:#9ca3af" id="integrity-cloud">Integrity: Loading...</p>
+        <p id="cloud-last-success">Last success: Loading...</p>
+        <p id="integrity-cloud">Integrity: Loading...</p>
         {% if not cloud_enabled %}
-        <p style="font-size:0.875rem;color:#fbbf24;margin-top:0.5rem">Cloud backup is disabled in configuration — manual runs are rejected by the server.</p>
+        <p class="note-warn">Cloud backup is disabled in configuration — manual runs are rejected by the server.</p>
         {% else %}
-        <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'cloud')">
+        <form onsubmit="triggerBackup(event, 'cloud')">
             <button class="btn-trigger btn-cloud" id="btn-cloud" disabled>Loading...</button>
         </form>
         {% endif %}
     </div>
     <div class="card unknown" id="card-lan">
-        <h2>LAN Backup <span class="status-badge unknown" id="badge-lan">Loading...</span></h2>
+        <h2>Office NAS backup <span class="status-badge unknown" id="badge-lan">Loading...</span></h2>
         <p id="desc-lan">Fetching status...</p>
-        <p style="font-size:0.75rem;color:#9ca3af;margin-top:0.5rem" id="last-lan">Last backup: Loading...</p>
+        <p id="last-lan">Last backup: Loading...</p>
         <p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p>
-        <p style="font-size:0.75rem;color:#6b7280" id="lan-last-success">Last success: Loading...</p>
-        <p style="font-size:0.75rem;color:#9ca3af" id="integrity-lan">Integrity: Loading...</p>
+        <p id="lan-last-success">Last success: Loading...</p>
+        <p id="integrity-lan">Integrity: Loading...</p>
         {% if not lan_enabled %}
-        <p style="font-size:0.875rem;color:#fbbf24;margin-top:0.5rem">LAN backup is disabled in configuration — manual runs are rejected by the server.</p>
+        <p class="note-warn">LAN backup is disabled in configuration — manual runs are rejected by the server.</p>
         {% else %}
-        <form style="margin-top:1rem" onsubmit="triggerBackup(event, 'lan')">
+        <form onsubmit="triggerBackup(event, 'lan')">
             <button class="btn-trigger btn-lan" id="btn-lan" data-wol="{{ 'yes' if lan_wol else 'no' }}" data-shutdown="{{ 'yes' if lan_shutdown else 'no' }}" disabled>Loading...</button>
         </form>
         {% endif %}
     </div>
 </div>
-<div style="margin-bottom:1rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+<div class="actions">
     <button class="btn-trigger" onclick="generateReport('weekly')">Download Weekly Report</button>
     <button class="btn-trigger" onclick="generateReport('monthly')">Download Monthly Report</button>
-    <button class="btn-trigger" id="btn-email-weekly" onclick="emailReport('weekly')" style="background:#0e7490">Email Weekly Report</button>
-    <button class="btn-trigger" id="btn-email-monthly" onclick="emailReport('monthly')" style="background:#0e7490">Email Monthly Report</button>
+    <button class="btn-secondary" id="btn-email-weekly" onclick="emailReport('weekly')">Email Weekly Report</button>
+    <button class="btn-secondary" id="btn-email-monthly" onclick="emailReport('monthly')">Email Monthly Report</button>
 </div>
-<h2 style="margin-top:2rem;margin-bottom:0.75rem;color:#9ca3af;font-size:0.9rem;">Recent Backups</h2>
+<h2 class="section-title">Recent Backups</h2>
+<div class="table-wrap">
 <table>
 <thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
-<tbody id="history-tbody"><tr><td colspan="6" style="color:#6b7280; text-align: center;">Loading data...</td></tr></tbody>
+<tbody id="history-tbody"><tr><td colspan="6" class="empty">Loading data...</td></tr></tbody>
 </table>
+</div>
 <div class="info">
     <p id="health-info">Fetching health info...</p>
-    <p id="last-updated" style="margin-top:0.25rem;color:#6b7280">Last updated: -</p>
-    <p style="margin-top:0.25rem">AAM Backup System — Live, updates automatically &middot; <a href='/settings' style='color:#60a5fa'>Settings</a> &middot; <a href='/logout' style='color:#60a5fa'>Logout</a></p>
+    <p id="last-updated">Last updated: -</p>
+    <p>This page updates by itself.</p>
 </div>
 </div>
 <script src="/static/js/dashboard.js"></script>

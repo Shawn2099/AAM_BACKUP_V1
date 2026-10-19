@@ -42,12 +42,11 @@ function fmtIST(iso) {
 }
 
 function showToast(message, type) {
-    const colors = { success: '#065f46', error: '#7f1d1d', warning: '#78350f', info: '#1e3a8a' };
     const el = document.createElement('div');
-    el.style.cssText = 'background:' + (colors[type] || colors.info) + ';color:#fff;padding:0.75rem 1rem;' +
-        'border-radius:0.5rem;font-size:0.85rem;box-shadow:0 4px 12px rgba(0,0,0,.4);white-space:pre-line';
+    el.className = 'toast ' + (type || 'info');
     el.textContent = message;
     document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => el.classList.add('shown'), 50);
     setTimeout(() => el.remove(), type === 'error' ? 12000 : 7000);
 }
 
@@ -142,12 +141,12 @@ function renderOverview() {
             until = ' &rarr; finished by ' + String(Math.floor(end / 60)).padStart(2, '0') + ':' +
                 String(end % 60).padStart(2, '0') + ' at the latest (' + hours + ' h)';
         }
-        return { mins: h * 60 + m, html: '<b>' + p.time + '</b> ' + esc(j[1]) + ' <span style="color:#9ca3af">(' +
+        return { mins: h * 60 + m, html: '<b>' + p.time + '</b> ' + esc(j[1]) + ' <span class="hint">(' +
             when + ')</span>' + until };
     }).sort((a, b) => a.mins - b.mins);
-    box.innerHTML = '<div style="font-weight:600;margin-bottom:0.4rem">Your timetable at a glance (' + esc(tzLabel()) +
+    box.innerHTML = '<div class="label">Your timetable at a glance (' + esc(tzLabel()) +
         ')</div>' + items.map(i => '<div style="margin:0.15rem 0">' + i.html + '</div>').join('') +
-        '<div style="color:#9ca3af;font-size:0.75rem;margin-top:0.4rem">Only one backup runs at a time. ' +
+        '<div class="hint">Only one backup runs at a time. ' +
         'If two would overlap, the page shows it in red and will not save.</div>';
 }
 
@@ -305,7 +304,7 @@ function render() {
         }).join('');
         const overview = s.name === 'schedule' ? '<div id="overview" class="overview"></div>' : '';
         return '<details class="section" open><summary>' + esc(s.title) +
-            ' <span class="count" style="color:#6b7280;font-weight:400;font-size:0.8rem"></span></summary>' +
+            ' <span class="count summary-count"></span></summary>' +
             overview + rows + '</details>';
     }).join('');
 
@@ -407,7 +406,7 @@ function applyTab() {
 let rolloverState = null;
 
 const STEP_MARK = { done: '✓', skipped: '–', failed: '✗', pending: '•' };
-const STEP_COLOR = { done: '#34d399', skipped: '#9ca3af', failed: '#f87171', pending: '#fbbf24' };
+const STEP_CLASS = { done: 'step-done', skipped: 'step-skipped', failed: 'step-failed', pending: 'step-pending' };
 
 function renderRolloverSteps(journal) {
     const box = document.getElementById('ro-steps');
@@ -418,7 +417,7 @@ function renderRolloverSteps(journal) {
     list.textContent = '';
     journal.steps.forEach(function (s) {
         const li = document.createElement('li');
-        li.style.color = STEP_COLOR[s.state] || '#e5e7eb';
+        li.className = STEP_CLASS[s.state] || '';
         li.textContent = (STEP_MARK[s.state] || '•') + ' ' + s.label +
             (s.state === 'failed' && s.error ? ' - will retry: ' + s.error : '') +
             (s.state === 'skipped' ? ' - not needed' : '');
@@ -555,7 +554,7 @@ async function loadSettings() {
     if (resp.status === 401) { window.location.href = '/login'; return; }
     const data = await resp.json();
     if (!resp.ok) {
-        document.getElementById('sections').innerHTML = '<p style="color:#fca5a5">' + esc(data.detail || 'Could not load settings') + '</p>';
+        document.getElementById('sections').innerHTML = '<p class="load-error">' + esc(data.detail || 'Could not load settings') + '</p>';
         return;
     }
     isAdmin = !!data.admin;
@@ -586,7 +585,7 @@ async function loadHistory() {
         '<tr><td>' + esc(fmtIST(r.changed_at)) + '</td><td>' + esc(r.changed_by) + '</td><td>' + esc(r.key) +
         (r.risky ? ' <span class="tag badge-risky">risky</span>' : '') + '</td><td>' + esc(r.old_value) +
         '</td><td>' + esc(r.new_value) + '</td></tr>').join('')
-        : '<tr><td colspan="5" style="color:#6b7280;text-align:center">No changes made on the dashboard yet.</td></tr>';
+        : '<tr><td colspan="5" class="empty">No changes made on the dashboard yet.</td></tr>';
 }
 
 function discardChanges() { loadSettings(); }
@@ -678,9 +677,7 @@ function showRestartOverlay(text) {
 }
 
 async function applyChanges() {
-    if (!window.confirm('Restart the backup service now?
-
-It is only restarted when no backup, check or rollover is running. ' +
+    if (!window.confirm('Restart the backup service now?\n\nIt is only restarted when no backup, check or rollover is running. ' +
         'The dashboard is unavailable for about a minute.')) return;
     const btn = document.getElementById('btn-apply');
     btn.disabled = true;

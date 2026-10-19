@@ -1,0 +1,83 @@
+/* Settings page - uses the tokens defined in dashboard.css */
+
+.page-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; padding: 1rem 0; border-bottom: 1px solid var(--rule); }
+.page-title { font-family: var(--serif); font-weight: 500; font-size: clamp(1.8rem, 4vw, 2.4rem); line-height: 1.15; padding: 1.5rem 0 0.75rem; border-bottom: 3px double var(--rule-strong); margin-bottom: 1rem; }
+
+/* tabs: an underline on the active one, like the tab of a ledger divider */
+.tabs { display: flex; gap: 0.25rem; margin-bottom: 1rem; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.tab { background: transparent; color: var(--ink-2); border: none; border-bottom: 3px solid transparent; border-radius: 0; padding: 0.55rem 1rem; margin: 0 0 -1px; font-size: 0.95rem; }
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); border-bottom-color: var(--action); }
+
+details.section { background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; margin-bottom: 0.75rem; padding: 0.15rem 1rem; }
+details.section > summary { cursor: pointer; padding: 0.7rem 0; font-family: var(--serif); font-size: 1.1rem; }
+details.section[open] > summary { border-bottom: 3px double var(--rule-strong); margin-bottom: 0.25rem; }
+
+.field { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(14rem, 1.2fr); gap: 0.75rem 1.5rem; padding: 0.8rem 0; border-top: 1px solid var(--rule); }
+details.section > .field:first-of-type { border-top: none; }
+.field .label { font-size: 0.95rem; font-weight: 600; }
+.field .name { font-family: var(--mono); font-size: 0.7rem; color: var(--ink-3); word-break: break-all; margin-top: 0.2rem; }
+.field .tech { font-size: 0.75rem; color: var(--ink-3); margin-top: 0.2rem; }
+.field .desc { font-size: 0.85rem; color: var(--ink-2); margin-top: 0.25rem; max-width: 60ch; }
+.field .meta { font-size: 0.75rem; color: var(--ink-3); margin-top: 0.25rem; }
+.field input[type=text], .field input[type=number], .field input[type=password], .field select, .field textarea { width: 100%; }
+.field textarea { min-height: 4rem; font-family: var(--mono); }
+.field.changed { background: var(--neutral-bg); box-shadow: inset 4px 0 0 var(--action); padding-left: 0.75rem; }
+.field.error { background: var(--bad-bg); box-shadow: inset 4px 0 0 var(--bad); padding-left: 0.75rem; }
+.field .err { color: var(--bad); font-size: 0.8rem; margin-top: 0.25rem; }
+.field input.bad { border-color: var(--bad); }
+.overview { background: var(--paper); border: 1px solid var(--rule); border-radius: 3px; padding: 0.75rem 1rem; margin: 0.5rem 0 0.75rem; font-size: 0.9rem; }
+
+.tag.badge-risky { --c: var(--blocked); --c-bg: var(--blocked-bg); }
+.tag.badge-restart { --c: var(--action); --c-bg: transparent; }
+.tag.badge-locked { --c: var(--neutral); --c-bg: var(--neutral-bg); }
+
+.list-row { display: flex; gap: 0.4rem; margin-bottom: 0.35rem; }
+.list-row input { flex: 1; }
+.btn-small { background: transparent; color: var(--action); border: 1px solid var(--action); border-radius: 3px; padding: 0.2rem 0.6rem; font-size: 0.85rem; font-weight: 500; margin-right: 0.25rem; }
+.btn-small:hover { background: var(--neutral-bg); }
+.btn-x { color: var(--bad); border-color: var(--bad); font-size: 1rem; line-height: 1; }
+.sched select, .sched input[type=time] { width: auto; display: inline-block; margin: 0.15rem 0.2rem 0.15rem 0; }
+.sched input[type=text] { margin-top: 0.25rem; }
+.sched .tz { font-size: 0.8rem; color: var(--ink-2); }
+.toggle { display: inline-flex; gap: 0.5rem; align-items: center; cursor: pointer; font-size: 0.9rem; }
+.with-unit { display: flex; align-items: center; gap: 0.5rem; }
+.with-unit input { flex: 1; }
+.with-unit .unit { color: var(--ink-2); font-size: 0.85rem; white-space: nowrap; min-width: 5.5rem; }
+
+/* apply bar: saved changes waiting for a restart */
+#apply-bar { display: none; align-items: center; gap: 1rem; flex-wrap: wrap; background: var(--warn-bg); border-left: 4px solid var(--warn); padding: 0.75rem 1rem; border-radius: 3px; margin: 1rem 0 0.5rem; font-size: 0.9rem; }
+#apply-bar button { margin-right: 0; }
+#restart-overlay { display: none; position: fixed; inset: 0; background: var(--paper); z-index: 20000; align-items: center; justify-content: center; font-family: var(--serif); font-size: 1.6rem; text-align: center; padding: 1rem; }
+
+#savebar { position: sticky; bottom: 0; background: var(--paper); padding: 0.75rem 0; border-top: 1px solid var(--rule-strong); display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+#save-note { font-size: 0.85rem; color: var(--ink-2); }
+#general-error { color: var(--bad); font-size: 0.85rem; white-space: pre-line; }
+
+#advanced-banner, #readonly-banner { display: none; background: var(--blocked-bg); border-left: 4px solid var(--blocked); padding: 0.75rem 1rem; border-radius: 3px; margin-bottom: 1rem; font-size: 0.9rem; }
+#admin-login, #admin-bar { display: none; background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 1rem 1.25rem; margin-bottom: 1rem; font-size: 0.9rem; }
+#admin-login p { color: var(--ink-2); margin: 0.35rem 0 0.6rem; }
+#admin-login input, #admin-pw input { margin: 0.25rem 0.4rem 0.25rem 0; }
+#admin-bar .btn-small { margin-top: 0.4rem; }
+#admin-pw { display: none; margin-top: 0.75rem; }
+
+#rollover-panel { display: none; background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 1.25rem; }
+#rollover-panel .row { margin: 0.4rem 0; }
+#rollover-panel .k { color: var(--ink-2); display: inline-block; min-width: 12rem; }
+#ro-steps { display: none; margin: 0.9rem 0; }
+#ro-steps-list { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+#ro-message { margin: 0.9rem 0; }
+#ro-approval { display: none; margin-bottom: 0.9rem; color: var(--blocked); }
+.step-done { color: var(--ok); }
+.step-skipped { color: var(--ink-3); }
+.step-failed { color: var(--bad); }
+.step-pending { color: var(--warn); }
+.fine-print { margin-top: 0.75rem; font-size: 0.85rem; color: var(--ink-2); max-width: 70ch; }
+.loading { color: var(--ink-2); }
+.load-error { color: var(--bad); }
+.summary-count { color: var(--ink-3); font-weight: 400; font-size: 0.85rem; }
+.hint { color: var(--ink-2); font-size: 0.8rem; margin-top: 0.4rem; }
+
+@media (max-width: 40rem) {
+    .field { grid-template-columns: 1fr; }
+}
