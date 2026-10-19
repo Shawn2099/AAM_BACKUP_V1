@@ -217,9 +217,7 @@ if ($ServiceAccount) {
     # /T: also the files that ALREADY exist (an upgrade: logs and the DB were
     # created by LocalSystem; without it NSSM could not open agent_svc.log as
     # the account and the agent did not start - trial box 2026-10-15).
-    # icacls does not resolve ".
-ame": use COMPUTER
-ame (found on the box, plan E/10)
+    # icacls does not resolve dot-backslash-name: use COMPUTERNAME-backslash-name (found on the box)
     $AclAccount = if ($ServiceAccount.StartsWith(".\")) { "$env:COMPUTERNAME\" + $ServiceAccount.Substring(2) } else { $ServiceAccount }
     icacls $RuntimeDir /grant "${AclAccount}:(OI)(CI)M" /T /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) {
