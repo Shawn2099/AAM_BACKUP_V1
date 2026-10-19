@@ -60,7 +60,7 @@ button { font: inherit; cursor: pointer; }
 .bar .in {
     position: relative; top: .9rem; max-width: 66rem; margin: 0 auto; padding: .5rem .55rem .5rem 1.1rem;
     display: flex; align-items: center; gap: 1rem; border-radius: 999px;
-    background: color-mix(in srgb, var(--panel) 82%, transparent); backdrop-filter: blur(14px) saturate(1.4);
+    background: var(--panel);
     border: 1px solid var(--hair); box-shadow: 0 10px 30px -14px var(--lift);
 }
 .brand { white-space: nowrap; display: flex; align-items: center; gap: .6rem; font-weight: 650; }
@@ -72,11 +72,11 @@ button { font: inherit; cursor: pointer; }
 
 /* ── status band ── */
 .band {
-    background: radial-gradient(38rem 18rem at 9% 62%, color-mix(in srgb, var(--c) 16%, transparent), transparent 70%), var(--c-bg);
+    background: var(--c-bg);
     border-bottom: 1px solid var(--c-line);
 }
 .band .in { max-width: 70rem; margin: 0 auto; padding: 5.6rem 1.5rem 2.4rem; display: flex; gap: 2rem; align-items: center; }
-.seal { flex: none; width: 7rem; height: 7rem; filter: drop-shadow(0 8px 22px color-mix(in srgb, var(--c) 30%, transparent)); }
+.seal { flex: none; width: 7rem; height: 7rem; }
 .seal .ring { fill: var(--panel); stroke: var(--c); stroke-width: 3; }
 .seal .glyph { stroke: var(--c); fill: none; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
 .seal .draw { stroke-dasharray: 60; stroke-dashoffset: 60; animation: draw .7s .15s ease-out forwards; }
@@ -128,7 +128,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--panel); pad
 /* ── where your files go ── */
 .route { display: grid; grid-template-columns: minmax(10rem, 13rem) 3.5rem minmax(0, 1fr); align-items: stretch; padding: 7px; }
 .source {
-    background: linear-gradient(160deg, var(--source), color-mix(in srgb, var(--source) 68%, #000)); color: #fff; border-radius: 18px;
+    background: var(--source); color: #fff; border-radius: 18px;
     padding: 1.3rem; display: flex; flex-direction: column; justify-content: center; gap: .3rem;
     box-shadow: 0 0 0 6px var(--shell), 0 0 0 7px var(--hair), 0 30px 50px -34px var(--lift), inset 0 1px 0 rgba(255,255,255,.22);
 }
@@ -137,7 +137,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--panel); pad
 .source span { font-size: .9rem; opacity: .85; }
 .source .n { font-size: 1.8rem; font-weight: 600; line-height: 1.1; margin-top: .6rem; opacity: 1; }
 .wires { position: relative; }
-.wires svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.wires svg { position: absolute; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; }
 .wire { fill: none; stroke: var(--c); stroke-width: 2.5; stroke-linecap: round; }
 .wire.tone-bad, .wire.tone-warn { stroke-dasharray: 2 9; }
 .dests { display: grid; gap: 1.6rem; }
@@ -153,7 +153,6 @@ code { font-family: var(--mono); font-size: .88em; background: var(--panel); pad
 .pill {
     display: inline-flex; align-items: center; gap: .4rem; padding: .15rem .7rem .15rem .55rem; border-radius: 999px;
     font-size: .85rem; font-weight: 600; background: var(--c-bg); color: var(--c); white-space: nowrap;
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 22%, transparent);
 }
 .pill::before { content: ""; width: .55rem; height: .55rem; border-radius: 50%; background: var(--c); }
 .dest p { color: var(--ink-2); font-size: .95rem; }
@@ -251,6 +250,16 @@ td.empty { color: var(--ink-3); text-align: center; padding: 1.5rem; }
 .tag { display: inline-flex; align-items: center; padding: .05rem .5rem; border-radius: 999px; font-size: .78rem; font-weight: 600; color: var(--c, var(--ink-2)); background: var(--c-bg, var(--idle-bg)); }
 .info { color: var(--ink-3); font-size: .85rem; margin-top: 2rem; padding-top: .75rem; border-top: 1px solid var(--hair); }
 .page-note { color: var(--ink-2); margin-bottom: 1rem; max-width: 70ch; }
+
+/* Finishing touches that need colour mixing (Chrome/Edge 111+, Firefox 113+, Safari 16.2+);
+   older browsers keep the plain solid colours above. */
+@supports (background: color-mix(in srgb, white 50%, black)) {
+    .bar .in { background: color-mix(in srgb, var(--panel) 82%, transparent); backdrop-filter: blur(14px) saturate(1.4); }
+    .band { background: radial-gradient(38rem 18rem at 9% 62%, color-mix(in srgb, var(--c) 16%, transparent), transparent 70%), var(--c-bg); }
+    .seal { filter: drop-shadow(0 8px 22px color-mix(in srgb, var(--c) 30%, transparent)); }
+    .source { background: linear-gradient(160deg, var(--source), color-mix(in srgb, var(--source) 68%, #000)); }
+    .pill { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 22%, transparent); }
+}
 
 @media (max-width: 62rem) { .page { grid-template-columns: minmax(0, 1fr); gap: 2rem; } }
 @media (max-width: 30rem) { .brand span.name { display: none; } }

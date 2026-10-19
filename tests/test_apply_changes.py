@@ -209,3 +209,14 @@ class TestPageAssets:
         from pathlib import Path
         css = (Path(ui.__file__).parent / "static" / "css" / "settings.css").read_text(encoding="utf-8")
         assert "#restart-overlay { display: none;" in css
+
+
+def test_colour_mixing_is_only_used_behind_a_support_check():
+    """Older browsers (Chrome < 111) drop a whole property that contains color-mix; the plain
+    colours must be the default and the mixes live in @supports blocks."""
+    import re
+    from pathlib import Path
+    for name in ("dashboard.css", "settings.css"):
+        css = (Path(ui.__file__).parent / "static" / "css" / name).read_text(encoding="utf-8")
+        outside = re.sub(r"@supports \(background: color-mix[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", css)
+        assert "color-mix(" not in outside, name
