@@ -272,3 +272,26 @@ class TestSuggestions:
         for jobs in (self.JOBS, {"cloud": ("0 2 * * *", 6 * 3600), "lan": ("0 6 * * *", 4 * 3600)}):
             for msg in schedule_problems(jobs, "Asia/Kolkata", H):
                 assert msg.index("Why:") > 0 and msg.split()[0] in ("Move", "Start")
+
+
+class TestUnrelatedJobIsNamed:
+    """Owner 2026-10-19: cloud at 13:40 warned for every NAS time because the Sunday safety check
+    overlaps the cloud backup. The message must say that changing the NAS time will not help,
+    and the time it offers must leave no overlap at all."""
+
+    def _jobs(self, lan_hour):
+        return {"cloud": ("40 13 * * *", 6 * 3600), "lan": (f"0 {lan_hour} * * *", 4 * 3600),
+                "audit": ("0 10 * * SUN", 8 * 3600)}
+
+    def test_message_says_the_lan_time_is_not_the_cause(self):
+        for hour in (3, 21):
+            [msg] = schedule_problems(self._jobs(hour), "Asia/Kolkata", H)
+            assert msg.startswith("Move the weekly safety check")
+            assert "Changing the LAN backup time will not fix this." in msg
+
+    def test_offered_time_leaves_no_overlap_at_all(self):
+        import re
+        [msg] = schedule_problems(self._jobs(21), "Asia/Kolkata", H)
+        hh, mm = map(int, re.search(r"start at (\d\d):(\d\d)", msg).groups())
+        moved = {**self._jobs(21), "audit": (f"{mm} {hh} * * SUN", 8 * 3600)}
+        assert schedule_problems(moved, "Asia/Kolkata", 0) == []

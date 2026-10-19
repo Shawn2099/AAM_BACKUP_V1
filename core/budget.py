@@ -129,6 +129,12 @@ def _nearest_working_time(jobs: dict[str, tuple[str, float]], name: str, timezon
     for step in steps:
         candidate = _with_start_time(cron, step // 60, step % 60)
         trial = {**jobs, name: (candidate, budget_s)}
+        if (candidate and _hard_problems(trial, timezone, 0, _QUICK_DAYS) == 0
+                and _hard_problems(trial, timezone, 0) == 0):
+            return step // 60, step % 60
+    for step in steps:      # no time avoids every overlap: accept the allowed waiting time
+        candidate = _with_start_time(cron, step // 60, step % 60)
+        trial = {**jobs, name: (candidate, budget_s)}
         if (candidate and _hard_problems(trial, timezone, wait_seconds, _QUICK_DAYS) == 0
                 and _hard_problems(trial, timezone, wait_seconds) == 0):
             return step // 60, step % 60
@@ -137,7 +143,7 @@ def _nearest_working_time(jobs: dict[str, tuple[str, float]], name: str, timezon
 
 def _overlap_message(name: str, nxt: str, t: datetime, t_next: datetime, budget_s: float,
                      wait_s: float, cron: str, next_cron: str, move_earlier: bool,
-                     fix: tuple[int, int] | None) -> str:
+                     fix: tuple[int, int] | None, others: tuple[str, ...] = ()) -> str:
     """Action first, then the reason, then the technical detail for support.
 
     `move_earlier`: the earlier job (`name`) is the one that runs less often (e.g. the weekly
@@ -161,8 +167,12 @@ def _overlap_message(name: str, nxt: str, t: datetime, t_next: datetime, budget_
     shorten = (f"set the {this}'s maximum running time to {_hours(allowed)} or less "
                "(Advanced settings, Run time limits)" if allowed >= 1800 else
                f"give the {this} a different day or time")
+    not_cause = ""
+    if others:
+        names = " and ".join(_JOB_NAMES.get(o, o) for o in others)
+        not_cause = f" Changing the {names} time will not fix this."
     return (
-        f"{move}, or {shorten}. "
+        f"{move}, or {shorten}.{not_cause} "
         f"Why: the {this} starts {t:%a %H:%M} and may run for up to {_hours(budget_s)} "
         f"(until {latest_end:%a %H:%M}); the {other} starts {t_next:%a %H:%M} and waits only "
         f"{_hours(wait_s)} for it, so it could be skipped. "
@@ -213,5 +223,6 @@ def schedule_problems(jobs: dict[str, tuple[str, float]], timezone: str,
                     fix = None
             problems.append(_overlap_message(
                 name, nxt, t, t_next, budget_s, wait_seconds, jobs[name][0], jobs[nxt][0],
-                move_earlier=move_earlier, fix=fix))
+                move_earlier=move_earlier, fix=fix,
+                others=tuple(j for j in jobs if j not in (name, nxt))))
     return problems
