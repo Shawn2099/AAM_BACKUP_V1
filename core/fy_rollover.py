@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 from loguru import logger
@@ -328,12 +329,18 @@ def run_archive_transition(
     auth_timeout: int = model_default(HealthConfig, "rollover_auth_timeout_seconds"),       # config.health.rollover_auth_timeout_seconds
     archive_timeout: int = model_default(HealthConfig, "rollover_archive_timeout_seconds"),   # config.health.rollover_archive_timeout_seconds
     artefacts: RunArtefacts | None = None,
+    config_dir: str | None = None,
 ) -> bool:
     """Transition all GCS objects under old_fy/ to ARCHIVE storage class.
 
     ``gcloud storage objects update gs://<bucket>/<old_fy>/ --recursive
-    --storage-class=ARCHIVE`` - metadata only, nothing is downloaded. Runs
-    through run_tool (full output kept, process tree killed on timeout).
+    --storage-class=ARCHIVE`` - the objects are rewritten inside Google, nothing is downloaded.
+    Runs through run_tool (full output kept, process tree killed on timeout).
+
+    The key is handed to gcloud as a file (``CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE``), never
+    activated: ``activate-service-account`` would store a second copy of the key in gcloud's
+    ``credentials.db``. ``config_dir`` (a folder in the runtime directory) keeps gcloud's own
+    settings out of a user profile the service account may not have.
 
     Non-blocking by design: any failure is logged as a WARNING and returns
     False; the rollover itself is already complete and the transition can be
@@ -358,20 +365,24 @@ def run_archive_transition(
                      "transition NOT run")
         return False
     artefacts = artefacts or RunArtefacts.ephemeral("fy-archive")
-    # Stateless auth: the key path is injected per call; no persistent login.
+    # Stateless: everything gcloud needs is injected per call; nothing is installed or stored.
     env = os.environ.copy()
-    env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcs_key_path)
-
-    steps = []
+    env["CLOUDSDK_PYTHON"] = env.get("CLOUDSDK_PYTHON") or sys.executable   # the SDK ships without one
+    env["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "1"
+    if config_dir:
+        Path(config_dir).mkdir(parents=True, exist_ok=True)
+        env["CLOUDSDK_CONFIG"] = str(config_dir)
     if Path(gcs_key_path).is_file():
-        steps.append(("gcloud-auth", [gcloud_exe, "auth", "activate-service-account",
-                                      f"--key-file={gcs_key_path}"], auth_timeout))
+        env["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"] = str(gcs_key_path)
     else:
         logger.info("FY rollover: no GCS key file found, using ambient gcloud authentication")
+
+    # First prove gcloud starts at all (a missing Python made every transition a silent no-op).
     # --recursive on the bare prefix (no ** glob) - no shell wildcard expansion.
-    steps.append(("gcloud-archive", [gcloud_exe, "storage", "objects", "update",
-                                     f"gs://{bucket}/{old_fy}/", "--storage-class=ARCHIVE",
-                                     "--recursive"], archive_timeout))
+    steps = [("gcloud-check", [gcloud_exe, "--version"], auth_timeout),
+             ("gcloud-archive", [gcloud_exe, "storage", "objects", "update",
+                                 f"gs://{bucket}/{old_fy}/", "--storage-class=ARCHIVE",
+                                 "--recursive"], archive_timeout)]
     for name, argv, timeout in steps:
         result = run_tool(name, argv, timeout_s=timeout, artefacts=artefacts, env=env)
         if not result.completed or result.exit_code != 0:

@@ -39,7 +39,7 @@ def fake_run_tool(
     def _fake(name, argv, *, timeout_s, artefacts, log_path=None, env=None, cwd=None):
         calls.append({"name": name, "argv": [str(a) for a in argv],
                       "timeout_s": timeout_s, "log_path": log_path,
-                      "artefacts": artefacts})
+                      "artefacts": artefacts, "env": env})
         out = artefacts.new_path(f"{name}.stdout", "txt")
         err = artefacts.new_path(f"{name}.stderr", "txt")
         out.write_text(stdout, encoding="utf-8")

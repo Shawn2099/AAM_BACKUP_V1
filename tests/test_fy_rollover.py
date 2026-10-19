@@ -167,19 +167,19 @@ class TestRunArchiveTransition:
             assert run_archive_transition(bucket="test-bucket", old_fy="FY25-26",
                                           gcs_key_path="key.json") is False
 
-    def test_auth_failure(self, tmp_path):
-        """gcloud auth fails → False, archive never attempted."""
+    def test_gcloud_check_failure(self, tmp_path):
+        """gcloud cannot even start (no Python, broken SDK) → False, archive never attempted."""
         key = tmp_path / "key.json"
         key.write_text('{"type": "service_account"}')
         ok, calls = self._run(key, exit_code=1, stderr="auth failed")
-        assert ok is False and len(calls) == 1 and calls[0]["name"] == "gcloud-auth"
+        assert ok is False and len(calls) == 1 and calls[0]["name"] == "gcloud-check"
 
     def test_archive_success(self, tmp_path):
-        """Successful auth + archive → True; key injected via the environment."""
+        """Successful check + archive → True."""
         key = tmp_path / "key.json"
         key.write_text('{"type": "service_account"}')
         ok, calls = self._run(key, exit_code=0)
-        assert ok is True and [c["name"] for c in calls] == ["gcloud-auth", "gcloud-archive"]
+        assert ok is True and [c["name"] for c in calls] == ["gcloud-check", "gcloud-archive"]
         assert [c["timeout_s"] for c in calls] == [30, 600]
 
     def test_archive_command_construction(self, tmp_path):
@@ -200,9 +200,10 @@ class TestRunArchiveTransition:
         assert ok is False
 
     def test_no_key_file_uses_ambient_auth(self, tmp_path):
-        """No key file → skips auth, goes straight to archive."""
+        """No key file → gcloud's own (ambient) login is used: no key override is set."""
         ok, calls = self._run(tmp_path / "nonexistent.json", exit_code=0)
-        assert ok is True and [c["name"] for c in calls] == ["gcloud-archive"]
+        assert ok is True and [c["name"] for c in calls] == ["gcloud-check", "gcloud-archive"]
+        assert "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE" not in calls[-1]["env"]
 
 
 class TestDetectRollover:

@@ -2482,6 +2482,7 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
             gcs_key_path=config.paths.gcs_key_path,
             auth_timeout=config.health.rollover_auth_timeout_seconds,
             archive_timeout=config.health.rollover_archive_timeout_seconds,
+            config_dir=os.path.join(config.paths.runtime_dir, "gcloud"),
         )
         if not archive_ok:
             raise RuntimeError(f"Archive transition of {from_fy} failed - retried every morning")
