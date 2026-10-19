@@ -88,7 +88,7 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
         assert isinstance(exc1, guards.GuardBlocked), exc1
         assert row1["status"] == "LAN_BLOCKED"
         assert [g["guard"] for g in req["guards"]] == ["G5_CANARY"]
-        assert req["phrase"] == "INITIALISE DESTINATION"
+        assert req["phrase"] == "APPROVE"
         assert files() == [], "nothing may be written to an unconfirmed destination"
         assert [e.kind for e in emails] == ["ACTION_REQUIRED"]   # one email, no FAILURE alert
 

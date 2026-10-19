@@ -56,10 +56,14 @@ def test_destination_must_match_for_g4():
     assert ok.allowed and not bad.allowed and "situation changed" in bad.reason
 
 
-def test_phrases_name_the_consequence():
-    assert ap.confirmation_phrase("G3_MASS_DELETE", {"planned_deletes": 4812}) == "DELETE 4812"
-    assert ap.phrase_matches("DELETE 4812", "  delete   4812 ")
-    assert not ap.phrase_matches("DELETE 4812", "yes")
+def test_one_word_confirms_every_approval():
+    """Owner 2026-10-19: typing APPROVE is enough for every guard (the card shows the numbers)."""
+    for guard in ("G3_MASS_DELETE", "G2_SOURCE_SHRINK", "G4_DESTINATION_IDENTITY", "G5_CANARY",
+                  "G1_SOURCE_HAS_FILES", "G6_FY_ROLLOVER"):
+        assert ap.confirmation_phrase(guard, {"planned_deletes": 4812}) == "APPROVE"
+    assert ap.request_phrase([{"guard": "G3_MASS_DELETE"}, {"guard": "G2_SOURCE_SHRINK"}]) == "APPROVE"
+    assert ap.phrase_matches("APPROVE", "  approve ")
+    assert not ap.phrase_matches("APPROVE", "yes")
     assert ap.expires_at(NOW, 12).startswith("2026-10-14T22:00:00")
 
 

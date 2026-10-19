@@ -52,12 +52,12 @@ def _request(*results, **over):
     return req
 
 
-def test_request_phrase_names_every_consequence():
+def test_request_phrase_is_one_word_for_several_guards():
     phrase = ap.request_phrase([
         {"guard": "G3_MASS_DELETE", "metrics": {"planned_deletes": 600}},
         {"guard": "G2_SOURCE_SHRINK", "metrics": {"drop_files": 40}},
     ])
-    assert phrase == "DELETE 600 / SOURCE SHRANK 40"
+    assert phrase == "APPROVE"
 
 
 def test_request_covers_all_blocked_guards_when_not_worse():
@@ -176,7 +176,7 @@ def test_blocked_run_opens_request_and_sends_attention_email(
     kw = db.open_approval_request.call_args.kwargs
     assert kw["leg"] == "lan" and kw["blocked_run_id"] == "run-b"
     assert [x["guard"] for x in kw["guards"]] == ["G3_MASS_DELETE"]   # blocked only
-    assert kw["phrase"] == "DELETE 600"
+    assert kw["phrase"] == "APPROVE"
     event = notify.call_args.args[1]
     assert event.kind == "ACTION_REQUIRED" and event.key == "blocked:lan"
     assert "600 of 1,000" in event.message and event.status == "LAN_BLOCKED"

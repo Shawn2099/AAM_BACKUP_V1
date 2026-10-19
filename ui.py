@@ -409,6 +409,7 @@ def _login_html(body: str) -> str:
             f"<meta name=\"color-scheme\" content=\"light dark\">"
             f"<title>AAM Backup - Sign in</title>"
             f"<link rel=\"stylesheet\" href=\"/static/css/dashboard.css\">"
+            f"<link rel=\"icon\" href=\"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%2314365a%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3E%3Cpath d=%27M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z%27/%3E%3Cpath d=%27M8.5 12l2.5 2.5L16 9.5%27/%3E%3C/svg%3E\">"
             f"<style>{_LOGIN_STYLE}</style></head><body>"
             f"<div class=\"login\"><svg class=\"mark\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--navy)\" "
             f"stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">"
@@ -735,7 +736,8 @@ def _approval_view(req: dict) -> dict:
             expired = True
     keys = ("approval_id", "leg", "status", "created_at", "blocked_run_id", "fy",
             "guards", "phrase", "approved_at", "approved_by", "expires_at")
-    return {**{k: req.get(k) for k in keys}, "expired": expired}
+    # one word confirms every approval, including requests stored with an older, longer phrase
+    return {**{k: req.get(k) for k in keys}, "phrase": approvals.APPROVE_PHRASE, "expired": expired}
 
 
 def _load_open_approval(approval_id: str) -> dict:
@@ -797,9 +799,9 @@ async def approve_blocked_run(approval_id: str, request: Request):
     if req["status"] != approvals.PENDING:
         raise HTTPException(status_code=409, detail=f"This request is {req['status']}; "
                                                     "only a pending request can be approved.")
-    if not approvals.phrase_matches(req["phrase"], typed):
+    if not approvals.phrase_matches(approvals.APPROVE_PHRASE, typed):
         raise HTTPException(status_code=400,
-                            detail=f"To approve, type exactly: {req['phrase']}")
+                            detail=f"To approve, type exactly: {approvals.APPROVE_PHRASE}")
     await _ensure_leg_idle(req["leg"])
     approved_at = now_iso()
     actor = _approval_actor(request)

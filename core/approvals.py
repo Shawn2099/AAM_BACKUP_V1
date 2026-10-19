@@ -53,27 +53,20 @@ def new_approval_id() -> str:
     return secrets.token_hex(16)
 
 
-def confirmation_phrase(guard: str, metrics: dict) -> str:
-    """Phrase the operator must type — names the consequence, not a yes/no."""
-    if guard == "G3_MASS_DELETE":
-        return f"DELETE {int(metrics.get('planned_deletes', 0))}"
-    if guard == "G2_SOURCE_SHRINK":
-        return f"SOURCE SHRANK {int(metrics.get('drop_files', 0))}"
-    if guard == "G4_DESTINATION_IDENTITY":
-        return "USE NEW DESTINATION"
-    if guard == "G5_CANARY":
-        return "INITIALISE DESTINATION"
-    if guard == "G1_SOURCE_HAS_FILES":
-        return "MIRROR EMPTY SOURCE"
-    if guard == "G6_FY_ROLLOVER":
-        return f"ROLL OVER TO {metrics.get('to_fy', '?')}"
-    return f"APPROVE {guard}"
+# Owner decision 2026-10-19: one word confirms every approval. The card already shows the reason
+# and the numbers; the person reads them, then types this. Requests stored with an older, longer
+# phrase are confirmed with the same word.
+APPROVE_PHRASE = "APPROVE"
 
 
-def request_phrase(blocked: list[dict]) -> str:
-    """Phrase for a request covering several blocked guards (one per guard)."""
-    return " / ".join(confirmation_phrase(b["guard"], b.get("metrics") or {})
-                      for b in blocked)
+def confirmation_phrase(guard: str = "", metrics: dict | None = None) -> str:
+    """What the operator types to approve (the same for every guard)."""
+    return APPROVE_PHRASE
+
+
+def request_phrase(blocked: list[dict] | None = None) -> str:
+    """Phrase for a request covering one or several blocked guards."""
+    return APPROVE_PHRASE
 
 
 def evaluate_request(request: dict | None, *, leg: str, blocked: list, now_iso: str,

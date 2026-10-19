@@ -72,6 +72,8 @@ function setServerUnreachable(down, why) {
     ['cloud', 'lan'].forEach(function(mode) {
         var card = document.getElementById('card-' + mode);
         var badge = document.getElementById('badge-' + mode);
+        var desc0 = document.getElementById('desc-' + mode);
+        if (desc0 && /^Fetching/.test(desc0.innerText)) desc0.innerText = 'Status unavailable - cannot reach the server.';
         if (card) card.className = 'dest tone-idle';
         if (badge) { badge.innerText = 'Unknown'; badge.className = 'pill tone-idle'; }
     });
@@ -157,15 +159,20 @@ function renderHero(data) {
     if (!legs.length) { setHero('unknown', 'Backups are switched off', 'Both backups are disabled in the settings.'); return; }
     var attention = data.attention || [];
     var hasRed = attention.some(function(i) { return i.level === 'red'; });
-    var problems = [], running = [], unknown = [], partial = [];
+    var problems = [], running = [], unknown = [], partial = [], waiting = [];
     legs.forEach(function(l) {
         var d = data[l[0]];
         var cat = d.last_run ? d.last_run.status_category : 'unknown';
         if (d.running) running.push(l[1]);
         else if (d.run_state === 'unknown') unknown.push(l[1]);
+        else if (!d.last_run) waiting.push(l[1]);
         else if (cat === 'partial') partial.push(l[1]);
         else if (_OK_CATEGORIES.indexOf(cat) < 0) problems.push(l[1] + ': ' + (d.last_run ? d.last_run.status_label : 'no backup yet'));
     });
+    if (waiting.length === legs.length && !running.length && !hasRed && !attention.length) {
+        setHero('idle', 'Waiting for your first backup', 'Nothing has been backed up yet. The first backup runs at its scheduled time - there is nothing to do now.');
+        return;
+    }
     if (problems.length || hasRed) {
         setHero('bad', 'Your backups need attention', problems.length ? problems.join('. ') + '.' : 'Read the notice below.');
     } else if (unknown.length) {
@@ -178,6 +185,7 @@ function renderHero(data) {
         setHero('warn', 'The latest backups succeeded, with a warning', 'Read the notice below.');
     } else {
         var parts = legs.map(function(l) {
+            if (!data[l[0]].last_run) return l[1] + ' has not run yet';
             var ls = data[l[0]].last_success;
             return l[1] + ' last succeeded ' + (ls ? agoText(ls) : 'never');
         });
@@ -253,6 +261,8 @@ async function updateStatus() {
                 }
                 if (data.cloud.last_run) { descCloud.innerText = (cloudUnknown ? 'Status unavailable — ' : '') + data.cloud.last_run.status_description; lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
                 else if (cloudUnknown) { descCloud.innerText = 'Status unavailable — could not reach Prefect API.'; }
+                else { descCloud.innerText = 'No backup has run yet. The first one starts at the scheduled time.'; lastCloud.innerText = 'Last backup: none yet'; }
+                if (isCloudRunning) { descCloud.innerText = 'Copying files to the cloud now.'; }
                 const cloudClass = isCloudRunning ? 'running' : (cloudUnknown ? 'unknown' : (data.cloud.last_run ? safeCategory(data.cloud.last_run.status_category) : 'unknown'));
                 cardCloud.className = 'dest tone-' + toneOf(cloudClass); badgeCloud.className = 'pill tone-' + toneOf(cloudClass);
                 showLastSuccess('cloud', data.cloud.last_success);
@@ -282,6 +292,8 @@ async function updateStatus() {
                 }
                 if (data.lan.last_run) { descLan.innerText = (lanUnknown ? 'Status unavailable — ' : '') + data.lan.last_run.status_description; lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
                 else if (lanUnknown) { descLan.innerText = 'Status unavailable — could not reach Prefect API.'; }
+                else { descLan.innerText = 'No backup has run yet. The first one starts at the scheduled time.'; lastLan.innerText = 'Last backup: none yet'; }
+                if (isLanRunning) { descLan.innerText = 'Copying files to the office NAS now.'; }
                 const lanClass = isLanRunning ? 'running' : (lanUnknown ? 'unknown' : (data.lan.last_run ? safeCategory(data.lan.last_run.status_category) : 'unknown'));
                 cardLan.className = 'dest tone-' + toneOf(lanClass); badgeLan.className = 'pill tone-' + toneOf(lanClass);
                 showLastSuccess('lan', data.lan.last_success);

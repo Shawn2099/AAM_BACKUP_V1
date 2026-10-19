@@ -52,7 +52,7 @@ def test_g6_passes_only_forward_with_every_final_backup_complete():
 
 def test_g6_approval_phrase_and_identity():
     m = {"from_fy": "FY26-27", "to_fy": "FY27-28"}
-    assert ap.confirmation_phrase("G6_FY_ROLLOVER", m) == "ROLL OVER TO FY27-28"
+    assert ap.confirmation_phrase("G6_FY_ROLLOVER", m) == "APPROVE"
     req = {"leg": "rollover", "guard": "G6_FY_ROLLOVER", "approved_metrics": m,
            "approved_at": "2026-04-01T09:00:00+05:30",
            "expires_at": "2026-04-01T21:00:00+05:30"}

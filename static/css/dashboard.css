@@ -63,10 +63,10 @@ button { font: inherit; cursor: pointer; }
     background: color-mix(in srgb, var(--panel) 82%, transparent); backdrop-filter: blur(14px) saturate(1.4);
     border: 1px solid var(--hair); box-shadow: 0 10px 30px -14px var(--lift);
 }
-.brand { display: flex; align-items: center; gap: .6rem; font-weight: 650; }
+.brand { white-space: nowrap; display: flex; align-items: center; gap: .6rem; font-weight: 650; }
 .brand svg { width: 26px; height: 26px; }
 .bar nav { margin-left: auto; display: flex; gap: .25rem; }
-.bar nav a { text-decoration: none; color: var(--ink-2); padding: .4rem .9rem; border-radius: 999px; font-weight: 500; transition: background .4s var(--spring); }
+.bar nav a { white-space: nowrap; text-decoration: none; color: var(--ink-2); padding: .4rem .9rem; border-radius: 999px; font-weight: 500; transition: background .4s var(--spring); }
 .bar nav a:hover { background: var(--idle-bg); color: var(--ink); }
 .bar nav a[aria-current="page"] { color: var(--ink); background: var(--idle-bg); }
 
@@ -177,6 +177,7 @@ details .more { margin-top: .5rem; font-size: .88rem; color: var(--ink-2); max-w
 .strip i.bad { background: var(--bad); opacity: 1; }
 .strip i.none { background: var(--line); opacity: 1; }
 .strip i:hover { transform: scaleY(1.25); }
+.strip:empty, .strip:empty + .strip-cap { display: none; }
 .strip-cap { display: flex; justify-content: space-between; font-size: .78rem; color: var(--ink-3); }
 
 /* ── timeline ── */
@@ -252,6 +253,7 @@ td.empty { color: var(--ink-3); text-align: center; padding: 1.5rem; }
 .page-note { color: var(--ink-2); margin-bottom: 1rem; max-width: 70ch; }
 
 @media (max-width: 62rem) { .page { grid-template-columns: minmax(0, 1fr); gap: 2rem; } }
+@media (max-width: 30rem) { .brand span.name { display: none; } }
 @media (max-width: 44rem) {
     .band .in { flex-direction: column; text-align: center; align-items: center; padding-top: 5.2rem; padding-left: 1rem; padding-right: 1rem; }
     .band .btn { margin: 0; }
@@ -261,7 +263,9 @@ td.empty { color: var(--ink-3); text-align: center; padding: 1.5rem; }
     .wires svg { display: none; }
     .wires::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; border-left: 3px solid var(--idle); }
     .run-when { display: none; }
-    .bar .in { margin: 0 .75rem; }
+    .bar .in { margin: 0 .75rem; gap: .5rem; padding: .4rem .4rem .4rem .8rem; }
+    .bar nav a { padding: .35rem .6rem; font-size: .9rem; }
+    .band .in { padding-top: 5.4rem; }
 }
 @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }

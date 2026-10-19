@@ -52,7 +52,7 @@ def _open(rig, leg="lan"):
         phrase=ap.request_phrase(GUARDS), created_at=pendulum.now("UTC").isoformat())
 
 
-def _approve(rig, aid, phrase="DELETE 600", headers=KEY):
+def _approve(rig, aid, phrase="APPROVE", headers=KEY):
     return rig.client.post(f"/approvals/{aid}/approve?wait=false",
                            json={"phrase": phrase}, headers=headers)
 
@@ -62,13 +62,13 @@ def test_list_shows_reason_numbers_and_phrase(rig):
     data = rig.client.get("/approvals", headers=KEY).json()
     [row] = data["approvals"]
     assert row["approval_id"] == aid and row["leg"] == "lan" and row["status"] == ap.PENDING
-    assert row["phrase"] == "DELETE 600"
+    assert row["phrase"] == "APPROVE"
     assert row["guards"][0]["metrics"]["planned_deletes"] == 600
 
 
 def test_approve_with_phrase_records_who_and_reruns_once_with_approval_id(rig):
     aid = _open(rig)
-    resp = _approve(rig, aid, phrase="  delete   600 ")      # case/space tolerant
+    resp = _approve(rig, aid, phrase="  approve ")      # case/space tolerant
     assert resp.status_code == 202, resp.text
     req = rig.db.get_approval(aid)
     assert req["status"] == ap.APPROVED
@@ -79,11 +79,11 @@ def test_approve_with_phrase_records_who_and_reruns_once_with_approval_id(rig):
                           "parameters": {"approval_id": aid}, "timeout": 0}]
 
 
-@pytest.mark.parametrize("phrase", ["", "DELETE 6000", "yes"])
+@pytest.mark.parametrize("phrase", ["", "DELETE 600", "yes"])
 def test_wrong_phrase_changes_nothing(rig, phrase):
     aid = _open(rig)
     resp = _approve(rig, aid, phrase=phrase)
-    assert resp.status_code == 400 and "DELETE 600" in resp.json()["detail"]
+    assert resp.status_code == 400 and "APPROVE" in resp.json()["detail"]
     assert rig.db.get_approval(aid)["status"] == ap.PENDING
     assert rig.calls == []
 
@@ -99,7 +99,7 @@ def test_approvals_refused_until_the_passwords_are_set_up(rig):
 def test_unauthenticated_is_refused(rig):
     aid = _open(rig)
     stranger = TestClient(ui.app, cookies={"session": "not-a-session"})
-    resp = stranger.post(f"/approvals/{aid}/approve?wait=false", json={"phrase": "DELETE 600"})
+    resp = stranger.post(f"/approvals/{aid}/approve?wait=false", json={"phrase": "APPROVE"})
     assert resp.status_code == 401
     assert rig.db.get_approval(aid)["status"] == ap.PENDING
 
@@ -162,7 +162,7 @@ def test_rollover_approval_reruns_the_rollover_deployment(rig):
     aid = rig.db.open_approval_request(
         leg="rollover", blocked_run_id="run-r", fy="FY26-27", guards=guards,
         phrase=ap.request_phrase(guards), created_at=pendulum.now("UTC").isoformat())
-    resp = _approve(rig, aid, phrase="roll over to fy27-28")
+    resp = _approve(rig, aid, phrase="approve")
     assert resp.status_code == 202, resp.text
     assert rig.calls == [{"name": "rollover-check/rollover-check",
                           "parameters": {"approval_id": aid}, "timeout": 0}]
@@ -176,3 +176,13 @@ def test_rollover_deployment_is_tagged_for_the_busy_check():
     block = src[src.index('name="rollover-check"'):]
     tags_line = next(line for line in block.splitlines() if "tags=" in line)
     assert '"rollover"' in tags_line
+
+
+def test_a_request_stored_with_an_old_long_phrase_is_confirmed_with_approve(rig):
+    """Requests created before the one-word rule keep working (the card shows APPROVE)."""
+    aid = rig.db.open_approval_request(
+        leg="lan", blocked_run_id="r-old", fy="FY26-27", guards=GUARDS,
+        phrase="DELETE 600", created_at=pendulum.now("UTC").isoformat())
+    assert rig.client.get("/approvals", headers=KEY).json()["approvals"][0]["phrase"] == "APPROVE"
+    assert _approve(rig, aid, phrase="DELETE 600").status_code == 400
+    assert _approve(rig, aid, phrase="APPROVE").status_code in (200, 202)
