@@ -957,6 +957,9 @@ class DashboardConfig(StrictModel):
         default=180, ge=0, le=600,
         description="A manual start waits this long for the run's first result before "
                     "answering (the run continues afterwards)")
+    history_nights: int = Field(
+        default=30, ge=7, le=90,
+        description="The dashboard shows one mark per night for this many nights")
     apply_delay_seconds: int = Field(
         default=2, ge=1, le=30,
         description="'Apply changes' restarts the backup service this long after the page "

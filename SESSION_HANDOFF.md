@@ -218,16 +218,17 @@ Owner: users must not need .bat files; the UI needs a real design pass (frontend
   **NOT yet proven on the real box:** the SIGINT -> NSSM restart chain and the "watchdog does not
   react to the 30 s gap" assumption (watchdog treats START_PENDING as NSSM handling it). Test on
   the box after deploy (tell the owner first - it restarts the agent; do it when no run is due).
-- **Redesign:** "ledger" look (pale green paper, ink-green text, blue-ink actions, double rules
-  under headings, serif figures, light + dark via `prefers-color-scheme`, system fonts only - the
-  dashboard may be offline). Dashboard opens with one sentence computed from the server's status
-  categories (`renderHero`). All inline hex colours moved into `static/css/dashboard.css` /
-  `settings.css` tokens; toasts/banners/approval cards are classes; status badges carry a mark
-  (check, half, dot, cross, triangle) so colour is never the only signal; the card badge now shows the
-  last result ("Failed"), not "Idle". Login page restyled. Preview: build the pages with a fetch
-  stub and screenshot with headless Chrome (see git history of this note; scripts were in the session
-  scratchpad). Lesson: a shell heredoc turned `\n` inside a JS string into a real newline and
-  broke settings.js (caught only by `node --check`; test added: `TestPageAssets`).
+- **Redesign (owner chose preview v5; an earlier "ledger" look was replaced):** floating pill
+  navigation, a status band with a seal (`setHero` in dashboard.js), the "Where your files go" route
+  (files -> Office copy / Online copy), nested-shell cards, a 30-night strip per copy
+  (`core/night_strip.py`; `/status` fields `cloud.nights` / `lan.nights`; key
+  `dashboard.history_nights`), a plain-language timeline (`renderHistory`) and a side rail (numbers,
+  guide, reports). Light by default, dark follows the computer (dark palette = the original graphite +
+  blue). Geist is bundled in `static/fonts` (licence next to it) because the dashboard may be offline.
+  Settings and sign-in use the same tokens (`dashboard.css` aliases the old Settings names).
+  The design iterations are in `research_notes/ui_preview/` (not committed). Pitfalls: a shell heredoc
+  turned `\n` in a JS string into a real newline (`TestPageAssets` now runs `node --check`);
+  `[hidden]` is forced to `display:none` in the CSS.
 
 ## 4g. AGREED PLAN (owner 2026-10-18) - §4f-2 topics + older items
 

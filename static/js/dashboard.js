@@ -72,8 +72,8 @@ function setServerUnreachable(down, why) {
     ['cloud', 'lan'].forEach(function(mode) {
         var card = document.getElementById('card-' + mode);
         var badge = document.getElementById('badge-' + mode);
-        if (card) card.className = 'card unknown';
-        if (badge) { badge.innerText = 'Unknown'; badge.className = 'status-badge unknown'; }
+        if (card) card.className = 'dest tone-idle';
+        if (badge) { badge.innerText = 'Unknown'; badge.className = 'pill tone-idle'; }
     });
 }
 function setSessionExpired(expired) {
@@ -85,9 +85,9 @@ function setSessionExpired(expired) {
         var badge = document.getElementById('badge-' + mode);
         var desc = document.getElementById('desc-' + mode);
         var card = document.getElementById('card-' + mode);
-        if (badge) { badge.innerText = 'Unknown'; badge.className = 'status-badge unknown'; }
+        if (badge) { badge.innerText = 'Unknown'; badge.className = 'pill tone-idle'; }
         if (desc) desc.innerText = 'Status unavailable — session may have expired. Sign in again.';
-        if (card) card.className = 'card unknown';
+        if (card) card.className = 'dest tone-idle';
     });
 }
 function integrityText(integrity) {
@@ -122,12 +122,33 @@ function agoText(iso) {
     if (h < 48) return h + (h === 1 ? ' hour ago' : ' hours ago');
     return Math.floor(h / 24) + ' days ago';
 }
+// Status category / hero tone -> the three tones the stylesheet knows (plus idle for "no news").
+var _TONE = { 'success': 'ok', 'no-changes': 'ok', 'ok': 'ok', 'partial': 'warn', 'running': 'warn', 'warn': 'warn',
+              'failed': 'bad', 'blocked': 'bad', 'bad': 'bad', 'skipped': 'idle', 'unknown': 'idle', 'idle': 'idle' };
+function toneOf(category) { return _TONE[category] || 'idle'; }
+var _GLYPH = { ok: 'M30 52l14 14 27-30', bad: 'M50 30v26M50 69v.01', warn: 'M34 50h.01M50 50h.01M66 50h.01',
+               idle: 'M41 41c0-10 18-10 18 0 0 8-9 8-9 17M50 70v.01' };
 function setHero(tone, line, sub) {
     var hero = document.getElementById('hero');
     if (!hero) return;
-    hero.setAttribute('data-tone', tone);
+    var t = toneOf(tone);
+    var wasOk = hero.classList.contains('tone-ok');
+    hero.className = 'band tone-' + t;
+    var glyph = document.getElementById('seal-glyph');
+    if (glyph) {
+        glyph.setAttribute('d', _GLYPH[t]);
+        // the check mark draws itself once, when the page first says "safe"
+        glyph.setAttribute('class', 'glyph' + (t === 'ok' && !wasOk ? ' draw' : ''));
+    }
     document.getElementById('hero-line').textContent = line;
     document.getElementById('hero-sub').textContent = sub;
+    var action = document.getElementById('hero-action');
+    if (action) {
+        var decision = document.querySelector('.approval-card');
+        action.hidden = t !== 'bad';
+        action.textContent = decision ? 'Review the decision' : 'See what happened';
+        action.setAttribute('href', decision ? '#approvals-container' : '#history');
+    }
 }
 function renderHero(data) {
     var legs = [['cloud', 'The cloud backup'], ['lan', 'The office NAS backup']].filter(function(l) {
@@ -217,8 +238,8 @@ async function updateStatus() {
             const integCloud = document.getElementById('integrity-cloud');
             if (integCloud) integCloud.innerText = integrityText(data.cloud.integrity);
             if (data.cloud.enabled === false) {
-                badgeCloud.innerText = 'Disabled'; badgeCloud.className = 'status-badge unknown';
-                cardCloud.className = 'card unknown';
+                badgeCloud.innerText = 'Disabled'; badgeCloud.className = 'pill tone-idle';
+                cardCloud.className = 'dest tone-idle';
                 descCloud.innerText = 'Cloud backup is disabled in configuration.';
                 if (btnCloud) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.innerText = 'Disabled'; }
                 showLastSuccess('cloud', data.cloud.last_success);
@@ -233,7 +254,7 @@ async function updateStatus() {
                 if (data.cloud.last_run) { descCloud.innerText = (cloudUnknown ? 'Status unavailable — ' : '') + data.cloud.last_run.status_description; lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
                 else if (cloudUnknown) { descCloud.innerText = 'Status unavailable — could not reach Prefect API.'; }
                 const cloudClass = isCloudRunning ? 'running' : (cloudUnknown ? 'unknown' : (data.cloud.last_run ? safeCategory(data.cloud.last_run.status_category) : 'unknown'));
-                cardCloud.className = 'card ' + cloudClass; badgeCloud.className = 'status-badge ' + cloudClass;
+                cardCloud.className = 'dest tone-' + toneOf(cloudClass); badgeCloud.className = 'pill tone-' + toneOf(cloudClass);
                 showLastSuccess('cloud', data.cloud.last_success);
             }
         }
@@ -246,8 +267,8 @@ async function updateStatus() {
             const integLan = document.getElementById('integrity-lan');
             if (integLan) integLan.innerText = integrityText(data.lan.integrity);
             if (data.lan.enabled === false) {
-                badgeLan.innerText = 'Disabled'; badgeLan.className = 'status-badge unknown';
-                cardLan.className = 'card unknown';
+                badgeLan.innerText = 'Disabled'; badgeLan.className = 'pill tone-idle';
+                cardLan.className = 'dest tone-idle';
                 descLan.innerText = 'LAN backup is disabled in configuration.';
                 if (btnLan) { btnLan.setAttribute('disabled', 'disabled'); btnLan.innerText = 'Disabled'; }
                 showLastSuccess('lan', data.lan.last_success);
@@ -262,65 +283,13 @@ async function updateStatus() {
                 if (data.lan.last_run) { descLan.innerText = (lanUnknown ? 'Status unavailable — ' : '') + data.lan.last_run.status_description; lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
                 else if (lanUnknown) { descLan.innerText = 'Status unavailable — could not reach Prefect API.'; }
                 const lanClass = isLanRunning ? 'running' : (lanUnknown ? 'unknown' : (data.lan.last_run ? safeCategory(data.lan.last_run.status_category) : 'unknown'));
-                cardLan.className = 'card ' + lanClass; badgeLan.className = 'status-badge ' + lanClass;
+                cardLan.className = 'dest tone-' + toneOf(lanClass); badgeLan.className = 'pill tone-' + toneOf(lanClass);
                 showLastSuccess('lan', data.lan.last_success);
             }
         }
         if (data.health && !data.health.error) { document.getElementById('health-info').innerText = 'Source: ' + data.health.source_free_gb + ' GB free | FY: ' + data.fy_prefix; }
-        const tbody = document.getElementById('history-tbody');
-        if (tbody && data.recent_runs && data.recent_runs.length > 0) {
-            const openRows = new Set();
-            for (let i = 0; i < data.recent_runs.length; i++) {
-                const el = document.getElementById('metrics-container-' + i);
-                if (el && el.classList.contains('open')) openRows.add(i);
-            }
-            let rowsHtml = '';
-            const escapeHtml = function(text) { return (text == null ? '' : String(text)).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); };
-            data.recent_runs.forEach((r, idx) => {
-                const safeMode = ['cloud', 'lan', 'rollover'].includes(r.mode) ? r.mode : 'unknown';
-                const modeTag = '<span class="tag ' + safeMode + '">' + escapeHtml(safeMode.toUpperCase()) + '</span>';
-                const sTag = '<span class="tag ' + safeCategory(r.status_category) + '" title="' + escapeHtml(r.status) + '">' + escapeHtml(r.status_label || r.status) + '</span>';
-                // plain title + fault code first (audit 2026-10-18); the raw error stays in the tooltip
-                const errText = r.fault_title ? r.fault_title + ' (' + r.fault_code + ')' : r.error;
-                const errCell = errText ? '<td class="err-cell" title="' + escapeHtml(r.error || errText) + '">' + escapeHtml(errText) + '</td>' : '<td>-</td>';
-                
-                let expandableClass = '';
-                let expandIcon = '';
-                let extraRowHtml = '';
-                if (r.extended_metrics) {
-                    try {
-                        const metrics = JSON.parse(r.extended_metrics);
-                        let badges = '';
-                        if (r.mode === 'lan' && 'added' in metrics) {
-                            badges += '<span class="metrics-badge added">Added: ' + (metrics.added || 0) + '</span>';
-                            badges += '<span class="metrics-badge modified">Modified: ' + (metrics.modified || 0) + '</span>';
-                            badges += '<span class="metrics-badge removed">Pruned: ' + (metrics.removed || 0) + '</span>';
-                            badges += '<span class="metrics-badge">Active Destination Files: ' + (metrics.total_files || 0) + '</span>';
-                        } else if (r.mode === 'cloud' && 'total_files' in metrics) {
-                            // WP7: the daily check compares SIZES only - it is a size check, not content verification
-                            var sizeOk = ('size_check_passed' in metrics) ? metrics.size_check_passed : metrics.verified;
-                            badges += '<span class="metrics-badge verified">' + (sizeOk === undefined ? 'Size check unknown' : (sizeOk ? 'Size check passed' : 'Size check failed')) + '</span>';
-                            badges += '<span class="metrics-badge">Total Tracked Files: ' + (metrics.total_files || 0) + '</span>';
-                            badges += '<span class="metrics-badge size">Space Consumed: ' + (metrics.total_size_gb || 0).toFixed(3) + ' GB</span>';
-                        }
-                        // only runs that measured something are expandable (a blocked run has no counts)
-                        if (badges) {
-                            const iconCls = openRows.has(idx) ? ' expand-icon open' : ' expand-icon';
-                            expandIcon = '<span class="' + iconCls + '">▸</span>';
-                            expandableClass = ' class="expandable" onclick="document.getElementById(\'metrics-container-' + idx + '\').classList.toggle(\'open\'); this.querySelector(\'.expand-icon\').classList.toggle(\'open\')"';
-                            const isOpen = openRows.has(idx) ? ' open' : '';
-                            extraRowHtml = '<tr class="metrics-row"><td colspan="6"><div id="metrics-container-' + idx + '" class="metrics-container' + isOpen + '">' + badges + '</div></td></tr>';
-                        }
-                    } catch(e) { }
-                }
-
-                rowsHtml += '<tr' + expandableClass + '><td>' + expandIcon + escapeHtml(r.started_at) + '</td><td>' + modeTag + '</td><td>' + sTag + '</td><td>' + escapeHtml(String(r.files)) + '</td><td>' + escapeHtml(String(r.duration)) + '</td>' + errCell + '</tr>\n';
-                rowsHtml += extraRowHtml;
-            });
-            tbody.innerHTML = rowsHtml;
-        } else if (tbody && data.recent_runs && data.recent_runs.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="empty">No backup runs recorded yet. The first scheduled backup will appear here.</td></tr>';
-        }
+        renderLegVisuals(data);
+        renderHistory(data.recent_runs);
     } catch (err) {
         setServerUnreachable(true, 'no answer');
         var now = Date.now(); if (now - _lastStatusErr > 30000) { console.error('Failed to update status dynamically:', err); _lastStatusErr = now; }
@@ -328,6 +297,101 @@ async function updateStatus() {
 }
 setInterval(updateStatus, 2000);
 window.addEventListener('DOMContentLoaded', updateStatus);
+
+// ── Where-your-files-go visuals ──────────────────────────────────────────
+function legClass(d) {
+    if (!d || d.enabled === false) return 'unknown';
+    if (d.running) return 'running';
+    if (d.run_state === 'unknown') return 'unknown';
+    return d.last_run ? safeCategory(d.last_run.status_category) : 'unknown';
+}
+function safetyText(integrity) {
+    if (!integrity || !integrity.status) return 'Safety check: not run yet';
+    var when = integrity.checked_at ? ' (checked ' + formatFullDate(integrity.checked_at) + ')' : '';
+    if (integrity.status === 'VERIFIED') return 'Safety check: every file matches' + when;
+    if (integrity.status === 'VERIFICATION_FAILED') return 'Safety check found differences - open Details';
+    if (integrity.status === 'AUDIT_INCOMPLETE') return 'Safety check could not run - open Details';
+    return 'Safety check: not run yet';
+}
+var _NIGHT_LABEL = { ok: 'Done', partial: 'Partly done', bad: 'Needs attention', none: 'No backup' };
+function renderStrip(mode, nights) {
+    var el = document.getElementById('strip-' + mode);
+    if (!el) return;
+    el.innerHTML = (nights || []).map(function(n) {
+        var state = _NIGHT_LABEL[n.state] ? n.state : 'none';
+        return '<i class="' + state + '" title="' + escHtml(n.date + ': ' + _NIGHT_LABEL[state]) + '"></i>';
+    }).join('');
+}
+function renderLegVisuals(data) {
+    ['cloud', 'lan'].forEach(function(mode) {
+        var d = data[mode];
+        var wire = document.getElementById('wire-' + mode);
+        if (wire) wire.setAttribute('class', 'wire tone-' + toneOf(legClass(d)));
+        renderStrip(mode, d && d.nights);
+        var safety = document.getElementById('safety-' + mode);
+        if (safety) safety.textContent = safetyText(d && d.integrity);
+    });
+    var free = document.getElementById('stat-free');
+    if (free && data.health && !data.health.error) free.textContent = data.health.source_free_gb + ' GB';
+    var fy = document.getElementById('source-fy');
+    if (fy) fy.textContent = data.fy_prefix;
+}
+
+// ── Recent backups: a timeline, one plain line per run ───────────────────
+var _MODE_NAME = { cloud: 'Online copy', lan: 'Office copy', rollover: 'New financial year' };
+function toggleRun(idx) {
+    var li = document.getElementById('run-' + idx);
+    if (!li) return;
+    li.classList.toggle('open');
+    li.querySelector('.run-head').setAttribute('aria-expanded', li.classList.contains('open'));
+}
+function renderHistory(runs) {
+    var list = document.getElementById('history-list');
+    if (!list || !runs) return;
+    if (!runs.length) {
+        list.innerHTML = '<li class="empty">No backups yet. The first scheduled backup will appear here.</li>';
+        return;
+    }
+    var open = {};
+    runs.forEach(function(_, i) { var el = document.getElementById('run-' + i); if (el && el.classList.contains('open')) open[i] = true; });
+    var html = '';
+    runs.forEach(function(r, idx) {
+        const safeMode = ['cloud', 'lan', 'rollover'].includes(r.mode) ? r.mode : 'unknown';
+        var tone = toneOf(safeCategory(r.status_category));
+        // plain title + fault code first (audit 2026-10-18); the raw error stays in the detail
+        var errText = r.fault_title ? r.fault_title + ' (' + r.fault_code + ')' : r.error;
+        var summary = errText ? errText
+            : (String(r.files) + ' files' + (r.duration && r.duration !== '-' ? ', took ' + r.duration : ''));
+        var badges = '';
+        if (r.extended_metrics) {
+            try {
+                const metrics = JSON.parse(r.extended_metrics);
+                if (r.mode === 'lan' && 'added' in metrics) {
+                    badges += '<span class="chip added">Added: ' + (metrics.added || 0) + '</span>';
+                    badges += '<span class="chip modified">Changed: ' + (metrics.modified || 0) + '</span>';
+                    badges += '<span class="chip removed">Removed: ' + (metrics.removed || 0) + '</span>';
+                    badges += '<span class="chip">Files on the NAS: ' + (metrics.total_files || 0) + '</span>';
+                } else if (r.mode === 'cloud' && 'total_files' in metrics) {
+                    // WP7: the daily check compares SIZES only - it is a size check, not content verification
+                    var sizeOk = ('size_check_passed' in metrics) ? metrics.size_check_passed : metrics.verified;
+                    badges += '<span class="chip verified">' + (sizeOk === undefined ? 'Size check unknown' : (sizeOk ? 'Size check passed' : 'Size check failed')) + '</span>';
+                    badges += '<span class="chip">Files in the cloud: ' + (metrics.total_files || 0) + '</span>';
+                    badges += '<span class="chip size">Space used: ' + (metrics.total_size_gb || 0).toFixed(3) + ' GB</span>';
+                }
+            } catch (e) { }
+        }
+        var detail = badges + (r.error ? '<p class="run-error">' + escHtml(r.error) + '</p>' : '')
+            + '<p class="run-tech">Status: ' + escHtml(r.status) + '</p>';
+        html += '<li class="run tone-' + tone + (open[idx] ? ' open' : '') + '" id="run-' + idx + '">'
+            + '<button class="run-head" aria-expanded="' + (open[idx] ? 'true' : 'false') + '" onclick="toggleRun(' + idx + ')">'
+            + '<span class="run-main"><strong>' + (_MODE_NAME[safeMode] || 'Backup') + '</strong> '
+            + '<span class="state-word">' + escHtml(r.status_label || r.status) + '</span>'
+            + '<small>' + escHtml(summary) + '</small></span>'
+            + '<span class="run-when">' + escHtml(r.started_at) + '</span></button>'
+            + '<div class="run-detail"><div>' + detail + '</div></div></li>';
+    });
+    list.innerHTML = html;
+}
 
 // ── Blocked backups waiting for a human decision (plan §6.2) ──────────────
 // A guard stopped a backup before anything was copied or deleted. The server
@@ -387,3 +451,14 @@ async function approvalAction(id, action) {
 }
 setInterval(updateApprovals, 10000);
 window.addEventListener('DOMContentLoaded', updateApprovals);
+
+// ── First-visit guide ─────────────────────────────────────────────────────
+function dismissGuide() {
+    var g = document.getElementById('guide');
+    if (g) g.hidden = true;
+    try { localStorage.setItem('aam-guide-dismissed', '1'); } catch (e) { }
+}
+window.addEventListener('DOMContentLoaded', function() {
+    var g = document.getElementById('guide');
+    try { if (g && localStorage.getItem('aam-guide-dismissed') === '1') g.hidden = true; } catch (e) { }
+});

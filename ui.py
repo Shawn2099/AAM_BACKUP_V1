@@ -34,7 +34,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import (admin_auth, app_restart, approvals, config_edit, faults, fy_rollover, rollover_journal,
+from core import (admin_auth, app_restart, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
                   statuses)
 from core.attention import RED, compute_attention
 from core.manifest import ManifestDB
@@ -387,12 +387,14 @@ def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
 
 _LOGIN_STYLE = """
 body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
-.login { background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 2rem; width: min(24rem, 100%); }
-.login h1 { font-family: var(--serif); font-weight: 500; font-size: 1.6rem; line-height: 1.2; padding-bottom: 0.75rem; margin-bottom: 1.25rem; border-bottom: 3px double var(--rule-strong); }
-label { display: block; font-size: 0.9rem; color: var(--ink-2); margin-bottom: 0.25rem; }
+.login { background: var(--panel); border: 1px solid var(--hair); border-radius: 18px; padding: 2rem; width: min(24rem, 100%);
+         box-shadow: 0 0 0 6px var(--shell), 0 0 0 7px var(--hair), 0 30px 50px -34px var(--lift); }
+.login h1 { font-size: 1.5rem; font-weight: 600; line-height: 1.2; margin-bottom: 1.25rem; }
+.login .mark { width: 34px; height: 34px; margin-bottom: .9rem; }
+label { display: block; font-size: 0.9rem; color: var(--ink-2); margin-bottom: 0.3rem; }
 input { width: 100%; margin-bottom: 1rem; }
-button { width: 100%; margin-right: 0; background: var(--action); color: var(--on-action); }
-button:hover { background: var(--action-hover); }
+button { width: 100%; margin-right: 0; font: inherit; font-weight: 600; border: 0; border-radius: 999px; padding: .65rem 1rem; background: var(--navy); color: var(--on-navy); }
+button:hover { background: var(--navy-hover); }
 p { line-height: 1.5; }
 """
 
@@ -408,7 +410,10 @@ def _login_html(body: str) -> str:
             f"<title>AAM Backup - Sign in</title>"
             f"<link rel=\"stylesheet\" href=\"/static/css/dashboard.css\">"
             f"<style>{_LOGIN_STYLE}</style></head><body>"
-            f"<div class=\"login\"><h1>Sign in to AAM Backup</h1>{body}</div></body></html>")
+            f"<div class=\"login\"><svg class=\"mark\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--navy)\" "
+            f"stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">"
+            f"<path d=\"M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z\"/><path d=\"M8.5 12l2.5 2.5L16 9.5\"/></svg>"
+            f"<h1>Sign in to AAM Backup</h1>{body}</div></body></html>")
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -561,6 +566,7 @@ async def status(request: Request):
             # audit has run; VERIFICATION_FAILED on divergence. A COMPLETE
             # backup does NOT imply VERIFIED.
             "integrity": _integrity_summary(db, "cloud"),
+            "nights": _nights(db, "cloud", cfg),
         },
         "lan": {
             **lan_fields,
@@ -569,6 +575,7 @@ async def status(request: Request):
             "last_success": _get_last_success(db, "lan"),
             "last_run_formatted": format_ist(lan_last_run["started_at"]) if lan_last_run else "No data",
             "integrity": _integrity_summary(db, "lan"),
+            "nights": _nights(db, "lan", cfg),
         },
         "manifest": {
             "lan_files": db.file_count("lan_status"),
@@ -577,6 +584,18 @@ async def status(request: Request):
         "health": await _get_health(),
         "recent_runs": recent_runs
     })
+
+
+def _nights(db, mode: str, cfg) -> list[dict]:
+    """One mark per night for the dashboard strip (core/night_strip.py)."""
+    try:
+        days = cfg.dashboard.history_nights
+        end = pendulum.now(IST).add(days=1).start_of("day")
+        return night_strip.build(db.get_runs_between(end.subtract(days=days), end, mode),
+                                 days=days)
+    except Exception as e:  # noqa: BLE001 - the strip is decoration; never break the status call
+        logger.warning(f"Night strip could not be built for {mode}: {e}")
+        return []
 
 
 def _attention(db, cfg) -> list[dict]:

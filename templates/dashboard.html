@@ -9,78 +9,123 @@
 </head>
 <body>
 <div id="toast-container" role="status" aria-live="polite"></div>
-<div class="container">
-<header class="masthead">
-    <span class="brand">AAM Backup</span>
-    <nav aria-label="Pages">
-        <a href="/settings">Settings</a>
-        <a href="/logout">Sign out</a>
-    </nav>
-</header>
-<section class="hero" id="hero" data-tone="unknown" aria-live="polite">
-    <h1 id="hero-line">Checking your backups...</h1>
-    <p id="hero-sub">Reading the latest results from the server.</p>
-</section>
-<div id="server-banner" class="banner red" style="display:none"></div>
-<div id="session-banner" class="banner red" style="display:none">Session expired — status unavailable. Refresh the page and sign in again to view current backup state.</div>
-<div id="attention-banner"></div>
-<div id="approvals-container"></div>
-<div class="stats">
-    <div class="stat"><div class="num" id="stat-lan-files">...</div><div class="label">Files on the office NAS</div></div>
-    <div class="stat"><div class="num" id="stat-cloud-files">...</div><div class="label">Files in the cloud</div></div>
-    <div class="stat"><div class="num" id="stat-fy-prefix">{{ fy_prefix }}</div><div class="label">Financial year</div></div>
-</div>
-<div class="grid">
-    <div class="card unknown" id="card-cloud">
-        <h2>Cloud backup <span class="status-badge unknown" id="badge-cloud">Loading...</span></h2>
-        <p id="desc-cloud">Fetching status...</p>
-        <p id="last-cloud">Last backup: Loading...</p>
-        <p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p>
-        <p id="cloud-last-success">Last success: Loading...</p>
-        <p id="integrity-cloud">Integrity: Loading...</p>
-        {% if not cloud_enabled %}
-        <p class="note-warn">Cloud backup is disabled in configuration — manual runs are rejected by the server.</p>
-        {% else %}
-        <form onsubmit="triggerBackup(event, 'cloud')">
-            <button class="btn-trigger btn-cloud" id="btn-cloud" disabled>Loading...</button>
-        </form>
-        {% endif %}
+<header class="bar"><div class="in">
+    <div class="brand">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--navy)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z"/><path d="M8.5 12l2.5 2.5L16 9.5"/></svg>
+        AAM Backup
     </div>
-    <div class="card unknown" id="card-lan">
-        <h2>Office NAS backup <span class="status-badge unknown" id="badge-lan">Loading...</span></h2>
-        <p id="desc-lan">Fetching status...</p>
-        <p id="last-lan">Last backup: Loading...</p>
-        <p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p>
-        <p id="lan-last-success">Last success: Loading...</p>
-        <p id="integrity-lan">Integrity: Loading...</p>
-        {% if not lan_enabled %}
-        <p class="note-warn">LAN backup is disabled in configuration — manual runs are rejected by the server.</p>
-        {% else %}
-        <form onsubmit="triggerBackup(event, 'lan')">
-            <button class="btn-trigger btn-lan" id="btn-lan" data-wol="{{ 'yes' if lan_wol else 'no' }}" data-shutdown="{{ 'yes' if lan_shutdown else 'no' }}" disabled>Loading...</button>
-        </form>
-        {% endif %}
+    <nav aria-label="Pages"><a href="/" aria-current="page">Dashboard</a><a href="/settings">Settings</a><a href="/logout">Sign out</a></nav>
+</div></header>
+
+<section class="band tone-idle" id="hero" aria-live="polite"><div class="in">
+    <svg class="seal" viewBox="0 0 100 100" aria-hidden="true"><circle class="ring" cx="50" cy="50" r="44"/><path class="glyph" id="seal-glyph" d="M41 41c0-10 18-10 18 0 0 8-9 8-9 17M50 70v.01"/></svg>
+    <div>
+        <h1 id="hero-line">Checking your backups...</h1>
+        <p id="hero-sub">Reading the latest results from the server.</p>
     </div>
+    <a class="btn" id="hero-action" href="#history" hidden>See what happened</a>
+</div></section>
+
+<div class="page">
+<main>
+    <div id="server-banner" class="banner red" style="display:none"></div>
+    <div id="session-banner" class="banner red" style="display:none">Session expired — status unavailable. Refresh the page and sign in again to view current backup state.</div>
+    <div id="attention-banner"></div>
+    <div id="approvals-container"></div>
+
+    <section>
+        <h2>Where your files go</h2>
+        <div class="route">
+            <div class="source">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+                <b>Your files</b>
+                <span>Main drive</span>
+                <span class="n" id="source-fy">{{ fy_prefix }}</span>
+                <span>financial year in use</span>
+            </div>
+            <div class="wires">
+                <svg viewBox="0 0 56 200" preserveAspectRatio="none" aria-hidden="true">
+                    <path id="wire-lan" class="wire tone-idle" d="M0 100 C 28 100, 28 52, 56 52" vector-effect="non-scaling-stroke"/>
+                    <path id="wire-cloud" class="wire tone-idle" d="M0 100 C 28 100, 28 148, 56 148" vector-effect="non-scaling-stroke"/>
+                </svg>
+            </div>
+            <div class="dests">
+                <article class="dest tone-idle" id="card-lan">
+                    <h2><span>Office copy (NAS) <span class="help" title="A copy of your files on the storage box in your office.">?</span></span> <span class="pill tone-idle" id="badge-lan">Loading...</span></h2>
+                    <p class="lead" id="desc-lan">Fetching status...</p>
+                    <div class="facts"><p id="last-lan">Last backup: Loading...</p><p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p></div>
+                    <p class="safety" id="safety-lan">Safety check: ...</p>
+                    <div class="strip" id="strip-lan" aria-label="Last nights"></div>
+                    <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
+                    <footer>
+                        <details><summary>Details</summary><div class="more"><p id="lan-last-success">Last success: Loading...</p><p id="integrity-lan">Integrity: Loading...</p></div></details>
+                        {% if not lan_enabled %}
+                        <p class="note-warn">LAN backup is disabled in configuration — manual runs are rejected by the server.</p>
+                        {% else %}
+                        <form onsubmit="triggerBackup(event, 'lan')">
+                            <button class="btn-trigger btn-lan" id="btn-lan" data-wol="{{ 'yes' if lan_wol else 'no' }}" data-shutdown="{{ 'yes' if lan_shutdown else 'no' }}" disabled>Loading...</button>
+                        </form>
+                        {% endif %}
+                    </footer>
+                </article>
+                <article class="dest tone-idle" id="card-cloud">
+                    <h2><span>Online copy (cloud) <span class="help" title="A copy kept safely on Google's servers, away from your office.">?</span></span> <span class="pill tone-idle" id="badge-cloud">Loading...</span></h2>
+                    <p class="lead" id="desc-cloud">Fetching status...</p>
+                    <div class="facts"><p id="last-cloud">Last backup: Loading...</p><p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p></div>
+                    <p class="safety" id="safety-cloud">Safety check: ...</p>
+                    <div class="strip" id="strip-cloud" aria-label="Last nights"></div>
+                    <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
+                    <footer>
+                        <details><summary>Details</summary><div class="more"><p id="cloud-last-success">Last success: Loading...</p><p id="integrity-cloud">Integrity: Loading...</p></div></details>
+                        {% if not cloud_enabled %}
+                        <p class="note-warn">Cloud backup is disabled in configuration — manual runs are rejected by the server.</p>
+                        {% else %}
+                        <form onsubmit="triggerBackup(event, 'cloud')">
+                            <button class="btn-trigger btn-cloud" id="btn-cloud" disabled>Loading...</button>
+                        </form>
+                        {% endif %}
+                    </footer>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <section id="history">
+        <h2>Recent backups</h2>
+        <ol class="tl" id="history-list"><li class="empty">Loading...</li></ol>
+    </section>
+</main>
+
+<aside>
+    <section>
+        <div class="rail-h">At a glance</div>
+        <div class="stat"><span>Files on the office NAS</span><b id="stat-lan-files">...</b></div>
+        <div class="stat"><span>Files in the cloud</span><b id="stat-cloud-files">...</b></div>
+        <div class="stat"><span>Financial year</span><b id="stat-fy-prefix">{{ fy_prefix }}</b></div>
+        <div class="stat"><span>Free space on main drive</span><b id="stat-free">...</b></div>
+    </section>
+    <section class="guide" id="guide">
+        <div class="rail-h">New here?</div>
+        <p>Every night the system makes two extra copies of your files: one <b>online</b> and one on the <b>office NAS</b>.</p>
+        <p>Green means nothing to do. Amber or red says what happened and what to do next.</p>
+        <button class="x" onclick="dismissGuide()">Got it, hide this</button>
+    </section>
+    <section>
+        <div class="rail-h">Reports</div>
+        <div class="reports">
+            <button class="btn-secondary" onclick="generateReport('weekly')">Download Weekly Report</button>
+            <button class="btn-secondary" onclick="generateReport('monthly')">Download Monthly Report</button>
+            <button class="btn-secondary" id="btn-email-weekly" onclick="emailReport('weekly')">Email Weekly Report</button>
+            <button class="btn-secondary" id="btn-email-monthly" onclick="emailReport('monthly')">Email Monthly Report</button>
+        </div>
+    </section>
+</aside>
 </div>
-<div class="actions">
-    <button class="btn-trigger" onclick="generateReport('weekly')">Download Weekly Report</button>
-    <button class="btn-trigger" onclick="generateReport('monthly')">Download Monthly Report</button>
-    <button class="btn-secondary" id="btn-email-weekly" onclick="emailReport('weekly')">Email Weekly Report</button>
-    <button class="btn-secondary" id="btn-email-monthly" onclick="emailReport('monthly')">Email Monthly Report</button>
-</div>
-<h2 class="section-title">Recent Backups</h2>
-<div class="table-wrap">
-<table>
-<thead><tr><th>Time</th><th>Pipeline</th><th>Status</th><th>Files</th><th>Duration</th><th>Error</th></tr></thead>
-<tbody id="history-tbody"><tr><td colspan="6" class="empty">Loading data...</td></tr></tbody>
-</table>
-</div>
-<div class="info">
+<div class="page" style="padding-top:0"><div class="foot-note">
     <p id="health-info">Fetching health info...</p>
     <p id="last-updated">Last updated: -</p>
     <p>This page updates by itself.</p>
-</div>
-</div>
+</div></div>
 <script src="/static/js/dashboard.js"></script>
 <script src="/static/js/report.js"></script>
 </body>

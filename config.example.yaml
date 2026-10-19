@@ -292,6 +292,8 @@ dashboard:
   # A manual start waits this long for the run's first result before the page
   # answers; the run continues afterwards (0-600 seconds)
   trigger_wait_seconds: 180
+  # The dashboard shows one mark per night for this many nights (7-90)
+  history_nights: 30
   # "Apply changes" on the Settings page restarts the backup service this long after
   # the page has been answered (1-30 seconds)
   apply_delay_seconds: 2
