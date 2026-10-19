@@ -232,6 +232,17 @@ if ($ServiceAccount) {
     Write-Host "       authenticate to a NAS in a WORKGROUP (plan §10 item 2)." -ForegroundColor Yellow
 }
 
+# -- Google key: readable only by SYSTEM, Administrators and the service account --------------
+# (the box inherited BUILTIN\Users:Read from C:\, so any local account could read the key)
+$GcsKeyPath = Read-ConfigValue "paths.gcs_key_path" ""
+if ($GcsKeyPath) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $DeployDir "lock_gcs_key.ps1") -KeyPath $GcsKeyPath -Account $ServiceAccount
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ERROR: the Google key could not be locked down. Services were NOT changed." -ForegroundColor Red
+        exit 1
+    }
+}
+
 Write-Host ""
 Write-Host "==================================================================="
 Write-Host "  AAM Backup Automation V1 - SERVICE INSTALLER"

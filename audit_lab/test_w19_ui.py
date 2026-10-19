@@ -471,7 +471,11 @@ def test_w19_trigger_verify_branches(ui_rig):
     # success: parameters carry the mode, upper-case label
     seen = _prep_triggers(ui_rig, running=False, verify=False)
     with TestClient(ui.app) as client:
+        # no good backup yet: the check asks first and starts nothing (audit-pending step 3)
         r = client.post("/trigger/verify/cloud")
+        assert r.status_code == 409 and r.json()["status"] == "backup_first"
+        assert "name" not in seen
+        r = client.post("/trigger/verify/cloud?anyway=1")
         assert r.status_code == 202
         assert seen["name"] == "integrity-audit/integrity-audit"
         assert seen["parameters"] == {"mode": "cloud"}
@@ -480,7 +484,7 @@ def test_w19_trigger_verify_branches(ui_rig):
     seen = _prep_triggers(ui_rig, running=False, verify=False,
                           raise_exc=RuntimeError("audit deployment missing"))
     with TestClient(ui.app) as client:
-        r = client.post("/trigger/verify/lan")
+        r = client.post("/trigger/verify/lan?anyway=1")
         assert r.status_code == 500 and r.json()["status"] == "trigger_failed"
 
     # rate limit
