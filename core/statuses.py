@@ -186,8 +186,16 @@ def label(status) -> str:
     return _LABELS.get(s, s or "Unknown")
 
 
-def describe(status, files_copied: int | None = 0, files_failed: int | None = 0) -> str:
-    """One-sentence, truthful description for the dashboard card."""
+# A3: a run is also BLOCKED after a sync attempt already ran (delete backstop, re-measure between retries).
+BLOCKED_AFTER_CHANGES_NOTE = "Some files may already have been changed by this run before it was stopped."
+
+
+def describe(status, files_copied: int | None = 0, files_failed: int | None = 0,
+             sync_attempted: bool = False) -> str:
+    """One-sentence, truthful description for the dashboard card.
+
+    sync_attempted: a sync attempt ran before the run was blocked (run row's
+    extended_metrics.sync_attempts) - "before any change" would then be false."""
     s = _norm(status)
     files = int(files_copied or 0)
     failed = int(files_failed or 0)
@@ -213,6 +221,8 @@ def describe(status, files_copied: int | None = 0, files_failed: int | None = 0)
         return (f"Backup partial - {files} file(s) transferred, "
                 f"{failed} could not be copied")
     if cat == CATEGORY_BLOCKED:
+        if sync_attempted:
+            return f"Backup blocked - {BLOCKED_AFTER_CHANGES_NOTE} Review and approve on the dashboard"
         return "Backup blocked before any change - review and approve on the dashboard"
     if cat == CATEGORY_RUNNING:
         return "Backup in progress"

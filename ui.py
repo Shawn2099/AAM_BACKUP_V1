@@ -1522,7 +1522,8 @@ def _status_fields(run: dict) -> dict:
         "status_label": statuses.label(status),
         "status_category": statuses.category(status),
         "status_description": statuses.describe(
-            status, run.get("files_copied", 0), run.get("files_failed", 0)
+            status, run.get("files_copied", 0), run.get("files_failed", 0),
+            sync_attempted=bool(metrics.get("sync_attempts")) if isinstance(metrics, dict) else False,
         ),
         "fault_code": code if code in faults.CATALOG else None,
         "fault_title": faults.CATALOG[code].title if code in faults.CATALOG else None,

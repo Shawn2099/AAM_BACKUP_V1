@@ -1055,8 +1055,12 @@ def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | Non
 
 
 def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
-                        occurred_at: str, artefacts_dir: str | None = None) -> None:
+                        occurred_at: str, artefacts_dir: str | None = None,
+                        sync_attempted: bool = False) -> None:
     """BLOCKED run -> one approval request + ONE attention email (DEC-3).
+
+    sync_attempted (A3): a sync attempt ran before the block (delete backstop, re-measure
+    between retries), so the text must not say nothing was changed.
 
     Never raises: the run row is already written, and the human must be
     told even when the request could not be stored.
@@ -1080,7 +1084,9 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
     message = "\n".join(r.get("reason", "") for r in blocked)
     if rejected:
         message += f"\n\nThe approval supplied for this run was not applied: {rejected}"
-    message += ("\n\nNothing was copied or deleted. Open the dashboard to review the "
+    changed = (statuses.BLOCKED_AFTER_CHANGES_NOTE if sync_attempted
+               else "Nothing was copied or deleted.")
+    message += (f"\n\n{changed} Open the dashboard to review the "
                 "numbers and either approve this backup once or dismiss it.")
     notify(config, AlertEvent(
         key=f"blocked:{leg}", kind="ACTION_REQUIRED", mode=leg,
@@ -1811,7 +1817,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
             if status == "CLOUD_BLOCKED" and guard_record:
                 _open_block_request(config, "cloud", run_id, guard_record, started_at,
-                                    artefacts_dir)
+                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
             elif statuses.is_success(status):
                 _send_recovery_if_needed(config, "cloud", run_id)
 
@@ -2117,7 +2123,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
             if status == "LAN_BLOCKED" and guard_record:
                 _open_block_request(config, "lan", run_id, guard_record, started_at,
-                                    artefacts_dir)
+                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
             elif statuses.is_success(status):
                 _send_recovery_if_needed(config, "lan", run_id)
 
