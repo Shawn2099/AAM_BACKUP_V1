@@ -154,3 +154,32 @@ def test_interrupt_has_a_fault_code():
     code = faults.classify_run("cloud", "CLOUD_FAILED", exc=KeyboardInterrupt())
     assert code == "AAM-SYS-02"
     assert faults.classify_run("cloud", "CLOUD_FAILED", exc=RuntimeError("x")) != "AAM-SYS-02"
+
+
+# ── record first, alert second (W23 follow-up) ─────────────────────────────────────────────────────
+# Prefect allows a cancelled flow-run process 30 s before it escalates to a forced kill. The failure
+# email goes through SMTP with retries (minutes when the mail server is down), so for an interrupt the
+# run row must be written BEFORE the alert, or a forced kill during the send leaves the run RUNNING.
+
+def _order_of_record_and_alert(pipeline_ctx, run):
+    order = []
+    with pipeline_ctx as (record_run, *_rest):
+        record_run.side_effect = lambda *a, **k: order.append("record")
+        with patch("flow._send_run_alert", side_effect=lambda *a, **k: order.append("alert")):
+            with pytest.raises(KeyboardInterrupt):
+                run()
+    return order
+
+
+def test_cloud_interrupt_records_the_run_before_it_alerts():
+    order = _order_of_record_and_alert(
+        _cloud_pipeline("sync", KeyboardInterrupt()),
+        lambda: flow._run_cloud_pipeline(_make_config(), "run-a2o", "2026-10-20T02:00:00"))
+    assert order == ["record", "alert"], order
+
+
+def test_lan_interrupt_records_the_run_before_it_alerts():
+    order = _order_of_record_and_alert(
+        _lan_pipeline("sync", KeyboardInterrupt()),
+        lambda: flow._run_lan_pipeline(_make_config(), "run-a2p", "2026-10-20T21:00:00"))
+    assert order == ["record", "alert"], order

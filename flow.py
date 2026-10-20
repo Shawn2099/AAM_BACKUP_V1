@@ -1570,6 +1570,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         phase = "pre"
         guard_record = None
         alert_sent = False   # WP8: exactly one alert per failed run
+        deferred_alert = None   # A2: an interrupted run records itself first, alerts second
         clock = None         # WP12: clock verdict from the health check
 
         try:
@@ -1774,11 +1775,16 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             if isinstance(e, guards.GuardBlocked):
                 guard_record = e.record   # its ACTION REQUIRED email goes out below
             elif not alert_sent:
-                _send_run_alert(config, "cloud", status,
-                                _failure_alert_text("cloud", status, error_msg),
-                                sync_result.get("exit_code"), started_at,
-                                run_id=run_id, fault_code=fault_code,
-                                artefacts_dir=artefacts_dir)
+                alert = ((config, "cloud", status, _failure_alert_text("cloud", status, error_msg),
+                          sync_result.get("exit_code"), started_at),
+                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
+                if isinstance(e, Exception):
+                    _send_run_alert(*alert[0], **alert[1])
+                else:
+                    # A cancel gives the process only Prefect's grace (30 s) before a forced kill; the
+                    # email (SMTP retries, minutes when the mail server is down) must not delay the
+                    # run row - it is sent right after the record below.
+                    deferred_alert = alert
                 alert_sent = True
             if extended_metrics is None:
                 # Failure-path telemetry: persist whatever stages were
@@ -1815,6 +1821,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 )
             except Exception as rec_err:
                 logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
+            if deferred_alert is not None:
+                _send_run_alert(*deferred_alert[0], **deferred_alert[1])
             if status == "CLOUD_BLOCKED" and guard_record:
                 _open_block_request(config, "cloud", run_id, guard_record, started_at,
                                     artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
@@ -1913,6 +1921,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         phase = "pre"
         guard_record = None
         alert_sent = False   # WP8: exactly one alert per failed run
+        deferred_alert = None   # A2: an interrupted run records itself first, alerts second
         nas_shutdown = None  # WP10: verified shutdown result, if one was attempted
 
         try:
@@ -2078,11 +2087,13 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     if shutdown_on_fail
                     else "The NAS was NOT shut down; the next scheduled run will re-sync."
                 )
-                _send_run_alert(config, "lan", status,
-                                _failure_alert_text("lan", status, error_msg, nas_msg),
-                                sync_result.get("exit_code"), started_at,
-                                run_id=run_id, fault_code=fault_code,
-                                artefacts_dir=artefacts_dir)
+                alert = ((config, "lan", status, _failure_alert_text("lan", status, error_msg, nas_msg),
+                          sync_result.get("exit_code"), started_at),
+                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
+                if isinstance(e, Exception):
+                    _send_run_alert(*alert[0], **alert[1])
+                else:
+                    deferred_alert = alert          # a cancel: record first, alert second (see cloud)
                 alert_sent = True
             if shutdown_on_fail and not isinstance(e, PartialRun):
                 logger.info(
@@ -2121,6 +2132,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 )
             except Exception as rec_err:
                 logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
+            if deferred_alert is not None:
+                _send_run_alert(*deferred_alert[0], **deferred_alert[1])
             if status == "LAN_BLOCKED" and guard_record:
                 _open_block_request(config, "lan", run_id, guard_record, started_at,
                                     artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
