@@ -41,6 +41,22 @@ flow.temp_rclone_config = lambda *a, **k: contextlib.nullcontext(spec["rc"])
 flow.notify = lambda *a, **k: True
 
 entry = spec["entry"]
+
+# WAVE 23 (cancel): when the parent drops the trigger file, deliver the cancel exactly as Prefect's
+# control listener does on Windows - `_thread.interrupt_main(SIGTERM)` in this (flow-run) process, whose
+# SIGTERM handler (prefect.utilities.engine) raises TerminationSignal in the main thread.
+if spec.get("cancel_trigger"):
+    import _thread
+    import signal
+    import threading
+
+    def _watch_for_cancel():
+        while not Path(spec["cancel_trigger"]).exists():
+            time.sleep(0.2)
+        _thread.interrupt_main(signal.SIGTERM)
+
+    threading.Thread(target=_watch_for_cancel, daemon=True).start()
+
 if entry in ("cloud", "lan"):
     flow.backup(config_path=spec["cfg"], mode=entry)
 elif entry == "audit":
