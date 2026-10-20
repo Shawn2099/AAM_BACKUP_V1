@@ -109,11 +109,14 @@ class TestAdminEndpoints:
         data = rig.client.get("/api/settings", headers=KEY).json()
         keys = {f["key"] for s in data["sections"] for f in s["fields"]}
         assert data["admin"] is False
-        assert "budget.lan_max_hours" in keys and "guards.max_delete_files" not in keys
-        r = rig.client.post("/api/settings", headers=KEY, json={"changes": {"guards.max_delete_files": 100}})
+        # B2: the deletion limits are basic now; another safety check stands for "support only"
+        assert "budget.lan_max_hours" in keys and "guards.max_delete_files" in keys
+        assert "guards.max_source_shrink_percent" not in keys
+        r = rig.client.post("/api/settings", headers=KEY,
+                            json={"changes": {"guards.max_source_shrink_percent": 50}})
         assert r.status_code == 403 and "Advanced password" in r.json()["detail"]
         v = rig.client.post("/api/settings/validate", headers=KEY,
-                            json={"changes": {"guards.max_delete_files": 100}}).json()
+                            json={"changes": {"guards.max_source_shrink_percent": 50}}).json()
         assert v["ok"] is False
 
     def test_only_the_advanced_password_opens_advanced(self, rig):

@@ -195,9 +195,10 @@ def test_basic_tab_holds_what_a_client_changes_the_rest_is_advanced(tmp_path):
     f = {x["key"]: x for s in ce.catalog(load_config(str(_write_config(tmp_path))))
          for x in s["fields"]}
     for key in ("notifications.recipients", "schedule.lan_cron", "budget.cloud_max_hours",
-                "paths.lan_destination", "wol.mac_address", "firm_name"):
+                "paths.lan_destination", "wol.mac_address", "firm_name",
+                "guards.max_delete_files", "guards.max_delete_percent"):      # B2: the deletion limits
         assert f[key]["level"] == "basic", key
-    for key in ("guards.max_delete_percent", "watchdog.failure_threshold", "cloud.verify_timeout_seconds",
+    for key in ("guards.max_source_shrink_percent", "watchdog.failure_threshold", "cloud.verify_timeout_seconds",
                 "maintenance.sqlite_synchronous", "schedule.timezone", "dashboard.bind_address"):
         assert f[key]["level"] == "advanced", key
     assert all(k in f for k in ce.BASIC_KEYS)        # no typo in the basic list

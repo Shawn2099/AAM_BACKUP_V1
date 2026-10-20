@@ -97,6 +97,9 @@ BASIC_KEYS = frozenset({
     "lan.shutdown_after_backup", "wol.enabled", "wol.mac_address", "wol.server_ip",
     "budget.lan_max_hours", "budget.cloud_max_hours", "budget.audit_max_hours",
     "cloud.bandwidth_limit", "dashboard.public_url",
+    # Owner 2026-10-20: the deletion limits (one pair, Cloud and Office copy) are a client setting;
+    # changing them still needs the typed phrase (the whole `guards` section is risky).
+    "guards.max_delete_files", "guards.max_delete_percent",
 })
 
 # Values the models only accept from a fixed set (enforced by a validator, so

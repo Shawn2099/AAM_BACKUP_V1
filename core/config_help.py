@@ -247,9 +247,16 @@ HELP: dict[str, tuple[str, str]] = {
     "run_logs.service_log_retention_days": ("Keep service logs for", ""),
 
     # ── safety ──
-    "guards.max_delete_files": ("Stop if a backup would delete more than",
-                                "Above this the backup waits for your approval on the dashboard."),
-    "guards.max_delete_percent": ("...or more than this share of all files", ""),
+    "guards.max_delete_files": (
+        "Stop if a backup would delete more than",
+        "Above this the backup waits for your approval on the dashboard. Applies to the Cloud and the "
+        "Office copy. Together with the percentage below, the stricter limit applies: with 20,000 files "
+        "already backed up and the limits 500 files / 10 %, at most 500 files may be deleted. "
+        "0 = never delete."),
+    "guards.max_delete_percent": (
+        "...or more than this share of the files already backed up",
+        "Counted against the files already in the backup, not against the folder being copied. "
+        "0 = never delete."),
     "guards.max_source_shrink_percent": ("Stop if the data folder suddenly shrinks by more than",
                                          "Protects against an empty or wrong drive being mirrored."),
     "guards.forbid_local_destination": ("Never back up onto this same server", ""),
