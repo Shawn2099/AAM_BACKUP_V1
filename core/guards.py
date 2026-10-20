@@ -136,7 +136,9 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                    limit_percent=max_delete_percent, **extra)
     earlier = (f" ({already_deleted:,} of them already deleted by an earlier attempt of "
                "this run)" if already_deleted else "")
-    if planned_deletes > max_delete_files or pct > max_delete_percent:
+    # B1: the verdict is the SAME allowance the cloud --max-delete backstop uses (one function), so
+    # G3 can never pass what the backstop then stops. `pct` is for the message only.
+    if planned_deletes > max_delete_allowance(destination_files, max_delete_files, max_delete_percent):
         return _block(
             name,
             f"This backup would delete {planned_deletes:,} of {destination_files:,} "
@@ -305,13 +307,15 @@ def enforce(leg: str, results: list[GuardResult],
 
 def max_delete_allowance(destination_files: int, max_delete_files: int,
                          max_delete_percent: float) -> int:
-    """Most deletions G3 still passes for this destination size.
+    """Most deletions G3 passes for this destination size - the ONE rule (B1).
 
-    Used as rclone's own `--max-delete` backstop on the real sync, so a
-    change between the dry-run and the sync cannot exceed the G3 limits.
-    Exact arithmetic on the configured percent (never above what G3 passes).
+    G3 passes exactly when `planned <= max_delete_allowance(...)`, and rclone's own
+    `--max-delete` backstop on the real sync uses the same number, so a change between the
+    dry-run and the sync cannot exceed the G3 limits and the two can never disagree.
+    The percent is the decimal the owner typed: `Fraction(str(...))`, never `Fraction(float)`,
+    whose binary value (0.3 is stored as 0.29999999999999998...) is one deletion too strict.
     """
-    by_percent = math.floor(Fraction(destination_files) * Fraction(max_delete_percent) / 100)
+    by_percent = math.floor(Fraction(destination_files) * Fraction(str(max_delete_percent)) / 100)
     return max(0, min(max_delete_files, by_percent))
 
 

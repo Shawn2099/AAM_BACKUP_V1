@@ -86,12 +86,20 @@ def test_g3_cases():
        max_files=st.integers(0, 10**6), max_pct=st.floats(0, 100, allow_nan=False))
 @settings(max_examples=400, deadline=None)
 def test_g3_property_never_passes_over_either_limit(dels, dest, max_files, max_pct):
+    # B1: the verdict is exact (the decimal the owner typed), one rule shared with the cloud backstop
+    from fractions import Fraction
+    from math import floor
+
     r = g.g3_mass_delete(dels, dest, max_files, max_pct)
-    pct = 100.0 * dels / dest if dest else 0.0
-    if r.passed:
-        assert dels <= max_files and pct <= max_pct
-    else:
-        assert dels > max_files or pct > max_pct
+    allowed = max(0, min(max_files, floor(Fraction(dest) * Fraction(str(max_pct)) / 100)))
+    assert r.passed is (dels <= allowed)
+
+
+def test_g3_blocks_planned_deletions_against_an_empty_destination():
+    """Nothing can be deleted from a destination with no files: planned deletions with a destination
+    count of 0 mean the measurement is wrong (an unreadable listing) - fail closed, never '0 %'."""
+    assert not g.g3_mass_delete(1, 0, 500, 10).passed
+    assert g.g3_mass_delete(0, 0, 500, 10).passed
 
 
 # ── G4 ─────────────────────────────────────────────────────────────────────
