@@ -361,6 +361,9 @@ maintenance:
   # How long a backup waits for another backup job to finish before it gives up
   # as *_SLOT_TIMEOUT (seconds). The schedule check (see `schedule:`) uses it.
   concurrency_wait_seconds: 3600
+  # While rclone/robocopy runs, the agent checks this often (seconds, 0.1-30) whether the
+  # flow was cancelled or interrupted; it then kills the tool and records the run (A6)
+  tool_poll_seconds: 1.0
   # SQLite durability: normal = safe (a power cut may lose the last commit);
   # full = flush every commit (slower)
   sqlite_synchronous: normal

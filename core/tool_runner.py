@@ -6,6 +6,10 @@ Guarantees, for every rclone / robocopy / system-tool invocation:
   full output is kept (WP2) and never accumulated unbounded in memory;
 * a timeout kills the whole process tree (gcloud.cmd spawns children) and
   is reported as `timed_out=True`, never as a fake exit code;
+* an interrupt of the calling flow (cancel, stop, Ctrl+C) kills the tree too,
+  is recorded in the manifest (`interrupted`) and then re-raised; the wait is
+  polled (`maintenance.tool_poll_seconds`) so the interrupt is seen while the
+  tool is still running;
 * a spawn failure is reported as `spawn_error`, never as a fake exit code;
 * `exit_code` is either a real `int` or `None` — never a bool / -1 sentinel;
 * every invocation is recorded in the artefact manifest (argv, exit,
@@ -89,6 +93,36 @@ def tail_lines(text: str, max_lines: int) -> str:
     return "\n".join(lines[-max_lines:])
 
 
+def _configured_poll_seconds(config_path: str | None = None) -> float:
+    """`maintenance.tool_poll_seconds` from config.yaml, validated with the model's own
+    bounds; the model default when the key is absent, out of bounds or the file unreadable.
+    Read per call (a cheap raw read) so run_tool needs no config argument at its 15 call sites."""
+    from core.config_file import load_round_trip
+    from models.config import CONFIG_PATH, MaintenanceConfig, model_default
+
+    default = model_default(MaintenanceConfig, "tool_poll_seconds")
+    try:
+        _, doc = load_round_trip(config_path or CONFIG_PATH)
+        value = ((doc or {}).get("maintenance") or {}).get("tool_poll_seconds", default)
+        return MaintenanceConfig(tool_poll_seconds=value).tool_poll_seconds
+    except Exception:  # noqa: BLE001 - polling must never be the reason a backup cannot start
+        return default
+
+
+def _wait_polling(proc: subprocess.Popen, timeout_s: float | None, poll_s: float) -> int:
+    """`proc.wait(timeout_s)` in short steps. One long blocking wait cannot be interrupted on
+    Windows (Prefect's cancel only sets a flag in the main thread), so the flag would be seen
+    only when the tool exits by itself. Raises TimeoutExpired exactly at the deadline."""
+    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    while True:
+        step = poll_s if deadline is None else min(poll_s, max(deadline - time.monotonic(), 0.0))
+        try:
+            return proc.wait(timeout=step)
+        except subprocess.TimeoutExpired:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise
+
+
 def _kill_tree(pid: int) -> None:
     try:
         parent = psutil.Process(pid)
@@ -169,6 +203,7 @@ def run_tool(
     exit_code: int | None = None
     timed_out = False
     spawn_error: str | None = None
+    interrupt: BaseException | None = None
     logger.info(f"Running {name}: {' '.join(str(a) for a in argv[:4])}... "
                 f"(artefacts: {artefacts.dir})")
     try:
@@ -182,7 +217,7 @@ def run_tool(
                 spawn_error = f"{type(e).__name__}: {e}"
             else:
                 try:
-                    rc = proc.wait(timeout=timeout_s)
+                    rc = _wait_polling(proc, timeout_s, _configured_poll_seconds())
                     exit_code = rc if type(rc) is int else None
                 except subprocess.TimeoutExpired:
                     timed_out = True
@@ -192,6 +227,12 @@ def run_tool(
                         proc.wait(timeout=30)
                     except subprocess.TimeoutExpired:
                         logger.error(f"{name} (pid {proc.pid}) did not exit after kill")
+                except BaseException as e:  # noqa: BLE001 - cancel / stop / Ctrl+C of the flow
+                    # The flow is being stopped: the tool must not outlive it. Kill the tree and
+                    # still write the record below, then re-raise the original exception.
+                    interrupt = e
+                    logger.error(f"{name} interrupted ({type(e).__name__}) - terminating process tree")
+                    _kill_tree(proc.pid)
     except OSError as e:
         spawn_error = spawn_error or f"output capture failed: {e}"
         artefacts.note(f"{name}: output capture failed: {e}", degraded=True)
@@ -210,7 +251,10 @@ def run_tool(
         "duration_s": result.duration_s, "timeout_s": timeout_s,
         "stdout": stdout_path.name, "stderr": stderr_path.name,
         "log": log_path.name if log_path else None,
+        "interrupted": type(interrupt).__name__ if interrupt is not None else None,
     })
+    if interrupt is not None:
+        raise interrupt
     if not result.completed:
         logger.error(result.describe_failure())
     else:

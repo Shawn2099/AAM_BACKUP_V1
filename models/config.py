@@ -591,6 +591,14 @@ class MaintenanceConfig(StrictModel):
         description="G8: robocopy temp logs left in %TEMP% by a killed run are deleted once "
                     "older than this (hours); the age gate protects a running backup's log",
     )
+    tool_poll_seconds: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=30,
+        description="A6: while rclone/robocopy runs, the agent checks this often whether the flow "
+                    "was cancelled or interrupted; it then stops the tool and records the run "
+                    "(seconds). A cancel is noticed within this time.",
+    )
     sqlite_busy_timeout_ms: int = Field(
         default=30000,
         ge=1000,
