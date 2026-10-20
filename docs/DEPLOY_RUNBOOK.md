@@ -31,6 +31,11 @@ Verified 2026-10-15 on the trial server (Windows Server 2016, PowerShell
 3. **Backup right** (only if `lan.use_backup_mode: true`, the default) —
    `secpol.msc` → Local Policies → User Rights Assignment →
    *Back up files and directories* → Add → `aambackup`.
+   If `aambackup` was ever deleted and re-created, it is a new account: add
+   it to the local *Backup Operators* group too (`net localgroup "Backup
+   Operators" aambackup /add`), which also gives "Log on as a batch job" that
+   the readiness probe needs (else `as .\aambackup ... exit 267011`), then
+   re-run `06_install_services.ps1`.
 4. **NAS remote shutdown** — on the NAS, allow `aambackup` to shut it down
    remotely ("Force shutdown from a remote system") and allow it through its
    firewall. This cannot be tested without shutting the NAS down; the first
