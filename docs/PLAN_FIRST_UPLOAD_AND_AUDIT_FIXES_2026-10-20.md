@@ -113,8 +113,14 @@ HTTP 500 on `/api/settings` (config unchanged).
 
 ## Task checklist
 
-- [ ] A6  - [ ] A2  - [ ] A7  - [ ] A1  - [ ] A3  - [ ] A4  - [ ] A5
-- [ ] B1  - [ ] B2/B3
-- [ ] D2  - [ ] D7  - [ ] D1  - [ ] D3  - [ ] D4  - [ ] D5
-- [ ] real-cancel lab test  - [ ] Full suite + audit lab  - [ ] Handoff update
+Done 2026-10-20 (each test first, full unit suite green, one commit each):
+- [x] A6 `83a283a`  - [x] A2 `5806619` (+ record-first-alert-second `d073df7`)  - [x] A7 `b51cbbd`
+- [x] A1 `5941699`  - [x] A3 `452cbcb`  - [x] A4 `f08f52c`  - [x] A5 `c7b2f83`
+- [x] B1 `4608408`  - [x] B2/B3 `b1c3ce6`
+- [x] D2 `8c82271`  - [x] D7 `93e7dc4`  - [x] D1 `d3c04a9`  - [x] D3 `96c6433`  - [x] D4 `e18b546`  - [x] D5 `fcd92a9`
+- [x] real-cancel lab test W23 `8570edb` (cloud + LAN pass: tool stopped ~1 s after the cancel, row *_FAILED / AAM-SYS-02,
+      lock released, next run converges)
+- [x] unit suite: 2675 passed / 19 skipped / 0 failed
+- [ ] full audit lab re-run (started after the last commit; result in SESSION_HANDOFF.md)
+- [x] Handoff update
 - E1 dropped by the owner; D6, D8, D9 deferred

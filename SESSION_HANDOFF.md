@@ -15,6 +15,28 @@ on deploy day (see §4f).
 >
 > **2026-10-19 update:** the safety check now separates "newer files wait for the next backup" (`PENDING_BACKUP`, amber, no email) from real faults - plan `docs/PLAN_AUDIT_PENDING_2026-10-19.md` (steps 1-4 done and proven on the box at 9186fb6; the weekly "backup first" chain, step 5, is deferred until a real week of data). New key `audit.backup_first_prompt_minutes`. Accepted by the owner (do not work on): locked files / no VSS, nothing alerts if the server is down, in-place ransomware, size-only daily cloud check. Restore drill + restore-script key handling (`.dpapi` vs plain key, hardcoded bucket fallback) is deferred to LAST.
 
+> **2026-10-20 (later) - ALL OF THE AUDIT PLAN IS BUILT AND COMMITTED** (`docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`,
+> hashes there). Unit suite **2675 passed / 19 skipped / 0 failed**. New lab wave **W23** (`audit_lab/test_w23_cancel.py`):
+> a Prefect-style cancel (`_thread.interrupt_main(SIGTERM)`, how Prefect 3.7.2 cancels a flow-run process on Windows;
+> 30 s grace, then a forced kill) mid-sync on the real tools: cloud 0.8 s / LAN 1.3 s to exit, no tool left, `*_FAILED` +
+> `AAM-SYS-02`, lock released, next run converges. What changed: `run_tool` polls (`maintenance.tool_poll_seconds`) and kills
+> its tree on any BaseException; pipelines decide an interrupt through `statuses.EXC_INTERRUPTED` and record BEFORE they
+> alert; `_hold_backup_lock` is mandatory in production (`lock_release_retries/_delay_ms`); `latest_audit` keeps a failed
+> audit; BLOCKED text knows a sync ran (`sync_attempted`); `smb_ready` needs the share root; G3 and the cloud backstop share
+> `guards.max_delete_allowance` (decimal percent, fail-closed on 0 destination files); the two deletion limits are basic
+> Settings keys; banner/`/health` red on a failed latest run (missed = amber); `notify` sends a short notice if building an
+> alert fails; undelivered-alerts clears after a later SENT; the audit classifier ignores file names and counts;
+> `db_retention_days` >= 35; a hand-switched rollover config stops with `rollover:switched_by_hand` (AAM-ROL-02).
+> **Deferred by the owner:** D6 (run_logs.dir validation), D8 (installer exit honesty / refuse while a backup runs), D9 (partly
+> refused recipients). **Dropped:** first-full-backup button, hung-tool detector, Stop button, E1. The first cloud upload
+> simply runs in nightly chunks (`budget.cloud_max_hours`, CLOUD_PARTIAL, resumes by itself); expect PARTIAL emails and, after
+> 26 h, the stale banner until it completes. **Open:** the final full audit lab run (result below if recorded); then the
+> infra phase with the owner: `04_check_readiness.ps1 -ServiceAccount .\aambackup` (needs the password), G3 email previews,
+> C7 reports from the box DB, 10.4 scenarios (NAS shutdown only with the owner at the NAS), seven nights, restore drill
+> (also a dry run of `deploy/09_restore_from_gcs.bat` - only its text is tested; it now asks for the bucket when config.yaml
+> cannot be read). Not proven on the real box: the Windows cancel through NSSM/`prefect serve` (W23 proves the Prefect-side
+> mechanism on real processes, not the service wrapper).
+>
 > **2026-10-20 - final code audit + new plan (owner):** 4 read-only reviewers + advisor audited the branch
 > (unit suite re-run first: 2526 passed / 19 skipped). **Current plan: `docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`**
 > (rev 2, every claim re-verified by 3 independent readers who reproduced them: Part A bug fixes A1-A7: hidden failed
