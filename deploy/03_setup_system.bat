@@ -191,18 +191,16 @@ if %ERRORLEVEL% equ 0 (
 )
 
 :: ====================================================================
-:: STEP 4: Windows Firewall Rules
-:: Opens inbound ports for the Prefect Server and Backup Dashboard so
-:: they can be accessed over the LAN.
+:: STEP 4: Windows Firewall
+:: This script opens NO port. 06_install_services.ps1 owns the firewall: it
+:: opens only the dashboard port, scoped to dashboard.firewall_remote_addresses
+:: (default LocalSubnet). The Prefect port 4200 has no login and is never
+:: opened (the server listens on 127.0.0.1 only). A rule created here for any
+:: address would undo that scope whenever this script is run again (A5).
 :: ====================================================================
 echo.
-echo [4/5] Configuring Windows Firewall rules for Prefect and Dashboard...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "New-NetFirewallRule -DisplayName 'AAM Backup Prefect' -Direction Inbound -LocalPort 4200 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue; New-NetFirewallRule -DisplayName 'AAM Backup Dashboard' -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue"
-if %ERRORLEVEL% equ 0 (
-    echo [OK]   Firewall rules added for ports 4200 and 8080.
-) else (
-    echo [WARN] Firewall rule creation failed. Please open TCP 4200 and 8080 manually.
-)
+echo [4/5] Firewall: nothing to do here - 06_install_services.ps1 opens the dashboard port (office network only).
+echo [OK]   No firewall rule created by this script.
 
 :: ====================================================================
 :: STEP 5: Isolated Google Cloud SDK

@@ -478,6 +478,8 @@ if ($LASTEXITCODE -ne 0 -or $dashInfo.Count -lt 3) {
 }
 $dashBind = $dashInfo[0]; $dashPort = $dashInfo[1]; $dashRemote = $dashInfo[2] -split ","
 Get-NetFirewallRule -DisplayName $FwRuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+# An older 03_setup_system.bat opened Prefect's port (4200, any address); that rule must not survive.
+Get-NetFirewallRule -DisplayName "AAM Backup Prefect" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 if ($dashBind -in @("127.0.0.1", "localhost", "::1")) {
     Write-Host "[OK]   Dashboard only on this server ($dashBind) - no firewall rule needed"
 } else {
