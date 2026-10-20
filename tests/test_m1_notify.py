@@ -154,10 +154,12 @@ def test_long_message_truncated_in_body_and_attached_in_full(tmp_path, db):
 
 
 def test_notify_never_raises(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path)        # no mail server listens on the default port
     with patch.object(nt, "_notify", side_effect=RuntimeError("db exploded")):
         result = nt.notify(cfg, _event())
-    assert result.status == nt.FAILED and "db exploded" in result.error
+    # D1: a broken alert pipeline now falls back to a short notice; with no mail server that fails
+    # too - and still never raises
+    assert result.status == nt.FAILED
 
 
 def test_ssl_auto_mode_follows_port():

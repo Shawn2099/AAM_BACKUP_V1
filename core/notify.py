@@ -431,6 +431,40 @@ def render_alert(config, event: AlertEvent, db=None) -> tuple[str, str, list[dic
 
 # ── Public entry point ────────────────────────────────────────────────────
 
+# D1: when building an alert fails (DB, incident lookup, compose, support bundle) a short plain notice is
+# sent instead. No DB here, so the repeat cooldown is process-local: event key -> time.monotonic() of the
+# last notice (a persistent condition re-notified every minute by the watchdog must not become a mail storm).
+_FALLBACK_SENT: dict[str, float] = {}
+
+
+def _fallback_alert(config, event: AlertEvent, error: Exception) -> DeliveryResult:
+    """The short notice (D1): the event's own title and message, no DB, no compose, no attachments.
+    Obeys notifications.send_on_failure like a normal alert. Never raises."""
+    import html
+
+    try:
+        if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
+            return DeliveryResult(DISABLED, "notifications.send_on_failure is false "
+                                            "(routine failure/warning emails only)")
+        cooldown_h = config.alerts.repeat_cooldown_hours
+        last = _FALLBACK_SENT.get(event.key)
+        if last is not None and cooldown_h > 0 and time.monotonic() - last < cooldown_h * 3600:
+            return DeliveryResult(SUPPRESSED, f"same short notice already sent (cooldown {cooldown_h}h)")
+        subject = f"[{config.firm_name} Backup] {event.kind}: {event.title}"
+        lines = [event.title, event.message or "",
+                 "This is a short notice: the full alert could not be prepared "
+                 f"({type(error).__name__}). The details are in the backup program's logs on the server."]
+        body = "".join(f"<p>{html.escape(line)}</p>" for line in lines if line)
+        result = send_email(config.notifications, subject, body,
+                            headers={"X-AAM-Reference": event.run_id or event.key})
+        if result.status == SENT:
+            _FALLBACK_SENT[event.key] = time.monotonic()
+        return result
+    except Exception as e:  # noqa: BLE001 - the last resort must not raise
+        logger.error(f"Short alert notice for {event.key} failed too: {e}")
+        return DeliveryResult(FAILED, f"short notice failed: {e}")
+
+
 def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
     """Send (or suppress) one alert and record the outcome. Never raises."""
     own_db = db is None
@@ -441,7 +475,17 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
         result = _notify(config, event, db)
     except Exception as e:  # noqa: BLE001 - alerting must never break a backup
         logger.error(f"Alert pipeline error for {event.key}: {e}")
-        result = DeliveryResult(FAILED, f"alert pipeline error: {e}")
+        result = _fallback_alert(config, event, e)       # D1: the human is still told
+        if db is not None:                                # ... and the outcome recorded when the DB works
+            try:
+                db.record_notification({
+                    "event_key": event.key, "kind": event.kind, "mode": event.mode,
+                    "subject": event.title, "status": result.status, "error": result.error,
+                    "attempts": result.attempts, "created_at": now_iso(),
+                    "fault_code": event.fault_code, "message_id": result.message_id,
+                    "thread_id": None, "attachments_rung": None})
+            except Exception as rec_err:  # noqa: BLE001
+                logger.error(f"Could not record the short notice for {event.key}: {rec_err}")
     finally:
         if own_db and db is not None:
             try:
