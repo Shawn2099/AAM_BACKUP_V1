@@ -574,9 +574,12 @@ class MaintenanceConfig(StrictModel):
     )
     db_retention_days: int = Field(
         default=90,
-        ge=7,
+        ge=35,
         le=3650,
-        description="Days of run history to keep in ManifestDB (7–3650)",
+        description="Days of run history to keep in ManifestDB (35–3650). At least 35: the 30-day "
+                    "report window plus a week, and the safety guards read their baseline (the last "
+                    "successful run of a leg) from this history - once it is purged the shrink guard "
+                    "passes as a 'first run'.",
     )
     log_retention_days: int = Field(
         default=90,

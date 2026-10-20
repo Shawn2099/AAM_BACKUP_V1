@@ -113,7 +113,7 @@ notifications:
   weekly_enabled: false
   monthly_enabled: false
 maintenance:
-  db_retention_days: 30
+  db_retention_days: 35
   log_retention_days: 7
   sqlite_busy_timeout_ms: 5000
   sqlite_vacuum_freelist_threshold: 1000

@@ -350,7 +350,8 @@ notifications:
 # MAINTENANCE
 # ═══════════════════════════════════════════════════
 maintenance:
-  # Days of run history to keep in the SQLite database (7–3650)
+  # Days of run history to keep in the SQLite database (35–3650; at least 35: the 30-day report
+  # window plus a week, and the safety guards read their baseline from this history)
   db_retention_days: 90
   # Days of application log files to keep (1–365). 90 = the 3-month log
   # retention the owner asked for (R8)
