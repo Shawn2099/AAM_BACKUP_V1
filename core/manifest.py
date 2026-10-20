@@ -1167,11 +1167,15 @@ class ManifestDB:
         return dict(row) if row else None
 
     def notification_failures_since(self, days: int) -> list[dict]:
+        """Emails that could not be delivered in the last `days` days AND are newer than the last
+        SENT email (D3): email is one transport, so a later SENT proves delivery works again and the
+        earlier failures no longer describe the present. SUPPRESSED / DISABLED are not proof."""
         cutoff = cutoff_iso(days)
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT * FROM notifications WHERE status = 'FAILED' AND created_at >= ? "
+                "AND id > COALESCE((SELECT MAX(id) FROM notifications WHERE status = 'SENT'), 0) "
                 "ORDER BY id DESC", (cutoff,)).fetchall()
             return [dict(r) for r in rows]
 
