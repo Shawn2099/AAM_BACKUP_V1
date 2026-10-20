@@ -16,6 +16,7 @@ import json
 
 import pendulum
 
+from core import statuses
 from core.time_utils import IST, format_ist
 
 RED = "red"
@@ -61,6 +62,15 @@ def compute_attention(db, config, now=None) -> list[dict]:
                         f"The last success was {age:.0f} h ago (limit {stale_h} h)")))
 
         run = db.last_run(leg)
+        if run and statuses.category(run.get("status")) == statuses.CATEGORY_FAILED:
+            # D2: a failed night is not "healthy" until 26 h have passed since the last success.
+            # A missed night (server off or busy) is a warning; PARTIAL / RUNNING are not alarms.
+            level = AMBER if run.get("status") in statuses.MISSED_STATUSES else RED
+            when = format_ist(run.get("ended_at") or run.get("started_at"))
+            items.append(_item(level, f"last_run:{leg}",
+                               act(f"Open the {_PHRASE.get(leg, leg)} card on the dashboard and fix the cause",
+                                   f"The last {_PHRASE.get(leg, leg)} did not succeed "
+                                   f"({statuses.label(run.get('status'))}, {when})")))
         if run and run.get("extended_metrics"):
             try:
                 metrics = json.loads(run["extended_metrics"])

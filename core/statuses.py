@@ -106,6 +106,9 @@ FAILED_STATUSES: frozenset[str] = frozenset({
     RunStatus.ROLLOVER_FAILED, RunStatus.ROLLOVER_ABANDONED,
 })
 
+# A night that did not run (server off or busy): in the failed category, but only a warning (D2).
+MISSED_STATUSES: frozenset[str] = frozenset({RunStatus.CLOUD_MISSED, RunStatus.LAN_MISSED})
+
 CLOUD_SUCCESS_STATUSES = frozenset(s for s in SUCCESS_STATUSES if s.startswith("CLOUD_"))
 LAN_SUCCESS_STATUSES = frozenset(s for s in SUCCESS_STATUSES if s.startswith("LAN_"))
 

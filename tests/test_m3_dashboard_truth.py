@@ -64,9 +64,9 @@ def test_all_good_means_nothing_to_attend(db):
 
 def test_stale_and_never_succeeded_legs_are_red(db):
     _run(db, "c", "cloud", "CLOUD_COMPLETE", 11 * 24)          # the 11-day outage
-    _run(db, "l1", "lan", "LAN_FAILED", 1)                     # failures don't count
+    _run(db, "l1", "lan", "LAN_FAILED", 1)                     # never succeeded; D2: the failure itself is red too
     items = compute_attention(db, _cfg())
-    assert _codes(items, RED) == {"stale:cloud", "stale:lan"}
+    assert _codes(items, RED) == {"stale:cloud", "stale:lan", "last_run:lan"}
     msgs = " ".join(i["message"] for i in items)
     assert "264 h" in msgs and "never completed successfully" in msgs.lower()
 
