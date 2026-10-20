@@ -591,6 +591,15 @@ class MaintenanceConfig(StrictModel):
         description="G8: robocopy temp logs left in %TEMP% by a killed run are deleted once "
                     "older than this (hours); the age gate protects a running backup's log",
     )
+    lock_release_retries: int = Field(
+        default=5, ge=0, le=50,
+        description="A7: how often the backup lock file is deleted again when the first delete fails "
+                    "(an antivirus scan or the watchdog reading the file blocks the delete on Windows).",
+    )
+    lock_release_delay_ms: int = Field(
+        default=200, ge=10, le=5000,
+        description="A7: wait between two attempts to delete the backup lock file (milliseconds).",
+    )
     tool_poll_seconds: float = Field(
         default=1.0,
         ge=0.1,

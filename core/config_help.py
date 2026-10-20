@@ -212,6 +212,10 @@ HELP: dict[str, tuple[str, str]] = {
     "maintenance.log_retention_days": ("Keep program logs for", ""),
     "maintenance.orphan_robocopy_log_max_age_hours": ("Delete leftover copy logs after",
                                                       "Logs left behind by a stopped copy."),
+    "maintenance.lock_release_retries": ("Retries when the 'backup running' marker cannot be removed",
+                                         "The marker file is removed when a backup ends; a virus scanner can "
+                                         "briefly block that."),
+    "maintenance.lock_release_delay_ms": ("Wait between those retries", ""),
     "maintenance.tool_poll_seconds": ("How quickly a stopped backup is noticed",
                                       "While a copy runs, the program checks this often whether the backup "
                                       "was stopped, and then stops the copy."),

@@ -49,7 +49,7 @@ from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
 from core.notify import SENT, AlertEvent, attachment_ladder, notify, send_email
-from core.process import acquire_lock, read_lock_alive, write_lock
+from core.process import acquire_lock, read_lock_alive
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
 from core.shutdown import FAILED as SHUTDOWN_FAILED
@@ -210,60 +210,82 @@ def _backup_slot(config):
             3600,
         )
     )
-    lock_path = config.paths.backup_lock_path
-
     if os.environ.get("PREFECT_TEST_MODE") == "1":
         # Unit-test mode (tests/conftest forces this env): occupancy requires
-        # an orchestration API which these tests deliberately do not provide.
-        # Keep the watchdog-lock lifecycle so its semantics stay testable;
-        # production never sets PREFECT_TEST_MODE.
-        try:
-            write_lock(lock_path)
-            logger.info(f"Backup lock acquired (PID={os.getpid()}) - test mode")
-        except OSError as e:
-            logger.warning(f"Could not write backup lock file: {e}")
-        try:
+        # an orchestration API which these tests deliberately do not provide, and
+        # their mock configs have no real lock path (so a lock that cannot be
+        # written is tolerated here, and only here). The lock lifecycle is the
+        # SAME shared helper as in production; production never sets
+        # PREFECT_TEST_MODE.
+        with _hold_backup_lock(config, required=False):
             yield
-        finally:
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
         return
 
     with concurrency("aam-backup", occupy=1, timeout_seconds=wait_seconds):
-        # Exclusive acquisition: a live lock owned by another pipeline aborts
-        # this one BEFORE any transfer starts (slot is released by the raise).
-        # The finally below only removes the lock if it is still ours, so a
-        # successor's lock can never be deleted by a finishing predecessor.
-        acquired = False
-        try:
-            acquired = acquire_lock(lock_path)
-            if not acquired:
+        with _hold_backup_lock(config, required=True):
+            yield
+
+
+@contextmanager
+def _hold_backup_lock(config, *, required: bool):
+    """The watchdog lock of one pipeline (A7), shared by the production and the test branch.
+
+    Exclusive: a live lock of another process aborts this pipeline BEFORE any transfer.
+    A lock holding THIS process's own live PID is the leftover of an earlier pipeline of the same
+    flow process (a release that failed) and is taken over - the slot guarantees pipelines of one
+    process never overlap. `required`: a lock that cannot be written stops the run (the watchdog
+    could not see it and could restart the agent mid-transfer); never run without it."""
+    lock_path = config.paths.backup_lock_path
+    held = False
+    try:
+        held = acquire_lock(lock_path)
+        if not held:
+            alive, owner_pid = read_lock_alive(lock_path)
+            if alive and owner_pid == os.getpid():
+                held = True
+                logger.warning("Backup lock of an earlier pipeline of this process taken over")
+            else:
                 raise RuntimeError(
                     "Backup lock is held by a live process - refusing to "
                     "overwrite it or run without it"
                 )
-            logger.info(
-                f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts"
-            )
-        except OSError as e:
-            logger.warning(f"Could not write backup lock file: {e}")
-        try:
-            yield
-        finally:
-            if acquired:
-                try:
-                    _, owner_pid = read_lock_alive(lock_path)
-                    if owner_pid == os.getpid():
-                        lock_path.unlink(missing_ok=True)
-                        logger.info("Backup lock released")
-                    else:
-                        logger.warning(
-                            "Backup lock changed during run - leaving it in place"
-                        )
-                except OSError:
-                    pass
+        logger.info(f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts")
+    except OSError as e:
+        if required:
+            raise RuntimeError(
+                f"Backup lock could not be written ({e}) - refusing to run without it: the "
+                "watchdog could not see this backup") from e
+        logger.warning(f"Could not write backup lock file: {e}")
+    try:
+        yield
+    finally:
+        if held:
+            _release_backup_lock(
+                lock_path, int(config.maintenance.lock_release_retries),
+                float(config.maintenance.lock_release_delay_ms) / 1000)
+
+
+def _release_backup_lock(lock_path, retries: int, delay_s: float) -> None:
+    """Remove the lock if it is still ours, retrying while the file is busy (an antivirus scan or
+    the watchdog reading it makes the delete fail on Windows). A lock of another owner is left."""
+    for attempt in range(retries + 1):
+        _, owner_pid = read_lock_alive(lock_path)
+        if owner_pid is None and not lock_path.exists():
+            return                                     # already gone
+        if owner_pid == os.getpid():
+            try:
+                lock_path.unlink(missing_ok=True)
+                logger.info("Backup lock released")
+                return
+            except OSError:
+                pass
+        elif owner_pid is not None and owner_pid != -1:
+            logger.warning("Backup lock changed during run - leaving it in place")
+            return
+        if attempt < retries:                          # busy (-1) / unreadable / delete failed
+            time.sleep(delay_s)
+    logger.error(f"Backup lock {lock_path} could not be released after {retries + 1} attempts; "
+                 "the next pipeline of this process takes it over, a later process sees a dead PID")
 
 
 def _cloud_diff_count(manifest: list, before: dict) -> int:
