@@ -121,6 +121,6 @@ Done 2026-10-20 (each test first, full unit suite green, one commit each):
 - [x] real-cancel lab test W23 `8570edb` (cloud + LAN pass: tool stopped ~1 s after the cancel, row *_FAILED / AAM-SYS-02,
       lock released, next run converges)
 - [x] unit suite: 2675 passed / 19 skipped / 0 failed
-- [ ] full audit lab re-run (started after the last commit; result in SESSION_HANDOFF.md)
+- [x] full audit lab re-run: 244 passed, 3 skipped, 1 flaky (see SESSION_HANDOFF.md)
 - [x] Handoff update
 - E1 dropped by the owner; D6, D8, D9 deferred

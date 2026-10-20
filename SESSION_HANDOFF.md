@@ -30,7 +30,7 @@ on deploy day (see §4f).
 > **Deferred by the owner:** D6 (run_logs.dir validation), D8 (installer exit honesty / refuse while a backup runs), D9 (partly
 > refused recipients). **Dropped:** first-full-backup button, hung-tool detector, Stop button, E1. The first cloud upload
 > simply runs in nightly chunks (`budget.cloud_max_hours`, CLOUD_PARTIAL, resumes by itself); expect PARTIAL emails and, after
-> 26 h, the stale banner until it completes. **Open:** the final full audit lab run (result below if recorded); then the
+> 26 h, the stale banner until it completes. **Final audit lab run (2026-10-20, after the last commit): 244 passed, 3 skipped, 1 failed. The one failure, `test_w16_lan_flow_random_tree_is_lossless_and_honest`, was a Prefect temporary-server `409 Conflict` on `set_state` (Hypothesis: "failed on the first call but did not on a subsequent one"); alone it passes (38 s). Infrastructure flake, not a code defect.** Open: the
 > infra phase with the owner: `04_check_readiness.ps1 -ServiceAccount .\aambackup` (needs the password), G3 email previews,
 > C7 reports from the box DB, 10.4 scenarios (NAS shutdown only with the owner at the NAS), seven nights, restore drill
 > (also a dry run of `deploy/09_restore_from_gcs.bat` - only its text is tested; it now asks for the bucket when config.yaml
