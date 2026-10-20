@@ -52,15 +52,26 @@ def tcp_port_open(host: str, port: int, timeout_s: float) -> tuple[bool, str]:
 
 
 def smb_path_usable(probe_path: str | None) -> tuple[bool, str]:
-    """A real SMB round-trip: stat the probe path (or list the share root)."""
+    """A real SMB round-trip: the SHARE ROOT must answer, then the probe path is stat'ed.
+
+    A missing share (winerror 67) and an unreachable host (winerror 53) raise FileNotFoundError
+    on Windows just like a missing file, so "file not found" alone proves nothing: a NAS that
+    accepts TCP 445 before its share is published would count as ready. Only a probe path that
+    is absent BELOW an answering share is allowed (whether the canary must exist is the canary
+    guard's decision, G5)."""
     if not probe_path:
         return True, "no probe path configured"
+    drive = os.path.splitdrive(probe_path)[0]       # \\host\share  or  Z:
+    if drive:
+        root = drive if drive.startswith("\\\\") else drive + "\\"
+        try:
+            os.stat(root)
+        except OSError as e:
+            return False, f"smb share {root} did not answer: {type(e).__name__}: {e}"
     try:
         os.stat(probe_path)
         return True, "smb stat ok"
     except FileNotFoundError:
-        # The share answers (it could tell us the file is absent) - SMB works.
-        # Whether the canary must exist is the canary guard's decision (G5).
         return True, "smb answered (probe path absent)"
     except OSError as e:
         return False, f"smb stat failed: {type(e).__name__}: {e}"
