@@ -61,6 +61,12 @@ class AuditStatus(StrEnum):
     NOT_VERIFIED = "NOT_VERIFIED"
 
 
+# The audits that reached a verdict about the data (A1). AUDIT_INCOMPLETE is not one: it only says the
+# check could not run, so it never replaces an unresolved VERIFICATION_FAILED.
+AUDIT_VERDICT_STATUSES: frozenset[str] = frozenset({
+    AuditStatus.VERIFIED, AuditStatus.VERIFICATION_FAILED, AuditStatus.PENDING_BACKUP,
+})
+
 # Legacy values that may exist in old run_history rows. Never produced now.
 _LEGACY_SUCCESS = frozenset({"LAN_NO_CHANGES_COMPLETE", "SUCCESS"})
 _LEGACY_NO_CHANGES = frozenset({"LAN_NO_CHANGES_COMPLETE"})

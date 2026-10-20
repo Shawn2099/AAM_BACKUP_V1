@@ -13,6 +13,7 @@ from pathlib import Path
 from loguru import logger
 
 from core import rollover_journal as rj
+from core import statuses
 from core.statuses import AuditStatus
 from core.time_utils import IST, cutoff_iso, now_iso
 from models.config import MaintenanceConfig, model_default
@@ -905,29 +906,37 @@ class ManifestDB:
             conn.commit()
 
     def latest_audit(self, mode: str, scope: str | None = None) -> dict | None:
-        """Return the newest audit row for a mode (and optional scope).
+        """Return the audit row that counts for a mode (and optional scope).
 
         Returns None when no audit has ever run — callers render that as
         NOT_VERIFIED. A VERIFICATION_FAILED row stays authoritative until a
-        later audit passes; audits never touch run_history.
+        later audit reaches a verdict (A1): an AUDIT_INCOMPLETE row newer than it
+        (the check could not run) does not replace it; the failed row is returned
+        with `newer_incomplete_at` set so readers can say so. Audits never touch
+        run_history.
         """
         with self._lock:
             conn = self._get_conn()
-            if scope is not None:
-                row = conn.execute(
-                    """SELECT * FROM integrity_audits
-                       WHERE mode = ? AND scope = ?
-                       ORDER BY started_at DESC LIMIT 1""",
-                    (mode, scope),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """SELECT * FROM integrity_audits
-                       WHERE mode = ?
-                       ORDER BY started_at DESC LIMIT 1""",
-                    (mode,),
-                ).fetchone()
-            return dict(row) if row else None
+            newest = self._newest_audit(conn, mode, scope)
+            if newest is None or newest["status"] != AuditStatus.AUDIT_INCOMPLETE:
+                return newest
+            verdict = self._newest_audit(conn, mode, scope, statuses.AUDIT_VERDICT_STATUSES)
+            if verdict is not None and verdict["status"] == AuditStatus.VERIFICATION_FAILED:
+                return {**verdict,
+                        "newer_incomplete_at": newest.get("ended_at") or newest["started_at"]}
+            return newest
+
+    @staticmethod
+    def _newest_audit(conn, mode: str, scope: str | None, only_statuses=None) -> dict | None:
+        sql, params = "SELECT * FROM integrity_audits WHERE mode = ?", [mode]
+        if scope is not None:
+            sql += " AND scope = ?"
+            params.append(scope)
+        if only_statuses is not None:
+            sql += f" AND status IN ({','.join('?' * len(only_statuses))})"
+            params.extend(sorted(only_statuses))
+        row = conn.execute(sql + " ORDER BY started_at DESC LIMIT 1", params).fetchone()
+        return dict(row) if row else None
 
     # ── Notifications ────────────────────────────────────────
 

@@ -86,10 +86,12 @@ def compute_attention(db, config, now=None) -> list[dict]:
 
         audit = db.latest_audit(leg)
         if audit and audit.get("status") == "VERIFICATION_FAILED":
+            newer = audit.get("newer_incomplete_at")   # A1: a later check that could not run
+            newer_note = f" The newer check on {format_ist(newer)} could not run." if newer else ""
             items.append(_item(RED, f"audit:{leg}",
                                act(f"Open the {_PHRASE.get(leg, leg)} details, fix the cause, then press Check now",
                                    "The safety check found files that do not match "
-                                   f"({audit.get('detail') or 'see the audit detail'})")))
+                                   f"({audit.get('detail') or 'see the audit detail'})." + newer_note)))
         elif audit and audit.get("status") == "PENDING_BACKUP":
             items.append(_item(AMBER, f"audit:{leg}",
                                act("Nothing to do",

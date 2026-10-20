@@ -1504,6 +1504,7 @@ def _integrity_summary(db: ManifestDB, mode: str) -> dict:
         "status": audit.get("status", "NOT_VERIFIED"),
         "checked_at": audit.get("ended_at") or audit.get("started_at"),
         "detail": audit.get("detail"),
+        "newer_incomplete_at": audit.get("newer_incomplete_at"),
     }
 
 

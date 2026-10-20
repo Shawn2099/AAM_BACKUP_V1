@@ -276,9 +276,12 @@ def _audit_row(db, leg: str) -> dict:
         status_text = "AUDIT COULD NOT RUN"
     if status_text == "PENDING_BACKUP":
         status_text = "NEWER FILES WAIT FOR THE NEXT BACKUP"
+    detail = str(audit.get("detail") or "-")
+    if audit.get("newer_incomplete_at"):        # A1: the failure stays until a check reaches a verdict
+        detail += f" The newer check on {format_ist(audit['newer_incomplete_at'])} could not run."
     return {"leg": leg, "status": status_text,
             "checked": format_ist(audit.get("ended_at") or audit.get("started_at")),
-            "detail": str(audit.get("detail") or "-")}
+            "detail": detail}
 
 
 def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None) -> dict:
