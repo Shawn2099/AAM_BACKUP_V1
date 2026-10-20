@@ -46,6 +46,18 @@ class TransportFailure:
     evidence: str  # the matching log line (trimmed)
 
 
+# D4: `rclone check` reports each compared file as a result line and counts them in its summary. Those
+# are comparison RESULTS, not transport evidence - a file called "403 Smith.pdf" or exactly 403 differences
+# must not look like an authentication failure (it downgraded a real VERIFICATION_FAILED to AUDIT_INCOMPLETE).
+_PER_FILE_RESULT_RE = re.compile(r"(?:\b[A-Za-z0-9-]+ differ|\bFile not in [^\n]*)\s*$", re.IGNORECASE)
+_SUMMARY_COUNT_RE = re.compile(r"\b\d+(?=\s+(?:differences found|errors while checking|errors\b))", re.IGNORECASE)
+
+
+def _without_comparison_results(lines: list[str]) -> list[str]:
+    """The log lines minus rclone's per-file verdicts, with the counts of its summary lines masked."""
+    return [_SUMMARY_COUNT_RE.sub("N", ln) for ln in lines if not _PER_FILE_RESULT_RE.search(ln)]
+
+
 def find_transport_failure(
     text: str,
     patterns: tuple[tuple[str, str, str], ...] = DEFAULT_PATTERNS,
@@ -53,7 +65,7 @@ def find_transport_failure(
     """Return the highest-priority transport failure found in `text`."""
     if not text:
         return None
-    lines = text.splitlines()
+    lines = _without_comparison_results(text.splitlines())
     for category, regex, hint in patterns:
         rx = re.compile(regex, re.IGNORECASE)
         for line in lines:
