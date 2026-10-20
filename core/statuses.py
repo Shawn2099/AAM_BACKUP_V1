@@ -233,6 +233,7 @@ def describe(status, files_copied: int | None = 0, files_failed: int | None = 0)
 EXC_ERROR = "error"        # anything unexpected
 EXC_BLOCKED = "blocked"    # a guard asked for a human decision
 EXC_PARTIAL = "partial"    # terminal policy: the run ended with a non-success status
+EXC_INTERRUPTED = "interrupted"   # the flow was cancelled / stopped (a BaseException, A2)
 
 
 def decide_terminal_status(leg: str, phase: str, current: str, exc_kind: str | None) -> str:
@@ -243,7 +244,9 @@ def decide_terminal_status(leg: str, phase: str, current: str, exc_kind: str | N
     Rule: an exception never leaves a success status behind - a verify-phase
     exception is CLOUD_VERIFY_FAILED (probe P1), a post-phase exception is
     *_FAILED (probe P2); the sync's own verdict is preserved by the caller in
-    extended_metrics.sync_status.
+    extended_metrics.sync_status. An interrupted run (EXC_INTERRUPTED) is decided
+    like an unexpected error in the same phase: the work was cut short, so it is
+    never SKIPPED (data may be half copied) and never a success.
     """
     prefix = leg.upper()
     failed = f"{prefix}_FAILED"

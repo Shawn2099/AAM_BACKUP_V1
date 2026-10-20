@@ -383,6 +383,8 @@ def classify_run(leg: str, status: str, *, exc: BaseException | None = None,
     attached = code_of(exc)
     if attached:
         return attached
+    if exc is not None and not isinstance(exc, Exception):
+        return "AAM-SYS-02"      # A2: the flow was cancelled / stopped (KeyboardInterrupt, TerminationSignal)
     if status in statuses.BLOCKED_STATUSES:
         return blocked_guard_code(guard_record) or UNKNOWN
     cloud = leg == "cloud"

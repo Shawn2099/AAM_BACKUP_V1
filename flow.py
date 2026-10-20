@@ -358,7 +358,17 @@ def _exception_kind(exc: BaseException) -> str:
         return statuses.EXC_BLOCKED
     if isinstance(exc, PartialRun):
         return statuses.EXC_PARTIAL
+    if not isinstance(exc, Exception):   # KeyboardInterrupt, SystemExit, Prefect's TerminationSignal
+        return statuses.EXC_INTERRUPTED
     return statuses.EXC_ERROR
+
+
+def _error_text(exc: BaseException) -> str:
+    """The run row's error text: an interrupt has no message of its own."""
+    if isinstance(exc, Exception):
+        return str(exc)
+    return (f"The run was interrupted ({type(exc).__name__}: service stop, cancel or Ctrl+C) "
+            "before it finished.")
 
 
 def _budget_metrics(budget: RunBudget, sync_result: dict) -> dict:
@@ -1724,8 +1734,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 )
             return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
-        except Exception as e:
-            error_msg = str(e)
+        except BaseException as e:   # A2: a cancel / stop is also decided here, then re-raised
+            error_msg = _error_text(e)
             # XR: a failed attempt's own verdict (exit code, FAILED / SUSPECT)
             sync_result = sync_state.get("result", sync_result)
             current = sync_result.get("status", status) if phase == "sync" else status
@@ -2020,8 +2030,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 )
             return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
-        except Exception as e:
-            error_msg = str(e)
+        except BaseException as e:   # A2: a cancel / stop is also decided here, then re-raised
+            error_msg = _error_text(e)
             # XR: a failed attempt's own verdict (exit code, FAILED / SUSPECT)
             sync_result = sync_state.get("result", sync_result)
             current = sync_result.get("status", status) if phase == "sync" else status
@@ -2030,7 +2040,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 guard_record = e.record
             fault_code = faults.classify_run("lan", status, exc=e, guard_record=guard_record,
                                              sync_result=sync_result)
-            shutdown_on_fail = (allow_shutdown and getattr(
+            # An interrupted run (service stop, cancel) never powers the NAS off.
+            shutdown_on_fail = (allow_shutdown and isinstance(e, Exception) and getattr(
                 config.lan, "shutdown_on_all_retries_exhausted", False) is True)
             if not alert_sent and not isinstance(e, guards.GuardBlocked):
                 # The one alert of this run, sent BEFORE any NAS shutdown below.

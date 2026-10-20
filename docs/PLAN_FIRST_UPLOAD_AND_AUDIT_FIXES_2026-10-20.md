@@ -73,7 +73,7 @@ BLOCK after data was deleted; fail-safe but a spurious block. Making G3 use `Fra
 | D8 (deferred) | deploy/06 ends "INSTALLATION COMPLETE" when services fail to start; stops services with no check for a running backup. | Read back every service, non-zero exit; refuse while `backup.lock` is held. |
 | D9 (deferred) | `sendmail()` refused-recipient dict ignored. | Log and record a partial refusal. |
 
-## E1 (optional, owner decides): calm status during the first upload
+## E1 - DROPPED (owner 2026-10-20: "no need"): calm status during the first upload
 
 Verified today: a budget-stopped `CLOUD_PARTIAL` is not a success, so a multi-night first upload sends a PARTIAL email every night,
 the Prefect run shows failed, and after 26 h the stale banner and the watchdog "overdue" email (every 12 h) start. The upload
@@ -117,4 +117,4 @@ HTTP 500 on `/api/settings` (config unchanged).
 - [ ] B1  - [ ] B2/B3
 - [ ] D2  - [ ] D7  - [ ] D1  - [ ] D3  - [ ] D4  - [ ] D5
 - [ ] real-cancel lab test  - [ ] Full suite + audit lab  - [ ] Handoff update
-- [ ] E1 (only if the owner asks)
+- E1 dropped by the owner; D6, D8, D9 deferred
