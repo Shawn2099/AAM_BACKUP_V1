@@ -15,6 +15,21 @@ on deploy day (see §4f).
 >
 > **2026-10-19 update:** the safety check now separates "newer files wait for the next backup" (`PENDING_BACKUP`, amber, no email) from real faults - plan `docs/PLAN_AUDIT_PENDING_2026-10-19.md` (steps 1-4 done and proven on the box at 9186fb6; the weekly "backup first" chain, step 5, is deferred until a real week of data). New key `audit.backup_first_prompt_minutes`. Accepted by the owner (do not work on): locked files / no VSS, nothing alerts if the server is down, in-place ransomware, size-only daily cloud check. Restore drill + restore-script key handling (`.dpapi` vs plain key, hardcoded bucket fallback) is deferred to LAST.
 
+> **2026-10-20 - final code audit + new plan (owner):** 4 read-only reviewers + advisor audited the branch
+> (unit suite re-run first: 2526 passed / 19 skipped). **Current plan: `docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`**
+> (rev 2, every claim re-verified by 3 independent readers who reproduced them: Part A bug fixes A1-A7: hidden failed
+> audit, interrupted run recorded as success (also `run_tool` not killing its child on cancel), BLOCKED text, `smb_ready`
+> winerror 53/67, deploy scripts 03/09, backup.lock must be mandatory; Part B deletion limits in Settings incl. the G3 vs
+> backstop rounding defect; Part C "First full backup" button with no duration limits via ONE `limits_for()` and a
+> `*_DEFERRED` status; Part D nine small truthfulness/data fixes awaiting owner approval).
+> Owner decisions: LAN /MIR has no in-run delete cap (preflight G3 is enough); dangerous approvals = dashboard login +
+> typed phrase (Advanced password stays for tech support); basic settings stay editable with the dashboard login;
+> one pair of deletion limits for both legs; first full backup = button in Settings. **Reviewed, NOT fixing for MVP:**
+> plain-HTTP dashboard, unauthenticated loopback Prefect API, security headers, per-IP-only rate limit, GET logout,
+> `config.yaml.bak-*` keeping the old plaintext SMTP password, redaction gaps, status-suffix matching in faults/email,
+> unknown file counts shown as 0, no RECOVERED for stale/audit/rollover alerts, `uv sync` while services run, NSSM log
+> rotation, service-account Modify on the project folder. The audit lab has NOT been re-run (do it once, at the end).
+
 > New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
 > `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
 
