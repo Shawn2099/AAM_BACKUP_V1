@@ -2366,18 +2366,26 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
 
     journal = db.rollover_incomplete()
     source, lan_dest = config.paths.source_drive, config.paths.lan_destination
+    hand_switched = False
     if journal is not None:
         configured = fy_rollover.configured_fy(source, lan_dest)
         switch_done = rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
         if not switch_done and configured == journal["to_fy"]:
-            # R3: the config was written but the process died before the journal saw it.
-            # The switch is done; a "final backup" now would back up the NEW folders.
-            logger.warning(f"FY rollover {journal['from_fy']} -> {journal['to_fy']}: "
-                           "config.yaml already points at the new FY - switch step closed")
-            db.rollover_step_done(journal["from_fy"], journal["to_fy"], rj.CONFIG_SWITCH,
-                                  now_iso())
-            journal = db.rollover_get(journal["from_fy"], journal["to_fy"])
-            switch_done = True
+            if rj.is_finished(journal["steps"][rj.FINAL_BACKUPS]):
+                # R3: the config was written but the process died before the journal saw it
+                # (the steps run in order, so the final backup is already done). The switch is
+                # done; a "final backup" now would back up the NEW folders.
+                logger.warning(f"FY rollover {journal['from_fy']} -> {journal['to_fy']}: "
+                               "config.yaml already points at the new FY - switch step closed")
+                db.rollover_step_done(journal["from_fy"], journal["to_fy"], rj.CONFIG_SWITCH,
+                                      now_iso())
+                journal = db.rollover_get(journal["from_fy"], journal["to_fy"])
+                switch_done = True
+            else:
+                # D7: NOT a crash - the final backup never completed, so config.yaml was switched
+                # by hand while the rollover was blocked. Closing the switch would back up the NEW
+                # year as the "final backup" and archive the old year without its last changes.
+                hand_switched = True
         if (switch_done and configured is not None and fy_rollover.classify_rollover(
                 configured, get_fy_prefix()) in (fy_rollover.FORWARD, fy_rollover.JUMP)):
             # a NEW rollover is due: an old journal stuck on a follow-up step (archive, NAS
@@ -2420,6 +2428,21 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
                         monotonic_start=monotonic_start)
         except Exception as e:  # noqa: BLE001 - the decision itself stands
             logger.critical(f"Failed to record rollover run {run_id}: {e}")
+
+    if hand_switched:
+        msg = (f"FY rollover {from_fy} -> {to_fy} stopped: config.yaml already points at {to_fy} "
+               f"(it was changed by hand), but the last backup of {from_fy} was never completed, "
+               f"so the last changes of {from_fy} are not protected yet. Nothing was changed or "
+               f"archived. Put source_drive and lan_destination back to {from_fy}; the daily "
+               "check then finishes the old year first and switches by itself.")
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {})
+        notify(config, AlertEvent(
+            key="rollover:switched_by_hand", kind="ACTION_REQUIRED", mode="rollover",
+            title="FY rollover stopped - settings were switched before the old year was backed up",
+            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-ROL-02", run_id=run_id))
+        raise fy_rollover.RolloverError(msg)
 
     if switch_pending and kind == fy_rollover.CLOCK_BEHIND:
         msg = (f"FY rollover refused: the computer clock says the current FY is "
