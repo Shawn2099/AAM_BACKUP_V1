@@ -54,8 +54,9 @@ _RISKY_KEYS = frozenset({
     "lan.use_backup_mode", "health.clock_unverified_policy", "cloud.write_probe_enabled",
     # what counts as "unchanged": a wide window skips same-size edits
     "cloud.modify_window_seconds", "audit.modify_window_seconds",
-    # silences routine failure emails (decisions/overdue are always sent)
-    "notifications.send_on_failure",
+    # silence a whole kind of alert email (the dashboard still shows the problem)
+    "notifications.send_on_failure", "alerts.send_decision_needed", "alerts.send_overdue",
+    "alerts.send_action_needed", "alerts.send_resolved", "alerts.send_info",
     # NAS power
     "wol.enabled", "wol.server_ip", "wol.mac_address", "wol.broadcast_address",
     "lan.shutdown_after_backup", "lan.shutdown_on_all_retries_exhausted",

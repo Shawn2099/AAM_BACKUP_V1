@@ -34,7 +34,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import (admin_auth, app_restart, messages, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
+from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
                   statuses)
 from core.attention import RED, compute_attention, leg_timing
 from core.manifest import ManifestDB
@@ -1410,10 +1410,12 @@ def trigger_weekly_email(request: Request):
     legs = _enabled_legs(cfg)
     rp = ReportPeriod.last_days(7)        # the dashboard sends the last 7 days up to now
     html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly", legs=legs,
-                                     report_period=rp, schedule=cfg.schedule)
+                                     report_period=rp, schedule=cfg.schedule,
+                                     alerts_off=alert_class.switched_off(cfg))
     try:
         ok = send_weekly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
-                                legs=legs, report_period=rp, schedule=cfg.schedule)
+                                legs=legs, report_period=rp, schedule=cfg.schedule,
+                                     alerts_off=alert_class.switched_off(cfg))
     except Exception as e:
         logger.exception("Failed to send weekly email report manual trigger")
         return JSONResponse(
@@ -1448,10 +1450,12 @@ def trigger_monthly_email(request: Request):
     legs = _enabled_legs(cfg)
     rp = ReportPeriod.last_days(30)        # the dashboard sends the last 30 days up to now
     html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly", legs=legs,
-                                     report_period=rp, schedule=cfg.schedule)
+                                     report_period=rp, schedule=cfg.schedule,
+                                     alerts_off=alert_class.switched_off(cfg))
     try:
         ok = send_monthly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
-                                 legs=legs, report_period=rp, schedule=cfg.schedule)
+                                 legs=legs, report_period=rp, schedule=cfg.schedule,
+                                     alerts_off=alert_class.switched_off(cfg))
     except Exception as e:
         logger.exception("Failed to send monthly email report manual trigger")
         return JSONResponse(
@@ -1485,7 +1489,8 @@ def _serve_report(days: int, period: str) -> Response:
     from core.report_period import ReportPeriod
     html_body = generate_report_html(db, cfg.firm_name, days, period, legs=_enabled_legs(cfg),
                                      report_period=ReportPeriod.last_days(days),
-                                     schedule=cfg.schedule)
+                                     schedule=cfg.schedule,
+                                     alerts_off=alert_class.switched_off(cfg))
 
     safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', cfg.firm_name)
     filename = f"{safe_firm}_{period}_Report_{pendulum.now(IST).format('YYYY-MM-DD')}.html"

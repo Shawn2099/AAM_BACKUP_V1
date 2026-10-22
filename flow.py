@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import approvals, faults, fy_rollover, guards, permissions, report, statuses
+from core import alert_class, approvals, faults, fy_rollover, guards, permissions, report, statuses
 from core.rclone_errors import find_transport_failure
 from core.backup_repository import (
     record_run_history,
@@ -2250,7 +2250,8 @@ def _send_summary_report(config, days: int, period: str) -> None:
         email = report.build_summary_email(db, config.firm_name, days, period,
                                            legs=_enabled_legs(config),
                                            report_period=report_period,
-                                           schedule=config.schedule)
+                                           schedule=config.schedule,
+                                           alerts_off=alert_class.switched_off(config))
         subject, body, attachments = email
         rungs, labels = attachment_ladder(attachments or [])
         result = send_email(config.notifications, subject, body, audience=AUDIENCE_REPORTS,

@@ -304,7 +304,8 @@ def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod) -> None
             s.pop("scheduled", None)
 
 
-def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, schedule=None) -> dict:
+def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, schedule=None,
+                       alerts_off=None) -> dict:
     """Everything a report says, computed ONCE (plan C3). Every renderer (email, download, CSV,
     subject) reads this and nothing else, so they cannot disagree.
 
@@ -337,7 +338,8 @@ def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, s
     per_leg = {leg: {"files": sum(r.get("files_copied") or 0 for r in runs if r.get("mode") == leg),
                      "bytes": sum(r.get("bytes_copied") or 0 for r in runs if r.get("mode") == leg)}
                for leg in legs}
-    return {"period": report_period, "legs": legs, "runs": runs, "totals": totals,
+    return {"alerts_off": list(alerts_off or []),
+            "period": report_period, "legs": legs, "runs": runs, "totals": totals,
             "per_leg": per_leg, "summaries": summaries, "headline": headline, "act": act,
             "audits": [_audit_row(db, leg) for leg in legs],
             "open_decisions": _open_decisions(db)}
@@ -396,6 +398,12 @@ def render_report_html(model: dict, firm_name: str, is_email: bool = False, name
     """HTML of a report (the email body and the dashboard download), from the model only."""
     rp, t = model["period"], model["totals"]
     summary_html = _summary_html(model)
+    if model.get("alerts_off"):          # a switched-off kind of email must be visible to the reader
+        from core import alert_class
+
+        names = ", ".join(alert_class.LABELS[c] for c in model["alerts_off"])
+        summary_html += (f"<p style=\"{_TD};background:#fffbeb\">These emails are switched off: "
+                         f"{html.escape(names)}. The dashboard still shows every problem.</p>")
     title = f"{name or rp.kind} Backup Report"
 
     rows = ""
@@ -490,14 +498,15 @@ def generate_report_html(
     now=None,
     report_period: ReportPeriod | None = None,
     schedule=None,
+    alerts_off=None,
 ) -> str:
     """HTML report for a period (plan C). An empty period still gives a report that says so
     (P1). `legs` = the enabled legs; default: the legs that appear in the runs. `schedule` (the
     config's schedule section) lets an empty period say "no backup was scheduled" instead of
     "no backup ran" when none was due."""
     rp = resolve_period(days, period, now, report_period)
-    return render_report_html(build_report_model(db, rp, legs, schedule=schedule), firm_name,
-                              is_email, name=period)
+    return render_report_html(build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off),
+                              firm_name, is_email, name=period)
 
 
 def send_summary_report(
@@ -510,6 +519,7 @@ def send_summary_report(
     legs=None,
     report_period: ReportPeriod | None = None,
     schedule=None,
+    alerts_off=None,
 ) -> bool:
     """Send aggregated summary report via email with CSV attachment.
 
@@ -517,19 +527,19 @@ def send_summary_report(
     subject, body, attachments = build_summary_email(db, firm_name, days, period,
                                                      body_html=body_html, legs=legs,
                                                      report_period=report_period,
-                                                     schedule=schedule)
+                                                     schedule=schedule, alerts_off=alerts_off)
     return _send_email_with_attachments(config, subject, body, attachments,
                                         audience=AUDIENCE_REPORTS)
 
 
 def build_summary_email(db: ManifestDB, firm_name: str, days: int, period: str,
                         body_html: str = None, legs=None, now=None,
-                        report_period: ReportPeriod | None = None, schedule=None
+                        report_period: ReportPeriod | None = None, schedule=None, alerts_off=None
                         ) -> tuple[str, str, list[dict]]:
     """(subject, html body, [CSV attachment]) for a summary report. A period with no runs is
     still reported ("action needed: ... no backup ran", P1). The subject says the outcome."""
     rp = resolve_period(days, period, now, report_period)
-    model = build_report_model(db, rp, legs, schedule=schedule)
+    model = build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off)
     body = body_html or render_report_html(model, firm_name, is_email=True, name=period)
     safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', firm_name)
     attachments = [{"filename": f"{safe_firm}_{period}_Report.csv",
@@ -550,9 +560,11 @@ def send_weekly_report(
     legs=None,
     report_period: ReportPeriod | None = None,
     schedule=None,
+    alerts_off=None,
 ) -> bool:
     return send_summary_report(db, config, firm_name, 7, "Weekly", body_html=body_html,
-                               legs=legs, report_period=report_period, schedule=schedule)
+                               legs=legs, report_period=report_period, schedule=schedule,
+                               alerts_off=alerts_off)
 
 
 def send_monthly_report(
@@ -563,7 +575,9 @@ def send_monthly_report(
     legs=None,
     report_period: ReportPeriod | None = None,
     schedule=None,
+    alerts_off=None,
 ) -> bool:
     return send_summary_report(db, config, firm_name, 30, "Monthly", body_html=body_html,
-                               legs=legs, report_period=report_period, schedule=schedule)
+                               legs=legs, report_period=report_period, schedule=schedule,
+                               alerts_off=alerts_off)
 

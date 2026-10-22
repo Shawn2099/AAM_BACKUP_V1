@@ -318,11 +318,17 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            act("Add an address under \"Who gets problem alerts\" in Settings",
                                "The alerts list is empty, so problem alerts go to the reports list")))
 
-    if not config.notifications.send_on_failure:
-        items.append(_item(AMBER, "alerts_off",
-                           act("Switch failure emails back on in Settings > Advanced",
-                               "They are off. Decisions, overdue backups and safety-check "
-                               "differences are still emailed")))
+    from core import alert_class
+
+    for cls in alert_class.switched_off(config):
+        code = "alerts_off" if cls == alert_class.FAILURE else f"alerts_off:{cls}"
+        label = alert_class.LABELS[cls]
+        if cls in (alert_class.DECISION, alert_class.OVERDUE, alert_class.ACTION, alert_class.RESOLVED):
+            fact = (f"The {label} are switched off, so nobody is mailed about them - "
+                    "check the dashboard regularly")
+        else:
+            fact = f"The {label} are switched off; the dashboard still shows every problem"
+        items.append(_item(AMBER, code, act("Switch them back on in Settings > Advanced", fact)))
 
     failed = db.notification_failures_since(window)
     if failed:

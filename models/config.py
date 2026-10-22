@@ -547,6 +547,20 @@ class AlertsConfig(StrictModel):
                     "hours while unresolved; repeats inside the window are recorded "
                     "as SUPPRESSED. 0 = never suppress.",
     )
+    send_decision_needed: bool = Field(
+        default=True,
+        description="Email when a backup is blocked and waits for your decision. Off: nothing is mailed "
+                    "- the dashboard still shows it in red and holds the approval card.")
+    send_overdue: bool = Field(
+        default=True, description="Email when a backup is overdue (the dashboard still shows it).")
+    send_action_needed: bool = Field(
+        default=True,
+        description="Email when a person must act: financial-year problems, safety-check differences, "
+                    "service problems.")
+    send_resolved: bool = Field(
+        default=True, description="Email 'resolved' when a reported problem is fixed.")
+    send_info: bool = Field(
+        default=True, description="Email information notices (a new financial year started).")
     incident_quiet_days: int = Field(
         default=7, ge=1, le=90,
         description="An alert with no resolution signal of its own (financial-year, dashboard and other "

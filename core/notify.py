@@ -43,10 +43,9 @@ FAILED = "FAILED"
 SUPPRESSED = "SUPPRESSED"
 DISABLED = "DISABLED"
 
-# Never silenced by notifications.send_on_failure (audit 2026-10-18, item 1):
-# a decision is needed or protection is lost, and RECOVERED closes an alert
-# the reader has already seen. Only routine FAILURE / WARNING emails obey it.
-ALWAYS_SENT_KINDS = frozenset({"ACTION_REQUIRED", "RECOVERED", "INFO"})
+# Which mails may be switched off is decided per alert CLASS (core/alert_class.py): problem and warning
+# emails by notifications.send_on_failure, every other class by its own alerts.send_* switch; the
+# password-changed notice and the test email have none.
 
 # Who an email is for (owner 2026-10-22: two recipient lists). Every producer states its audience
 # explicitly; nothing is routed by guessing from the kind.
@@ -507,6 +506,17 @@ def render_alert(config, event: AlertEvent, db=None) -> tuple[str, str, list[dic
 _FALLBACK_SENT: dict[str, float] = {}
 
 
+def _switched_off_reason(config, event: AlertEvent) -> str | None:
+    """Why this alert is not sent because its class is switched off, or None."""
+    from core import alert_class
+
+    cls = alert_class.classify_event(event)
+    if alert_class.is_enabled(config, cls):
+        return None
+    return (f"{alert_class.SWITCH_KEYS[cls]} is false ({alert_class.LABELS[cls]} are switched off; "
+            "the dashboard still shows the problem)")
+
+
 def _cooldown_hours(config, event: AlertEvent) -> float:
     """How long a repeat of this alert is held back: its own window, else the global one."""
     return (event.cooldown_hours if event.cooldown_hours is not None
@@ -519,9 +529,9 @@ def _fallback_alert(config, event: AlertEvent, error: Exception) -> DeliveryResu
     import html
 
     try:
-        if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
-            return DeliveryResult(DISABLED, "notifications.send_on_failure is false "
-                                            "(routine failure/warning emails only)")
+        off = _switched_off_reason(config, event)
+        if off:
+            return DeliveryResult(DISABLED, off)
         cooldown_h = _cooldown_hours(config, event)
         last = _FALLBACK_SENT.get(event.key)
         if last is not None and cooldown_h > 0 and time.monotonic() - last < cooldown_h * 3600:
@@ -633,9 +643,9 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     subject, body, attachments = render_alert(config, event, db)
     labels: list[str] = []
 
-    if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
-        result = DeliveryResult(DISABLED, "notifications.send_on_failure is false "
-                                          "(routine failure/warning emails only)")
+    off = _switched_off_reason(config, event)
+    if off:
+        result = DeliveryResult(DISABLED, off)
     else:
         cooldown_h = _cooldown_hours(config, event)
         if same and cooldown_h > 0 and _within_hours(same["created_at"], cooldown_h):

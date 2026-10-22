@@ -213,6 +213,13 @@ HELP: dict[str, tuple[str, str]] = {
     "alerts.stale_repeat_hours": ("Repeat the 'backup overdue' email at most every",
                                   "While a backup stays overdue the reminder is sent this often (hours)."),
     "watchdog.healthy_mark_seconds": ("How often the watchdog records that all is well", ""),
+    "alerts.send_decision_needed": ("Email when a backup waits for your decision",
+                                    "Off: no email, but the dashboard still shows it in red with its approval card."),
+    "alerts.send_overdue": ("Email when a backup is overdue", "Off: no email; the dashboard still shows it."),
+    "alerts.send_action_needed": ("Email when a person must act",
+                                  "Financial-year problems, safety-check differences and service problems."),
+    "alerts.send_resolved": ("Email when a problem is fixed", "The 'resolved' notice."),
+    "alerts.send_info": ("Email information notices", "For example: a new financial year started."),
     "alerts.incident_quiet_days": ("Days of quiet after which an alert counts as over",
                                    "If the same alert does not occur again for this long, the next time it "
                                    "appears it is treated as a new problem and mailed in full."),

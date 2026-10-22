@@ -430,6 +430,15 @@ alerts:
   # The "backup overdue" email for a leg is repeated at most once per this many hours while the leg
   # stays overdue (1-720). It is not sent at all while a failure email about the missed run was sent.
   stale_repeat_hours: 24
+  # One switch per kind of email (all on = the default). A kind that is off is not mailed; the
+  # dashboard still shows the problem and says which emails are off. Problem and warning emails
+  # are switched by notifications.send_on_failure; the password-changed notice and the test
+  # email cannot be switched off.
+  send_decision_needed: true
+  send_overdue: true
+  send_action_needed: true
+  send_resolved: true
+  send_info: true
   # An alert with no resolution signal of its own (financial year, dashboard ...) that has not
   # occurred again for this many days is over; its next occurrence is a new problem (1-90).
   incident_quiet_days: 7

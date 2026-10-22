@@ -51,3 +51,38 @@ def classify(kind: str, key: str) -> str:
 
 def classify_event(event) -> str:
     return classify(event.kind, event.key)
+
+
+# The switch of each class (config key, dotted). `security` and `test` have none: they are always sent.
+SWITCH_KEYS = {
+    FAILURE: "notifications.send_on_failure",
+    DECISION: "alerts.send_decision_needed",
+    OVERDUE: "alerts.send_overdue",
+    ACTION: "alerts.send_action_needed",
+    RESOLVED: "alerts.send_resolved",
+    INFO: "alerts.send_info",
+}
+# What a person reads about a class ("problem and warning emails are switched off")
+LABELS = {
+    FAILURE: "problem and warning emails",
+    DECISION: "'a backup is waiting for your decision' emails",
+    OVERDUE: "'backup overdue' emails",
+    ACTION: "'action needed' emails (financial year, safety check, service problems)",
+    RESOLVED: "'resolved' emails",
+    INFO: "information emails (new financial year)",
+}
+
+
+def is_enabled(config, cls: str) -> bool:
+    """Is this class switched on? Classes without a switch are always on; a config that does not carry
+    the key (an older or partial one) counts as on - never silently off."""
+    dotted = SWITCH_KEYS.get(cls)
+    if dotted is None:
+        return True
+    section, name = dotted.split(".", 1)
+    return bool(getattr(getattr(config, section, None), name, True))
+
+
+def switched_off(config) -> list[str]:
+    """The classes that are switched off, in a stable order."""
+    return [cls for cls in SWITCH_KEYS if not is_enabled(config, cls)]
