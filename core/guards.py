@@ -251,7 +251,8 @@ def g6_fy_rollover(from_fy: str, to_fy: str, kind: str, final_status: dict) -> G
             f"The final backup of {from_fy} did not complete for: {', '.join(failed)} "
             f"({', '.join(f'{leg}={final_status[leg]}' for leg in failed)}). Rolling over now "
             f"would leave {from_fy}'s last changes on that leg unprotected. Fix it and the "
-            "daily check retries, or approve to roll over anyway.",
+            "daily check retries, or approve to roll over anyway. Until then the backups keep "
+            f"using {from_fy}, so nothing saved in {to_fy} is backed up yet.",
             "AAM-ROL-02", **metrics,
         )
     return _pass(name, f"{from_fy} -> {to_fy}: next FY and every final backup complete", **metrics)

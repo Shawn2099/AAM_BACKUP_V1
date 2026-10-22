@@ -53,3 +53,10 @@ def test_the_dashboard_does_not_offer_to_run_it_again():
         assert state["can_run"] is False and "support" in state["message"].lower()
         free = fr.manual_run_state(FROM, TO)
         assert free["can_run"] is True        # unchanged for a rollover that was never done
+
+
+def test_the_blocked_final_backup_says_the_new_year_is_not_backed_up_yet():
+    from core import guards
+
+    g = guards.g6_fy_rollover(FROM, TO, fr.FORWARD, {"lan": "LAN_FAILED", "cloud": "CLOUD_COMPLETE"})
+    assert "nothing saved in " + TO + " is backed up yet" in g.reason
