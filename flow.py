@@ -2409,6 +2409,7 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     journal = db.rollover_incomplete()
     source, lan_dest = config.paths.source_drive, config.paths.lan_destination
     hand_switched = False
+    reentered = False
     if journal is not None:
         configured = fy_rollover.configured_fy(source, lan_dest)
         switch_done = rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
@@ -2456,6 +2457,8 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         if kind == fy_rollover.NONE:
             return "NO_ROLLOVER_NEEDED"
         switch_pending = True
+        finished = db.rollover_get(from_fy, to_fy)         # none is open (checked above), so it is finished
+        reentered = finished is not None and kind in (fy_rollover.FORWARD, fy_rollover.JUMP)
 
     run_id = _stable_run_id("rollover")
     started_at = now_iso()
@@ -2484,6 +2487,17 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
             title="FY rollover stopped - settings were switched before the old year was backed up",
             message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
             fault_code="AAM-ROL-02", run_id=run_id))
+        raise fy_rollover.RolloverError(msg)
+
+    if reentered:
+        msg = fy_rollover.reentered_message(from_fy, to_fy)
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {})
+        notify(config, AlertEvent(
+            key=f"rollover:reentered:{to_fy}", kind="ACTION_REQUIRED", mode="rollover",
+            title="FY rollover not repeated - the settings were put back to the old year",
+            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-ROL-04", run_id=run_id))
         raise fy_rollover.RolloverError(msg)
 
     if switch_pending and kind == fy_rollover.CLOCK_BEHIND:

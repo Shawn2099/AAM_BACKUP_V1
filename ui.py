@@ -1186,6 +1186,16 @@ def _unfinished_rollover_message(journal: dict) -> str:
             "'Run' continues it now.")
 
 
+def _finished_journal(configured: str | None, current: str) -> bool:
+    """Is the transition configured -> current already finished (the settings were put back)? Plan FY-2."""
+    if configured is None or configured == current:
+        return False
+    try:
+        return get_db().rollover_get(configured, current) is not None
+    except Exception:  # noqa: BLE001 - the panel still renders; the flow itself decides again
+        return False
+
+
 @app.get("/api/rollover")
 async def rollover_status(request: Request):
     """FY rollover panel: the backups' FY, today's FY, the last attempt, and
@@ -1194,7 +1204,7 @@ async def rollover_status(request: Request):
     cfg = _cfg()
     configured = fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
     current = get_fy_prefix()
-    state = fy_rollover.manual_run_state(configured, current)
+    state = fy_rollover.manual_run_state(configured, current, _finished_journal(configured, current))
     journal = _open_rollover_journal()
     if journal is not None:           # an unfinished rollover can always be continued
         state = {**state, "can_run": True, "message": _unfinished_rollover_message(journal)}
@@ -1223,7 +1233,8 @@ async def run_rollover_now(request: Request):
     _require_settings_rights(request)
     cfg = _cfg()
     configured = fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
-    state = fy_rollover.manual_run_state(configured, get_fy_prefix())
+    current = get_fy_prefix()
+    state = fy_rollover.manual_run_state(configured, current, _finished_journal(configured, current))
     if not state["can_run"] and _open_rollover_journal() is None:
         raise HTTPException(status_code=409, detail=state["message"])
     running = await _is_running("rollover")

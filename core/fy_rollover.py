@@ -137,7 +137,15 @@ def classify_rollover(configured_fy: str, computed_fy: str) -> str:
     return JUMP if diff < 50 else CLOCK_BEHIND
 
 
-def manual_run_state(configured: str | None, current: str) -> dict:
+def reentered_message(from_fy: str, to_fy: str) -> str:
+    """Why a rollover whose journal is already finished is not run again (plan FY-2)."""
+    return (f"The switch from {from_fy} to {to_fy} was already finished, but the settings now point at "
+            f"{from_fy} again (they were put back by hand or from an old copy). Nothing was backed up, "
+            f"switched or archived. Put source_drive and lan_destination back to {to_fy}. Starting that "
+            "switch again is a support action - ask your support contact.")
+
+
+def manual_run_state(configured: str | None, current: str, finished_journal: bool = False) -> dict:
     """What the dashboard's "Run FY rollover now" button may do (owner 2026-10-15).
 
     The button never bypasses a rule: it starts the same rollover check the
@@ -150,6 +158,8 @@ def manual_run_state(configured: str | None, current: str) -> dict:
                 "message": "The source / NAS folders do not end in an FY folder (e.g. FY26-27), "
                            "so there is no automatic FY rollover."}
     kind = classify_rollover(configured, current)
+    if finished_journal and kind in (FORWARD, JUMP):
+        return {"kind": kind, "can_run": False, "message": reentered_message(configured, current)}
     messages = {
         NONE: f"Not due: the backups already use {configured}, which is the current FY.",
         FORWARD: f"Due: the backups still use {configured}, but the current FY is {current}. "
