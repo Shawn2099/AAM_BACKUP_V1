@@ -244,6 +244,9 @@ dashboard:
   # its next scheduled run + its run budget (budget.*_max_hours) + this many hours of grace
   # (0-168). Follows the schedule: a daily plan is about 26 h, a weekly plan about a week.
   stale_grace_hours: 2
+  # A leg that is overdue but is copying a large amount over several nights (budget-stopped PARTIAL
+  # runs that make progress) shows amber "catching up" for this many days (1-365), then red.
+  catching_up_max_days: 14
   # ...or when an alert/report email failed to send within this many days (1–90)
   alert_failure_window_days: 7
   # Advanced settings have their own login (a second password). A salted hash, written by

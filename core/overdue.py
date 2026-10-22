@@ -39,6 +39,15 @@ def latest_firing(cron: str, timezone_name: str, at: datetime) -> datetime:
     return next(iter(CronSim(cron, moment, reverse=True)))
 
 
+def latest_owed(cron: str, timezone_name: str, now: datetime, budget_hours: float) -> datetime:
+    """The most recent scheduled run whose run time (`budget_hours`) has already passed at `now`:
+    the run the owner has had a chance to hear about. A run that is still working (it started at
+    most `budget_hours` ago) is not owed yet, so its failure mail is not expected before it ends."""
+    tz = ZoneInfo(timezone_name)
+    at = datetime.fromtimestamp(_aware(now, tz).timestamp() - float(budget_hours) * 3600, tz)
+    return latest_firing(cron, timezone_name, at)
+
+
 def firings_between(cron: str, timezone_name: str, start: datetime, end: datetime) -> int:
     """How many scheduled firings fall in the half-open interval [start, end)."""
     tz = ZoneInfo(timezone_name)

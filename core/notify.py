@@ -311,7 +311,11 @@ def send_email(notifications, subject: str, body_html: str,
     if problem:
         logger.error(f"Email not sent ({subject!r}): {problem}")
         return DeliveryResult(FAILED, problem, 0)
-    target = resolve_recipients(notifications, audience)
+    try:
+        target = resolve_recipients(notifications, audience)
+    except ValueError as e:          # a programming error, but "never raises" holds for the transport
+        logger.error(f"Email not sent ({subject!r}): {e}")
+        return DeliveryResult(FAILED, str(e), 0)
     to = list(target.addresses)
     if target.note:
         logger.warning(f"Email {subject!r}: {target.note}")

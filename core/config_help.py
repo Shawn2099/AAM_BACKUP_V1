@@ -174,6 +174,9 @@ HELP: dict[str, tuple[str, str]] = {
     # ── dashboard ──
     "dashboard.public_url": ("Dashboard address in emails",
                              "The link people click in alert emails, e.g. http://backup-server:8080."),
+    "dashboard.catching_up_max_days": ("Days a big upload may keep catching up before it is a problem",
+                                       "A large first upload or big change is copied over several nights. "
+                                       "After this many days without finishing, it is reported as overdue."),
     "dashboard.stale_grace_hours": ("Extra time before a backup counts as overdue",
                                     "A backup is overdue when its next scheduled run, the time that run "
                                     "may take and this many extra hours have all passed."),

@@ -943,6 +943,11 @@ class DashboardConfig(StrictModel):
         description="Banner, /health and the overdue email turn red when an enabled leg has had no "
                     "successful backup by its next scheduled run + the run budget + this many hours "
                     "of grace (a daily schedule: about 26 h, a weekly one: about a week).")
+    catching_up_max_days: int = Field(
+        default=14, ge=1, le=365,
+        description="A leg that is overdue but whose latest run is a budget-stopped PARTIAL that copied "
+                    "data (a large upload spread over several nights) shows amber 'catching up' for "
+                    "this many days after its first partial run; after that it is red and emailed.")
     alert_failure_window_days: int = Field(
         default=7, ge=1, le=90,
         description="Banner + /health turn red when an alert or report email failed to be "

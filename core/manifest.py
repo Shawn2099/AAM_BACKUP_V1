@@ -1250,26 +1250,60 @@ class ManifestDB:
             return None
         if (isinstance(data, dict) and all(isinstance(data.get(k), str) and data[k]
                                            for k in self._SCHEDULE_KEYS)):
-            since = data.get("since")
+            def stamp(key):
+                value = data.get(key)
+                return value if isinstance(value, str) and value else None
+
             return {**{k: data[k] for k in self._SCHEDULE_KEYS},
-                    "since": since if isinstance(since, str) and since else None}
+                    "cloud_since": stamp("cloud_since"), "lan_since": stamp("lan_since")}
         return None
 
     def set_schedule_in_effect(self, schedule: dict, since: str | None = None) -> None:
         """Record the schedules the service actually registered (written by serve.py just before it
         starts serving). A schedule saved in Settings but not yet applied is NOT in effect.
-        `since` = when this schedule took effect: kept while the schedule is unchanged (a restart must
-        not move it), set to now (or `since`) when a cron string or the timezone changed."""
+        `<leg>_since` = when that leg's schedule took effect: kept while its cron and the timezone are
+        unchanged (a restart must not move it), set to now (or `since`) when it really changed from an
+        earlier record. The FIRST record has no `since` at all: nothing changed, and stamping the deploy
+        moment would hide a leg that was already failing."""
         new = {k: str(schedule[k]) for k in self._SCHEDULE_KEYS}
         old = self._stored_schedule()
-        unchanged = old is not None and all(old[k] == new[k] for k in self._SCHEDULE_KEYS)
-        stamp = old["since"] if unchanged and old.get("since") else (since or now_iso())
-        self._set_meta("schedule_in_effect", json.dumps({**new, "since": stamp}))
+        record = dict(new)
+        for leg in ("cloud", "lan"):
+            if old is None:
+                stamp = None
+            elif old[f"{leg}_cron"] == new[f"{leg}_cron"] and old["timezone"] == new["timezone"]:
+                stamp = old.get(f"{leg}_since")
+            else:
+                stamp = since or now_iso()
+            record[f"{leg}_since"] = stamp
+        self._set_meta("schedule_in_effect", json.dumps(record))
 
     def get_schedule_in_effect(self) -> dict | None:
         """The recorded schedules (+ `since`), or None when missing or not valid (callers fall back
         to the config)."""
         return self._stored_schedule()
+
+    def first_partial_after(self, mode: str, since_iso: str | None) -> str | None:
+        """When the earliest PARTIAL run of this leg after `since_iso` started (None if there is none):
+        how long a large upload has been spread over several nights."""
+        import pendulum
+
+        partial = sorted(statuses.PARTIAL_STATUSES)
+        marks = ",".join("?" for _ in partial)
+        with self._lock:
+            rows = self._get_conn().execute(
+                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks})",
+                (mode, *partial)).fetchall()
+        floor = pendulum.parse(since_iso).timestamp() if since_iso else float("-inf")
+        found = []
+        for (started,) in rows:
+            try:
+                ts = pendulum.parse(started).timestamp()
+            except Exception:  # noqa: BLE001
+                continue
+            if ts > floor:
+                found.append((ts, started))
+        return min(found)[1] if found else None
 
     def told_about_leg_since(self, mode: str, since_iso: str) -> bool:
         """True when a failure / action email for this leg was created after `since_iso` and the owner

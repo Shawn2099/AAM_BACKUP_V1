@@ -211,3 +211,23 @@ def test_latest_firing_is_the_most_recent_owed_run():
         datetime(2026, 10, 22, 1, 0, tzinfo=tz)                       # at the firing minute: that firing
     assert overdue.latest_firing("0 21 * * MON-FRI", "Asia/Kolkata", datetime(2026, 10, 26, 12, 0, tzinfo=tz)) == \
         datetime(2026, 10, 23, 21, 0, tzinfo=tz)                      # Monday noon: Friday night's run
+
+
+def test_a_run_still_in_progress_does_not_count_as_the_owed_run(tmp_path, sent):
+    """At 21:10 the 21:00 run is working; last night's failure mail already told the owner about the
+    state. The stale mail must not go out in the minutes before tonight's own failure mail."""
+    cfg = _cfg(tmp_path)
+    cfg.schedule.lan_cron = "0 21 * * *"
+    cfg.schedule.cloud_cron = "0 18 * * *"
+    db = _db(cfg)
+    try:
+        t = NOW.subtract(days=3).replace(hour=1).isoformat()          # last LAN success: 3 days ago
+        db.insert_run({"run_id": "old", "mode": "lan", "started_at": t, "ended_at": t, "status": "LAN_COMPLETE"})
+        db.record_notification({                                     # last night's failure mail, 21:30 on the 21st
+            "event_key": "backup:lan:LAN_FAILED", "kind": "FAILURE", "mode": "lan", "subject": "s",
+            "status": "SENT", "created_at": NOW.subtract(days=1).set(hour=21, minute=30).isoformat()})
+    finally:
+        db.close()
+    with pendulum.travel_to(NOW.set(hour=21, minute=10), freeze=True):
+        assert wd._check_stale_legs(cfg) == ["lan"]
+    assert sent == []

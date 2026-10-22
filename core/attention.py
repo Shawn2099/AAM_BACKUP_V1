@@ -42,7 +42,11 @@ def _schedule_in_effect(db, config) -> dict | None:
     """The cron strings + timezone the scheduler is actually serving: what serve.py recorded when it
     registered them (a schedule saved in Settings but not yet applied is NOT in effect), else the
     configured ones. None when neither can be read."""
-    stored = db.get_schedule_in_effect() if hasattr(db, "get_schedule_in_effect") else None
+    try:
+        stored = db.get_schedule_in_effect() if hasattr(db, "get_schedule_in_effect") else None
+    except Exception as e:  # noqa: BLE001 - a database hiccup must not stop the overdue check
+        logger.warning(f"The schedule in effect could not be read ({e}); using the configured one")
+        stored = None
     if isinstance(stored, dict):
         return stored
     sched = getattr(config, "schedule", None)
@@ -58,9 +62,12 @@ def _later(a: str | None, b: str | None) -> str | None:
     return max(both, key=lambda t: pendulum.parse(t).timestamp()) if both else None
 
 
-def _progressing_partial(run: dict | None) -> bool:
+def _progressing_partial(db, config, leg: str, last: dict | None, now) -> bool:
     """The latest run is a budget-stopped PARTIAL that copied something: a large upload spread over
-    several nights (first full upload, big change) - slow, not stuck."""
+    several nights (first full upload, big change) - slow, not stuck. Only for
+    `dashboard.catching_up_max_days` after the first partial run following the last success: an
+    upload that never finishes is a problem, not "catching up" forever."""
+    run = db.last_run(leg)
     if not run or run.get("status") not in statuses.PARTIAL_STATUSES:
         return False
     if not (run.get("bytes_copied") or 0) > 0:
@@ -70,7 +77,17 @@ def _progressing_partial(run: dict | None) -> bool:
     except ValueError:
         return False
     budget = metrics.get("budget") if isinstance(metrics, dict) else None
-    return isinstance(budget, dict) and bool(budget.get("stopped"))
+    if not (isinstance(budget, dict) and budget.get("stopped")):
+        return False
+    from models.config import DashboardConfig, model_default
+
+    max_days = getattr(config.dashboard, "catching_up_max_days",
+                       model_default(DashboardConfig, "catching_up_max_days"))
+    since = (last.get("started_at") or last.get("ended_at")) if last else None
+    first = db.first_partial_after(leg, since)
+    if not first:
+        return True
+    return (now.timestamp() - pendulum.parse(first).timestamp()) <= max_days * 86400
 
 
 def _leg_clock(db, config, leg: str, sched: dict):
@@ -87,7 +104,7 @@ def _leg_clock(db, config, leg: str, sched: dict):
         base = _later(db.first_known_at(), db.last_config_change_at(f"{leg}.enabled"))
     # a schedule that changed after that moment starts its own clock: the old plan's run history says
     # nothing about when the NEW plan's first run is due (daily -> weekly must not look a week late)
-    base = _later(base, sched.get("since"))
+    base = _later(base, sched.get(f"{leg}_since"))
     if not base:
         return last, None, None
     parsed = pendulum.parse(base)
@@ -115,9 +132,9 @@ def leg_timing(db, config, leg: str, now=None) -> dict:
         if last is None:
             return {"state": "waiting", **out}
         budget_h = getattr(config.budget, f"{leg}_max_hours")
-        run_should_have_finished = due + pendulum.duration(hours=float(budget_h))
-        return {"state": "late" if now > run_should_have_finished else "on_time", **out}
-    if _progressing_partial(db.last_run(leg)):
+        finished_by = due.timestamp() + float(budget_h) * 3600       # real elapsed time, DST-proof
+        return {"state": "late" if now.timestamp() > finished_by else "on_time", **out}
+    if _progressing_partial(db, config, leg, last, now):
         return {"state": "catching_up", **out}
     return {"state": "overdue", **out}
 
@@ -146,14 +163,14 @@ def _overdue_item(db, config, leg: str, sched: dict, now) -> dict | None:
                          act("Nothing to do yet",
                              f"No {phrase} has finished yet; the first scheduled run is still ahead{when}"))
         return None
-    if _progressing_partial(db.last_run(leg)):
+    if _progressing_partial(db, config, leg, last, now):
         return _item(AMBER, f"catching_up:{leg}",
                      act("Nothing to do - leave it running",
                          f"The {phrase} is copying a large amount over several nights and is "
                          "making progress"))
     # the most recent run that was owed: a failure mail created after it already told the owner about
     # the CURRENT state (an older mail says nothing about a scheduler that has stopped since)
-    owed = overdue.latest_firing(sched[f"{leg}_cron"], sched["timezone"], now).isoformat()
+    owed = overdue.latest_owed(sched[f"{leg}_cron"], sched["timezone"], now, budget_h).isoformat()
     if last is None:
         return {**_item(RED, f"stale:{leg}",
                         act(f"Run the {phrase} now from its card, or check why it has not run",
@@ -179,7 +196,13 @@ def compute_attention(db, config, now=None) -> list[dict]:
         if not getattr(config, leg).enabled:
             continue
         name = _LEG_NAME[leg]
-        item = _overdue_item(db, config, leg, sched, now) if sched else None
+        if sched:
+            item = _overdue_item(db, config, leg, sched, now)
+        else:       # cannot even tell when it should run: say so (red + the watchdog mails it)
+            item = _item(RED, f"stale:{leg}",
+                         act(f"Ask support to check the schedule settings",
+                             f"The {_PHRASE.get(leg, leg)} schedule cannot be read, so it cannot be "
+                             "checked whether the backup is on time"))
         if item:
             items.append(item)
 

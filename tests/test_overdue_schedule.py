@@ -157,6 +157,8 @@ def test_a_manual_run_just_before_a_firing_that_then_fails_goes_red_at_that_firi
 
 def test_schedule_changed_daily_to_weekly_does_not_alarm(tmp_path, db):
     _success(db, at(2026, 10, 22, 21, 0).replace(second=3))      # last success under the daily plan
+    db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *",
+                               "timezone": "Asia/Kolkata"})       # the plan that was served before
     db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 2 * * SUN",
                                "timezone": "Asia/Kolkata"}, since=at(2026, 10, 26, 8, 0).isoformat())
     cfg = _cfg(tmp_path, lan_cron="0 2 * * SUN")
@@ -167,20 +169,13 @@ def test_schedule_changed_daily_to_weekly_does_not_alarm(tmp_path, db):
 
 def test_schedule_changed_weekly_to_daily_starts_its_own_clock(tmp_path, db):
     _success(db, at(2026, 10, 20, 2, 0))                         # last success under the weekly plan
+    db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 2 * * SUN",
+                               "timezone": "Asia/Kolkata"})       # the plan that was served before
     db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *",
                                "timezone": "Asia/Kolkata"}, since=at(2026, 10, 24, 12, 0).isoformat())
     cfg = _cfg(tmp_path)
     assert not _stale(db, cfg, at(2026, 10, 24, 20, 0))          # first daily run is still ahead
     assert _stale(db, cfg, at(2026, 10, 25, 3, 1))               # it did not succeed: now red
-
-
-def test_the_since_stamp_survives_a_restart_but_moves_with_a_change(tmp_path, db):
-    first = {"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *", "timezone": "Asia/Kolkata"}
-    db.set_schedule_in_effect(first, since="2026-10-01T00:00:00+05:30")
-    db.set_schedule_in_effect(first)                             # service restarted, same schedule
-    assert db.get_schedule_in_effect()["since"] == "2026-10-01T00:00:00+05:30"
-    db.set_schedule_in_effect({**first, "lan_cron": "0 22 * * *"}, since="2026-10-05T00:00:00+05:30")
-    assert db.get_schedule_in_effect()["since"] == "2026-10-05T00:00:00+05:30"
 
 
 def test_the_schedule_in_effect_wins_over_the_saved_config(tmp_path, db):
@@ -322,7 +317,7 @@ def test_serve_records_the_schedule_it_registers(tmp_path):
     finally:
         db.close()
     assert stored["lan_cron"] == "0 20 * * MON-FRI" and stored["timezone"] == "Asia/Kolkata"
-    assert stored["since"]
+    assert stored["lan_since"] is None and stored["cloud_since"] is None       # first record: no change
 
 
 def test_a_failure_to_record_never_stops_the_scheduler(tmp_path, monkeypatch):
@@ -389,3 +384,76 @@ def test_the_status_endpoint_and_the_page_use_the_servers_timing(tmp_path, db, m
     assert data["lan"]["timing"]["state"] in ("on_time", "late", "overdue", "waiting", "catching_up")
     js = (Path(__file__).resolve().parent.parent / "static" / "js" / "dashboard.js").read_text(encoding="utf-8")
     assert ".timing" in js and "diffDays < 2" not in js          # the fixed 1-day / 2-day labels are gone
+
+
+# ── code review fixes (Opus, 2026-10-22) ─────────────────────────────────────
+
+def test_since_is_kept_per_leg_so_changing_cloud_does_not_move_the_lan_clock(tmp_path, db):
+    base = {"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *", "timezone": "Asia/Kolkata"}
+    db.set_schedule_in_effect(base)
+    assert db.get_schedule_in_effect()["cloud_since"] is None and db.get_schedule_in_effect()["lan_since"] is None
+    db.set_schedule_in_effect({**base, "cloud_cron": "0 3 * * *"}, since="2026-10-24T12:00:00+05:30")
+    got = db.get_schedule_in_effect()
+    assert got["cloud_since"] == "2026-10-24T12:00:00+05:30" and got["lan_since"] is None
+    db.set_schedule_in_effect({**base, "cloud_cron": "0 3 * * *"})            # restart, nothing changed
+    assert db.get_schedule_in_effect()["cloud_since"] == "2026-10-24T12:00:00+05:30"
+    db.set_schedule_in_effect({**base, "cloud_cron": "0 3 * * *", "timezone": "UTC"},
+                              since="2026-10-25T00:00:00+05:30")             # timezone moves both legs
+    got = db.get_schedule_in_effect()
+    assert got["cloud_since"] == got["lan_since"] == "2026-10-25T00:00:00+05:30"
+
+
+def test_a_cloud_schedule_change_leaves_a_failing_lan_red(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    base = {"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *", "timezone": "Asia/Kolkata"}
+    db.set_schedule_in_effect(base)
+    _success(db, at(2026, 10, 20, 21, 0).replace(second=3))                  # LAN failing since the 21st
+    db.set_schedule_in_effect({**base, "cloud_cron": "0 3 * * *"}, since=at(2026, 10, 23, 12).isoformat())
+    assert _stale(db, cfg, at(2026, 10, 23, 13))
+
+
+def test_the_first_recorded_schedule_does_not_hide_a_leg_that_was_already_failing(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 20, 21, 0).replace(second=3))
+    db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *",
+                               "timezone": "Asia/Kolkata"})                    # first record: no 'since'
+    assert _stale(db, cfg, at(2026, 10, 23, 13))
+
+
+def test_the_latest_owed_run_is_one_whose_run_should_already_have_finished():
+    # daily 21:00, 4 h budget: at 21:10 the 21:00 run is still working, so the owed run is yesterday's
+    assert overdue.latest_owed("0 21 * * *", "Asia/Kolkata", at(2026, 10, 22, 21, 10), 4) == at(2026, 10, 21, 21, 0)
+    assert overdue.latest_owed("0 21 * * *", "Asia/Kolkata", at(2026, 10, 23, 1, 0), 4) == at(2026, 10, 22, 21, 0)
+
+
+def test_a_schedule_the_database_cannot_give_falls_back_to_the_config(tmp_path, db, monkeypatch):
+    from core import attention
+    cfg = _cfg(tmp_path)
+
+    def locked():
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(db, "get_schedule_in_effect", locked)
+    assert attention._schedule_in_effect(db, cfg)["lan_cron"] == "0 21 * * *"
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    assert _stale(db, cfg, at(2026, 10, 24, 3, 1))                    # the overdue check still works
+
+
+def test_an_unreadable_schedule_is_red_not_silence(tmp_path, db, monkeypatch):
+    from core import attention
+    monkeypatch.setattr(attention, "_schedule_in_effect", lambda d, c: None)
+    items = compute_attention(db, _cfg(tmp_path), now=at(2026, 10, 22, 12))
+    red = [i for i in items if i["code"] == "stale:lan" and i["level"] == RED]
+    assert red and "schedule cannot be read" in red[0]["message"]
+
+
+def test_catching_up_ends_after_the_configured_number_of_days(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 1, 21, 0))
+    _partial(db, at(2026, 10, 2, 21, 0))                                       # first partial after the success
+    _partial(db, at(2026, 10, 20, 21, 0))
+    days = cfg.dashboard.catching_up_max_days
+    assert days == 14
+    # 3 days after the first partial: still catching up; 20 days after: red
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 5, 12)) if i["code"] == "catching_up:lan"]
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 22, 12)) if i["code"] == "stale:lan"]
