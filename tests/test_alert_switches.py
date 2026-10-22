@@ -36,7 +36,7 @@ EVENTS = {
 def _cfg(tmp_path, port=25, send_on_failure=True, **alerts) -> AppConfig:
     return AppConfig(
         firm_name="AAM",
-        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\share\\FY26-27",
+        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\share",
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
         dashboard={"public_url": "http://backup-server:8080", **ui_login.DASHBOARD},

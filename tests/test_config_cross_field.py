@@ -82,6 +82,28 @@ class TestCrossFieldValidation:
                 **_quiet_legs(),
             )
 
+    @pytest.mark.parametrize("source, nas", [
+        ("E:\\SOURCE", "\\\\nas\\share\\FY26-27"),      # source without an FY folder
+        ("E:\\SOURCE\\FY26-27", "\\\\nas\\share"),      # NAS without an FY folder
+    ])
+    def test_one_sided_fy_leaf_refused(self, source, nas):
+        """FY folder on one path only → error (the rollover would rewrite the other to an empty folder)."""
+        with pytest.raises(ValidationError, match="both") as err:
+            AppConfig(
+                paths=PathsConfig(source_drive=source, lan_destination=nas),
+                lan=LanConfig(enabled=True),
+                **_quiet_legs(),
+            )
+        assert "FY" in str(err.value)
+
+    def test_no_fy_leaf_on_either_path_is_fine(self):
+        """Neither path has an FY folder → valid (the yearly switch is simply off)."""
+        AppConfig(
+            paths=PathsConfig(source_drive="E:\\SOURCE", lan_destination="\\\\nas\\share"),
+            lan=LanConfig(enabled=True),
+            **_quiet_legs(),
+        )
+
     def test_4digit_fy_rejected(self):
         """4-digit FY name → error."""
         with pytest.raises(ValidationError, match="4-digit"):

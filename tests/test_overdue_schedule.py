@@ -81,7 +81,7 @@ def test_the_deadline_is_real_elapsed_time_across_a_dst_change():
 def _cfg(tmp_path, lan_cron="0 21 * * *", cloud_enabled=False, grace=2.0, **sched):
     return AppConfig(
         firm_name="T",
-        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\share\\FY26-27",
+        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\share",
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": cloud_enabled},
         schedule={"lan_cron": lan_cron, **sched},

@@ -30,7 +30,7 @@ JS = (ROOT / "static" / "js" / "dashboard.js").read_text(encoding="utf-8")
 SETTINGS_JS = (ROOT / "static" / "js" / "settings.js").read_text(encoding="utf-8")
 TEMPLATE = (ROOT / "templates" / "dashboard.html").read_text(encoding="utf-8")
 KEY = {}      # the TestClient is signed in already (tests/conftest.py)
-UNC = "\\\\nas\\share\\FY26-27"
+UNC = "\\\\nas\\share"
 
 
 def _cfg(tmp_path, port=25, **dash) -> AppConfig:

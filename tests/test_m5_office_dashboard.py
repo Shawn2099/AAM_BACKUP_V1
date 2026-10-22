@@ -13,7 +13,7 @@ from core.manifest import ManifestDB
 from models.config import AppConfig, DashboardConfig
 from tests.test_m4_installer import INSTALLER, READINESS, ROOT
 
-UNC = "\\\\nas\\backup\\FY26-27"
+UNC = "\\\\nas\\backup"
 
 
 def _cfg(tmp_path, **dash) -> AppConfig:

@@ -25,7 +25,7 @@ from core.time_utils import IST
 from models.config import AppConfig, WatchdogConfig
 from test_support.smtp_server import smtp_server
 
-UNC = "\\\\nas\\backup\\FY26-27"
+UNC = "\\\\nas\\backup"
 
 
 @pytest.fixture(autouse=True)

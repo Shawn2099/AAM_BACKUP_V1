@@ -108,7 +108,7 @@ def _wol_cfg(tmp_path, **wol):
     w = {"enabled": True, "mac_address": "AA:BB:CC:DD:EE:FF", "server_ip": "10.10.186.231"}
     w.update(wol)
     return AppConfig(
-        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\10.10.186.231\\share\\FY26-27"},
+        paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": "\\\\10.10.186.231\\share\\FY26-27"},
         wol=w, cloud={"enabled": False}, dashboard={})
 
 

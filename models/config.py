@@ -1211,6 +1211,15 @@ class AppConfig(StrictModel):
         lan_parts = self.paths.lan_destination.replace("\\", "/").rstrip("/").split("/")
         lan_fy = lan_parts[-1].upper() if fy_pattern.match(lan_parts[-1]) else None
 
+        if self.lan.enabled and bool(src_fy) != bool(lan_fy):
+            side = "NAS folder" if src_fy else "source folder"
+            raise ValueError(
+                f"Make both paths end in a financial-year folder like FY26-27, or neither. Only the "
+                f"{'source' if src_fy else 'NAS'} path does (the {side} does not). With one "
+                "path only, the yearly switch would point the other at a new empty folder and the real "
+                "data would stop being backed up."
+            )
+
         if src_fy and lan_fy and src_fy != lan_fy:
             raise ValueError(
                 f"Make both paths end in the same FY folder (source {src_fy}, NAS {lan_fy}). "

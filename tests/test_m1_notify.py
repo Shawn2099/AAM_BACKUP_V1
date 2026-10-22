@@ -11,7 +11,7 @@ from core.manifest import ManifestDB
 from models.config import AppConfig
 from test_support.smtp_server import smtp_server
 
-UNC = "\\\\nas\\backup\\FY26-27"
+UNC = "\\\\nas\\backup"
 
 
 def _cfg(tmp_path, port=25, **notif) -> AppConfig:
