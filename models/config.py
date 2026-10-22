@@ -547,6 +547,11 @@ class AlertsConfig(StrictModel):
                     "hours while unresolved; repeats inside the window are recorded "
                     "as SUPPRESSED. 0 = never suppress.",
     )
+    incident_quiet_days: int = Field(
+        default=7, ge=1, le=90,
+        description="An alert with no resolution signal of its own (financial-year, dashboard and other "
+                    "alerts) that has not occurred again for this many days counts as over: the next "
+                    "occurrence is a NEW problem and its first email is always sent.")
     stale_repeat_hours: float = Field(
         default=24, ge=1, le=720,
         description="The 'backup overdue' email for a leg is repeated at most once per this many "
@@ -912,6 +917,10 @@ class WatchdogConfig(StrictModel):
         default=10, ge=1, le=1000,
         description="Rotate the watchdog's own log (watchdog_app.log) at this size; kept "
                     "run_logs.service_log_retention_days")
+    healthy_mark_seconds: int = Field(
+        default=300, ge=60, le=3600,
+        description="How often a fully healthy check is recorded in the database; an incident of the "
+                    "watchdog's own alerts is over once a healthy mark follows its email")
     stale_check_interval_seconds: int = Field(
         default=1800, ge=60, le=86_400,
         description="How often the watchdog checks that every enabled leg had a successful "

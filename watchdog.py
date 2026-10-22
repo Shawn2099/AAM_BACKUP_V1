@@ -86,7 +86,7 @@ def _apply_config(wc: WatchdogConfig, run_logs: RunLogsConfig | None = None) -> 
     global BACKUP_WAIT_INTERVAL, MAX_DEFERRALS, MAX_TRANSFER_DEFERRALS, RESTART_COOLDOWN
     global MAX_STARTS_PER_WINDOW, START_WINDOW_SECONDS, STOP_PENDING_TIMEOUT, KILL_WAIT
     global API_READY_TIMEOUT, SERVICE_POLL, SC_TIMEOUT, LOG_ROTATION_MB, LOG_RETENTION_DAYS
-    global STALE_CHECK_INTERVAL
+    global STALE_CHECK_INTERVAL, HEALTHY_MARK_SECONDS
     PREFECT_HEALTH_URL = wc.prefect_health_url
     CHECK_INTERVAL_SECONDS = wc.check_interval_seconds
     FAILURE_THRESHOLD = wc.failure_threshold
@@ -110,6 +110,7 @@ def _apply_config(wc: WatchdogConfig, run_logs: RunLogsConfig | None = None) -> 
     LOG_ROTATION_MB = wc.log_rotation_mb
     LOG_RETENTION_DAYS = (run_logs or RunLogsConfig()).service_log_retention_days
     STALE_CHECK_INTERVAL = wc.stale_check_interval_seconds
+    HEALTHY_MARK_SECONDS = wc.healthy_mark_seconds
 
 
 _apply_config(WatchdogConfig())
@@ -340,8 +341,34 @@ def _critical(key: str, title: str, message: str, status: str,
     _attention_raised = True
 
 
+_healthy_marked_at = 0.0
+
+
+def _mark_healthy() -> None:
+    """Record in the database that the watchdog's last check was fully healthy: an incident of the
+    watchdog's own alerts is over once a healthy check follows its mail (a flag in memory is lost when
+    the watchdog restarts). Written at most every `HEALTHY_MARK_SECONDS`."""
+    global _healthy_marked_at
+    if time.monotonic() - _healthy_marked_at < HEALTHY_MARK_SECONDS:
+        return
+    try:
+        from core.manifest import ManifestDB
+        from core.time_utils import now_iso
+        from models.config import CONFIG_PATH, load_config
+
+        db = ManifestDB.from_config(load_config(CONFIG_PATH))
+        try:
+            db.set_watchdog_healthy_at(now_iso())
+        finally:
+            db.close()
+        _healthy_marked_at = time.monotonic()
+    except Exception as e:  # noqa: BLE001 - never stops the loop; the mark is retried next time
+        logger.warning(f"Could not record the healthy mark: {e}")
+
+
 def _send_recovered_if_needed() -> None:
     global _attention_raised
+    _mark_healthy()
     if not _attention_raised:
         return
     _notify({"key": "watchdog:recovered", "kind": "RECOVERED",

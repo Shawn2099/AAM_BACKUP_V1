@@ -212,6 +212,10 @@ HELP: dict[str, tuple[str, str]] = {
                                      "Stops your inbox filling with the same alert."),
     "alerts.stale_repeat_hours": ("Repeat the 'backup overdue' email at most every",
                                   "While a backup stays overdue the reminder is sent this often (hours)."),
+    "watchdog.healthy_mark_seconds": ("How often the watchdog records that all is well", ""),
+    "alerts.incident_quiet_days": ("Days of quiet after which an alert counts as over",
+                                   "If the same alert does not occur again for this long, the next time it "
+                                   "appears it is treated as a new problem and mailed in full."),
     "alerts.body_max_chars": ("Alert text length", "Longer details are attached as a file."),
     "alerts.attachments_max_total_kb": ("Largest email attachments (KB)",
                                         "Support report + logs together; a logs zip that "

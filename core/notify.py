@@ -22,6 +22,7 @@ import smtplib
 import socket
 import ssl
 import time
+from datetime import timedelta
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from email.mime.application import MIMEApplication
@@ -31,6 +32,7 @@ from email.utils import formatdate, make_msgid
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
+import pendulum
 from loguru import logger
 
 from core import netinfo
@@ -570,12 +572,41 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
     return result
 
 
-def _incident(event: AlertEvent, db) -> tuple[dict | None, str | None]:
+def _incident_closed(event: AlertEvent, db, config, prior: dict) -> bool:
+    """Has the problem behind `prior` (the incident's last SENT mail) ended - whether or not a RESOLVED
+    mail was ever sent? A later SUCCESSFUL run (cloud / lan), a later VERIFIED audit, a healthy watchdog
+    check, or - for alerts with no resolution signal of their own - `alerts.incident_quiet_days` without
+    any row of this key (a SUPPRESSED / LIMITED repeat counts as the problem still occurring).
+    Reminder limits count the mails of one incident, so an incident that never closed would silence the
+    first mail of a NEW problem with the same key."""
+    mode, since = event.mode, prior["created_at"]
+    try:
+        if mode in ("cloud", "lan"):
+            return db.leg_success_after(mode, since)
+        if mode == "audit":
+            return db.audit_verified_after(since)
+        if mode == "watchdog":
+            healthy = db.watchdog_healthy_at()
+            return bool(healthy) and _is_after(healthy, since)
+        latest = db.last_notification(event.key) or prior
+        quiet = timedelta(days=config.alerts.incident_quiet_days)
+        return pendulum.now("UTC") - pendulum.parse(latest["created_at"]) > quiet
+    except Exception as e:  # noqa: BLE001 - when unsure the incident stays open (the safe side for a count)
+        logger.warning(f"Could not tell whether the {event.key} incident is over ({e}); treated as open")
+        return False
+
+
+def _is_after(a_iso: str, b_iso: str) -> bool:
+    return pendulum.parse(a_iso).timestamp() > pendulum.parse(b_iso).timestamp()
+
+
+def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | None]:
     """(the earlier SENT email of this same, unchanged incident or None,
     Message-ID of the incident's first email to reply to or None).
 
     Audit 2026-10-18 item 6: a RESOLVED email or a different fault code on
-    the leg starts a new incident, so its first email is never suppressed."""
+    the leg starts a new incident, so its first email is never suppressed. An incident also ends when
+    the problem itself ended (`_incident_closed`), even if no RESOLVED mail was sent."""
     prior = db.last_notification(event.key, status=SENT)
     if event.kind == "RECOVERED":
         same = prior if prior and not db.sent_in_mode_after(
@@ -584,7 +615,8 @@ def _incident(event: AlertEvent, db) -> tuple[dict | None, str | None]:
         root = open_problem.get("thread_id") or open_problem.get("message_id")
         return same, root
     unchanged = (prior is not None and prior.get("fault_code") == event.fault_code
-                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True))
+                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True)
+                 and not (config is not None and _incident_closed(event, db, config, prior)))
     same = prior if unchanged else None
     root = (same.get("thread_id") or same.get("message_id")) if same else None
     return same, root
@@ -594,7 +626,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     if event.fault_code is None:
         from core.email_compose import effective_code
         event = replace(event, fault_code=effective_code(event))
-    same, root = _incident(event, db)
+    same, root = _incident(event, db, config)
     if same and event.kind != "RECOVERED":
         first = (db.notification_by_message_id(root) if root else None) or same
         event = replace(event, first_reported_at=first["created_at"])

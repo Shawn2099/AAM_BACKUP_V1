@@ -1305,6 +1305,37 @@ class ManifestDB:
                 found.append((ts, started))
         return min(found)[1] if found else None
 
+    def leg_success_after(self, mode: str, after_iso: str) -> bool:
+        """Did a SUCCESSFUL run of this leg start after `after_iso`? (exact SUCCESS_STATUSES)"""
+        import pendulum
+        from core.statuses import SUCCESS_STATUSES
+
+        marks = ",".join("?" for _ in SUCCESS_STATUSES)
+        with self._lock:
+            rows = self._get_conn().execute(
+                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks}) "
+                "ORDER BY started_at DESC LIMIT 20", (mode, *sorted(SUCCESS_STATUSES))).fetchall()
+        floor = pendulum.parse(after_iso).timestamp()
+        return any(pendulum.parse(r[0]).timestamp() > floor for r in rows)
+
+    def audit_verified_after(self, after_iso: str) -> bool:
+        """Did an integrity audit reach VERIFIED after `after_iso`?"""
+        import pendulum
+
+        with self._lock:
+            rows = self._get_conn().execute(
+                "SELECT created_at FROM integrity_audits WHERE status = 'VERIFIED' "
+                "ORDER BY created_at DESC LIMIT 20").fetchall()
+        floor = pendulum.parse(after_iso).timestamp()
+        return any(pendulum.parse(r[0]).timestamp() > floor for r in rows)
+
+    def set_watchdog_healthy_at(self, iso_ts: str) -> None:
+        """The watchdog's last fully healthy check (survives a watchdog restart, unlike a flag)."""
+        self._set_meta("watchdog_healthy_at", iso_ts)
+
+    def watchdog_healthy_at(self) -> str | None:
+        return self._meta("watchdog_healthy_at")
+
     def told_about_leg_since(self, mode: str, since_iso: str) -> bool:
         """True when a failure / action email for this leg was created after `since_iso` and the owner
         therefore already knows: SENT, or SUPPRESSED (only ever written when an earlier mail of the same
