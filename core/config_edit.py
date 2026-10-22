@@ -89,7 +89,8 @@ BASIC_KEYS = frozenset({
     "firm_name",
     "schedule.lan_cron", "schedule.cloud_cron", "schedule.weekly_cron",
     "schedule.monthly_cron", "schedule.audit_cron",
-    "notifications.recipients", "notifications.sender", "notifications.smtp_host",
+    "notifications.recipients", "notifications.report_recipients", "notifications.sender",
+    "notifications.smtp_host",
     "notifications.smtp_port", "notifications.smtp_username", "notifications.smtp_password",
     "notifications.smtp_security",
     "notifications.weekly_enabled", "notifications.monthly_enabled",
@@ -110,6 +111,7 @@ _FIXED_CHOICES = {
 # How the page should draw a field (the server still validates every value).
 _WIDGETS = {
     "notifications.recipients": "email_list",
+    "notifications.report_recipients": "email_list",
     "notifications.sender": "email",
     "audit.network_error_patterns": "text_list",
     "schedule.timezone": "timezone",
@@ -302,7 +304,7 @@ def confirmation_phrase(risky_keys: list[str]) -> str:
 
 
 _EMAIL_DELIVERY = frozenset({
-    "notifications.recipients", "notifications.sender", "notifications.smtp_host",
+    "notifications.recipients", "notifications.report_recipients", "notifications.sender", "notifications.smtp_host",
     "notifications.smtp_port", "notifications.smtp_username", "notifications.smtp_password",
     "notifications.smtp_security"})
 # Not dangerous, but worth a second look before saving: shown with a note in the review dialog.

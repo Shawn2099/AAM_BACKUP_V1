@@ -322,8 +322,13 @@ notifications:
   # Copied to another server it cannot be decrypted: enter it again there.
   smtp_password: "YOUR_APP_PASSWORD"
   sender: "your-smtp-user@gmail.com"
+  # The ALERTS list: problems, action needed, warnings, resolved notices.
+  # Empty = alerts go to report_recipients. An address may be in both lists, never twice in one.
   recipients:
     - "admin@yourcompany.com"
+  # The REPORTS list: weekly and monthly reports, new-financial-year notice.
+  # Empty = reports go to recipients (the alerts list).
+  report_recipients: []
   # auto = SSL on port 465, STARTTLS otherwise; starttls | ssl; none = plain text
   # (internal relay only)
   smtp_security: auto

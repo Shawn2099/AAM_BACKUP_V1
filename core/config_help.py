@@ -50,8 +50,14 @@ HELP: dict[str, tuple[str, str]] = {
     "schedule.timezone": ("Time zone", "Time zone of the timetable. India = Asia/Kolkata (IST)."),
 
     # ── emails ──
-    "notifications.recipients": ("Who receives the emails",
-                                 "Everyone who should get alerts and reports. One address per box."),
+    "notifications.recipients": ("Who gets problem alerts",
+                                 "Everyone who should be told when something needs attention "
+                                 "(problems, action needed, warnings, resolved). One address per box. "
+                                 "If this list is empty, alerts go to the reports list."),
+    "notifications.report_recipients": ("Who gets reports",
+                                        "Everyone who should get the weekly and monthly reports. "
+                                        "One address per box. An address may also be in the alerts "
+                                        "list. If this list is empty, reports go to the alerts list."),
     "notifications.sender": ("Sent from (address)", "The address the emails come from."),
     "notifications.smtp_host": ("Mail server", "Address of the mail server, e.g. smtp.gmail.com."),
     "notifications.smtp_port": ("Mail server port", "Usually 587 (or 465)."),

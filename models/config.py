@@ -459,7 +459,14 @@ class NotificationConfig(StrictModel):
                          "enter the mail password again in Settings")
             return SecretText("", protected=True, undecryptable=True)
     sender: str = ""
-    recipients: list[str] = Field(default_factory=list)
+    recipients: list[str] = Field(
+        default_factory=list,
+        description="The ALERTS list: problems, action needed, warnings, resolved notices. "
+                    "Empty = alerts go to report_recipients.")
+    report_recipients: list[str] = Field(
+        default_factory=list,
+        description="The REPORTS list: the weekly and monthly reports and the new-financial-year "
+                    "notice. Empty = reports go to recipients (the alerts list).")
     # F12: the old `send_on_success` flag was removed — no code path ever
     # read it (success emails would have been 5 a.m. noise), and a config
     # switch that does nothing is worse than none. Pydantic ignores unknown
@@ -499,17 +506,22 @@ class NotificationConfig(StrictModel):
             raise ValueError(f"Enter the sender as name@domain.tld (now: '{v}'). Mail servers reject other forms.")
         return v
 
-    @field_validator("recipients")
+    @field_validator("recipients", "report_recipients")
     @classmethod
-    def valid_recipients(cls, v: list[str]) -> list[str]:
+    def valid_recipients(cls, v: list[str], info) -> list[str]:
+        """One list: well-formed, no address twice (case-insensitive). The same address may be in
+        both lists (it then receives both kinds of email)."""
+        which = "report list" if info.field_name == "report_recipients" else "alerts list"
         cleaned = [r.strip() for r in v]
         bad = [r for r in cleaned if not _EMAIL.fullmatch(r)]
         if bad:
-            raise ValueError("Fix or remove: " + ", ".join(repr(b) for b in bad)
-                             + ". Each recipient must look like name@domain.tld, or alerts go nowhere.")
-        dupes = sorted({r for r in cleaned if cleaned.count(r) > 1})
+            raise ValueError(f"Fix or remove in the {which}: " + ", ".join(repr(b) for b in bad)
+                             + ". Each recipient must look like name@domain.tld, or emails go nowhere.")
+        lowered = [r.lower() for r in cleaned]
+        dupes = sorted({r for r, low in zip(cleaned, lowered) if lowered.count(low) > 1}, key=str.lower)
         if dupes:
-            raise ValueError(f"Remove the duplicate: {', '.join(dupes)}. Each address should be listed once.")
+            raise ValueError(f"Remove the duplicate in the {which}: {', '.join(dupes)}. "
+                             "Each address should be listed once per list.")
         return cleaned
 
     def __repr__(self) -> str:
