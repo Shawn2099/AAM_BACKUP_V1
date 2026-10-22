@@ -623,8 +623,16 @@ def test_w19_health_endpoint(ui_rig):
     from core.time_utils import IST
 
     ui = ui_rig["ui"]
+    ui_rig["cfg"].notifications.recipients = ["ops@example.com"]    # no address at all is itself red
     ui_rig["monkeypatch"].setattr(ui, "_is_running", lambda leg: _async(False))
-    # 1. nothing has ever succeeded -> 503 with the reasons, no paths/secrets
+    # 1. nothing has ever succeeded -> 503 with the reasons, no paths/secrets. (An EMPTY database is only
+    #    "waiting for the first scheduled run"; three days of failed nights without a success are overdue.)
+    old = ManifestDB(str(ui_rig["cfg"].paths.database_path))
+    stamp = pendulum.now(IST).subtract(days=3).isoformat()
+    for leg in ("cloud", "lan"):
+        old.insert_run({"run_id": f"old-{leg}", "mode": leg, "started_at": stamp, "ended_at": stamp,
+                        "status": f"{leg.upper()}_FAILED"})
+    old.close()
     with TestClient(ui.app) as client:
         r = client.get("/health")
         assert r.status_code == 503 and r.json()["status"] == "attention"
@@ -667,11 +675,11 @@ def test_w19_email_report_endpoints(ui_rig):
         gen_args, send_args = [], []
         outcome = {"mode": "ok"}
 
-        def fake_gen(db, firm, d, p, is_email=False, legs=None, report_period=None):
+        def fake_gen(db, firm, d, p, is_email=False, legs=None, report_period=None, schedule=None):
             gen_args.append((d, p))
             return "" if outcome["mode"] == "no_data" else "<html>report</html>"
 
-        def fake_send(db, cfg_, firm, body_html=None, legs=None, report_period=None):
+        def fake_send(db, cfg_, firm, body_html=None, legs=None, report_period=None, schedule=None):
             if outcome["mode"] == "raise":
                 raise OSError("smtp unreachable")
             return outcome["mode"] == "ok"
