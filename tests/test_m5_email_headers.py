@@ -20,7 +20,7 @@ def _notif(port) -> NotificationConfig:
 
 def _send(**kw):
     with smtp_server() as srv:
-        result = nt.send_email(_notif(srv.server_address[1]), "Subject", "<p>Hello <b>you</b></p>", **kw)
+        result = nt.send_email(_notif(srv.server_address[1]), "Subject", "<p>Hello <b>you</b></p>", audience="alerts", **kw)
     assert result.status == nt.SENT
     return result, email.message_from_string(srv.messages[0]["data"])
 

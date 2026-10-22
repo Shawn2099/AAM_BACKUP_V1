@@ -11,6 +11,8 @@ Size / attachment behaviour (plan B4):
   reject_attachments  reply with this line after DATA when the message has an attachment
                   (a content filter refusing .zip), e.g. "554 5.7.1 attachment refused".
   hangup_over     close the connection once DATA has received more than this many bytes.
+  refuse_rcpt     addresses (case-insensitive) whose RCPT is answered "550 5.1.1 no such user"; the
+                  others are accepted, so smtplib returns a refusals dict (a typo in one list).
 """
 
 from __future__ import annotations
@@ -53,6 +55,9 @@ class _Handler(socketserver.StreamRequestHandler):
                 mail_from, rcpts = cmd, []
                 self._send("250 OK")
             elif verb == "RCPT":
+                if any(a.lower() in cmd.lower() for a in srv.refuse_rcpt):
+                    self._send("550 5.1.1 no such user")
+                    continue
                 rcpts.append(cmd)
                 self._send("250 OK")
             elif verb == "DATA":
@@ -91,7 +96,8 @@ class _Server(socketserver.ThreadingTCPServer):
 
 @contextmanager
 def smtp_server(fail_with: str | None = None, *, size_limit: int | None = None,
-                reject_attachments: str | None = None, hangup_over: int | None = None):
+                reject_attachments: str | None = None, hangup_over: int | None = None,
+                refuse_rcpt: tuple[str, ...] = ()):
     srv = _Server(("127.0.0.1", 0), _Handler)
     srv.messages = []
     srv.mail_attempts = 0
@@ -99,6 +105,7 @@ def smtp_server(fail_with: str | None = None, *, size_limit: int | None = None,
     srv.size_limit = size_limit
     srv.reject_attachments = reject_attachments
     srv.hangup_over = hangup_over
+    srv.refuse_rcpt = tuple(refuse_rcpt)
     srv.hangups = 0
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

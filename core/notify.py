@@ -46,6 +46,58 @@ DISABLED = "DISABLED"
 # the reader has already seen. Only routine FAILURE / WARNING emails obey it.
 ALWAYS_SENT_KINDS = frozenset({"ACTION_REQUIRED", "RECOVERED", "INFO"})
 
+# Who an email is for (owner 2026-10-22: two recipient lists). Every producer states its audience
+# explicitly; nothing is routed by guessing from the kind.
+AUDIENCE_ALERTS = "alerts"      # problems, action needed, warnings, resolved: notifications.recipients
+AUDIENCE_REPORTS = "reports"    # weekly / monthly report, new-financial-year notice
+AUDIENCE_BOTH = "both"          # the test email: every address of both lists, once
+AUDIENCES = (AUDIENCE_ALERTS, AUDIENCE_REPORTS, AUDIENCE_BOTH)
+
+
+@dataclass(frozen=True)
+class Recipients:
+    """The addresses one email goes to; `note` says when a list stood in for an empty one."""
+    addresses: list[str]
+    note: str | None = None
+
+
+def resolve_recipients(notifications, audience: str) -> Recipients:
+    """THE place that turns an audience into addresses. An empty list uses the other one (never a
+    silent loss); both empty = no addresses, which `send_email` reports as a failed delivery.
+    `both` is the case-insensitive de-duplicated union (an address in both lists gets one mail)."""
+    if audience not in AUDIENCES:
+        raise ValueError(f"unknown audience {audience!r} (expected one of {AUDIENCES})")
+    alerts = list(notifications.recipients)
+    reports = list(notifications.report_recipients)
+    if not alerts and not reports:
+        return Recipients([], "no recipients are configured (alerts list and reports list are empty)")
+    if audience == AUDIENCE_BOTH:
+        seen, union = set(), []
+        for address in alerts + reports:
+            if address.lower() not in seen:
+                seen.add(address.lower())
+                union.append(address)
+        return Recipients(union)
+    own, other, name, other_name = ((alerts, reports, "alerts", "reports")
+                                    if audience == AUDIENCE_ALERTS
+                                    else (reports, alerts, "reports", "alerts"))
+    if own:
+        return Recipients(own)
+    return Recipients(other, f"the {name} list is empty - sent to the {other_name} list")
+
+class RecipientsPartlyRefused(Exception):
+    """The mail server accepted the message for some addresses and refused others (a typo in a list).
+    The message WAS delivered to the accepted ones, but the refused address never gets it, so the
+    delivery is reported as failed and names them - not retried (the refusal would repeat)."""
+
+    def __init__(self, refused: dict):
+        self.refused = refused
+        listed = "; ".join(
+            f"{addr}: {code} {msg.decode(errors='replace') if isinstance(msg, bytes) else msg}"
+            for addr, (code, msg) in refused.items())
+        super().__init__(f"the mail server refused: {listed}")
+
+
 def _is_permanent_smtp_error(exc: BaseException) -> bool:
     """True when retrying cannot help (RFC 5321: 5xx = permanent).
 
@@ -53,8 +105,8 @@ def _is_permanent_smtp_error(exc: BaseException) -> bool:
     SMTPSenderRefused / SMTPRecipientsRefused for transient 4xx replies
     too (e.g. "451 try again later"), which must be retried.
     """
-    if isinstance(exc, smtplib.SMTPNotSupportedError):
-        return True  # e.g. STARTTLS / AUTH not offered by the server
+    if isinstance(exc, (smtplib.SMTPNotSupportedError, RecipientsPartlyRefused)):
+        return True  # e.g. STARTTLS / AUTH not offered by the server; a refused address stays refused
     if isinstance(exc, smtplib.SMTPRecipientsRefused):
         codes = [code for code, _msg in exc.recipients.values()]
         return bool(codes) and all(500 <= c < 600 for c in codes)
@@ -86,6 +138,7 @@ class AlertEvent:
     resolved_code: str | None = None   # RECOVERED: the code that was fixed
     artefacts_dir: str | None = None   # the run's full-log folder (support attachments)
     first_reported_at: str | None = None   # set by _notify on a reminder of an open incident
+    audience: str = AUDIENCE_ALERTS    # which recipient list(s): alerts | reports | both
 
 
 @dataclass
@@ -139,7 +192,7 @@ def _advertised_size(server) -> int:
 
 
 def _send_once(notifications, msgs: list[MIMEMultipart], first: int = 0,
-               state: dict | None = None) -> None:
+               state: dict | None = None, *, recipients: list[str]) -> None:
     """Send the richest of msgs[first:] that fits the server's advertised SIZE (the poorest if
     none does; the server then has the last word). `state["rung"]` is set to the index tried
     BEFORE the data is sent, so a failure can say which rung it was."""
@@ -150,8 +203,9 @@ def _send_once(notifications, msgs: list[MIMEMultipart], first: int = 0,
                     len(msgs) - 1)
         if state is not None:
             state["rung"] = pick
-        server.sendmail(notifications.sender, list(notifications.recipients),
-                        msgs[pick].as_string())
+        refused = server.sendmail(notifications.sender, list(recipients), msgs[pick].as_string())
+        if refused:
+            raise RecipientsPartlyRefused(refused)
 
 
 def _is_attachment_problem(exc: BaseException) -> bool:
@@ -163,13 +217,14 @@ def _is_attachment_problem(exc: BaseException) -> bool:
 
 
 def email_config_problem(notifications) -> str | None:
-    """Return why email cannot be sent with this config, or None if usable."""
+    """Return why email cannot be sent with this config, or None if usable. Which list is used is
+    not decided here: an empty list stands in for the other (`resolve_recipients`)."""
     if not notifications.smtp_host:
         return "notifications.smtp_host is empty"
     if not notifications.sender:
         return "notifications.sender is empty"
-    if not notifications.recipients:
-        return "notifications.recipients is empty"
+    if not notifications.recipients and not notifications.report_recipients:
+        return "no recipients are configured (notifications.recipients and report_recipients are empty)"
     if notifications.smtp_auth and not (notifications.smtp_username and notifications.smtp_password):
         return "notifications.smtp_auth is true but smtp_username/smtp_password are empty"
     return None
@@ -233,12 +288,14 @@ def _attach(msg: MIMEMultipart, attachments: list[dict]) -> MIMEMultipart:
 
 
 def send_email(notifications, subject: str, body_html: str,
-               attachments: list[dict] | None = None, *, body_text: str | None = None,
+               attachments: list[dict] | None = None, *, audience: str,
+               body_text: str | None = None,
                headers: dict[str, str] | None = None,
                message_id: str | None = None,
                attachment_rungs: list[list[dict]] | None = None) -> DeliveryResult:
     """Send one email with retry (tenacity). Never raises.
 
+    audience: alerts | reports | both - which recipient list(s) get it (`resolve_recipients`).
     attachments: [{"filename": str, "content": bytes}]
     attachment_rungs: the same lists from richest to poorest (the last may be empty). The richest
     rung that fits the server's advertised SIZE is sent; a refusal that a smaller message can cure
@@ -252,6 +309,9 @@ def send_email(notifications, subject: str, body_html: str,
     if problem:
         logger.error(f"Email not sent ({subject!r}): {problem}")
         return DeliveryResult(FAILED, problem, 0)
+    target = resolve_recipients(notifications, audience)
+    if target.note:
+        logger.warning(f"Email {subject!r}: {target.note}")
 
     domain = notifications.sender.rpartition("@")[2] or "aam-backup"
     message_id = message_id or make_msgid(domain=domain)
@@ -263,7 +323,7 @@ def send_email(notifications, subject: str, body_html: str,
         msg = MIMEMultipart("mixed")
         msg["Subject"] = subject
         msg["From"] = notifications.sender
-        msg["To"] = ", ".join(notifications.recipients)
+        msg["To"] = ", ".join(target.addresses)
         msg["Date"] = formatdate(localtime=True)
         msg["Message-ID"] = message_id
         msg["Auto-Submitted"] = "auto-generated"
@@ -299,7 +359,7 @@ def send_email(notifications, subject: str, body_html: str,
             ):
                 with attempt:
                     attempts += 1
-                    _send_once(notifications, msgs, first, state)
+                    _send_once(notifications, msgs, first, state, recipients=target.addresses)
             break
         except (RetryError, Exception) as e:  # noqa: BLE001
             used = state["rung"]
@@ -455,7 +515,7 @@ def _fallback_alert(config, event: AlertEvent, error: Exception) -> DeliveryResu
                  "This is a short notice: the full alert could not be prepared "
                  f"({type(error).__name__}). The details are in the backup program's logs on the server."]
         body = "".join(f"<p>{html.escape(line)}</p>" for line in lines if line)
-        result = send_email(config.notifications, subject, body,
+        result = send_email(config.notifications, subject, body, audience=event.audience,
                             headers={"X-AAM-Reference": event.run_id or event.key})
         if result.status == SENT:
             _FALLBACK_SENT[event.key] = time.monotonic()
@@ -543,8 +603,8 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
                 headers["In-Reply-To"] = root
                 headers["References"] = root
             rungs, labels = attachment_ladder(attachments)
-            result = send_email(config.notifications, subject, body, headers=headers,
-                                attachment_rungs=rungs or None)
+            result = send_email(config.notifications, subject, body, audience=event.audience,
+                                headers=headers, attachment_rungs=rungs or None)
 
     try:
         db.record_notification({

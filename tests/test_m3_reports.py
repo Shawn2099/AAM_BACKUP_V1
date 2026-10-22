@@ -88,10 +88,10 @@ def test_report_email_uses_the_single_smtp_transport():
     import inspect
     assert "smtplib" not in inspect.getsource(report)
     with patch("core.report.send_email", return_value=nt.DeliveryResult(nt.SENT)) as send:
-        assert report._send_email_with_attachments(MagicMock(), "s", "<b/>", []) is True
+        assert report._send_email_with_attachments(MagicMock(), "s", "<b/>", [], audience="reports") is True
     send.assert_called_once()
     with patch("core.report.send_email", return_value=nt.DeliveryResult(nt.FAILED, "x")):
-        assert report._send_email_with_attachments(MagicMock(), "s", "<b/>", []) is False
+        assert report._send_email_with_attachments(MagicMock(), "s", "<b/>", [], audience="reports") is False
 
 
 def test_monthly_report_no_longer_collides_with_the_weekly_one():

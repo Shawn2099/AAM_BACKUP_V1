@@ -31,7 +31,8 @@ def _rungs():
 
 def _send(tmp_path, srv):
     notifications = _cfg(tmp_path, port=srv.server_address[1], retry_attempts=3).notifications
-    return nt.send_email(notifications, "subject", "<p>body</p>", attachment_rungs=_rungs())
+    return nt.send_email(notifications, "subject", "<p>body</p>", audience="alerts",
+                         attachment_rungs=_rungs())
 
 
 def _attachment_names(raw: str) -> list[str]:
@@ -110,7 +111,8 @@ def test_plain_attachments_argument_still_works(tmp_path):
     with smtp_server() as srv:
         notifications = _cfg(tmp_path, port=srv.server_address[1]).notifications
         result = nt.send_email(notifications, "s", "<p>b</p>",
-                               [{"filename": "a.csv", "content": b"1,2\n"}])
+                               [{"filename": "a.csv", "content": b"1,2\n"}],
+                               audience="alerts")
     assert result.status == nt.SENT and result.rung is None
     assert _attachment_names(srv.messages[0]["data"]) == ["a.csv"]
 

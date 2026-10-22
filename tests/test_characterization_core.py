@@ -936,7 +936,7 @@ class TestReportCharacterization:
         from core.report import _send_email_with_attachments
 
         cfg = NotificationConfig()  # no host/sender/recipients
-        assert _send_email_with_attachments(cfg, "subj", "<html>") is False
+        assert _send_email_with_attachments(cfg, "subj", "<html>", audience="reports") is False
 
     def test_send_email_missing_credentials_returns_false(self):
         from core.report import _send_email_with_attachments
@@ -944,7 +944,7 @@ class TestReportCharacterization:
         cfg = NotificationConfig(
             smtp_host="smtp.x", sender="s@x.com", recipients=["r@x.com"]
         )
-        assert _send_email_with_attachments(cfg, "subj", "<html>") is False
+        assert _send_email_with_attachments(cfg, "subj", "<html>", audience="reports") is False
 
     def test_send_email_success_via_smtp(self):
         from core.report import _send_email_with_attachments
@@ -955,7 +955,7 @@ class TestReportCharacterization:
         )
         from core.notify import SENT, DeliveryResult
         with patch("core.report.send_email", return_value=DeliveryResult(SENT)) as m:
-            assert _send_email_with_attachments(cfg, "subj", "<html>") is True
+            assert _send_email_with_attachments(cfg, "subj", "<html>", audience="reports") is True
         assert m.call_args.args[0] is cfg      # the single transport (WP8)
 
     def test_send_failure_alert_disabled(self, tmp_db):

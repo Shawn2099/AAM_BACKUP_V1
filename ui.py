@@ -992,13 +992,13 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
 def _announce_password_change(request: Request, name: str, actor: str) -> None:
     """INFO email to the recipients (plan E6): which password, who, when - never the password."""
     try:
-        from core.notify import AlertEvent, notify
+        from core.notify import AUDIENCE_BOTH, AlertEvent, notify
         notify(_cfg(), AlertEvent(
             key=f"password:{name.lower()}", kind="INFO", mode="dashboard",
             title=f"{name} password changed",
             message=f"The {name} password of the backup dashboard was changed by {actor} "
                     f"at {format_ist(now_iso(), 'D MMM YYYY, h:mm A')}. If this was not you, "
-                    "contact support."), db=get_db())
+                    "contact support.", audience=AUDIENCE_BOTH), db=get_db())
     except Exception as e:  # noqa: BLE001 - the change stands; a failed email is logged and visible
         logger.error(f"Could not send the {name} password change notice: {e}")
 
@@ -1236,20 +1236,25 @@ def send_test_email(request: Request):
     so a changed mail setting is proven before a real alert depends on it
     (audit 2026-10-18 item 4). Not stopped by notifications.send_on_failure."""
     _require_settings_rights(request)
-    from core.notify import SENT, AlertEvent, notify
+    from core.notify import AUDIENCE_BOTH, SENT, AlertEvent, notify, resolve_recipients
 
     actor = _approval_actor(request)
-    result = notify(_cfg(), AlertEvent(
+    cfg = _cfg()
+    result = notify(cfg, AlertEvent(
         key=f"test:{now_iso()}", kind="INFO", mode="test",
         title="Test email from your backup system",
         message=(f"This is a test sent from the dashboard by {actor}. If you can read it, "
-                 "backup emails reach you. Nothing to do.")), db=get_db())
-    recipients = ", ".join(_cfg().notifications.recipients)
+                 "backup emails reach you. Nothing to do."),
+        audience=AUDIENCE_BOTH), db=get_db())
+    recipients = ", ".join(resolve_recipients(cfg.notifications, AUDIENCE_BOTH).addresses)
     if result.status == SENT:
         return {"status": "sent", "detail": messages.act("Check that it arrived", f"The test email was sent to {recipients}")}
+    if "no recipients" in (result.error or ""):
+        action = "Add at least one email address under \"Who gets problem alerts\" or \"Who gets reports\", then send it again"
+    else:
+        action = "Check the mail settings (server, port, user and password), then send it again"
     return JSONResponse({"status": "failed",
-                         "detail": messages.act("Check the mail settings (server, port, user and password), then send it again",
-                                    f"The test email was NOT delivered: {result.error}")},
+                         "detail": messages.act(action, f"The test email was NOT delivered: {result.error}")},
                         status_code=502)
 
 
@@ -1388,6 +1393,7 @@ def trigger_weekly_email(request: Request):
         raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     cfg = _cfg()
     db = get_db()
+    from core.notify import AUDIENCE_REPORTS, resolve_recipients
     from core.report import generate_report_html, send_weekly_report
     from core.report_period import ReportPeriod
     legs = _enabled_legs(cfg)
@@ -1404,7 +1410,7 @@ def trigger_weekly_email(request: Request):
             status_code=500,
         )
     if ok:
-        recipients = ", ".join(cfg.notifications.recipients)
+        recipients = ", ".join(resolve_recipients(cfg.notifications, AUDIENCE_REPORTS).addresses)
         return JSONResponse({"status": "sent", "detail": f"Weekly report emailed to: {recipients}"})
     return JSONResponse(
         {"status": "failed", "detail": messages.act("Check the mail settings in Settings, then try again", "The report email was not sent; the agent log has the details")},
@@ -1425,6 +1431,7 @@ def trigger_monthly_email(request: Request):
         raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     cfg = _cfg()
     db = get_db()
+    from core.notify import AUDIENCE_REPORTS, resolve_recipients
     from core.report import generate_report_html, send_monthly_report
     from core.report_period import ReportPeriod
     legs = _enabled_legs(cfg)
@@ -1441,7 +1448,7 @@ def trigger_monthly_email(request: Request):
             status_code=500,
         )
     if ok:
-        recipients = ", ".join(cfg.notifications.recipients)
+        recipients = ", ".join(resolve_recipients(cfg.notifications, AUDIENCE_REPORTS).addresses)
         return JSONResponse({"status": "sent", "detail": f"Monthly report emailed to: {recipients}"})
     return JSONResponse(
         {"status": "failed", "detail": messages.act("Check the mail settings in Settings, then try again", "The report email was not sent; the agent log has the details")},

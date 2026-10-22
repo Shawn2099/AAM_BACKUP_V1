@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.email_samples import samples  # noqa: E402
-from core.notify import SENT, send_email  # noqa: E402
+from core.notify import AUDIENCE_ALERTS, SENT, send_email  # noqa: E402
 from models.config import load_config  # noqa: E402
 
 
@@ -46,9 +46,12 @@ def main(argv=None) -> int:
         print(f"{len(items)} .eml files written to {folder}")
     failed = 0
     if a.to:
-        notifications = config.notifications.model_copy(update={"recipients": [a.to]})
+        # previews go to --to ONLY: both real lists are replaced, never added to
+        notifications = config.notifications.model_copy(
+            update={"recipients": [a.to], "report_recipients": []})
         for s in items:
-            r = send_email(notifications, "[PREVIEW] " + s["subject"], s["html"])
+            r = send_email(notifications, "[PREVIEW] " + s["subject"], s["html"],
+                           audience=AUDIENCE_ALERTS)
             if r.status != SENT:
                 failed += 1
                 print(f"NOT SENT: {s['name']}: {r.error}")

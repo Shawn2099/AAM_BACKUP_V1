@@ -48,7 +48,8 @@ from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
-from core.notify import SENT, AlertEvent, attachment_ladder, notify, send_email
+from core.notify import (AUDIENCE_REPORTS, SENT, AlertEvent, attachment_ladder, notify,
+                         send_email)
 from core.process import acquire_lock, read_lock_alive
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
@@ -2251,7 +2252,8 @@ def _send_summary_report(config, days: int, period: str) -> None:
                                            report_period=report_period)
         subject, body, attachments = email
         rungs, labels = attachment_ladder(attachments or [])
-        result = send_email(config.notifications, subject, body, attachment_rungs=rungs or None)
+        result = send_email(config.notifications, subject, body, audience=AUDIENCE_REPORTS,
+                            attachment_rungs=rungs or None)
         try:
             db.record_notification({
                 "event_key": f"report:{period.lower()}", "kind": "REPORT", "mode": "report",
@@ -2603,7 +2605,8 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
             title=f"New financial year {to_fy} started",
             message=(f"From today your backups use the new folder {to_fy}. The {from_fy} "
                      f"backups are kept unchanged.{todo or ' Nothing to do.'}"),
-            status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at))
+            status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at,
+            audience=AUDIENCE_REPORTS))
 
     steps = {
         rj.FINAL_BACKUPS: step_final_backups, rj.SOURCE_FOLDER: step_source_folder,

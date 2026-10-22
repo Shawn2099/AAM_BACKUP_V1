@@ -107,15 +107,15 @@ def test_w20_email_not_configured(sandbox, monkeypatch):
 
     _, n = _cfg(sandbox)
     n.smtp_host = ""
-    assert rep._send_email_with_attachments(n, "s", "b") is False
+    assert rep._send_email_with_attachments(n, "s", "b", audience="reports") is False
 
     _, n = _cfg(sandbox)
     n.recipients = []
-    assert rep._send_email_with_attachments(n, "s", "b") is False
+    assert rep._send_email_with_attachments(n, "s", "b", audience="reports") is False
 
     _, n = _cfg(sandbox)
     n.smtp_username = ""
-    assert rep._send_email_with_attachments(n, "s", "b") is False   # no creds
+    assert rep._send_email_with_attachments(n, "s", "b", audience="reports") is False   # no creds
 
 
 def test_w20_email_starttls_success(sandbox, monkeypatch):
@@ -127,7 +127,7 @@ def test_w20_email_starttls_success(sandbox, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP_SSL", lambda *a, **k: pytest.fail("wrong port path"))
     ok = rep._send_email_with_attachments(
         n, "Subject", "<html>b</html>",
-        attachments=[{"filename": "failure_details.txt", "content": b"boom"}])
+        attachments=[{"filename": "failure_details.txt", "content": b"boom"}], audience="reports")
     assert ok is True and made.tls_started is True and made.quit_called is True
     sender, recipients, msg = made.sent
     assert made.logged_in == ("u", "p")
@@ -148,7 +148,7 @@ def test_w20_email_ssl_port_465(sandbox, monkeypatch):
     made = _FakeSMTP()
     monkeypatch.setattr(smtplib, "SMTP_SSL", lambda host, port, timeout=None, **kw: made)
     monkeypatch.setattr(smtplib, "SMTP", lambda *a, **k: pytest.fail("should use SSL"))
-    assert rep._send_email_with_attachments(n, "S", "b") is True
+    assert rep._send_email_with_attachments(n, "S", "b", audience="reports") is True
     assert made.tls_started is False                  # implicit TLS, no starttls
     assert made.logged_in == ("u", "p")
 
@@ -160,7 +160,7 @@ def test_w20_email_permanent_error_no_retry(sandbox, monkeypatch):
     made = _FakeSMTP(behaviour=[smtplib.SMTPAuthenticationError(535, b"bad creds")])
     monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     monkeypatch.setattr(time, "sleep", lambda s: pytest.fail("must not retry"))
-    assert rep._send_email_with_attachments(n, "S", "b") is False
+    assert rep._send_email_with_attachments(n, "S", "b", audience="reports") is False
 
     # WP8 fix: 421 is a TRANSIENT reply (smtplib still raises SenderRefused
     # for it) - it is retried and the email is delivered, not dropped.
@@ -168,7 +168,7 @@ def test_w20_email_permanent_error_no_retry(sandbox, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     slept = []
     monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
-    assert rep._send_email_with_attachments(n, "S", "b") is True
+    assert rep._send_email_with_attachments(n, "S", "b", audience="reports") is True
     assert len(slept) == 1
 
 
@@ -180,7 +180,7 @@ def test_w20_email_transient_retries_then_succeeds(sandbox, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     slept = []
     monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
-    assert rep._send_email_with_attachments(n, "S", "b") is True   # 2nd attempt ok
+    assert rep._send_email_with_attachments(n, "S", "b", audience="reports") is True   # 2nd attempt ok
     assert len(slept) == 1                                          # one backoff
 
 
@@ -192,7 +192,7 @@ def test_w20_email_transient_exhausts(sandbox, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP", lambda host, port, timeout=None, **kw: made)
     slept = []
     monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
-    assert rep._send_email_with_attachments(n, "S", "b") is False
+    assert rep._send_email_with_attachments(n, "S", "b", audience="reports") is False
     assert len(slept) == 2                       # 3 attempts, 2 backoffs
     L.record("W20.smtp_retry_policy",
              "SMTP policy (core.notify): 5xx never retries, 4xx/transient errors back "
@@ -207,7 +207,8 @@ def test_w20_email_transient_exhausts(sandbox, monkeypatch):
 def _capture_alert(rep, monkeypatch):
     seen = {}
 
-    def fake_send(config, subject, body, attachments):
+    def fake_send(config, subject, body, attachments, *, audience):
+        seen["audience"] = audience
         seen["subject"] = subject
         seen["body"] = body
         seen["attachments"] = attachments
@@ -360,7 +361,7 @@ def test_w20_summary_report_no_runs(sandbox, monkeypatch):
     cfg, n = _cfg(sandbox)
     seen = {}
     monkeypatch.setattr(rep, "_send_email_with_attachments",
-                        lambda c, subject, body, att: seen.update(subject=subject, body=body) or True)
+                        lambda c, subject, body, att, *, audience: seen.update(subject=subject, body=body) or True)
     # plan C P1: an empty period is still reported, as "action needed"
     assert rep.send_summary_report(FakeDB([]), n, "Firm", 7, "Weekly") is True
     assert "action needed" in seen["subject"] and "No backups in" in seen["body"]
@@ -372,7 +373,7 @@ def test_w20_summary_report_regenerates_when_body_falsy(sandbox, monkeypatch):
     cfg, n = _cfg(sandbox)
     seen = {}
     monkeypatch.setattr(rep, "_send_email_with_attachments",
-                        lambda c, s, b, a: seen.update(subject=s, body=b) or True)
+                        lambda c, s, b, a, *, audience: seen.update(subject=s, body=b) or True)
     # body_html=None (default) -> generated from the DB
     ok = rep.send_summary_report(FakeDB([_run()]), n, "Firm", 7, "Weekly")
     assert ok is True and "Backup Report" in seen["body"]
@@ -384,7 +385,7 @@ def test_w20_summary_report_happy(sandbox, monkeypatch):
     cfg, n = _cfg(sandbox)
     seen = {}
 
-    def fake_send(config, subject, body, attachments):
+    def fake_send(config, subject, body, attachments, *, audience):
         seen["subject"], seen["attachments"] = subject, attachments
         return True
 
@@ -403,7 +404,7 @@ def test_w20_summary_report_uses_given_body(sandbox, monkeypatch):
     cfg, n = _cfg(sandbox)
     seen = {}
     monkeypatch.setattr(rep, "_send_email_with_attachments",
-                        lambda c, s, b, a: seen.update(subject=s, body=b) or True)
+                        lambda c, s, b, a, *, audience: seen.update(subject=s, body=b) or True)
     import pendulum
 
     from core.time_utils import IST

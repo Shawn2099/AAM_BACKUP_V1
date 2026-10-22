@@ -17,7 +17,7 @@ from loguru import logger
 from core import faults, statuses
 from core.email_compose import LEG_LABEL
 from core.manifest import ManifestDB
-from core.notify import SENT, send_email
+from core.notify import AUDIENCE_ALERTS, AUDIENCE_REPORTS, SENT, send_email
 from core.report_period import ReportPeriod
 from core.time_utils import IST, format_ist, now_formatted
 from models.config import NotificationConfig
@@ -30,12 +30,14 @@ def _send_email_with_attachments(
     subject: str,
     body_html: str,
     attachments: list[dict] = None,
+    *,
+    audience: str,
 ) -> bool:
     """Send one email through the SINGLE SMTP transport (core.notify.send_email,
     plan WP8): retries via tenacity, 5xx permanent / 4xx retried (the SMTP
     library raises SenderRefused for transient 4xx replies too), optional auth,
     configurable security and timeout. True only when delivered."""
-    result = send_email(config, subject, body_html, attachments or [])
+    result = send_email(config, subject, body_html, attachments or [], audience=audience)
     return result.status == SENT
 
 
@@ -98,7 +100,8 @@ def send_failure_alert(
 </body>
 </html>"""
 
-    return _send_email_with_attachments(config, subject, body, attachments)
+    return _send_email_with_attachments(config, subject, body, attachments,
+                                        audience=AUDIENCE_ALERTS)
 
 
 # G5: cells that begin with one of these are interpreted as formulas/commands
@@ -484,7 +487,8 @@ def send_summary_report(
     subject, body, attachments = build_summary_email(db, firm_name, days, period,
                                                      body_html=body_html, legs=legs,
                                                      report_period=report_period)
-    return _send_email_with_attachments(config, subject, body, attachments)
+    return _send_email_with_attachments(config, subject, body, attachments,
+                                        audience=AUDIENCE_REPORTS)
 
 
 def build_summary_email(db: ManifestDB, firm_name: str, days: int, period: str,
