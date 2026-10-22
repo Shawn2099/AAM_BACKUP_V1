@@ -325,6 +325,7 @@ Write-Host "[setup] Installing $SVC_SERVER..."
   "PREFECT_SERVER_DATABASE_TIMEOUT=60.0" `
   "PREFECT_SERVER_DATABASE_SQLALCHEMY_POOL_TIMEOUT=60.0" `
   "PREFECT_SERVER_ANALYTICS_ENABLED=False" `
+  "PREFECT_SERVER_CONCURRENCY_LEASE_STORAGE=prefect.server.concurrency.lease_storage.filesystem" `
   "AAM_CONFIG=$ConfigFile"
 
 sc.exe failure $SVC_SERVER reset= 86400 actions= restart/30000/restart/60000/restart/60000 2>$null
