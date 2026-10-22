@@ -203,7 +203,8 @@ def test_forward_rollover_runs_pipelines_then_switches_inside_the_slot():
         r.m["_run_cloud_pipeline"].assert_called_once()
         r.m["_run_lan_pipeline"].assert_called_once()
         names = [c[0] for c in r.order.mock_calls if not c[0].startswith("_backup_slot().")]
-        assert names[:5] == ["_backup_slot", "create_source_folder", "create_nas_folder",
+        # FY-7: the new source folder is created first (before the final backups, no slot needed)
+        assert names[:5] == ["create_source_folder", "_backup_slot", "create_nas_folder",
                              "update_config_yaml", "run_archive_transition"]
         r.m["create_source_folder"].assert_called_once_with(
             "E:\\DATA", "FY27-28", placeholder_name="README_FY.txt")
@@ -219,7 +220,7 @@ def test_failed_final_backup_blocks_and_asks_a_human():
         with pytest.raises(fr.RolloverError, match="lan"):
             r.run()
         r.m["update_config_yaml"].assert_not_called()
-        r.m["create_source_folder"].assert_not_called()
+        r.m["create_source_folder"].assert_called_once()     # FY-7: created early, so the office can save
         assert r.statuses() == ["ROLLOVER_BLOCKED"]
         leg, record = r.m["_open_block_request"].call_args.args[1], \
             r.m["_open_block_request"].call_args.args[3]

@@ -526,6 +526,11 @@ rollover:
   # Small note written into the NEW source FY folder (never overwritten), so the
   # new, still-empty year is not mistaken for a missing drive by the backup.
   source_placeholder_name: README_FY.txt
+  # Create the new year's folder as soon as the rollover starts, before the old year's final
+  # backup, so the office can save into it on 1 April even if that backup fails and the switch
+  # waits for your approval. Files saved there are NOT backed up until the switch is done (the
+  # dashboard and an email say so). Only for the normal next year on a proven clock.
+  create_source_folder_early: true
   # The old year's online copy is moved to the cheaper ARCHIVE storage class after the
   # switch; if that fails it is retried every morning. After this many days of failing
   # the warning email becomes "action needed". 1–365

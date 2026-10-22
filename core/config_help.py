@@ -288,6 +288,10 @@ HELP: dict[str, tuple[str, str]] = {
     "approvals.expiry_hours": ("An approval is valid for", ""),
     "approvals.tolerance_percent": ("Allowed change after approval", ""),
     "rollover.source_placeholder_name": ("Note file placed in a new year folder", ""),
+    "rollover.create_source_folder_early": (
+        "Create the new year's folder before the old year's final backup",
+        "So the office can save into it on 1 April even if that backup fails. Files saved there are "
+        "not backed up until the switch is done; the dashboard and an email say so."),
     "rollover.archive_alert_after_days": (
         "Escalate a stuck archive move after",
         "Moving last year's online copy to cheaper storage is retried every morning."),

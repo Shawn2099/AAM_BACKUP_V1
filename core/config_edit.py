@@ -50,6 +50,7 @@ _RISKY_KEYS = frozenset({
     "paths.source_drive", "paths.lan_destination", "paths.gcs_key_path",
     "cloud.enabled", "cloud.bucket", "cloud.project_number", "cloud.location",
     "cloud.storage_class", "lan.enabled", "rollover.source_placeholder_name",
+    "rollover.create_source_folder_early",
     # data safety
     "lan.use_backup_mode", "health.clock_unverified_policy", "cloud.write_probe_enabled",
     # what counts as "unchanged": a wide window skips same-size edits

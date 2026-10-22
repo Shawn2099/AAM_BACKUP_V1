@@ -805,6 +805,15 @@ class RolloverConfig(StrictModel):
                     "file and guard G1 does not block an intentionally new, empty FY.",
     )
 
+    create_source_folder_early: bool = Field(
+        default=True,
+        description="Create the new financial year's source folder as soon as the rollover starts - "
+                    "before the final backup of the old year - so the office can save into it on 1 April "
+                    "even when that final backup fails and the switch waits for your approval. Only for "
+                    "the normal next year on a proven clock. Files saved there are NOT backed up until the "
+                    "switch is done; the dashboard and an email say so.",
+    )
+
     archive_alert_after_days: int = Field(
         default=3, ge=1, le=365,
         description="The old FY's move to the cheaper ARCHIVE storage class is retried every "

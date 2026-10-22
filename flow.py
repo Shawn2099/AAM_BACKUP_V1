@@ -2697,6 +2697,13 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         raise fy_rollover.RolloverError(msg)
 
     try:
+        if (config.rollover.create_source_folder_early and kind == fy_rollover.FORWARD and switch_pending
+                and not rj.is_finished(journal["steps"][rj.SOURCE_FOLDER])):
+            # plan FY-7: the office can save into the new year from day 1 even if the final backup below
+            # fails. Needs no slot. A failure here does not stop the old year's final backup; the step
+            # stays failed and run_steps retries it as a BLOCKING step before the switch.
+            _rollover_step(db, from_fy, to_fy, rj.SOURCE_FOLDER, run_id, step_source_folder)
+            journal = db.rollover_get(from_fy, to_fy)
         if not rj.is_finished(journal["steps"][rj.FINAL_BACKUPS]):
             # the final backups run through the normal pipelines, which take the backup slot
             # themselves (limit 1) - they must stay OUTSIDE the slot held below
