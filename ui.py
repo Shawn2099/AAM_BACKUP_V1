@@ -1173,6 +1173,41 @@ async def validate_settings(request: Request):
                                         allow_advanced=_is_admin(request))
 
 
+def _require_advanced(request: Request) -> None:
+    _require_auth(request)
+    if not _is_admin(request):
+        raise HTTPException(status_code=403, detail=messages.act(
+            "Open the Advanced tab and sign in with the Advanced password", "Only support settings use this"))
+
+
+@app.get("/api/settings/browse")
+def browse_folders(request: Request, path: str = ""):
+    """Folders on the server for the Advanced source picker (read-only; plan FY-8)."""
+    _require_advanced(request)
+    from core import source_picker
+
+    try:
+        return source_picker.list_folders(path)
+    except source_picker.PickerError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.post("/api/settings/check-source")
+async def check_source_folder(request: Request):
+    """Would <parent>/<current FY> work as the source folder? Nothing is created or saved."""
+    _require_advanced(request)
+    from core import source_picker
+    from models.config import load_config
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    parent = body.get("parent") if isinstance(body, dict) else ""
+    return await run_in_threadpool(
+        source_picker.check_source_parent, load_config(_settings_config_path()), str(parent or ""))
+
+
 def _open_rollover_journal() -> dict | None:
     """The unfinished rollover journal (plan A8), if any."""
     return get_db().rollover_incomplete()

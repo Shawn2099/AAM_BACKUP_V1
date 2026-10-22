@@ -117,6 +117,7 @@ _WIDGETS = {
     "notifications.sender": "email",
     "audit.network_error_patterns": "text_list",
     "schedule.timezone": "timezone",
+    "paths.source_drive": "folder",      # Advanced: Choose folder... (plan FY-8)
 }
 
 

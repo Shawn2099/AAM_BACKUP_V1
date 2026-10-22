@@ -286,10 +286,65 @@ function mbToSize(n) {
     return Number.isInteger(n) ? n + 'M' : Math.round(n * 1024) + 'k';
 }
 
+// ── folder picker (Advanced source folder; the server lists and checks, never creates) ────
+function fyLeaf(path) {
+    const m = /([^\\/]+)[\\/]*$/.exec(path || '');
+    return m && /^FY\d\d-\d\d$/i.test(m[1]) ? m[1] : null;
+}
+
+function folderHtml(f) {
+    const id = fid(f.key), dis = disabledAttr(f);
+    const canPick = !!fyLeaf(f.value);
+    return '<input type="text" id="in-' + id + '" value="' + esc(f.value) + '"' + dis + '>' +
+        (canPick ? ' <button type="button" class="btn" id="browse-' + id + '"' + dis + '>Choose folder...</button>' : '') +
+        '<div class="folder-box" id="box-' + id + '" hidden></div><div class="folder-check" id="chk-' + id + '"></div>';
+}
+
+async function browseFolders(f, path) {
+    const id = fid(f.key), box = document.getElementById('box-' + id);
+    box.hidden = false;
+    box.textContent = 'Loading...';
+    const resp = await fetch('/api/settings/browse?path=' + encodeURIComponent(path || ''));
+    const data = await resp.json();
+    if (!resp.ok) { box.textContent = data.detail || 'The server could not list this folder.'; return; }
+    const sep = data.path.indexOf('/') >= 0 && data.path.indexOf('\\') < 0 ? '/' : '\\';
+    const join = n => /[\\/]$/.test(data.path) ? data.path + n : data.path + sep + n;
+    let html = '<div class="folder-path">' + esc(data.path || 'This server') + '</div>';
+    if (data.path) {
+        html += '<div><button type="button" class="btn" data-use="' + esc(data.path) + '">Use this folder (the ' +
+            esc(fyLeaf(original[f.key]) || 'FY') + ' folder must be inside it)</button></div>';
+    }
+    if (data.parent !== null && data.path) html += '<div><a href="#" data-go="' + esc(data.parent) + '">.. (up)</a></div>';
+    else if (data.path) html += '<div><a href="#" data-go="">.. (all drives)</a></div>';
+    html += data.folders.map(n => '<div><a href="#" data-go="' + esc(data.path ? join(n) : n) + '">' + esc(n) + '</a></div>').join('');
+    box.innerHTML = html;
+    box.querySelectorAll('[data-go]').forEach(a => a.addEventListener('click', e => {
+        e.preventDefault(); browseFolders(f, a.getAttribute('data-go'));
+    }));
+    box.querySelectorAll('[data-use]').forEach(b => b.addEventListener('click', () => useFolder(f, b.getAttribute('data-use'))));
+}
+
+async function useFolder(f, parent) {
+    const id = fid(f.key), chk = document.getElementById('chk-' + id);
+    chk.textContent = 'Checking...';
+    const resp = await fetch('/api/settings/check-source', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parent: parent }) });
+    const data = await resp.json();
+    if (!resp.ok) { chk.textContent = data.detail || 'The check failed.'; return; }
+    if (!data.ok) { chk.innerHTML = '<div class="err">' + data.problems.map(esc).join('<br>') + '</div>'; return; }
+    chk.innerHTML = '<div>' + esc(data.source) + (data.cloud_target ? ' - the cloud copy stays at ' + esc(data.cloud_target) : '') +
+        '</div>' + data.warnings.map(w => '<div class="meta">' + esc(w) + '</div>').join('');
+    const input = document.getElementById('in-' + id);
+    input.value = data.source;
+    document.getElementById('box-' + id).hidden = true;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 // ── one editor per field ─────────────────────────────────────────────────────
 function editorHtml(f) {
     const id = fid(f.key), dis = disabledAttr(f);
     if (f.widget === 'schedule') return scheduleHtml(f);
+    if (f.widget === 'folder') return folderHtml(f);
     if (f.widget === 'email_list' || f.widget === 'text_list') return listHtml(f);
     if (f.widget === 'toggle') {
         return '<label class="toggle"><input type="checkbox" id="in-' + id + '"' + (f.value ? ' checked' : '') + dis +
@@ -393,6 +448,8 @@ function render() {
         } else if (f.widget !== 'email_list' && f.widget !== 'text_list') {
             const el = document.getElementById('in-' + id);
             if (el) { el.addEventListener('input', onEdit); el.addEventListener('change', onEdit); }
+            const pick = document.getElementById('browse-' + id);
+            if (pick) pick.addEventListener('click', () => browseFolders(f, ''));
         }
     });
 }
