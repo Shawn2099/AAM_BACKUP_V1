@@ -321,7 +321,7 @@ def compute_attention(db, config, now=None) -> list[dict]:
     from core import fy_rollover
 
     try:                       # plan FY-6: files saved in the next year's folder before the switch
-        found = fy_rollover.unprotected_new_fy(config, db)
+        found = fy_rollover.unprotected_new_fy(config, db, count=False)
     except Exception as e:  # noqa: BLE001 - the dashboard still renders
         logger.warning(f"Could not check the new financial year's folder: {e}")
         found = None

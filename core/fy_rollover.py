@@ -212,22 +212,56 @@ def new_fy_file_count(source_drive: str, to_fy: str, placeholder_name: str | Non
 
     The placeholder and the entries G1 never counts (desktop.ini, Thumbs.db, ...) are not files of the
     office. Never follows links (robocopy /XJ would not either). Plan FY-6."""
-    from core.guards import SOURCE_IGNORE_NAMES
-
-    root = _child_path(_parent_path(source_drive), to_fy)
-    if not os.path.isdir(root):
+    root = _new_fy_root(source_drive, to_fy)
+    if root is None:
         return None
-    ignore = {n.lower() for n in SOURCE_IGNORE_NAMES}
-    if placeholder_name:
-        ignore.add(placeholder_name.lower())
-    count = 0
-    for _, _, files in os.walk(root, followlinks=False):
-        count += sum(1 for f in files if f.lower() not in ignore)
+    ignore = _ignore_names(placeholder_name)
+    count, stack = 0, [root]
+    while stack:               # scandir, not os.walk: os.walk follows junctions on Windows
+        try:
+            with os.scandir(stack.pop()) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        if not os.path.isjunction(entry.path):
+                            stack.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False) and entry.name.lower() not in ignore:
+                        count += 1
+        except OSError:
+            continue           # an unreadable sub-folder does not hide the rest
     return count
 
 
-def unprotected_new_fy(config, db) -> dict | None:
+def _new_fy_root(source_drive: str, to_fy: str) -> str | None:
+    """The new FY folder next to the configured source if it is a real folder (not a link), else None."""
+    root = _child_path(_parent_path(source_drive), to_fy)
+    if not os.path.isdir(root) or os.path.islink(root) or os.path.isjunction(root):
+        return None
+    return root
+
+
+def _ignore_names(placeholder_name: str | None) -> frozenset[str]:
+    from core.guards import SOURCE_IGNORE_NAMES
+
+    return frozenset(SOURCE_IGNORE_NAMES | ({placeholder_name.lower()} if placeholder_name else set()))
+
+
+def new_fy_has_files(source_drive: str, to_fy: str, placeholder_name: str | None) -> bool:
+    """Is there at least one real file in the new FY folder? Stops at the first one and skips junctions, so
+    the dashboard can ask on every refresh without walking a big tree. Plan FY-14."""
+    from core.guards import first_regular_file
+
+    root = _new_fy_root(source_drive, to_fy)
+    if root is None:
+        return False
+    try:
+        return first_regular_file(root, _ignore_names(placeholder_name)) is not None
+    except OSError:
+        return False
+
+
+def unprotected_new_fy(config, db, count: bool = True) -> dict | None:
     """{from_fy, to_fy, files} when files were saved in the NEXT FY's folder before the switch, else None.
+    `count=False` (the dashboard) only asks whether a file exists: `files` is then None.
 
     Read-only and clock-light: it needs no proof of the clock because it changes nothing. Only the normal
     case (exactly the next FY) counts; a clock that is behind, a jump of more than one FY and a folder that
@@ -244,14 +278,21 @@ def unprotected_new_fy(config, db) -> dict | None:
         if classify_rollover(configured, current) != FORWARD:
             return None
         to_fy = current
-    files = new_fy_file_count(source, to_fy, config.rollover.source_placeholder_name)
-    if not files:
-        return None
+    placeholder = config.rollover.source_placeholder_name
+    if count:
+        files = new_fy_file_count(source, to_fy, placeholder)
+        if not files:
+            return None
+    else:
+        if not new_fy_has_files(source, to_fy, placeholder):
+            return None
+        files = None
     return {"from_fy": configured, "to_fy": to_fy, "files": files}
 
 
 def unprotected_message(found: dict) -> str:
-    return (f"{found['files']} file(s) were saved in the {found['to_fy']} folder, but the backups still "
+    saved = f"{found['files']} file(s) were" if found.get("files") else "Files were"
+    return (f"{saved} saved in the {found['to_fy']} folder, but the backups still "
             f"use {found['from_fy']} until the yearly switch is done, so those files are NOT backed up. "
             f"Do not move files out of {found['from_fy']} meanwhile: the next backup would remove them "
             "from the backup copies too.")

@@ -102,13 +102,13 @@ def test_it_ends_when_the_switch_is_done(tmp_path, cfg, db):
 
 # ── the dashboard ─────────────────────────────────────────────────────────────
 
-def test_the_dashboard_shows_a_red_card_with_the_count(tmp_path, cfg, db):
+def test_the_dashboard_shows_a_red_card_without_walking_the_tree_for_a_count(tmp_path, cfg, db):
     _new_folder(tmp_path, "a.xlsx", "b.xlsx", "c.xlsx")
     with _today(TO):
         items = compute_attention(db, cfg)
     [item] = [i for i in items if i["code"] == f"rollover:unprotected:{TO}"]
     assert item["level"] == RED
-    assert "3" in item["message"] and TO in item["message"] and "not backed up" in item["message"].lower()
+    assert TO in item["message"] and "not backed up" in item["message"].lower()
 
 
 def test_no_card_when_nothing_is_unprotected(tmp_path, cfg, db):
@@ -195,3 +195,47 @@ def test_no_resolved_mail_when_the_office_was_never_mailed(tmp_path, cfg, db):
     with _today(TO), patch("flow.notify", side_effect=lambda c, e, **kw: sent.append(e)):
         flow._alarm_unprotected_new_fy(cfg, db)
     assert sent == []
+
+
+# ── FY-14: presence only on the dashboard, junction-safe count in the mail ────
+
+def _junction(tmp_path, link: str, target):
+    import subprocess
+
+    r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+    if r.returncode != 0:
+        pytest.skip("cannot create a junction here")
+
+
+def test_a_junction_inside_the_new_folder_is_not_counted_or_followed(tmp_path, cfg):
+    folder = _new_folder(tmp_path, "a.xlsx")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "big1.dat").write_text("x", encoding="utf-8")
+    (outside / "big2.dat").write_text("x", encoding="utf-8")
+    _junction(tmp_path, folder / "linked", outside)
+    assert fr.new_fy_file_count(cfg.paths.source_drive, TO, PLACEHOLDER) == 1
+
+
+def test_presence_check_stops_at_the_first_file_and_never_walks_the_tree(tmp_path, cfg, monkeypatch):
+    _new_folder(tmp_path, PLACEHOLDER, "clients/2026/c.pdf")
+    monkeypatch.setattr(fr.os, "walk", lambda *a, **k: (_ for _ in ()).throw(AssertionError("walked")))
+    assert fr.new_fy_has_files(cfg.paths.source_drive, TO, PLACEHOLDER) is True
+    assert fr.new_fy_has_files(cfg.paths.source_drive, "FY99-00", PLACEHOLDER) is False      # no such folder
+
+
+def test_a_new_folder_that_is_itself_a_link_does_not_count(tmp_path, cfg, monkeypatch):
+    _new_folder(tmp_path, "a.xlsx")
+    monkeypatch.setattr(fr.os.path, "isjunction", lambda p: str(p).endswith(TO), raising=False)
+    assert fr.new_fy_has_files(cfg.paths.source_drive, TO, PLACEHOLDER) is False
+    assert fr.new_fy_file_count(cfg.paths.source_drive, TO, PLACEHOLDER) is None
+
+
+def test_the_dashboard_asks_for_presence_only_and_the_mail_for_the_count(tmp_path, cfg, db):
+    _new_folder(tmp_path, "a.xlsx", "b.xlsx")
+    with _today(TO):
+        quick = fr.unprotected_new_fy(cfg, db, count=False)
+        exact = fr.unprotected_new_fy(cfg, db)
+    assert quick["files"] is None and exact["files"] == 2
+    assert "file(s)" not in fr.unprotected_message(quick) and "2 file(s)" in fr.unprotected_message(exact)
+    assert "NOT backed up" in fr.unprotected_message(quick)
