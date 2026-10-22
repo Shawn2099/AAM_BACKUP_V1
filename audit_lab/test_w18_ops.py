@@ -58,7 +58,7 @@ def _write_cfg(base: Path, cfg) -> Path:
 
 
 def _lab_cfg(sandbox):
-    return L.build_config(sandbox, source=sandbox / "src", lan_dest=str(sandbox / "nas"),
+    return L.build_config(sandbox, source=sandbox / "src" / "FY26-27", lan_dest=str(sandbox / "nas" / "FY26-27"),
                           runtime=sandbox / "runtime")
 
 

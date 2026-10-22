@@ -185,7 +185,7 @@ def test_w17_wait_for_server_timeout_raises(monkeypatch):
 def test_w17_ensure_server_online_paths(monkeypatch, sandbox):
     import core.wol as wol
 
-    cfg = L.build_config(sandbox, source=sandbox / "src", lan_dest=str(sandbox / "nas"),
+    cfg = L.build_config(sandbox, source=sandbox / "src" / "FY26-27", lan_dest=str(sandbox / "nas" / "FY26-27"),
                          runtime=sandbox / "runtime")
     sent: list = []
 
@@ -424,7 +424,7 @@ def test_w17_alert_wedged_lock(monkeypatch, sandbox):
 
     sent = []
     monkeypatch.setattr(cn, "notify", lambda cfg, event, db=None: sent.append(event))
-    cfg = L.build_config(sandbox, source=sandbox / "src", lan_dest=str(sandbox / "nas"),
+    cfg = L.build_config(sandbox, source=sandbox / "src" / "FY26-27", lan_dest=str(sandbox / "nas" / "FY26-27"),
                          runtime=sandbox / "runtime")
     monkeypatch.setattr(mc, "load_config", lambda p=None: cfg)
 

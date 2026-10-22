@@ -50,7 +50,7 @@ def ui_rig(sandbox, monkeypatch):
     import models.config as mconfig
 
     saved = (ui._config, ui._config_loaded_at, ui._DB_INSTANCE, dict(ui._sessions))
-    cfg = L.build_config(sandbox, source=sandbox / "src", lan_dest=str(sandbox / "nas"),
+    cfg = L.build_config(sandbox, source=sandbox / "src" / "FY26-27", lan_dest=str(sandbox / "nas" / "FY26-27"),
                          runtime=sandbox / "runtime")
     cfg_path = _write_cfg(sandbox, cfg)
     monkeypatch.setattr(mconfig, "CONFIG_PATH", str(cfg_path))
@@ -675,11 +675,11 @@ def test_w19_email_report_endpoints(ui_rig):
         gen_args, send_args = [], []
         outcome = {"mode": "ok"}
 
-        def fake_gen(db, firm, d, p, is_email=False, legs=None, report_period=None, schedule=None):
+        def fake_gen(db, firm, d, p, is_email=False, legs=None, report_period=None, schedule=None, **_ignored):
             gen_args.append((d, p))
             return "" if outcome["mode"] == "no_data" else "<html>report</html>"
 
-        def fake_send(db, cfg_, firm, body_html=None, legs=None, report_period=None, schedule=None):
+        def fake_send(db, cfg_, firm, body_html=None, legs=None, report_period=None, schedule=None, **_ignored):
             if outcome["mode"] == "raise":
                 raise OSError("smtp unreachable")
             return outcome["mode"] == "ok"

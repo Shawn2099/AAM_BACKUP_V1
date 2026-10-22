@@ -85,7 +85,7 @@ class _FakeSMTP:
 
 
 def _cfg(sandbox, **over):
-    cfg = L.build_config(sandbox, source=sandbox / "src", lan_dest=str(sandbox / "nas"),
+    cfg = L.build_config(sandbox, source=sandbox / "src" / "FY26-27", lan_dest=str(sandbox / "nas" / "FY26-27"),
                          runtime=sandbox / "runtime")
     n = cfg.notifications
     n.smtp_host = "smtp.example.test"
@@ -423,7 +423,7 @@ def test_w20_weekly_monthly_delegate(sandbox, monkeypatch):
     calls = []
 
     def fake_summary(db, config, firm, days, period, body_html=None, legs=None,
-                     report_period=None, schedule=None):
+                     report_period=None, schedule=None, **_ignored):
         calls.append((days, period, body_html))
         return True
 

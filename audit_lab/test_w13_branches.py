@@ -882,9 +882,9 @@ def test_w13_fy_rollover_path_helpers():
         ("\\\\NAS\\share\\FY26-27", "\\\\NAS\\share"),
         ("C:\\SOURCE\\FY26-27\\", "C:\\SOURCE"),
         ("/mnt/data/FY26-27", "/mnt/data"),
-        # a bare drive root loses its trailing separator ("C:\\" -> "C:"); that is
-        # harmless because _child_path re-adds it, so assert the round-trip below.
-        ("C:\\", "C:"),
+        # a bare drive root keeps its backslash ("C:\\" -> "C:\\"): plan FY-10 fixed the old "C:/FY27-28"
+        # (a source D:\FY26-27 must become D:\FY27-28, not D:/FY27-28)
+        ("C:\\", "C:\\"),
     ]
     for raw, want in parent_cases:
         got = _parent_path(raw)

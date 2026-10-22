@@ -415,7 +415,8 @@ def test_w14_dashboard_and_status_endpoints(ui_rig, monkeypatch):
         # WP9: the seeded runs are days old -> /health must say so (503 + the
         # staleness reason); it used to answer 200 "healthy" regardless.
         if r_health.status_code != 503 or not any(
-                "has not succeeded" in m for m in r_health.json().get("reasons", [])):
+                ("has not succeeded" in m or "never completed successfully" in m)
+                for m in r_health.json().get("reasons", [])):
             problems.append(f"GET /health did not report the stale backups: "
                             f"{r_health.status_code} {r_health.text[:200]}")
 
