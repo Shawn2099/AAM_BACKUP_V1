@@ -291,7 +291,7 @@ echo.
 echo ===================================================================
 echo   SYSTEM SETUP COMPLETE
 echo ===================================================================
-echo   Next step: create config.yaml ^(docs\INSTALL_FRESH.md step 8^), then run 04_check_readiness.ps1.
+echo   Next step: create config.yaml ^(docs\INSTALL_FRESH.md step 9^), then run 04_check_readiness.ps1.
 echo ===================================================================
 echo.
 pause

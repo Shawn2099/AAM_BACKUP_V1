@@ -12,14 +12,14 @@ firm_name: "YourFirmName"
 # ═══════════════════════════════════════════════════
 # FILE SYSTEM PATHS
 # IMPORTANT (mandatory, whichever backup is on): source_drive MUST end with the current Fiscal
-# Year folder (e.g. D:\FY25-26), and lan_destination too while the NAS backup is on. The system
+# Year folder (e.g. D:\FY26-27), and lan_destination too while the NAS backup is on. The system
 # uses this suffix for the cloud folder name, the safety checks and the yearly switch; a config
 # without it does not load. Only the CURRENT year is backed up: older year folders
 # (D:\FY24-25, D:\archives\FY10-11) are uploaded once at deployment by a separate tool.
 # ═══════════════════════════════════════════════════
 paths:
-  source_drive: "D:\\YOUR_DATA\\FY25-26"
-  lan_destination: "\\\\NAS_IP\\share\\FY25-26"
+  source_drive: "D:\\FY26-27"
+  lan_destination: "\\\\NAS_IP\\share\\FY26-27"
   # Runtime directory — all logs, database, lock file, and Prefect home live here.
   # Separate from code installation so updates don't delete runtime data.
   runtime_dir: "C:\\BackupAgent"
@@ -84,9 +84,9 @@ wol:
   # MAC address of the NAS server (colons or hyphens accepted)
   mac_address: "AA:BB:CC:DD:EE:FF"
   # IP of the NAS server — used for SMB port reachability check
-  server_ip: "192.168.1.100"
+  server_ip: "192.0.2.10"   # example value (documentation address): use the NAS address, the same host as in lan_destination
   # Subnet-directed broadcast address for the Magic Packet.
-  # Leave empty to auto-derive from server_ip (e.g. 192.168.1.100 → 10.10.186.255).
+  # Leave empty to auto-derive from server_ip (e.g. 192.168.1.100 → 192.168.1.255).
   # Set explicitly if the NAS is on a different VLAN or managed switch
   # that blocks the global 255.255.255.255 broadcast.
   broadcast_address: ""

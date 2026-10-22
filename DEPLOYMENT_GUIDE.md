@@ -1,3 +1,7 @@
+> **SUPERSEDED - do not use for an installation.** The current procedure is `docs/INSTALL_FRESH.md` (first install) and
+> `docs/DEPLOY_RUNBOOK.md` (update). This guide predates the service account, the closed Prefect port, the mandatory year
+> folder and the new schedule, and some of its commands are wrong for today's code. Kept only as history.
+
 # AAM Backup Automation – Deployment Guide
 
 This guide covers the complete, end-to-end installation process for deploying the AAM Backup Automation system on a Windows Server or PC.

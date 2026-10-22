@@ -1,4 +1,7 @@
-# Deployment runbook — Windows Server 2016 (by hand, no AI agent needed)
+# Deployment runbook — UPDATING an existing install on Windows Server 2016
+
+> **First install on a clean server? Use `docs/INSTALL_FRESH.md` instead.** This runbook is the upgrade procedure for a
+> machine that already has the code checked out (the trial server); steps 2-3 and 9 assume that.
 
 For the person sitting at the server. Every step is a command you type or a
 window you click; each says what you should see. If a step does not show what
