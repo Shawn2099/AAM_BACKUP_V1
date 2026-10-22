@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# FIRST-INSTALL CONFIG TEMPLATE - copy to C:\AAMBackup\config.yaml and fill in every line marked  <-- FILL IN
+# FIRST-INSTALL CONFIG TEMPLATE - copy to C:\BackupAgent\config\config.yaml (NOT into the code folder) and fill in every line marked  <-- FILL IN
 # Everything not listed here uses its safe default (config.example.yaml documents all keys).
 #
 # Paths use SINGLE quotes: write them exactly as Windows shows them, no doubled backslashes.
@@ -13,7 +13,7 @@ firm_name: "FILL IN firm name"                            # <-- FILL IN (shown i
 
 paths:
   source_drive: 'D:\FY26-27'                              # <-- FILL IN the CURRENT year folder to back up (must hold files)
-  lan_destination: '\\10.0.0.50\backup\FY26-27'           # <-- FILL IN \\NAS-address\share\<same year folder> (create it on the NAS first)
+  lan_destination: '\\192.0.2.10\backup\FY26-27'          # <-- FILL IN \\NAS-address\share\<same year folder> (create it on the NAS first); 192.0.2.10 is only an example, the checks refuse it
   runtime_dir: 'C:\BackupAgent'                           # logs, database, locks (outside the code folder)
   gcs_key_path: 'C:\AAMBackup\deploy\keys\aam-gcs-key.json'   # <-- the Google service-account key file you downloaded
 
@@ -24,7 +24,7 @@ lan:
 wol:
   enabled: false                                          # true only after you filled in the two lines below and tested wake-up
   mac_address: ""                                         # NAS network card MAC, e.g. 00:11:22:33:44:55
-  server_ip: "10.0.0.50"                                  # MUST be the same NAS address as in lan_destination
+  server_ip: "192.0.2.10"                                 # <-- FILL IN the NAS address: the same host as in lan_destination (example value, refused)
 
 cloud:
   enabled: true                                           # false = NAS only
@@ -36,6 +36,7 @@ notifications:
   smtp_host: "smtp.example.com"                           # <-- FILL IN
   smtp_port: 587
   smtp_security: "auto"                                   # auto = SSL on port 465, STARTTLS otherwise
+  smtp_auth: true                                         # false = an internal mail relay that needs no login
   smtp_username: "alerts@example.com"                     # <-- FILL IN (the password is asked for on the server)
   sender: "alerts@example.com"                            # <-- FILL IN
   recipients: ["owner@example.com"]                       # <-- FILL IN: problems and action needed

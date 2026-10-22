@@ -1,13 +1,14 @@
 # Install on a clean Windows Server 2016 (first install)
 
 For the person at the server. Follow it top to bottom; every step says what you should see. If a step does not show
-that, **stop** (nothing important is changed before step 10). To UPDATE an existing install use
+that, **stop**. Steps 1-6 change almost nothing; step 7 changes system settings; the services are only installed in step 11. To UPDATE an existing install use
 `DEPLOY_RUNBOOK.md` instead. Plan and reasons: `docs/PLAN_FRESH_INSTALL_2026-10-23.md`.
 
 | Placeholder | Meaning | Example |
 |---|---|---|
 | `C:\AAMBackup` | where the code lives | |
 | `C:\BackupAgent` | runtime folder (logs, database), created by the checks | |
+| `C:\BackupAgent\config\config.yaml` | the settings file: NOT in the code folder (that one is locked) | |
 | `aambackup` | the backup service account | your choice |
 | `D:\FY26-27` | the CURRENT financial-year folder to back up | |
 
@@ -26,13 +27,13 @@ gcloud auth login
 gcloud config set project YOUR-PROJECT
 gcloud storage buckets create gs://YOUR-BUCKET --location=asia-south1 --default-storage-class=STANDARD --uniform-bucket-level-access
 gcloud storage buckets update gs://YOUR-BUCKET --versioning
-gcloud storage buckets update gs://YOUR-BUCKET --clear-soft-delete-policy
-gcloud storage buckets update gs://YOUR-BUCKET --lifecycle-file=deploy\gcs_lifecycle.json
+gcloud storage buckets update gs://YOUR-BUCKET --clear-soft-delete
+gcloud storage buckets update gs://YOUR-BUCKET --lifecycle-file=gcs_lifecycle.json
 gcloud iam service-accounts create YOUR-SA --display-name="Backup agent"
 gcloud storage buckets add-iam-policy-binding gs://YOUR-BUCKET --member="serviceAccount:YOUR-SA@YOUR-PROJECT.iam.gserviceaccount.com" --role="roles/storage.objectAdmin"
 gcloud iam service-accounts keys create aam-gcs-key.json --iam-account="YOUR-SA@YOUR-PROJECT.iam.gserviceaccount.com"
 ```
-Versioning must be ON and the lifecycle file applied (without them, deleted files are lost for good). Note down the
+(`gcs_lifecycle.json` is `deploy\gcs_lifecycle.json` from the code; copy it next to where you run the commands.) Versioning must be ON and the lifecycle file applied (without them, deleted files are lost for good). Note down the
 bucket name, the project NUMBER (Console > project info) and the region. Bring only `aam-gcs-key.json` (USB); do not
 leave other copies of it anywhere.
 
@@ -65,6 +66,8 @@ that says "must run in an ADMINISTRATOR PowerShell" was started in the wrong win
 ### 2. Time zone and clock (a clean Server 2016 is on Pacific time!)
 ```powershell
 tzutil /s "India Standard Time"
+Set-Service W32Time -StartupType Automatic
+Start-Service W32Time
 w32tm /resync
 tzutil /g
 ```
@@ -103,7 +106,7 @@ cmd /c C:\AAMBackup\deploy\03_setup_system.bat
 ```
 It installs `uv` and Python 3.12 (for all users), turns on long paths, sets Windows Update Active Hours, adds Defender
 exclusions, unpacks the Google Cloud SDK, **locks the code folder** (only Administrators and SYSTEM may change it) and
-prints the Windows time zone. Wanted: `SYSTEM SETUP COMPLETE`, no `[ERROR]`. Then **close the window and open a NEW
+prints the Windows time zone. It ends with "Press any key". Wanted: `SYSTEM SETUP COMPLETE`, no `[ERROR]` and no "was unexpected at this time". Then **close the window and open a NEW
 Administrator PowerShell** (the new settings are only visible in new windows).
 
 ### 8. Put the Google key in place
@@ -111,15 +114,17 @@ Administrator PowerShell** (the new settings are only visible in new windows).
 copy E:\aam-gcs-key.json C:\AAMBackup\deploy\keys\aam-gcs-key.json
 ```
 
-### 9. Create `config.yaml`
+### 9. Create `config.yaml` (outside the code folder)
 ```powershell
 cd C:\AAMBackup
-copy deploy\config.install.yaml config.yaml
-notepad config.yaml
+mkdir C:\BackupAgent\config
+copy deploy\config.install.yaml C:\BackupAgent\config\config.yaml
+notepad C:\BackupAgent\config\config.yaml
 ```
+(The code folder is read-only for the backup account on purpose; the settings file needs a folder the account may write to. If Notepad shows everything on one line, use WordPad.)
 Fill in every line marked `<-- FILL IN`: firm name, **source folder** `D:\FY26-27`, **NAS folder** `\\<NAS-IP>\<share>\FY26-27`
 (same year folder), the bucket, project number, region, mail settings and both address lists. Paths are in single quotes,
-type them as Windows shows them. Leave `shutdown_after_backup: false` and `wol.enabled: false` for now. Do **not** type
+type them as Windows shows them. Also replace the example NAS address `192.0.2.10` in BOTH `lan_destination` and `wol.server_ip` (the checks refuse the example). Set `smtp_auth: false` only for an internal mail relay that needs no login. Leave `shutdown_after_backup: false` and `wol.enabled: false` for now. Do **not** type
 passwords into the file. The source and the NAS folder must end in the **same** year folder.
 
 ### 10. Readiness check
@@ -127,9 +132,8 @@ The NAS must be switched on. First run (it builds the Python environment; takes 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy\04_check_readiness.ps1 -ServiceAccount .\aambackup
 ```
-It asks for the `aambackup` password (the probe runs AS that account) and, if your mail server needs a login, for the **mail
-password** (typed twice, hidden; stored encrypted). It then sends **one test mail** to both address lists. Wanted: the last
-line `>>> SUCCESS` (green). Yellow `[WARN]` lines are things that are NOT proven; read each one. Every `[FAIL]` names the fix:
+It first asks (if your mail server needs a login) for the **mail password** (typed twice, hidden; stored encrypted), then a window asks for the `aambackup` password (the probe runs AS that account). At the end it sends **one test mail** to both address lists. Wanted: the last
+line `>>> SUCCESS` (green), or `PASSED WITH n WARNING(S)`. Yellow `[WARN]` lines are things that are NOT proven; read each one. Every `[FAIL]` names the fix:
 
 | `[FAIL]` says | Fix |
 |---|---|
@@ -142,15 +146,22 @@ line `>>> SUCCESS` (green). Yellow `[WARN]` lines are things that are NOT proven
 | `as .\aambackup ... Access is denied` | A2.1: same user name + password on the NAS, Modify on the share |
 | `as .\aambackup ... backup privilege` | step 5 (Backup Operators), then run the check again |
 | `as .\aambackup ... exit 267011` | step 5: the account lacks "log on as a batch job" (Backup Operators has it) |
-| `Test mail` | the mail settings or the password; run again (add `-SkipTestMail` to not send another mail while fixing something else) |
+| `Test mail` | the mail settings or the password. To type the password again: `.venv\Scripts\python.exe deploy\set_mail_password.py --config C:\BackupAgent\config\config.yaml`; then run the check again (add `-SkipTestMail` to not send another mail while fixing something else) |
+| `W32Time Service` | `Set-Service W32Time -StartupType Automatic; Start-Service W32Time` |
+| `Rights for .\aambackup` / `as .\aambackup ... config folder` | `C:\BackupAgent\config` must exist (step 9); run the check again, it grants the rights |
 | `Base Python location ... user profile` | delete `C:\AAMBackup\.venv`, run `cmd /c deploy\03_setup_system.bat`, open a new window, run this check again |
+
+### 10b. Let the yearly archive step find Python
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\07_configure_gcloud.ps1
+```
+(Without it the 1 April move of the closed year to the cheaper storage class silently does nothing.)
 
 ### 11. Install the services
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy\06_install_services.ps1 -ServiceAccount .\aambackup
 ```
-It asks for the `aambackup` password, then for the **two dashboard passwords** (the ordinary one for everybody, and the
-Advanced one for the owner/IT; they must differ, at least 10 characters each, typed twice, hidden). It re-checks the config
+It asks for the **two dashboard passwords** first (the ordinary one for everybody, and the Advanced one for the owner/IT; they must differ, at least 10 characters each, typed twice, hidden), then for the `aambackup` password. It re-checks the config
 first and stops **without touching the services** if it is invalid. Wanted: `INSTALLATION COMPLETE (3 services running,
 Prefect API and dashboard answered)`. If it prints `INSTALL FAILED`, read the lines under it and the logs in
 `C:\BackupAgent\logs`, fix, run it again.
@@ -161,10 +172,15 @@ The server has only the old Internet Explorer, which cannot show the dashboard. 
 **Send test email**.
 
 ### 13. First backups (daytime, owner present)
-Prefect UI is only on the server (`http://localhost:4200`, it works in IE). Deployments `backup-cloud` and `backup-lan`:
-*Run > Quick run*.
+From the dashboard on the office PC use the backup buttons for the cloud and the NAS backup. (The Prefect screen on the server does not work in the old Internet Explorer.) Or, on the server:
+```powershell
+$env:PREFECT_API_URL='http://127.0.0.1:4200/api'; $env:PREFECT_HOME='C:\BackupAgent\.prefect'
+.venv\Scripts\prefect.exe deployment run 'backup/backup-cloud'
+.venv\Scripts\prefect.exe deployment run 'backup/backup-lan'
+```
+A long first cloud upload holds the backup slot: the 21:00 NAS run of that day then ends `LAN_SLOT_TIMEOUT`. Start it after the NAS run, or accept one missed NAS night.
 - `backup-cloud`: expect `CLOUD_PARTIAL` ("continues next run") or `CLOUD_COMPLETE`. That proves the key, bucket and rights.
-  A big first upload spreads over nights, or run it once with parameter `budget_hours` = 48 over a weekend.
+  A big first upload spreads over nights, or run it once with `-p budget_hours=48` added to the command over a weekend.
 - `backup-lan`: expect `LAN_COMPLETE`. It needs the `.AAM_TARGET_MOUNTED` marker from A2.2; without it you get
   `LAN_BLOCKED` and an approval card on the dashboard.
 
@@ -173,7 +189,7 @@ Active Hours are set 20:00-08:00 (reboots can only happen in the day). Decide th
 
 ### 15. Wake-on-LAN and NAS shutdown (ONLY with the owner standing at the NAS)
 Fill in `wol.mac_address`, `wol.server_ip` (the same address as the NAS folder) and set `wol.enabled: true`, run the check
-(step 10) again, switch the NAS off by hand, run `backup-lan` and watch it wake. Only when that works set
+(step 10, with `-SkipTestMail`) again, switch the NAS off by hand, run `backup-lan` and watch it wake. Only when that works set
 `lan.shutdown_after_backup: true` (Settings > Advanced or `config.yaml`) and test the real shutdown with the owner at the NAS.
 
 ### 16. Older years (once, separate tool)
@@ -184,6 +200,7 @@ folders, by the bulk-upload tool (`docs/PLAN_BULK_UPLOAD`, to be built). Never c
 - [ ] `04_check_readiness.ps1` all green as `aambackup`; test mail arrived on both lists
 - [ ] `INSTALLATION COMPLETE`; dashboard opens from an office PC
 - [ ] `backup-cloud` PARTIAL/COMPLETE; `backup-lan` LAN_COMPLETE
+- [ ] Forgotten dashboard password: `powershell -ExecutionPolicy Bypass -File deploy\11_reset_dashboard_passwords.ps1` works (as administrator)
 - [ ] Restore test: `deploy\09_restore_from_gcs.bat` restores a sample folder and the files open
 - [ ] Reboot the server: the three services come back by themselves (`services.msc`)
 - [ ] 7 nights in a row with truthful results
@@ -195,4 +212,4 @@ folders, by the bulk-upload tool (`docs/PLAN_BULK_UPLOAD`, to be built). Never c
 - A script printed red text: fix that line, run the same script again (they can be repeated safely).
 - `INSTALL FAILED` or a service does not start: `C:\BackupAgent\logs\agent_svc.log`, `prefect_svc.log`, `watchdog_svc.log`.
 - Start over completely: `cmd /c deploy\08_uninstall_services.bat`, delete `C:\BackupAgent` and `C:\AAMBackup\.venv`, begin at step 7.
-- Passwords forgotten: `deploy\11_reset_dashboard_passwords.ps1` (as administrator).
+- Passwords forgotten: `powershell -ExecutionPolicy Bypass -File deploy\11_reset_dashboard_passwords.ps1` (as administrator).

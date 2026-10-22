@@ -5,4 +5,6 @@
 *.py text eol=lf
 *.md text eol=lf
 *.yaml text eol=lf
+# Notepad on Server 2016 cannot show LF-only files: the template the owner edits there is CRLF
+deploy/config.install.yaml text eol=crlf
 *.json text eol=lf

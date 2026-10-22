@@ -27,7 +27,7 @@ def test_template_loads_as_a_config_with_the_dashboard_login_still_to_set():
     doc = _doc()
     cfg = AppConfig(**doc)
     assert cfg.paths.source_drive == r"D:\FY26-27"
-    assert cfg.paths.lan_destination == r"\\10.0.0.50\backup\FY26-27"
+    assert cfg.paths.lan_destination == r"\\192.0.2.10\backup\FY26-27"
 
 
 def test_template_has_no_secrets_and_the_unproven_features_off():

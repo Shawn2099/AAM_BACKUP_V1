@@ -80,10 +80,35 @@ def test_wol_hostname_is_a_warning_not_a_failure():
 
 
 def test_wol_placeholders_fail():
-    lines = _wol(mac="aa:bb:cc:dd:ee:ff", ip="192.0.2.10", dest="\\\\192.0.2.10\\x\\FY26-27")
+    lines = _wol(mac="aa:bb:cc:dd:ee:ff", ip="192.0.2.10", dest="\\\\nas\\x\\FY26-27")
     assert sum(1 for s, _, _ in lines if s == "FAIL") == 2
 
 
 def test_forward_slash_unc_is_parsed():
     assert ic._unc_host("//10.1.1.1/share/FY26-27") == "10.1.1.1"
     assert ic._unc_host("D:\\FY26-27") is None
+
+
+def test_same_offset_today_but_different_summer_time_rules_fails():
+    # Windows on a zone that is UTC+1 all year vs a schedule zone that is UTC+1 now and UTC+2 in summer
+    status, _, detail = ic.check_timezone("Europe/Berlin", datetime(2026, 1, 15, 5, 0, tzinfo=timezone.utc),
+                                          local_offset=timedelta(hours=1))
+    assert status == "FAIL" and "summer-time" in detail
+
+
+def test_the_example_nas_address_is_refused_even_with_wol_off():
+    lines = ic.check_wol_target(True, False, "\\\\192.0.2.10\\backup\\FY26-27", "192.0.2.10", "")
+    assert [s for s, _, _ in lines] == ["FAIL"]
+    assert [s for s, _, _ in ic.check_wol_target(False, False, "\\\\192.0.2.10\\backup\\FY26-27", "", "")] == ["OK"]
+
+
+def test_history_lookup_survives_odd_characters_in_the_path(tmp_path):
+    import sqlite3
+    d = tmp_path / "a#b c%d"
+    d.mkdir()
+    con = sqlite3.connect(d / "manifest.db")
+    con.execute("CREATE TABLE run_history (id INTEGER)")
+    con.execute("INSERT INTO run_history VALUES (1)")
+    con.commit()
+    con.close()
+    assert ic._has_history(str(d / "manifest.db")) is True

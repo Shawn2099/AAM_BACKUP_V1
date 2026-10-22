@@ -11,6 +11,7 @@
 param(
     [string]$ServiceAccount = "",
     [string]$PasswordFile = "",
+    [string]$ConfigFile = "",
     [switch]$KeepServiceAccount
 )
 
@@ -51,7 +52,11 @@ $NSSM = Join-Path $BinDir "nssm.exe"
 #  `uv sync --frozen`; the services then run .venv's Python directly.)
 
 # -- Read runtime_dir from config.yaml via Python ---------------------
-$ConfigFile   = Join-Path $ProjectDir "config.yaml"
+$ConfigFile   = Resolve-ConfigFile $ProjectDir $ConfigFile
+if (-not (Test-Path $ConfigFile)) {
+    Write-Host "  ERROR: $ConfigFile not found (copy deploy\config.install.yaml there and fill it in). Services were NOT changed." -ForegroundColor Red
+    exit 1
+}
 $DefaultRuntime = "C:\BackupAgent"
 $ReadConfigPy = Join-Path $DeployDir "read_config.py"
 

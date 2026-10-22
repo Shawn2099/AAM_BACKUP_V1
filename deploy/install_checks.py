@@ -21,8 +21,9 @@ import json
 import re
 import sqlite3
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
@@ -34,17 +35,20 @@ PLACEHOLDER_IP = "192.0.2.10"  # TEST-NET-1: reserved for documentation, never a
 
 
 def check_timezone(tz_name: str, now_utc: datetime | None = None, local_offset=None) -> Line:
-    """Windows' own clock zone must give the same UTC offset as schedule.timezone."""
+    """Windows' own clock zone must give the same UTC offset as schedule.timezone, now AND six months from now
+    (two zones with the same offset today can switch summer time on different dates)."""
     from zoneinfo import ZoneInfo
 
     now_utc = now_utc or datetime.now(timezone.utc)
-    want = now_utc.astimezone(ZoneInfo(tz_name)).utcoffset()
-    have = local_offset if local_offset is not None else now_utc.astimezone().utcoffset()
-    if want == have:
-        return "OK", "Time zone", f"Windows clock zone matches schedule.timezone {tz_name}"
-    return ("FAIL", "Time zone",
-            f"Windows is set to UTC{_fmt(have)} but schedule.timezone {tz_name} is UTC{_fmt(want)}. "
-            f'Fix: tzutil /s "India Standard Time" (for Asia/Kolkata), then w32tm /resync')
+    for when in (now_utc, now_utc + timedelta(days=182)):
+        want = when.astimezone(ZoneInfo(tz_name)).utcoffset()
+        have = local_offset if local_offset is not None else when.astimezone().utcoffset()
+        if want != have:
+            return ("FAIL", "Time zone",
+                    f"Windows is set to UTC{_fmt(have)} but schedule.timezone {tz_name} is UTC{_fmt(want)}"
+                    f"{' (summer-time rules differ)' if when is not now_utc else ''}. Fix: set the Windows time zone "
+                    f'of the office (India: tzutil /s "India Standard Time"), then w32tm /resync')
+    return "OK", "Time zone", f"Windows clock zone matches schedule.timezone {tz_name}"
 
 
 def _fmt(delta) -> str:
@@ -104,6 +108,8 @@ def _unc_host(path: str) -> str | None:
 
 def check_wol_target(lan_enabled: bool, wol_enabled: bool, lan_destination: str, server_ip: str,
                      mac: str) -> list[Line]:
+    if lan_enabled and _unc_host(lan_destination) == PLACEHOLDER_IP:
+        return [("FAIL", "NAS folder", f"lan_destination still has the example address {PLACEHOLDER_IP}: enter the NAS address")]
     if not (lan_enabled and wol_enabled):
         return [("OK", "Wake-on-LAN", "off (nothing to wake)" if not wol_enabled else "NAS backup is off")]
     out: list[Line] = []
@@ -137,7 +143,7 @@ def _has_history(db_path: str) -> bool:
     if not p.is_file():
         return False
     try:
-        con = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True, timeout=5)
+        con = sqlite3.connect(f"file:{quote(p.as_posix())}?mode=ro", uri=True, timeout=5)
         try:
             return con.execute("SELECT COUNT(*) FROM run_history").fetchone()[0] > 0
         finally:

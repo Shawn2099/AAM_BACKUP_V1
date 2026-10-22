@@ -166,7 +166,7 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v SetActiveHou
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ActiveHoursStart /t REG_DWORD /d 20 /f >nul 2>&1
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ActiveHoursEnd /t REG_DWORD /d 8 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    echo [OK]   Update Active Hours set to 20:00-08:00 (12 h, the maximum). Reboots can only happen 08:00-20:00.
+    echo [OK]   Update Active Hours set to 20:00-08:00 ^(12 h, the maximum^). Reboots can only happen 08:00-20:00.
 ) else (
     echo [WARN] Active Hours registry write failed. Set manually:
     echo        HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings

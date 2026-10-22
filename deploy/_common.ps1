@@ -1,4 +1,10 @@
-# Shared helpers for 04_check_readiness.ps1 and 06_install_services.ps1 (dot-source: . "$PSScriptRoot\_common.ps1").
+# Shared helpers for 04_check_readiness.ps1, 06_install_services.ps1 and 11_reset_dashboard_passwords.ps1
+# (dot-source: . "$PSScriptRoot\_common.ps1").
+
+# Where config.yaml lives on a FRESH install. It is NOT inside the code folder: 03_setup_system.bat locks that folder
+# (the SYSTEM services run code from it), and the backup account must be able to create, replace and delete files
+# next to config.yaml (Settings saves, the yearly FY switch, backup copies, the lock file).
+$script:FreshConfigFile = "C:\BackupAgent\config\config.yaml"
 
 function Assert-Administrator {
     # No self-elevation: a script that re-opens itself in a new window loses its output when it ends, so the
@@ -12,6 +18,15 @@ function Assert-Administrator {
         Write-Host ""
         exit 1
     }
+}
+
+function Resolve-ConfigFile([string]$ProjectDir, [string]$Explicit = "") {
+    # explicit -ConfigFile, else an existing install's config.yaml in the project folder (the trial server keeps
+    # it there), else the fresh-install location.
+    if ($Explicit) { return $Explicit }
+    $legacy = Join-Path $ProjectDir "config.yaml"
+    if (Test-Path $legacy) { return $legacy }
+    return $script:FreshConfigFile
 }
 
 function Set-InstallEnvironment([string]$RuntimeDir) {
@@ -30,16 +45,27 @@ function Get-AclAccount([string]$Account) {
 }
 
 function Grant-AgentRights([string]$RuntimeDir, [string]$ProjectDir, [string]$ConfigFile, [string]$ServiceAccount) {
-    # The agent writes the DB, logs, run logs, lock and Prefect home under the runtime folder, and (FY rollover)
-    # config.yaml + its backup next to it. /T also covers files that already exist (an upgrade: logs and the DB were
-    # created by LocalSystem). Used by BOTH 04 (before the probe runs as the account) and 06, so the readiness
-    # check and the install can never disagree about a right. Returns $true when everything was granted.
+    # The agent writes the DB, logs, run logs, lock and Prefect home under the runtime folder, and (FY rollover,
+    # Settings) config.yaml + its backup + temp/lock files in config.yaml's folder. /T also covers files that already
+    # exist (an upgrade: logs and the DB were created by LocalSystem). Used by BOTH 04 (before the probe runs as the
+    # account) and 06, so the readiness check and the install can never disagree about a right.
+    # Returns $true when everything was granted.
     if (-not (Test-Path $RuntimeDir)) { New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null }
     $acl = Get-AclAccount $ServiceAccount
     icacls $RuntimeDir /grant "${acl}:(OI)(CI)M" /T /C /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { return $false }
-    icacls $ProjectDir /grant "${acl}:M" | Out-Null
-    if ($LASTEXITCODE -ne 0) { return $false }
-    icacls $ConfigFile /grant "${acl}:M" | Out-Null
+    $configDir = Split-Path -Parent $ConfigFile
+    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
+    if ($configDir.TrimEnd('\') -ieq $ProjectDir.TrimEnd('\')) {
+        # legacy layout (the trial server): config.yaml sits in the code folder, so the account needs Modify on the
+        # folder itself, not only on the file
+        icacls $ProjectDir /grant "${acl}:M" | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        icacls $ConfigFile /grant "${acl}:M" | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    }
+    # fresh layout: its own folder, inherited by every file the account creates there (create / replace / delete);
+    # the code folder stays read-only for the account
+    icacls $configDir /grant "${acl}:(OI)(CI)M" /T /C /Q | Out-Null
     return ($LASTEXITCODE -eq 0)
 }

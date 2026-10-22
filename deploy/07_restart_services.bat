@@ -21,6 +21,7 @@ for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
 
 :: -- Read runtime_dir from config.yaml via Python ---------------------
 set "CONFIG_FILE=%PROJECT_DIR%\config.yaml"
+if not exist "%CONFIG_FILE%" if exist "C:\BackupAgent\config\config.yaml" set "CONFIG_FILE=C:\BackupAgent\config\config.yaml"
 set "DEFAULT_RUNTIME=C:\BackupAgent"
 
 :: Find uv

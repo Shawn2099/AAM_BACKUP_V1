@@ -35,7 +35,9 @@ def main(config_path: str = None) -> int:
     print("Testing config.yaml against Pydantic schema validation...\n")
 
     if config_path is None:
-        config_path = os.path.join(project_root, "config.yaml")
+        config_path = os.environ.get("AAM_CONFIG") or os.path.join(project_root, "config.yaml")
+        if not os.path.exists(config_path) and os.path.exists(r"C:\BackupAgent\config\config.yaml"):
+            config_path = r"C:\BackupAgent\config\config.yaml"
 
     if not os.path.exists(config_path):
         print(f"ERROR: config.yaml not found at {config_path}")

@@ -6,6 +6,7 @@
 param(
     [string]$ServiceAccount = "",
     [string]$PasswordFile = "",
+    [string]$ConfigFile = "",
     [switch]$SkipTestMail
 )
 
@@ -231,7 +232,16 @@ if ($lanman -and $lanman.Status -eq "Running") {
 # 12. Antivirus Check (Warning only)
 $wd = Get-Service WinDefend -ErrorAction SilentlyContinue
 if ($wd -and $wd.Status -eq "Running") {
-    Warn-Item "Windows Defender" "is running. Ensure exclusions are set (run 03_setup_system.bat): project folder, robocopy.exe, rclone.exe"
+    $mp = Get-MpPreference -ErrorAction SilentlyContinue
+    $exPaths = if ($mp -and $mp.ExclusionPath) { @($mp.ExclusionPath) } else { @() }
+    $exProcs = if ($mp -and $mp.ExclusionProcess) { @($mp.ExclusionProcess) } else { @() }
+    $pathOk = [bool]($exPaths | Where-Object { $_.TrimEnd('\') -ieq $ProjectDir.TrimEnd('\') })
+    $procOk = ($exProcs -contains "robocopy.exe") -and ($exProcs -contains "rclone.exe")
+    if ($pathOk -and $procOk) {
+        Check-Item "Windows Defender" "running, with exclusions for the project folder, robocopy.exe and rclone.exe" $false
+    } else {
+        Warn-Item "Windows Defender" "is running without the exclusions (run 03_setup_system.bat): project folder, robocopy.exe, rclone.exe"
+    }
 }
 
 # 13. Directory Write-Access
@@ -245,8 +255,12 @@ try {
 }
 
 # 14. Config & Keys
-$cfg = Join-Path $ProjectDir "config.yaml"
-if (Test-Path $cfg) { Check-Item "config.yaml" "Found" $false } else { Check-Item "config.yaml" "Missing in project root" $true }
+$cfg = Resolve-ConfigFile $ProjectDir $ConfigFile
+if (Test-Path $cfg) {
+    Check-Item "config.yaml" "Found ($cfg)" $false
+} else {
+    Check-Item "config.yaml" "Missing: $cfg (copy deploy\config.install.yaml there and fill it in)" $true
+}
 
 # (the Google key named in config.yaml is checked below by install_checks.py - the path comes from the config,
 #  not from a fixed folder)
@@ -302,8 +316,12 @@ if (Test-Path $venvPy) {
         # 16c. Install-time checks (deploy\install_checks.py): Windows time zone, the Google key named in the
         # config, the source year = the current financial year, the Wake-on-LAN target = the NAS host.
         Push-Location $ProjectDir
-        $icOut = & $venvPy (Join-Path $ScriptDir "install_checks.py") $cfg 2>&1
+        # stdout only: a log line on stderr (deprecated key, decrypt problem) must not become a fake FAIL
+        $icOut = @(& $venvPy (Join-Path $ScriptDir "install_checks.py") $cfg 2>$null)
         Pop-Location
+        if ($icOut.Count -eq 0) {
+            Check-Item "Install checks" "install_checks.py printed nothing - run it by hand: .venv\Scripts\python.exe deploy\install_checks.py $cfg" $true
+        }
         foreach ($line in $icOut) {
             $m = [regex]::Match([string]$line, '^(OK|WARN|FAIL) ([^:]+): (.*)$')
             if (-not $m.Success) { Check-Item "Install checks" ([string]$line) $true }
@@ -442,7 +460,7 @@ if ((Test-Path $venvPy) -and $cfgExit -eq 0) {
         Warn-Item "Test mail" "skipped (-SkipTestMail): the mail settings are NOT proven"
     } else {
         Push-Location $ProjectDir
-        $tmOut = (& $venvPy (Join-Path $ScriptDir "send_test_mail.py") $cfg 2>&1) | Select-Object -Last 1
+        $tmOut = (& $venvPy (Join-Path $ScriptDir "send_test_mail.py") $cfg 2>$null) | Select-Object -Last 1
         $tmExit = $LASTEXITCODE
         Pop-Location
         Check-Item "Test mail" ([string]$tmOut -replace '^(OK|FAIL) Test mail: ', '') ($tmExit -ne 0)

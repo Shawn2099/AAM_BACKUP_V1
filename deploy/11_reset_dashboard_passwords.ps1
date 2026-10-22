@@ -16,7 +16,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $PSScriptRoot
-if (-not $ConfigFile) { $ConfigFile = Join-Path $ProjectDir "config.yaml" }
+. (Join-Path $PSScriptRoot "_common.ps1")
+$ConfigFile = Resolve-ConfigFile $ProjectDir $ConfigFile
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Run this script as administrator." -ForegroundColor Red
     exit 1

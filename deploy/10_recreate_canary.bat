@@ -34,9 +34,9 @@ if not exist "%DEST%\" (
     echo.
     echo  ERROR: destination does not exist or is not reachable: %DEST%
     echo  Check that the FY share is mounted before re-creating the canary.
-    echo  (A missing canary on a share that should hold backup data usually
+    echo  ^(A missing canary on a share that should hold backup data usually
     echo   means the share or its mount was touched manually - investigate
-    echo   before continuing.)
+    echo   before continuing.^)
     echo.
     exit /b 1
 )

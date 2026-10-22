@@ -10,6 +10,38 @@ on deploy day (see §4f).
 
 ---
 
+## >>> 2026-10-23 - FRESH-INSTALL WORK + OPEN ITEMS (newest of the newest) <<<
+
+Owner goal: install on a clean Windows Server 2016 from scratch (owner will supply a fresh 2016 VM for the dry run).
+Plan: `docs/PLAN_FRESH_INSTALL_2026-10-23.md` (rev 2, section 5 binding). Guide: `docs/INSTALL_FRESH.md`. Built and
+committed (INST-1..): `.gitattributes` (CRLF for .bat/.ps1/config.install.yaml), `deploy/_common.ps1`,
+04/06/03 rewritten parts, `install_checks.py`, `set_mail_password.py`, `send_test_mail.py`, `config.install.yaml`
+(02_collect_config.ps1 removed). Config for a fresh install lives OUTSIDE the locked code folder:
+`C:\BackupAgent\config\config.yaml` (scripts resolve it with `Resolve-ConfigFile`; the trial box keeps `C:\AAMBackup\config.yaml`).
+Two Opus reviews found and we fixed: 03 step 2 unescaped `)` (aborted the script), code-folder lock breaking the
+agent's writes next to config.yaml, wrong gcloud flag, Defender warning forever, IE cannot show Prefect UI, etc.
+
+**NOT deployed to the trial box. Box still runs 9906026.** Audit lab on the FY block was started by the owner at 00:08
+(`agent_runs\audit_lab_20261023_0008\REPORT.md`) - read it first, fix failures, THEN deploy FY-9..HEAD (checklist from the
+Opus upgrade audit: deploy before ~01:45 IST or after the 02:01 cloud run is terminal; `aam-backup` concurrency slot = 0;
+no backup.lock; stop AamWatchdog, restart AamBackupAgent, start AamWatchdog; no old python PIDs left; DB copy first;
+rollback = `git reset --keep 9906026` + same restart order; DB schema unchanged).
+
+Open checklist (tick when done):
+- [ ] Lab REPORT.md read, failures fixed
+- [ ] Deploy to the trial box (above), verify 02:01 cloud run + no spam mail
+- [ ] I-4 WoL host check in Settings save (core/config_edit.py) - after the lab (imports it)
+- [ ] I-13 `core/permissions.py` message: folder missing / NAS asleep vs missing rights - after the lab
+- [ ] `core/notify.py:420` `_nas_host` prefers wol.server_ip even when WoL is off (trial box stale 10.10.186.231 leaks into alerts) - after the lab
+- [ ] R-12 cloud probe AS the service account in 04 (rclone lsd + `_aam_preflight` write/delete); today the first cloud proof is the first manual cloud run
+- [ ] I-15 nits: 08_uninstall kills EVERY robocopy/rclone/uv process (limit to ours); two scripts numbered 07; RUN_GCLOUD_LOGIN.bat hard-coded path; remove committed server_discovery_report.*; SESSION_HANDOFF line mojibake
+- [ ] I-16 old-year bulk upload tool (own plan: rclone copy never sync, one prefix per old folder, never into the current FY prefix, ARCHIVE class, bandwidth limit, ends with rclone check --one-way)
+- [ ] Clean-VM dry run of INSTALL_FRESH.md - verify: Authenticated Users in BUILTIN\Users, SDK zip layout + bundled Python (CLOUDSDK_PYTHON), uv Python readable by aambackup, W32Time start type, Get-Credential window, filtered token vs SeBackupPrivilege (probe -RunLevel Limited), Notepad CRLF, B2 (account writes next to config.yaml) as the real account
+- [ ] Alert-controls steps D-G (docs/PLAN_ALERT_CONTROLS_2026-10-22.md)
+- [ ] Owner items: Advanced password (different from dashboard, >=10 chars), WoL server_ip fix on the box (10.10.151.53), acceptance items
+
+---
+
 ## >>> 2026-10-22 LATE UPDATE (newest of the newest) - FY folders + deploy <<<
 
 **Box now runs `9906026` (deployed ~22:12 IST: bundle `^4d32a24`, ff merge, DB backup `C:\BackupAgent\manifest.db.bak-before-fy-*`,

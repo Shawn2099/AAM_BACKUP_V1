@@ -31,6 +31,7 @@ for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
 set "RCLONE=%SCRIPT_DIR%\bin\rclone.exe"
 set "KEY_FILE=%SCRIPT_DIR%\keys\aam-gcs-key.json"
 set "CONFIG_YAML=%PROJECT_DIR%\config.yaml"
+if not exist "%CONFIG_YAML%" if exist "C:\BackupAgent\config\config.yaml" set "CONFIG_YAML=C:\BackupAgent\config\config.yaml"
 set "READ_CONFIG=%SCRIPT_DIR%\read_config.py"
 
 :: -- Project Python (A5) -------------------------------------------------
@@ -222,7 +223,7 @@ if %RCLONE_EXIT% equ 0 (
     echo      Full log: %LOG_FILE%
     call :LOG "[OK] Restore completed successfully. Dest=!LOCAL_DEST!"
 ) else (
-    echo [WARN] Restore finished with errors (exit code: %RCLONE_EXIT%).
+    echo [WARN] Restore finished with errors ^(exit code: %RCLONE_EXIT%^).
     echo        Some files may not have transferred. Review full log:
     echo        %LOG_FILE%
     echo        Common causes: network interruption, permission error on a
