@@ -202,3 +202,8 @@ def test_a_trailing_separator_does_not_change_the_result(tmp_path, cfg):
     a = sp.check_source_parent(cfg, str(parent))
     b = sp.check_source_parent(cfg, str(parent) + "\\")
     assert a["ok"] and b["ok"] and a["source"] == b["source"]
+
+
+def test_the_page_survives_a_server_error_instead_of_staying_on_loading():
+    js = open("static/js/settings.js", encoding="utf-8").read()
+    assert js.count("The server did not answer properly") >= 2 and "} catch (e) {" in js

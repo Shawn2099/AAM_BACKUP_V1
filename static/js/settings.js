@@ -304,8 +304,11 @@ async function browseFolders(f, path) {
     const id = fid(f.key), box = document.getElementById('box-' + id);
     box.hidden = false;
     box.textContent = 'Loading...';
-    const resp = await fetch('/api/settings/browse?path=' + encodeURIComponent(path || ''));
-    const data = await resp.json();
+    let resp, data;
+    try {
+        resp = await fetch('/api/settings/browse?path=' + encodeURIComponent(path || ''));
+        data = await resp.json();
+    } catch (e) { box.textContent = 'The server did not answer properly. Try again in a moment.'; return; }
     if (!resp.ok) { box.textContent = data.detail || 'The server could not list this folder.'; return; }
     const sep = data.path.indexOf('/') >= 0 && data.path.indexOf('\\') < 0 ? '/' : '\\';
     const join = n => /[\\/]$/.test(data.path) ? data.path + n : data.path + sep + n;
@@ -327,9 +330,12 @@ async function browseFolders(f, path) {
 async function useFolder(f, parent) {
     const id = fid(f.key), chk = document.getElementById('chk-' + id);
     chk.textContent = 'Checking...';
-    const resp = await fetch('/api/settings/check-source', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parent: parent }) });
-    const data = await resp.json();
+    let resp, data;
+    try {
+        resp = await fetch('/api/settings/check-source', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ parent: parent }) });
+        data = await resp.json();
+    } catch (e) { chk.textContent = 'The server did not answer properly. Try again in a moment.'; return; }
     if (!resp.ok) { chk.textContent = data.detail || 'The check failed.'; return; }
     if (!data.ok) { chk.innerHTML = '<div class="err">' + data.problems.map(esc).join('<br>') + '</div>'; return; }
     chk.innerHTML = '<div>' + esc(data.source) + (data.cloud_target ? ' - the cloud copy stays at ' + esc(data.cloud_target) : '') +
