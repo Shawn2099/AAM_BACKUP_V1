@@ -370,6 +370,26 @@ class SaveResult:
     effects: list[str] = field(default_factory=list)
 
 
+def _refuse_fy_change(current, candidate) -> None:
+    """Settings may move the backups to another drive or parent folder, never to another financial year:
+    only the rollover changes the FY (final backup of the old year, archive, journal). A hand switch here
+    would skip all of that and nothing would notice (plan FY-3)."""
+    from core import fy_rollover
+
+    before = fy_rollover.configured_fy(current.paths.source_drive, current.paths.lan_destination)
+    after = fy_rollover.configured_fy(candidate.paths.source_drive, candidate.paths.lan_destination)
+    if before == after:
+        return
+    if before is None or after is None:
+        raise ConfigEditError(409, messages.act(
+            "Ask support to change this in config.yaml on the server",
+            "Switching the yearly folders on or off is not done from this page"))
+    raise ConfigEditError(409, messages.act(
+        f"Use \"Run FY rollover\" on the dashboard (the backups use {before})",
+        f"The financial year ({before} to {after}) is never changed here: the rollover first backs up "
+        f"the old year, then switches"))
+
+
 def _prepare(config_path: str, changes: dict, allow_advanced: bool = True):
     """(current config, {key: typed new value}) - raises ConfigEditError when the
     request is not allowed or the resulting config would not load. Shared by
@@ -404,6 +424,7 @@ def _prepare(config_path: str, changes: dict, allow_advanced: bool = True):
     except ValidationError as e:
         raise ConfigEditError(400, messages.act("Fix the highlighted settings, then save again", "Nothing was saved because a value is not valid"),
                               errors=_validation_messages(e)) from e
+    _refuse_fy_change(current, candidate)
     # the typed values the services will actually see ("3" -> 3)
     typed = {k: _current_value(candidate, k) for k in wanted}
     return current, {k: v for k, v in typed.items()
