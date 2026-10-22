@@ -202,6 +202,7 @@ in the report CSV and in the email.
 | AAM-SYS-04 | Backup tool missing | A program the backup needs ({tool}) is missing on the server. | Support | Forward to support. |
 | AAM-SYS-05 | Server disk almost full | The server's disk {disk} has only {free} free (needs {min}). | IT | Free space on the server disk; call support if unsure. |
 | AAM-SYS-07 | Backup night missed | The server was switched off or busy at the scheduled backup time and the backup started too late to run without reaching into office hours. Nothing was changed. | Nobody → Support | Nothing needed; the next backup copies everything. Tell support if it repeats. |
+| AAM-SYS-08 | Backup slot stuck | The backup could not start. The program believes another backup is still running, but none is: an earlier backup was cut off (e.g. the backup service restarted while it ran) and its place was never given back. Nothing was changed. | Support | Forward to support; no backup starts until support clears the slot. |
 | AAM-SYS-06 | Unexpected program error | Something unexpected went wrong in the backup program ({error_type}). | Support | Forward to support - the attached report has the details. |
 | AAM-SVC-01 | Backup program stopped | The backup program on the server is stopped and could not be restarted automatically. **No backups will run until it is fixed.** | Support | Forward to support now. |
 | AAM-SVC-02 | Backup program stuck | The backup program did not stop or restart properly. | Support | Forward to support now. |

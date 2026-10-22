@@ -131,3 +131,64 @@ def test_slot_of_a_run_killed_with_the_server_is_freed_after_the_restart(tmp_pat
         if holder is not None:
             _kill_tree(holder)
         _kill_tree(server)
+
+
+# ---------------------------------------------------------------------------------------------
+# The Prefect server restarts while a backup is in the middle of a transfer (real tools, real flow)
+# ---------------------------------------------------------------------------------------------
+from audit_lab import labconf as L                                          # noqa: E402
+from audit_lab.test_w6_flow import _db_rows, rig  # noqa: E402,F401
+from audit_lab.test_w22_hardkill import (                                    # noqa: E402,F401
+    _drop_local_backend_partials, _spawn_mid_run, _tree, hardkill_rig)
+
+_SERVER: dict = {}
+
+
+@pytest.fixture()
+def real_prefect_server(tmp_path_factory):
+    """Replaces the W22 fixture of the same name: the production server environment, restartable."""
+    from prefect.settings import PREFECT_API_URL, temporary_settings
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    home = tmp_path_factory.mktemp("prefect_home_w24")
+    _SERVER.update(home=home, port=port, proc=_start_server(home, port, "server1.log"), n=1)
+    url = f"http://127.0.0.1:{port}/api"
+    try:
+        with temporary_settings({PREFECT_API_URL: url}):
+            yield url
+    finally:
+        _kill_tree(_SERVER["proc"])
+
+
+def _restart_server(outage_seconds: float) -> None:
+    _kill_tree(_SERVER["proc"])
+    time.sleep(outage_seconds)
+    _SERVER["n"] += 1
+    _SERVER["proc"] = _start_server(_SERVER["home"], _SERVER["port"], f"server{_SERVER['n']}.log")
+
+
+@pytest.mark.parametrize("leg", ["cloud", "lan"])
+def test_server_restart_mid_transfer(hardkill_rig, leg):
+    rig = hardkill_rig
+    child, proc, lock, log = _spawn_mid_run(rig, leg, need_tool=True)
+    _restart_server(outage_seconds=30)
+    try:
+        child.wait(timeout=900)
+    except subprocess.TimeoutExpired:
+        _kill_tree(child)
+        raise
+    statuses = [r["status"] for r in _db_rows(rig["cfg_path"])[0] if r["mode"] == leg]
+    dest = _tree(rig["nas"]) if leg == "lan" else _tree(
+        rig["buckets"] / "lab-bucket" / rig["src"].name)
+    src = _tree(rig["src"])
+    slots = _active_slots(f"http://127.0.0.1:{_SERVER['port']}/api")
+    L.record(f"W24.server_restart_mid_{leg}", f"Prefect server down 30 s in the middle of a {leg} sync",
+             f"child exit={child.returncode} rows={statuses} files src={len(src)} dest={len(dest)} "
+             f"lock left={lock.exists()} slots={slots}",
+             "OK" if dest == src and child.returncode == 0 else "ISSUE")
+    assert child.returncode == 0, log.read_text(errors="replace")[-3000:]
+    assert statuses == [f"{leg.upper()}_COMPLETE"], statuses
+    assert dest == src, "the copy must be complete after the server came back"
+    assert not lock.exists() and slots == 0

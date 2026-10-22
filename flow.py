@@ -469,6 +469,26 @@ def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget:
     raise PartialRun(f"{leg.upper()} run ended {status} - {error}")
 
 
+STUCK_SLOT_NOTE = (" - the backup slot is taken but no backup is running (an earlier backup was "
+                   "cut off, e.g. the backup service was restarted while it ran); support: reset the "
+                   "'aam-backup' concurrency limit in Prefect or restart AamPrefectServer")
+
+
+def _slot_stuck(config, exc: BaseException) -> bool:
+    """AAM-SYS-08: the slot wait ran out while no live process holds the backup lock.
+
+    A real holder writes backup.lock right after taking the slot and keeps it until it releases
+    both, so a timed-out wait with a dead or absent lock means the slot belongs to nobody. Unsure
+    (lock unreadable, any error) = the ordinary AAM-SYS-01 text; this never changes what is done."""
+    if not isinstance(exc, TimeoutError):
+        return False
+    try:
+        alive, _pid = read_lock_alive(config.paths.backup_lock_path)
+    except Exception:  # noqa: BLE001 - only picks the wording of the message
+        return False
+    return alive is False
+
+
 @contextmanager
 def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
                    monotonic_start: float | None = None):
@@ -481,17 +501,21 @@ def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
             stack.enter_context(_backup_slot(config))
         except Exception as e:
             status = f"{leg.upper()}_SLOT_TIMEOUT"
-            logger.error(f"{leg} run {run_id} could not start: {e}")
+            stuck = _slot_stuck(config, e)
+            detail = f"{e}{STUCK_SLOT_NOTE}" if stuck else str(e)
+            logger.error(f"{leg} run {run_id} could not start: {detail}")
             try:
                 _record_run(
                     config, run_id, leg, started_at, status, -1,
-                    f"Backup could not start: {e}",
+                    f"Backup could not start: {detail}",
                     monotonic_start=monotonic_start,
                 )
             except Exception as rec_err:  # noqa: BLE001
                 logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
-            _send_run_alert(config, leg, status, f"The {leg.upper()} backup could not start: {e}",
-                            None, started_at, run_id=run_id)
+            _send_run_alert(config, leg, status,
+                            f"The {leg.upper()} backup could not start: {detail}",
+                            None, started_at, run_id=run_id,
+                            fault_code="AAM-SYS-08" if stuck else None)
             raise
         yield
 

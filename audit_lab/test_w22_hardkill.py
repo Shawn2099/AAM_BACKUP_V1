@@ -129,8 +129,9 @@ def _drop_local_backend_partials(rig) -> None:
         stray.unlink()
 
 
-def _spawn_and_kill(rig, entry: str, *, need_tool: bool) -> dict:
-    """Run the production flow in a child process, kill its whole tree while it holds the slot."""
+def _spawn_mid_run(rig, entry: str, *, need_tool: bool):
+    """Run the production flow in a child process and return once it is in the middle of its work
+    (holds the slot and the lock, tool running): (child Popen, psutil.Process, lock path, log path)."""
     from prefect.settings import PREFECT_API_URL
 
     env = {k: v for k, v in os.environ.items() if k != "PREFECT_TEST_MODE"}
@@ -162,6 +163,12 @@ def _spawn_and_kill(rig, entry: str, *, need_tool: bool) -> dict:
     else:
         raise AssertionError("the child never reached the middle of its run: "
                              f"{log.read_text(errors='replace')[-2000:]}")
+    return child, proc, lock, log
+
+
+def _spawn_and_kill(rig, entry: str, *, need_tool: bool) -> dict:
+    """Run the production flow in a child process, kill its whole tree while it holds the slot."""
+    _child, proc, lock, _log = _spawn_mid_run(rig, entry, need_tool=need_tool)
     killed = _kill_tree(proc)
     return {"killed_pids": killed, "lock_left": lock.exists(), "lock": lock,
             "survivors": [p for p in killed if psutil.pid_exists(p)]}

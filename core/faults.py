@@ -288,6 +288,15 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
     _f("AAM-SYS-05", "Server disk almost full", PROBLEM, (IT,),
        "A disk on the server is almost full, so we did not start.",
        "Free space on the server disk.", "Call support if unsure."),
+    _f("AAM-SYS-08", "Backup slot stuck", PROBLEM, (SUPPORT,),
+       "The backup could not start. The program believes another backup is still running, "
+       "but none is - an earlier backup was cut off (for example the backup service was "
+       "restarted while it ran) and its place was never given back. Your files are not "
+       "affected: nothing was changed.",
+       "Forward this email to support. Every backup waits for that place, so no backup "
+       "will start until support clears it.",
+       "Support: with no backup running, clear the stuck place (the reason line of the "
+       "attached report says how), then run the backup once."),
     _f("AAM-SYS-07", "Backup night missed", WARNING, (NOBODY, SUPPORT),
        "The server was switched off or busy at the scheduled backup time, and the backup "
        "started too late to run without reaching into office hours. Your data is safe: "
