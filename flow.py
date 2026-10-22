@@ -2377,17 +2377,19 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
         db.close()
 
 
-def _resolve_unprotected_new_fy(config, db) -> None:
+def _resolve_unprotected_new_fy(config, db, new_fy: str | None = None) -> None:
     """The matching RESOLVED mail - once - when the switch made the new year's files protected, but only
-    for a problem the office was actually mailed about."""
-    configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+    for a problem the office was actually mailed about. `new_fy` is passed by the rollover run that just
+    switched (its config object still holds the old year); the daily check reads the config instead.
+    Own mail group `rollover_files`, so it never ends an unrelated rollover incident (the archive warning)."""
+    configured = new_fy or fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
     if configured is None:
         return
     problem = db.last_notification(f"rollover:unprotected:{configured}", status="SENT")
     if problem is None or db.last_notification(f"recovered:rollover:{configured}", status="SENT"):
         return
     notify(config, AlertEvent(
-        key=f"recovered:rollover:{configured}", kind="RECOVERED", mode="rollover",
+        key=f"recovered:rollover:{configured}", kind="RECOVERED", mode="rollover_files",
         title=f"Files in {configured} are backed up now",
         message=f"The switch to {configured} is done: the files saved in its folder are part of the "
                 "backups now.",
@@ -2403,7 +2405,7 @@ def _alarm_unprotected_new_fy(config, db) -> None:
             _resolve_unprotected_new_fy(config, db)
             return
         notify(config, AlertEvent(
-            key=f"rollover:unprotected:{found['to_fy']}", kind="ACTION_REQUIRED", mode="rollover",
+            key=f"rollover:unprotected:{found['to_fy']}", kind="ACTION_REQUIRED", mode="rollover_files",
             title=f"Files in {found['to_fy']} are not backed up yet",
             message=fy_rollover.unprotected_message(found), occurred_at=now_iso(),
             fault_code="AAM-ROL-06", cooldown_hours=config.alerts.stale_repeat_hours))
@@ -2725,6 +2727,11 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
 
     final = db.rollover_get(from_fy, to_fy)
     metrics["steps"] = {name: final["steps"][name]["state"] for name in rj.STEPS}
+    if rj.is_finished(final["steps"][rj.CONFIG_SWITCH]):       # the new year's files are protected from now on
+        try:
+            _resolve_unprotected_new_fy(config, db, new_fy=to_fy)
+        except Exception as e:  # noqa: BLE001 - a mail problem never changes the rollover's result
+            logger.warning(f"Could not send the 'files are backed up now' notice: {e}")
     if blocking_error is not None:
         fail(*blocking_error)
 

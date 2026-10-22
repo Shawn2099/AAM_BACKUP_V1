@@ -31,6 +31,7 @@ LEG_LABEL = {
     "watchdog": "Backup program on the server",
     "report": "Backup reports",
     "rollover": "Financial-year switch",
+    "rollover_files": "Financial-year switch",     # the "new year files are not backed up" alert has its own mail group
 }
 # what {leg_name} reads as inside a sentence ("... from the office backup (NAS)")
 LEG_NAME = {"lan": "office backup (NAS)", "cloud": "online backup (Google Cloud)"}
