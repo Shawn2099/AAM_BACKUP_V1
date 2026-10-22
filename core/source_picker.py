@@ -6,6 +6,7 @@ also refuses any change of the financial year). Local, read-only, never follows 
 """
 from __future__ import annotations
 
+import ntpath
 import os
 import string
 
@@ -24,11 +25,29 @@ def _drives() -> list[str]:
     return [f"{c}:\\" for c in string.ascii_uppercase if os.path.isdir(f"{c}:\\")]
 
 
+def _local_absolute(path: str) -> str:
+    """The normalised full local path (drive letter + backslash), or PickerError. A relative path, a drive-
+    relative one ("D:") and a network path (two backslashes + host) are refused: the source is a local
+    folder, and listing a network host would make the service connect to it."""
+    path = (path or "").strip()
+    if path.startswith(("\\\\", "//")):
+        raise PickerError("Only local folders can be chosen here (not network paths).")
+    drive, rest = ntpath.splitdrive(path)
+    if not (len(drive) == 2 and drive[1] == ":" and rest[:1] in ("\\", "/")):
+        raise PickerError("Type the full path including the drive, like D:\\Data.")
+    return ntpath.normpath(path)
+
+
+def _is_root(path: str) -> bool:
+    return ntpath.splitdrive(path)[1] in ("\\", "/")
+
+
 def list_folders(path: str | None) -> dict:
     """{path, parent, folders}: the sub-folders of `path` (links and system folders left out), or the
     drives when `path` is empty. `parent` is None at the top."""
     if not path:
         return {"path": "", "parent": None, "folders": _drives()}
+    path = _local_absolute(path)
     if not os.path.exists(path):
         raise PickerError(f"The folder {path} does not exist (or the server cannot see it).")
     if not os.path.isdir(path):
@@ -42,12 +61,17 @@ def list_folders(path: str | None) -> dict:
                 key=str.lower)
     except OSError as e:
         raise PickerError(f"The server cannot open {path}: {e.strerror or e}") from e
-    parent = os.path.dirname(path.rstrip("\\/"))
-    return {"path": path, "parent": parent if parent and parent != path else None, "folders": names}
+    parent = None if _is_root(path) else ntpath.dirname(path)     # a drive root has no parent: "up" shows the drives
+    if parent and _is_root(parent) and not parent.endswith("\\"):
+        parent += "\\"
+    return {"path": path, "parent": parent, "folders": names}
 
 
 def _is_link(path: str) -> bool:
-    return os.path.islink(path) or os.path.isjunction(path)
+    """A link/junction ANYWHERE in the path (not only the last part): the real path differs from the typed one.
+    Compared case-insensitively - Windows returns the on-disk case and expands subst drives."""
+    return (os.path.islink(path) or os.path.isjunction(path)
+            or os.path.normcase(os.path.realpath(path)) != os.path.normcase(os.path.abspath(path)))
 
 
 def check_source_parent(config, parent: str) -> dict:
@@ -62,6 +86,11 @@ def check_source_parent(config, parent: str) -> dict:
     parent = (parent or "").strip()
     if not parent:
         out["problems"].append("Choose a folder first.")
+        return out
+    try:
+        parent = _local_absolute(parent)
+    except PickerError as e:
+        out["problems"].append(str(e))
         return out
     source = fy_rollover._child_path(parent, fy)
     out["source"] = source

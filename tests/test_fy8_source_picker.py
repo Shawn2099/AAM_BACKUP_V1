@@ -4,6 +4,8 @@ The owner picks a PARENT folder (a drive or a folder that holds the FY folders);
 configured FY, never typed or chosen. The picker only lists and checks - it never creates a folder and it
 saves nothing itself (the save goes through the normal Settings flow, which also refuses any FY change)."""
 
+import os
+
 from test_support import ui_login  # noqa: E402,F401
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -165,3 +167,38 @@ def test_the_catalog_draws_the_source_path_as_a_folder_picker_and_the_page_calls
     assert fields["paths.lan_destination"].get("widget") != "folder"      # the NAS path is typed
     js = open("static/js/settings.js", encoding="utf-8").read()
     assert "/api/settings/browse" in js and "/api/settings/check-source" in js
+
+
+# ── FY-12: path handling found by the Opus review ─────────────────────────────
+
+def test_a_drive_root_has_no_parent_so_up_shows_the_drives():
+    root = os.path.splitdrive(os.getcwd())[0] + "\\"
+    assert sp.list_folders(root)["parent"] is None
+
+
+@pytest.mark.parametrize("bad", ["\\\\host\\share", "\\\\host\\share\\data", "D:", "data", "..\\x", "/data"])
+def test_only_absolute_local_paths_are_listed_or_checked(tmp_path, cfg, bad):
+    with pytest.raises(sp.PickerError, match="full path|local"):
+        sp.list_folders(bad)
+    out = sp.check_source_parent(cfg, bad)
+    assert out["ok"] is False and out["problems"]
+
+
+def test_a_parent_typed_in_another_case_is_not_mistaken_for_a_link(tmp_path, cfg):
+    parent = _parent_with_fy(tmp_path)
+    out = sp.check_source_parent(cfg, str(parent).upper())
+    assert out["ok"] is True, out["problems"]
+
+
+def test_a_parent_below_a_link_is_refused(tmp_path, cfg, monkeypatch):
+    parent = _parent_with_fy(tmp_path)
+    monkeypatch.setattr(sp.os.path, "realpath", lambda p: "Z:\\somewhere\\else")
+    out = sp.check_source_parent(cfg, str(parent))
+    assert out["ok"] is False and "link" in " ".join(out["problems"]).lower()
+
+
+def test_a_trailing_separator_does_not_change_the_result(tmp_path, cfg):
+    parent = _parent_with_fy(tmp_path)
+    a = sp.check_source_parent(cfg, str(parent))
+    b = sp.check_source_parent(cfg, str(parent) + "\\")
+    assert a["ok"] and b["ok"] and a["source"] == b["source"]
