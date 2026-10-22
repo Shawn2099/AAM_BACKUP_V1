@@ -151,17 +151,22 @@ def _overdue_item(db, config, leg: str, sched: dict, now) -> dict | None:
                      act("Nothing to do - leave it running",
                          f"The {phrase} is copying a large amount over several nights and is "
                          "making progress"))
+    # the most recent run that was owed: a failure mail created after it already told the owner about
+    # the CURRENT state (an older mail says nothing about a scheduler that has stopped since)
+    owed = overdue.latest_firing(sched[f"{leg}_cron"], sched["timezone"], now).isoformat()
     if last is None:
-        return _item(RED, f"stale:{leg}",
-                     act(f"Run the {phrase} now from its card, or check why it has not run",
-                         "It has never completed successfully"))
+        return {**_item(RED, f"stale:{leg}",
+                        act(f"Run the {phrase} now from its card, or check why it has not run",
+                            "It has never completed successfully")),
+                "due_at": owed}
     age = _hours_since(last.get("ended_at") or last.get("started_at"), now)
-    return _item(RED, f"stale:{leg}",
+    return {**_item(RED, f"stale:{leg}",
                  act(f"Check why the {phrase} has not succeeded",
                      f"The last success was {age:.0f} h ago; the next scheduled run was due "
                      f"{format_ist(due.isoformat())} and it was not finished by "
                      f"{format_ist(limit.isoformat())} (next scheduled run + {budget_h:g} h run "
-                     f"budget + {grace:g} h grace)"))
+                     f"budget + {grace:g} h grace)")),
+            "due_at": owed}
 
 
 def compute_attention(db, config, now=None) -> list[dict]:

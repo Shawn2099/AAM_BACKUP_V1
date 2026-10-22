@@ -32,6 +32,13 @@ def next_firing(cron: str, timezone_name: str, after: datetime) -> datetime:
     return next(iter(CronSim(cron, _aware(after, tz))))
 
 
+def latest_firing(cron: str, timezone_name: str, at: datetime) -> datetime:
+    """The most recent scheduled firing at or before `at` (the run that is the latest one owed)."""
+    tz = ZoneInfo(timezone_name)
+    moment = _aware(at, tz).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    return next(iter(CronSim(cron, moment, reverse=True)))
+
+
 def firings_between(cron: str, timezone_name: str, start: datetime, end: datetime) -> int:
     """How many scheduled firings fall in the half-open interval [start, end)."""
     tz = ZoneInfo(timezone_name)

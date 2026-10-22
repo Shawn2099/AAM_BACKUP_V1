@@ -353,13 +353,13 @@ def _send_recovered_if_needed() -> None:
 
 
 def _check_stale_legs(cfg=None) -> list[str]:
-    """Email every enabled leg with no successful backup within
-    dashboard.stale_after_hours (plan §2 rule 11) - the same evaluation as the
-    dashboard banner (core.attention), so both always agree. This is the only
-    alert for runs that never start (scheduler not firing, a flow crashing
-    before our code): they write no row and send nothing themselves.
-    notify() records every outcome and repeats per alerts.repeat_cooldown_hours.
-    Returns the stale legs; never raises."""
+    """Email every enabled leg that is overdue (plan §2 rule 11): no successful backup by its next
+    scheduled run + run budget + dashboard.stale_grace_hours - the same evaluation as the dashboard
+    banner (core.attention), so both always agree. This is the only alert for runs that never start
+    (scheduler not firing, a flow crashing before our code): they write no row and send nothing
+    themselves. Skipped (the banner stays red) when a failure / action mail about the missed run was
+    already sent: it says the same thing. notify() records every outcome and repeats per
+    alerts.stale_repeat_hours. Returns the stale legs; never raises."""
     try:
         from core import notify as nt
         from core.attention import compute_attention
@@ -373,13 +373,17 @@ def _check_stale_legs(cfg=None) -> list[str]:
             for item in stale:
                 leg = item["code"].split(":", 1)[1]
                 logger.error(f"Stale backup: {item['message']}")
+                if item.get("due_at") and db.told_about_leg_since(leg, item["due_at"]):
+                    logger.info(f"Stale {leg} backup: the missed run was already reported by email")
+                    continue
                 nt.notify(cfg, nt.AlertEvent(
                     key=f"stale:{leg}", kind="ACTION_REQUIRED", mode=leg,
                     title=f"{leg.upper()} backup overdue",
                     message=(f"{item['message']} Scheduled backups are not completing - "
                              "either each run fails (see its own alert) or the runs are not "
                              "starting at all. Check the dashboard and the services."),
-                    status="STALE", fault_code="AAM-SYS-03"), db=db)
+                    status="STALE", fault_code="AAM-SYS-03",
+                    cooldown_hours=cfg.alerts.stale_repeat_hours), db=db)
         finally:
             db.close()
         return [i["code"].split(":", 1)[1] for i in stale]

@@ -1271,6 +1271,29 @@ class ManifestDB:
         to the config)."""
         return self._stored_schedule()
 
+    def told_about_leg_since(self, mode: str, since_iso: str) -> bool:
+        """True when a failure / action email for this leg was created after `since_iso` and the owner
+        therefore already knows: SENT, or SUPPRESSED (only ever written when an earlier mail of the same
+        unchanged incident was SENT). FAILED and DISABLED mails told nobody, and the overdue mail
+        itself (`stale:` keys) is what is being decided, so neither counts. Times are compared as
+        instants, never as strings."""
+        import pendulum
+
+        since = pendulum.parse(since_iso).timestamp()
+        with self._lock:
+            rows = self._get_conn().execute(
+                "SELECT created_at FROM notifications WHERE mode = ? AND status IN ('SENT', 'SUPPRESSED') "
+                "AND kind IN ('FAILURE', 'ACTION_REQUIRED') AND event_key NOT LIKE 'stale:%' "
+                "AND COALESCE(audience, 'alerts') IN ('alerts', 'both') "
+                "ORDER BY id DESC LIMIT 200", (mode,)).fetchall()
+        for (created,) in rows:
+            try:
+                if pendulum.parse(created).timestamp() > since:
+                    return True
+            except Exception:  # noqa: BLE001 - an unreadable row counts as nothing
+                continue
+        return False
+
     def last_config_change_at(self, key_prefix: str) -> str | None:
         """When a setting starting with `key_prefix` was last changed on the dashboard."""
         with self._lock:

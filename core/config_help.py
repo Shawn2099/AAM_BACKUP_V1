@@ -207,6 +207,8 @@ HELP: dict[str, tuple[str, str]] = {
     # ── alerts / housekeeping / health ──
     "alerts.repeat_cooldown_hours": ("Repeat the same alert at most every",
                                      "Stops your inbox filling with the same alert."),
+    "alerts.stale_repeat_hours": ("Repeat the 'backup overdue' email at most every",
+                                  "While a backup stays overdue the reminder is sent this often (hours)."),
     "alerts.body_max_chars": ("Alert text length", "Longer details are attached as a file."),
     "alerts.attachments_max_total_kb": ("Largest email attachments (KB)",
                                         "Support report + logs together; a logs zip that "

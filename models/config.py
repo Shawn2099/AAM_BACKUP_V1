@@ -547,6 +547,11 @@ class AlertsConfig(StrictModel):
                     "hours while unresolved; repeats inside the window are recorded "
                     "as SUPPRESSED. 0 = never suppress.",
     )
+    stale_repeat_hours: float = Field(
+        default=24, ge=1, le=720,
+        description="The 'backup overdue' email for a leg is repeated at most once per this many "
+                    "hours while the leg stays overdue (other alerts follow repeat_cooldown_hours).",
+    )
     body_max_chars: int = Field(default=1000, ge=100, le=100_000,
                                 description="Inline message length in the email body")
     # Support attachments (docs/EMAIL_CONTENT_SPEC.md §5, audit 2026-10-18)
@@ -911,7 +916,7 @@ class WatchdogConfig(StrictModel):
         default=1800, ge=60, le=86_400,
         description="How often the watchdog checks that every enabled leg had a successful "
                     "backup by its next scheduled run + run budget + dashboard.stale_grace_hours; "
-                    "an overdue leg is emailed (again per alerts.repeat_cooldown_hours)")
+                    "an overdue leg is emailed (again per alerts.stale_repeat_hours)")
 
 
 class DashboardConfig(StrictModel):

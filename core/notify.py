@@ -139,6 +139,7 @@ class AlertEvent:
     artefacts_dir: str | None = None   # the run's full-log folder (support attachments)
     first_reported_at: str | None = None   # set by _notify on a reminder of an open incident
     audience: str = AUDIENCE_ALERTS    # which recipient list(s): alerts | reports | both
+    cooldown_hours: float | None = None   # repeat window of THIS alert; None = alerts.repeat_cooldown_hours
 
 
 @dataclass
@@ -500,6 +501,12 @@ def render_alert(config, event: AlertEvent, db=None) -> tuple[str, str, list[dic
 _FALLBACK_SENT: dict[str, float] = {}
 
 
+def _cooldown_hours(config, event: AlertEvent) -> float:
+    """How long a repeat of this alert is held back: its own window, else the global one."""
+    return (event.cooldown_hours if event.cooldown_hours is not None
+            else config.alerts.repeat_cooldown_hours)
+
+
 def _fallback_alert(config, event: AlertEvent, error: Exception) -> DeliveryResult:
     """The short notice (D1): the event's own title and message, no DB, no compose, no attachments.
     Obeys notifications.send_on_failure like a normal alert. Never raises."""
@@ -509,7 +516,7 @@ def _fallback_alert(config, event: AlertEvent, error: Exception) -> DeliveryResu
         if not config.notifications.send_on_failure and event.kind not in ALWAYS_SENT_KINDS:
             return DeliveryResult(DISABLED, "notifications.send_on_failure is false "
                                             "(routine failure/warning emails only)")
-        cooldown_h = config.alerts.repeat_cooldown_hours
+        cooldown_h = _cooldown_hours(config, event)
         last = _FALLBACK_SENT.get(event.key)
         if last is not None and cooldown_h > 0 and time.monotonic() - last < cooldown_h * 3600:
             return DeliveryResult(SUPPRESSED, f"same short notice already sent (cooldown {cooldown_h}h)")
@@ -594,7 +601,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
         result = DeliveryResult(DISABLED, "notifications.send_on_failure is false "
                                           "(routine failure/warning emails only)")
     else:
-        cooldown_h = config.alerts.repeat_cooldown_hours
+        cooldown_h = _cooldown_hours(config, event)
         if same and cooldown_h > 0 and _within_hours(same["created_at"], cooldown_h):
             result = DeliveryResult(
                 SUPPRESSED, f"same alert already sent at {same['created_at']} "
