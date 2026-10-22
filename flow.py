@@ -2260,7 +2260,8 @@ def _send_summary_report(config, days: int, period: str) -> None:
                 "subject": subject, "status": result.status, "error": result.error,
                 "attempts": result.attempts, "created_at": now_iso(),
                 "attachments_rung": (labels[result.rung] if labels and result.rung is not None
-                                     else None)})
+                                     else None),
+                "audience": AUDIENCE_REPORTS, "recipients": result.recipients})
         except Exception as e:  # noqa: BLE001 - the delivery verdict below still stands
             logger.error(f"Could not record {period} report delivery: {e}")
         if result.status != SENT:
