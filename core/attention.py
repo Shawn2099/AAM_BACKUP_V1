@@ -185,7 +185,7 @@ def compute_attention(db, config, now=None) -> list[dict]:
 
         run = db.last_run(leg)
         if run and statuses.category(run.get("status")) == statuses.CATEGORY_FAILED:
-            # D2: a failed night is not "healthy" until 26 h have passed since the last success.
+            # D2: a failed night is not "healthy" until the leg is overdue (next scheduled run + run budget + grace).
             # A missed night (server off or busy) is a warning; PARTIAL / RUNNING are not alarms.
             level = AMBER if run.get("status") in statuses.MISSED_STATUSES else RED
             when = format_ist(run.get("ended_at") or run.get("started_at"))

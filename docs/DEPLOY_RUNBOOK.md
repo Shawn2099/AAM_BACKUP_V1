@@ -96,6 +96,18 @@ Open `C:\AAMBackup\config.yaml` in Notepad. In the `schedule:` section set:
 when the next one starts — LAN 21:00 / cloud 22:00 is refused.) Every other
 setting is optional; `config.example.yaml` documents all of them.
 
+Also: delete the line `stale_after_hours: ...` under `dashboard:` if it is there (it is ignored with a
+warning in the log; "overdue" now follows the schedule: next scheduled run + run budget +
+`dashboard.stale_grace_hours`). Under `notifications:` the existing `recipients:` list is the ALERTS list;
+add `report_recipients:` for the weekly / monthly reports (or set both lists in Settings). An empty list
+uses the other one.
+
+On the Prefect server service (`AamPrefectServer`) the installer sets
+`PREFECT_SERVER_CONCURRENCY_LEASE_STORAGE=prefect.server.concurrency.lease_storage.filesystem`, so a server
+restart cannot leave the backup slot taken by a run that no longer exists (fault AAM-SYS-08 "Backup slot
+stuck" says so if it ever happens: reset the `aam-backup` concurrency limit in Prefect or restart
+AamPrefectServer).
+
 ## 5. Readiness check (changes nothing on the services)
 
 ```powershell

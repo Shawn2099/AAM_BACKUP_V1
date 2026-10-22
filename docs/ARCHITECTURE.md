@@ -465,7 +465,7 @@ producer (flow, watchdog, rollover, reports, password change)
 | `cloud` | bucket/project/class, bandwidth, transfers/checkers, all rclone timeouts, flow retries, `error_tail_lines`, `dry_run_timeout_seconds`, `write_probe_enabled` | cloud_*, permissions |
 | `schedule` | 6 cron expressions + timezone; at load, `core.budget.schedule_problems` (cronsim, 1 year) refuses any slot-job start whose budget could run past the next slot job's start + `maintenance.concurrency_wait_seconds` (WP14) | serve.py, models.config |
 | `budget` | per-job run budgets `cloud/lan/audit_max_hours` (from job start, slot wait included) + `cloud_verify_reserve_minutes`, `lan_post_reserve_minutes`. The long steps get `RunBudget.cap(...)`: cloud upload = rclone `--max-duration`, robocopy / checks = timeout. Budget stop = `*_PARTIAL` + `budget_stopped` (cloud: not verified, not recorded as bucket state), audit = `AUDIT_INCOMPLETE`; `extended_metrics.budget` on every run. Manual override: `backup(budget_hours=...)` | flow, core/budget |
-| `notifications` | SMTP host/port/security/auth/timeout/retries, recipients, enable flags | report, notify |
+| `notifications` | SMTP host/port/security/auth/timeout/retries, `recipients` (the ALERTS list) and `report_recipients` (the REPORTS list), enable flags | report, notify |
 | `alerts` | cooldown, body/attachment size | notify |
 | `dashboard` | the two password hashes, bind, port, `public_url` (empty = auto), session/rate-limit/refresh, "Apply changes" timings, history nights | ui, notify |
 | `rollover` | `archive_alert_after_days` | fy_rollover |
@@ -506,7 +506,7 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | C2 | Requested leg is enabled (`mode=cloud` with `cloud.enabled=false` is refused) | yes | — |
 | C3 | Backup slot free: Prefect limit `aam-backup` obtained within `maintenance.concurrency_wait_seconds` (default 3600 s) | yes | timeout recorded as `*_SLOT_TIMEOUT` row (WP5; today no row is written) |
 | C4 | `backup.lock` not held by another **live** process (a dead/reused PID is taken over) | yes | — |
-| C6 | Watchdog (independent service), every `watchdog.stale_check_interval_seconds`: each enabled leg with no successful backup within `dashboard.stale_after_hours` -> `stale:<leg>` ACTION_REQUIRED email (same `core.attention` evaluation as the banner; catches runs that never start) | yes (M5) | — |
+| C6 | Watchdog (independent service), every `watchdog.stale_check_interval_seconds`: each enabled leg that is OVERDUE -> `stale:<leg>` ACTION_REQUIRED email (same `core.attention` evaluation as the banner; catches runs that never start). Overdue = now past (next scheduled run after the last success STARTED) + the leg's run budget + `dashboard.stale_grace_hours` (`core.overdue`), using the schedule the service registered (`db_meta.schedule_in_effect`, falls back to config). The mail is skipped while a failure/action mail about the latest owed run was SENT/SUPPRESSED, and repeats at most per `alerts.stale_repeat_hours` | yes (M5) | — |
 | C5 | Earlier runs whose process died (`*_RUNNING` row, owner `pid:create_time` gone): recorded `*_ABANDONED` + one FAILURE email - at agent start and at every pipeline start (`backup_repository.sweep_abandoned_runs`); an unreadable owner falls back to `maintenance.abandon_running_after_hours` | yes (M5) | — |
 
 ### 10.2 Cloud leg — must pass to START the sync

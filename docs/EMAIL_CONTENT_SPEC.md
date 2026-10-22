@@ -279,6 +279,14 @@ list are attached only when `alerts.attach_file_names` is true.
 
 ## 6. Delivery behaviour
 
+- **Two recipient lists (owner 2026-10-22).** `notifications.recipients` = the ALERTS list (problems, action
+  needed, warnings, resolved, overdue, password-changed); `notifications.report_recipients` = the REPORTS list
+  (weekly / monthly report, new-financial-year notice). An address may be in both lists, never twice in one. An
+  empty list uses the other one (noted in the log; the dashboard shows an amber note when the alerts list is
+  empty and a red one when both are). The test email and the password-changed notice go to both lists, each
+  address once. `core.notify.resolve_recipients` is the only place that decides; every email states its audience.
+  A recipient the mail server refuses makes the delivery FAILED and names the address.
+
 - One email per run outcome (after our own retries), never per attempt (already so).
 - **Incident threading:** the first email of an incident gets `Message-ID: <{reference}@aam-backup>`; its
   reminders and the RESOLVED email carry `In-Reply-To` / `References` to it and keep the same subject, so Gmail
@@ -402,13 +410,17 @@ tell support." Next: "The next backup re-checks everything, {next_run}."
 ```
 Subject: [AAM Backup] ACTION NEEDED: No successful online backup for 50 hours (AAM-SYS-03)
 
-Your online backup has not completed successfully since 16 Oct 2026, 2:00 AM IST (50 hours; limit 26 hours).
+Your online backup has not completed successfully since 16 Oct 2026, 2:00 AM IST (50 hours). The next scheduled run
+was due 17 Oct 2026, 2:00 AM IST and was not finished by 17 Oct 2026, 10:00 AM IST (next scheduled run + 6 h run
+budget + 2 h grace). "Overdue" follows the chosen schedule: a weekly plan is not overdue after a day.
 Either each try fails (you will have separate emails for those) or backups are not starting at all.
 
 Is my data safe? Your server's files are untouched, but changes since 16 Oct are NOT in the online backup yet.
 What to do: 1. Open the dashboard and look at "Recent Backups". 2. Forward this email to support.
-What happens next: We remind you every 12 hours until a backup succeeds.
+What happens next: We remind you every 24 hours until a backup succeeds.
 ```
+Not sent while a failure email about the latest missed run was already sent (it says the same); the dashboard
+banner stays red. Repeats per `alerts.stale_repeat_hours` (24 h).
 
 ### 7.8 Weekly safety check (ACTION NEEDED / WARNING): AAM-AUD-01 / AAM-AUD-02
 AUD-01 headline: "This week's safety check compared every file and found 3 differences between your shared folder
@@ -485,7 +497,7 @@ transport with `[PREVIEW]` in the subject (no notification row, no cooldown); `-
 Replaced (plan C, P1): the weekly / monthly report is sent even when nothing ran; its subject and top banner say "action needed: <leg> - no backup ran" and the table row says "No backup ran in this period."
 
 ### 7.16 Password changed (INFO, plan E6)
-"The Dashboard (or Advanced) password of the backup dashboard was changed by {who} at {time}. If this was not you, contact support." Sent to all recipients; never contains a password.
+"The Dashboard (or Advanced) password of the backup dashboard was changed by {who} at {time}. If this was not you, contact support." Sent to both lists (each address once); never contains a password.
 
 ### 7.15 Test email (INFO, new)
 "This is a test from your backup system, sent by {who} from the dashboard on {time}. If you can read this,
