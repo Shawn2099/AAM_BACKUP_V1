@@ -262,7 +262,7 @@ function syncList(key) {
     if (f.widget === 'email_list') {
         inputs.forEach(i => i.classList.toggle('bad', i.value.trim() !== '' && !EMAIL_RE.test(i.value.trim())));
         const bad = values[key].filter(x => !EMAIL_RE.test(x));
-        const dup = values[key].filter((x, i, a) => a.indexOf(x) !== i);
+        const dup = values[key].filter((x, i, a) => a.findIndex(y => y.toLowerCase() === x.toLowerCase()) !== i);
         if (bad.length) localErrors[key] = 'Not an email address: ' + bad.join(', ');
         else if (dup.length) localErrors[key] = 'Listed more than once: ' + dup.join(', ');
     }
@@ -408,7 +408,7 @@ function collect() {
             values[f.key] = items.filter(x => x.length);
             if (f.widget === 'email_list') {
                 const bad = values[f.key].filter(x => !EMAIL_RE.test(x));
-                const dup = values[f.key].filter((x, i, a) => a.indexOf(x) !== i);
+                const dup = values[f.key].filter((x, i, a) => a.findIndex(y => y.toLowerCase() === x.toLowerCase()) !== i);
                 if (bad.length) localErrors[f.key] = 'Not an email address: ' + bad.join(', ');
                 else if (dup.length) localErrors[f.key] = 'Listed more than once: ' + dup.join(', ');
             }
