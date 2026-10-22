@@ -10,6 +10,28 @@ on deploy day (see §4f).
 
 ---
 
+## >>> 2026-10-22 LATE UPDATE (newest of the newest) - FY folders + deploy <<<
+
+**Box now runs `9906026` (deployed ~22:12 IST: bundle `^4d32a24`, ff merge, DB backup `C:\BackupAgent\manifest.db.bak-before-fy-*`,
+agent+watchdog restarted while idle).** That includes alert controls A-C. Plan `docs/PLAN_FY_FOLDERS_2026-10-22.md` (rev 2,
+Opus-reviewed) is built through FY-8: FY-1 both paths end in an FY folder or neither (config load) | FY-2 a finished rollover is
+never re-run when the paths are put back (`rollover:reentered:<fy>`, AAM-ROL-04) | FY-3 Settings can never change the FY
+(`config_edit._refuse_fy_change`, 409) | FY-4 the two paths are Advanced | FY-5 G6 text "nothing saved in <to_fy> is backed up yet" |
+FY-6 `fy_rollover.unprotected_new_fy` -> red card + daily mail AAM-ROL-06 (`rollover:unprotected:<fy>`) + one RESOLVED mail
+(`flow._alarm_unprotected_new_fy`, runs first in `rollover_check_flow`) | FY-7 `rollover.create_source_folder_early` (default
+true): SOURCE_FOLDER step runs BEFORE the final backups, FORWARD + proven clock only (journal vocabulary unchanged; do NOT add
+REQUIRES[CONFIG_SWITCH]) | FY-8 Advanced source picker: `core/source_picker.py`, `GET /api/settings/browse`,
+`POST /api/settings/check-source`, picks the PARENT only (FY leaf fixed), never creates folders, `static/js/settings.js`.
+Unit suite 2915 passed. NOT yet run for this block: audit lab (clean PREFECT_HOME) and the Opus code review of FY-1..8.
+**Owner decisions:** old FY after the switch is NOT backed up and NOT checked (accepted risk, no catch-up job); hand edit of
+config.yaml moving the FY stays an accepted risk. **Box facts:** schedule now cloud `1 2 * * *`, LAN `1 21 * * *`, audit
+`0 8 * * SUN` (applied 22:30); dashboard `http://10.10.150.170:8080`; dashboard password was reset by us (owner has it; the
+Advanced password is still unknown - the two must differ, min 10 chars; reset with `deploy/set_dashboard_passwords.py`, ask is
+injectable); `report_recipients` now set by the owner; `wol.server_ip` still the stale 10.10.186.231 (WoL is Off on the box);
+LAN destination already uses the real NAS 10.10.151.53. The 21:00 LAN run of 22 Oct was LAN_COMPLETE (slot fix proven).
+**Next:** verify the 02:01 cloud run of 23 Oct; alert-controls steps D-G; audit lab + Opus review of FY-1..8; owner acceptance
+items (previews, reports, 7 nights, restore drill, NAS shutdown test only with the owner at the NAS).
+
 ## >>> 2026-10-22 SESSION - READ THIS FIRST (newest, overrides older status below) <<<
 
 **Branch `mvp-hardening`, HEAD = the "ALERTS-C" commit (a46976f) + the doc commit that follows it. Box (`ssh innoviztawinserver2016`)
