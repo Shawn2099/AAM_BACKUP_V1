@@ -127,3 +127,13 @@ section 6, runbook.
    interrupted / stuck slot `AAM-SYS-01/02/08`): a new `delay_exempt` flag on those entries of `core/faults.CATALOG`
    (data, not a literal at the call site). Decision, overdue and service problems are never delayed.
 4. The password-changed notice is not switchable (class `security`).
+
+## Progress (update when a step is committed)
+- [x] A classifier + scan test - 11107ae
+- [x] B incident closure (success / VERIFIED audit / healthy mark / quiet days) - ccd71b5
+- [x] C switches per class + amber items + report line - a46976f
+- [ ] D follow-up switches + reminder limits (+ LIMITED status, "reminder n of m")
+- [ ] E RESOLVED only after a sent incident
+- [ ] F failure delay + DEFERRED + `delay_exempt` faults
+- [ ] G docs/spec/runbook
+- [ ] full unit suite, audit lab, Opus code review, deploy, set recommended values (see SESSION_HANDOFF 2026-10-22)

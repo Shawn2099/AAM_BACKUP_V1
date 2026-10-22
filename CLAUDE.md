@@ -9,7 +9,8 @@ Active work is the MVP hardening on branch `mvp-hardening`. Before doing anythin
 1. `SESSION_HANDOFF.md` — current position, next steps, verified tool facts, gotchas (update it at the end of every session).
 2. `MVP_HARDENING_PLAN.md` — the owner-approved plan: rules (§2), work packages (§7), config keys (§8), decisions DEC-1..8 (§11), checklist (§13). Do not re-plan.
 3. `docs/PLAN_OPEN_TOPICS_2026-10-18.md` — the agreed plan + task checklist for the current work (tick tasks as they are committed).
-4. `docs/ARCHITECTURE.md` — processes, flow step-by-step, decision points, file map, and §10 "gates" (every check each leg must pass).
+4. `docs/PLAN_ALERT_CONTROLS_2026-10-22.md` (rev 3, binding: alert classes, switches, follow-up limits, delayed failure mails - steps A-C done, D-G open) and `docs/PLAN_RECIPIENTS_AND_SCHEDULE_ALERTS_2026-10-22.md` (two recipient lists + schedule-aware overdue, done and deployed except the alert-controls part). The newest status is the 2026-10-22 block at the top of `SESSION_HANDOFF.md`.
+5. `docs/ARCHITECTURE.md` — processes, flow step-by-step, decision points, file map, and §10 "gates" (every check each leg must pass).
 
 **Worker agents** (asked to run tests/checks, not to build): follow `AGENT_TASKS.md` only. You never edit tracked files, and the trial box is read-only for you (worker agents only); your logs and reports go to `agent_runs/`.
 
@@ -73,6 +74,7 @@ The venv is at `.venv` (Python 3.12, managed by `uv`). Use the venv interpreter 
 
 ## Environment gotchas
 
+- **Local audit lab hangs** unless `PREFECT_HOME` points at a clean directory (the PC's `~/.prefect/prefect.db` was migrated by another Prefect version); see SESSION_HANDOFF 2026-10-22. Deploy to the box with a git bundle piped over ssh (recipe there).
 - **Git Bash heredocs mangle backslashes** (`\n`, `\t`, `\\`) here, even with `<<'EOF'`. For code or text containing backslashes, use the Write/Edit tools, or a Python script file created with Write, and check diffs for stray `\n`.
 - Remote PowerShell over SSH: use `;` instead of `&&`, set `[Console]::OutputEncoding=[Text.Encoding]::UTF8`, and since there is no scp, pipe scripts in: `cat x.py | ssh innoviztawinserver2016 'C:\AAMBackup\.venv\Scripts\python.exe -'`.
 - `smtplib` raises `SMTPSenderRefused` for transient 4xx replies too; classify SMTP errors by reply code (`core.notify._is_permanent_smtp_error`).

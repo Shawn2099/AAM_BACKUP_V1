@@ -1,11 +1,129 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
+**Last updated:** 2026-10-22 (see the 2026-10-22 block right below - it is newest and wins; older text follows). 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
 UI + email audit and rebuild - see §4f; rclone exit codes +
 bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
 **Box not redeployed with §4d / §4e / §4f** (box is at 6adcfb2; owner decides). §4f adds schema
 v3 (one-time in-place upgrade of the box DB) and needs `dashboard.public_url` + bind/firewall
 on deploy day (see §4f).
+
+
+---
+
+## >>> 2026-10-22 SESSION - READ THIS FIRST (newest, overrides older status below) <<<
+
+**Branch `mvp-hardening`, HEAD = the "ALERTS-C" commit (a46976f) + the doc commit that follows it. Box (`ssh innoviztawinserver2016`)
+runs `4d32a24` (deployed 19:33 IST, services restarted, DB backed up to `C:\BackupAgent\manifest.db.bak-20261022-1933`,
+config backup `C:\AAMBackup\config.yaml.bak-pre-recipients-20261022-1933`). Steps ALERTS-A/B/C are NOT deployed yet (local
+only, unit suite 2863 passed). Nothing is pushed to GitHub (deploy = `git bundle` over ssh, see "Deploy recipe").**
+
+### What happened today (all committed, tests first, Opus-reviewed)
+1. **Root cause of "no backup since 20 Oct" (fixed + deployed):** a cloud run held the Prefect concurrency slot `aam-backup`
+   when the services restarted (21:48-21:50 on 20 Oct); Prefect keeps the slot's *lease* only in server memory by default, so
+   the new server did not know the holder and the DB still counted `active_slots=1` forever -> every run waited 3600 s and
+   ended `*_SLOT_TIMEOUT`. Fix `479d6b7`: `PREFECT_SERVER_CONCURRENCY_LEASE_STORAGE=prefect.server.concurrency.lease_storage.filesystem`
+   in the AamPrefectServer env (`deploy/06_install_services.ps1`; already set on the box with nssm; leases live in
+   `<PREFECT_HOME>/concurrency_leases`). Lab wave **W24** (`audit_lab/test_w24_server_restart.py`) kills holder+server,
+   restarts the server and asserts the slot is freed (red on the old installer); it also proves a 30 s server outage in
+   the middle of a real cloud sync / LAN mirror is harmless (both finish COMPLETE). On the box the orphaned slot was reset
+   once through the Prefect API (`PATCH /api/v2/concurrency_limits/aam-backup {"active_slots":0}`, only with no active
+   flow run) and a manual cloud run finished `CLOUD_NO_CHANGES_COMPLETE`.
+   New fault **AAM-SYS-08 "Backup slot stuck"**: a slot wait that times out while no live process holds `backup.lock`
+   (`flow._slot_stuck`); wording only, nothing is released automatically (owner rule: never auto-proceed).
+2. **Two recipient lists** (`3089fe6`..`e9bed20`, plan `docs/PLAN_RECIPIENTS_AND_SCHEDULE_ALERTS_2026-10-22.md`):
+   `notifications.recipients` = ALERTS list, `notifications.report_recipients` = REPORTS list. Same address may be in both,
+   never twice in one (case-insensitive). **An empty list uses the other one** (symmetric). Test email + password-changed
+   notice go to both (each address once); weekly/monthly report + financial-year notice to reports. One function decides:
+   `core.notify.resolve_recipients(notifications, audience)`; `send_email(..., audience=)` is REQUIRED; every `AlertEvent`
+   has `audience`. A refused recipient (typo) makes the delivery FAILED and names it (`RecipientsPartlyRefused`, not
+   retried). Schema **v5** (`notifications.audience`, `.recipients`); `notification_failures_since` is cleared only by a
+   later SENT of the SAME audience (or `both`). Dashboard: RED `recipients_none`, AMBER `alerts_list_empty`.
+   **Box state: only `recipients` is set (2 addresses); `report_recipients` empty -> reports go to the same 2 addresses.
+   The owner still has to type the two lists in Settings.**
+3. **"Overdue" follows the schedule** (`72ed43d`, `164392e`, `5985e81`, `7db9ad7`): no more fixed 26 h. Overdue =
+   now > (next scheduled run after the last success STARTED) + the leg's run budget + `dashboard.stale_grace_hours` (2)
+   (`core/overdue.py`, one CronSim step, real elapsed time). `dashboard.stale_after_hours` is deprecated (dropped with a warning).
+   `serve.py` records the schedule it registers in `db_meta.schedule_in_effect` with a per-leg `cloud_since`/`lan_since`
+   (set only when that leg's cron or the timezone changed; the first record has none) - a schedule saved but not applied
+   changes nothing, and a changed schedule starts its own clock. Fresh install/never-succeeded leg = AMBER `first_run:<leg>`
+   until its first run is due; a progressing budget-stopped PARTIAL = AMBER `catching_up:<leg>` for
+   `dashboard.catching_up_max_days` (14), never a watchdog mail. `/status` legs carry `timing.state`
+   (on_time|late|overdue|waiting|catching_up) which `dashboard.js` renders. Reports say "no backup was scheduled in this
+   period" when the schedule planned none. Legacy attention tests use `test_support/attention_cfg.py` (every-minute
+   schedule, 24 h budget, 2 h grace = the old 26 h window).
+4. **Quieter overdue mail** (`5985e81`, `7db9ad7`): the watchdog skips `stale:<leg>` when a SENT/SUPPRESSED failure/action mail
+   exists after the latest OWED run (`overdue.latest_owed` = latest firing whose run time has passed); FAILED/DISABLED
+   rows and `stale:` rows never count; repeats at most per `alerts.stale_repeat_hours` (24) via `AlertEvent.cooldown_hours`.
+5. **Opus reviews** of plan (twice), of the code, and of the alert-controls plan are in this conversation's history; their
+   findings are folded into the commits and `docs/PLAN_ALERT_CONTROLS_2026-10-22.md` (rev 3).
+
+### IN PROGRESS: alert controls (`docs/PLAN_ALERT_CONTROLS_2026-10-22.md`, rev 3 = binding, owner answers at the end)
+Done locally, not deployed: **A** `core/alert_class.py` (one classifier: failure|decision|overdue|action|resolved|info|security|test;
+scan test fails if an `AlertEvent` key prefix is unregistered) - `11107ae`. **B** incidents close by what happened (later
+success / VERIFIED audit / healthy watchdog mark in db_meta / `alerts.incident_quiet_days` 7) not only by a RESOLVED mail -
+`ccd71b5`. **C** a switch per class: `alerts.send_decision_needed|send_overdue|send_action_needed|send_resolved|send_info`
+(+ existing `notifications.send_on_failure`), all default true, Advanced + typed phrase, amber `alerts_off[:class]` items,
+report line "These emails are switched off", password-changed + test email unswitchable - `a46976f`.
+**TO DO, in this order (each: test first, full suite, GitNexus detect-changes, one commit):**
+- **D follow-up (reminder) switches + limits** (owner: "I like the current implementation but follow-ups switchable; don't
+  spam"): bool `alerts.follow_ups_general` (failure+action), `follow_ups_overdue`, `follow_ups_decision` (default TRUE = today);
+  off = only the first mail of an incident (banner + approval card stay). Per class: interval (`repeat_cooldown_hours` 12,
+  `stale_repeat_hours` 24, new `decision_repeat_hours` 12; all 1..720) and `max_reminders` (0..365, default 100 = no practical
+  limit; overdue `stale_max_reminders`; decision `decision_max_reminders` 1..365 default 6, never 0 while its switch is on).
+  Count = SENT non-RECOVERED rows with `thread_id = root` of the incident (never "same key after last RECOVERED"); never apply
+  when `same is None`. A reminder past the limit is recorded with NEW status `LIMITED` (NOT SUPPRESSED - the watchdog's
+  `told_about_leg_since` must not count it). After the limit nothing more is sent (owner: no daily fallback). Reminder text
+  "reminder n of m". Recommended box values: failure/action 12 h + 2, overdue 24 h + 1, decision 12 h + 6.
+- **E** `recovered:<leg>` / `watchdog:recovered` only when the mode has an open SENT incident (else SUPPRESSED "nothing was
+  reported"); the watchdog stops depending on the in-memory `_attention_raised`.
+- **F** `alerts.failure_alert_after_hours` (default 0 = immediate): only keys `backup:<leg>:*` / `missed:<leg>:*` on cloud/lan,
+  skipped while the leg's last success is younger than N h -> status `DEFERRED` (not a delivery failure); infrastructure faults
+  stay immediate via a `delay_exempt` flag on `core/faults.CATALOG` entries (AAM-NAS-*, AAM-SYS-01/02/08).
+- **G** docs (EMAIL_CONTENT_SPEC section 6, runbook, ARCHITECTURE), `config.example.yaml` in the same commits
+  (`test_m4_config_example`, `test_m4_settings_admin` enumerate every key; number keys need a `_UNITS` entry).
+- Then: full unit suite, audit lab, Opus code review, deploy, set the recommended values in Settings.
+
+### Owner decisions (2026-10-22)
+Two lists, same address allowed in both; empty list -> other list; test email to both; overdue/alerts must follow the
+schedule (no false alarms); do NOT spam the client inbox; follow-ups switchable; decision-needed editable (min 1 reminder);
+password-changed notice not switchable; infrastructure faults stay immediate when the failure delay is on.
+**Still open with the owner:** (a) the two recipient lists (which addresses where); (b) the box's cloud schedule
+`schedule.cloud_cron: "57 14 * * *"` (14:57 daily - looks like a test leftover; handoff says production should be `0 2 * * *`);
+(c) NAS `lan.server_ip` 10.10.186.231 vs real 10.10.151.53, the temporary NAS password typed in chat, NAS lockout (see 20 Oct block).
+
+### Verify first thing next session
+- Did the **21:00 LAN run on 22 Oct** finish `LAN_COMPLETE` (first real run after the slot fix)? `run_history` on the box,
+  banner clear, one RESOLVED mail only. Check the 23 Oct 14:57 cloud run too. Look at `notifications` for spam.
+- Then deploy A/B/C (and D-G when done): `git bundle create x.bundle mvp-hardening ^4d32a24`, base64 over ssh into a python
+  script (see recipe), `git merge --ff-only FETCH_HEAD` in `C:\AAMBackup`, check `load_config` of the live config, back up the
+  DB with `sqlite3 .backup`, stop watchdog+agent, start agent then watchdog (only when no flow run is active / no backup.lock).
+
+### Deploy recipe + gotchas learned today
+- No scp: write a Python script with the bundle embedded as base64 and run `ssh innoviztawinserver2016 'C:\AAMBackup\.venv\Scripts\python.exe -' < script.py`.
+  Create the bundle with an explicit ref: `git bundle create x.bundle mvp-hardening ^<boxcommit>` (a bare range has no ref).
+- Service restarts through ssh may be blocked by the auto-mode classifier unless the owner said so in the conversation
+  ("you may do it if needed" was given 2026-10-22). Never work around a denial.
+- Git Bash heredocs with backslashes/quotes break: write patch scripts with the Write tool into the scratchpad and run them
+  with `.venv\Scripts\python.exe`. `sed -i` by line number is fragile; patch by exact text.
+- **Local audit lab:** `~/.prefect/prefect.db` (1.8 GB) on this PC was migrated by a different Prefect version
+  (`alembic ... Can't locate revision '14806cb26270'`), so every lab test that starts a Prefect server HANGS (e.g.
+  `test_w19_require_auth_branches`). Run the lab with a clean home: `PREFECT_HOME=<tmp dir> .venv\Scripts\python.exe -m pytest audit_lab --ignore=audit_lab/test_w7_deployed.py -q -s --timeout=900 -p no:cacheprovider -o addopts=""`
+  (62 min; last full run 22 Oct after A2..C-OVERDUE: 244 passed / 3 skipped / 4 failed, the 4 were stale lab expectations,
+  fixed in `4d32a24` and re-run green). The audit lab imports the working tree: do not edit core modules while it runs
+  (use `git worktree add /tmp/wt -b branch` for parallel work, copy `config.yaml` into it).
+- `pendulum` DateTime + `timedelta` is wall-clock-ish and `CronSim` keeps the tzinfo it is given: `core/overdue._aware`
+  rebuilds plain stdlib datetimes from the timestamp; keep it that way.
+- New tests that expect "overdue" on an empty DB must seed an old run (an empty DB is only "waiting for the first run").
+
+### Where things are
+`core/alert_class.py` (classes, switches, labels) | `core/overdue.py` (deadline/next_firing/latest_owed/firings_between) |
+`core/attention.py` (`compute_attention`, `leg_timing`, `_leg_clock`) | `core/notify.py` (`resolve_recipients`, `_incident`,
+`_incident_closed`, `_switched_off_reason`, `_cooldown_hours`) | `core/manifest.py` (schema v5, `schedule_in_effect`,
+`first_known_at`, `told_about_leg_since`, `leg_success_after`, `audit_verified_after`, `watchdog_healthy_at`,
+`first_partial_after`) | `serve.py::_record_schedule_in_effect` | tests: `test_recipients_*`, `test_overdue_schedule`,
+`test_report_schedule`, `test_stale_mail_dedup`, `test_alert_class`, `test_incident_closure`, `test_alert_switches`,
+lab `test_w24_server_restart`.
+
 
 > **Box at a989ae6 (2026-10-19 19:30, deployed by git bundle over SSH, branch NOT pushed to GitHub; detached HEAD as before).** Code only: no service restart, so the running services still hold the older code in memory (the change affects scripts and the readiness probe, not the backup path). Verified on the box: mail password probe OK as Administrator and as LocalSystem; `encrypt_secrets.py` = "already encrypted", config.yaml untouched. NOT yet run: `04_check_readiness.ps1 -ServiceAccount .\aambackup` (needs the account password; owner types it).
 >
