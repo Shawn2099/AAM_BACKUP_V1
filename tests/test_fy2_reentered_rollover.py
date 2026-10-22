@@ -29,7 +29,7 @@ def test_a_config_put_back_after_a_finished_rollover_stops_and_asks():
         _put_config_back(r)
         _reset_mocks(r)
         before = len(r.statuses())
-        with pytest.raises(fr.RolloverError, match="put back"):
+        with pytest.raises(fr.RolloverError, match="put back by hand"):
             r.run()
         assert r.statuses()[before:] == ["ROLLOVER_BLOCKED"]
         assert "ROLLOVER_COMPLETE" not in r.statuses()[before:]
@@ -60,3 +60,16 @@ def test_the_blocked_final_backup_says_the_new_year_is_not_backed_up_yet():
 
     g = guards.g6_fy_rollover(FROM, TO, fr.FORWARD, {"lan": "LAN_FAILED", "cloud": "CLOUD_COMPLETE"})
     assert "nothing saved in " + TO + " is backed up yet" in g.reason
+
+
+def test_neither_message_tells_the_owner_to_change_the_year_in_settings():
+    """Settings refuses any change of the financial year (FY-3), so the text must send them to support."""
+    text = fr.reentered_message(FROM, TO)
+    assert "config.yaml" in text and "support" in text.lower()
+    import inspect
+
+    import flow
+
+    src = inspect.getsource(flow._rollover_resume)
+    assert "Ask support to change source_drive and lan_destination in config.yaml" in src
+    assert "Put source_drive" not in src and "Put source_drive" not in text

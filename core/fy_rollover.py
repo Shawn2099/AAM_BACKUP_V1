@@ -139,8 +139,9 @@ def reentered_message(from_fy: str, to_fy: str) -> str:
     """Why a rollover whose journal is already finished is not run again (plan FY-2)."""
     return (f"The switch from {from_fy} to {to_fy} was already finished, but the settings now point at "
             f"{from_fy} again (they were put back by hand or from an old copy). Nothing was backed up, "
-            f"switched or archived. Put source_drive and lan_destination back to {to_fy}. Starting that "
-            "switch again is a support action - ask your support contact.")
+            f"switched or archived. Ask support to change source_drive and lan_destination in config.yaml on "
+            f"the server back to {to_fy} (Settings no longer changes the financial year). Starting that "
+            "switch again is also a support action.")
 
 
 def manual_run_state(configured: str | None, current: str, finished_journal: bool = False) -> dict:

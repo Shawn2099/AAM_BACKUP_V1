@@ -2513,7 +2513,8 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         msg = (f"FY rollover {from_fy} -> {to_fy} stopped: config.yaml already points at {to_fy} "
                f"(it was changed by hand), but the last backup of {from_fy} was never completed, "
                f"so the last changes of {from_fy} are not protected yet. Nothing was changed or "
-               f"archived. Put source_drive and lan_destination back to {from_fy}; the daily "
+               f"archived. Ask support to change source_drive and lan_destination in config.yaml on the "
+               f"server back to {from_fy} (Settings no longer changes the financial year); the daily "
                "check then finishes the old year first and switches by itself.")
         logger.error(msg)
         record("ROLLOVER_BLOCKED", msg, {})
