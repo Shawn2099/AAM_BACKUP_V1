@@ -104,3 +104,21 @@ def test_an_old_finished_journal_is_still_readable(tmp_path):
         assert rj.is_complete(db.rollover_get(FROM, TO)) and db.rollover_incomplete() is None
     finally:
         db.close()
+
+
+def test_a_failed_early_folder_is_reported_once_under_its_own_key():
+    with _Rig() as r:
+        r.m["create_source_folder"].side_effect = OSError("disk full")
+        with pytest.raises(fr.RolloverError):
+            r.run()
+        early = [e for e in _events(r) if e.key == f"rollover:{TO}:source_folder_early"]
+        assert len(early) == 1 and early[0].kind == "WARNING" and early[0].fault_code == "AAM-ROL-04"
+        assert "disk full" in early[0].message and TO in early[0].message
+        # the escalation of the blocking retry keeps ITS key, so one never swallows the other
+        assert any(e.key == f"rollover:{TO}:source_folder" for e in _events(r))
+
+
+def test_a_good_early_folder_sends_nothing():
+    with _Rig() as r:
+        assert r.run() == "ROLLOVER_COMPLETED"
+        assert not [e for e in _events(r) if e.key.endswith("source_folder_early")]
