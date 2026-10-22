@@ -180,13 +180,17 @@ def effective_fy_prefix(source_drive: str) -> str:
 
 
 def configured_fy(source_drive: str, lan_destination: str) -> str | None:
-    """FY the backups are configured for (source leaf first), or None."""
-    return _fy_name(source_drive) or _fy_name(lan_destination)
+    """FY the backups are configured for: the SOURCE folder's FY leaf, or None (plan FY-9).
+
+    The NAS path never decides: with the NAS leg on, the config validator forces it to match the source;
+    with the NAS off (cloud-only) it is an unused placeholder, and reading its leaf would make the rollover
+    rewrite a source folder that has no FY folder. `lan_destination` is kept for the callers' signature."""
+    return _fy_name(source_drive)
 
 
 def detect_rollover(source_drive: str, lan_destination: str) -> bool:
     """Return True if the configured FY suffix doesn't match the computed FY prefix."""
-    current_fy = _fy_name(source_drive) or _fy_name(lan_destination)
+    current_fy = configured_fy(source_drive, lan_destination)
     if current_fy is None:
         # G2: explicit opt-out signal. No FY suffix in either path means the
         # operator is not using FY folders, so rollover is intentionally a
@@ -362,6 +366,7 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
     with config_transaction(config_path, tmp_prefix=".config_rollover_") as txn:
         old_source = txn.doc["paths"]["source_drive"]
         old_lan = txn.doc["paths"]["lan_destination"]
+        lan_has_fy = _fy_name(str(old_lan)) is not None      # decided inside the lock, from the file itself
         if expect_fy is not None:
             current = configured_fy(str(old_source), str(old_lan))
             if current == new_fy:
@@ -373,7 +378,8 @@ def update_config_yaml(config_path: str, source_root: str, lan_root: str,
                     f"config.yaml points at {current or 'no FY folder'}, not {expect_fy} - "
                     f"the switch to {new_fy} was not made. Nothing was written.")
         txn.doc["paths"]["source_drive"] = new_source
-        txn.doc["paths"]["lan_destination"] = new_lan
+        if lan_has_fy:      # an unused NAS placeholder without an FY folder (cloud-only) stays as it is
+            txn.doc["paths"]["lan_destination"] = new_lan
     logger.info(
         f"FY rollover: config.yaml updated\n"
         f"  source:  {old_source} → {new_source}\n"

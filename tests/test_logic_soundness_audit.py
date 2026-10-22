@@ -945,7 +945,8 @@ class TestDetectRollover:
         """Finding F-1: detection falls back to the LAN FY, but the later
         rollover uses `src_fy or lan_fy`; a source without an FY suffix can
         still be forced through a rollover driven solely by the LAN path."""
-        assert fy_rollover.detect_rollover("E:\\SRC", "\\\\s\\x\\FY00-01") is True
+        # FY-9: the source folder alone decides; a NAS path with an old FY cannot drive a rollover
+        assert fy_rollover.detect_rollover("E:\\SRC", "\\\\s\\x\\FY00-01") is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1203,8 +1203,10 @@ class AppConfig(StrictModel):
         # convention (FY25-26); a name like FY2026-27 silently disables rollover
         # forever. Refuse at config load instead of at the FY boundary.
         fy_4digit = re.compile(r"FY\d{4}-\d{2,4}\b", re.IGNORECASE)
-        for path_name, path_value in (("source_drive", self.paths.source_drive),
-                                      ("lan_destination", self.paths.lan_destination)):
+        checked = [("source_drive", self.paths.source_drive)]
+        if self.lan.enabled:          # an unused NAS placeholder (cloud-only) is not read by anything
+            checked.append(("lan_destination", self.paths.lan_destination))
+        for path_name, path_value in checked:
             for seg in path_value.replace("\\", "/").split("/"):
                 seg = seg.strip()
                 if fy_4digit.search(seg):
@@ -1220,20 +1222,22 @@ class AppConfig(StrictModel):
         lan_parts = self.paths.lan_destination.replace("\\", "/").rstrip("/").split("/")
         lan_fy = lan_parts[-1].upper() if fy_pattern.match(lan_parts[-1]) else None
 
+        # The source folder decides the financial year. The NAS path only counts while the NAS backup is on
+        # (cloud-only keeps an unused placeholder that nothing reads, so it may look like anything).
         if self.lan.enabled and bool(src_fy) != bool(lan_fy):
             side = "NAS folder" if src_fy else "source folder"
             raise ValueError(
                 f"Make both paths end in a financial-year folder like FY26-27, or neither. Only the "
                 f"{'source' if src_fy else 'NAS'} path does (the {side} does not). With one "
                 "path only, the yearly switch would point the other at a new empty folder and the real "
-                "data would stop being backed up."
+                "data would stop being backed up. Fix the NAS folder under Settings > Advanced (or ask support)."
             )
 
-        if src_fy and lan_fy and src_fy != lan_fy:
+        if self.lan.enabled and src_fy and lan_fy and src_fy != lan_fy:
             raise ValueError(
                 f"Make both paths end in the same FY folder (source {src_fy}, NAS {lan_fy}). "
                 "The system refuses to start otherwise: the backup would overwrite the old "
-                "year's data with the new year's."
+                "year's data with the new year's. Fix the NAS folder under Settings > Advanced (or ask support)."
             )
 
         return self
