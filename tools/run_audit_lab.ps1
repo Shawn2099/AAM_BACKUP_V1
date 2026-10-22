@@ -21,9 +21,13 @@ $Py = Join-Path $Repo ".venv\Scripts\python.exe"
 Push-Location $Repo
 try {
     Write-Host "Audit lab started $(Get-Date -Format 'HH:mm'). Results: $Out"
+    # PowerShell 5.1 turns any stderr line of a native program into a terminating error under "Stop"
+    # (the lab's logger writes to stderr), so run it with "Continue" and judge by the exit code.
+    $ErrorActionPreference = "Continue"
     & $Py -m pytest audit_lab --ignore=audit_lab/test_w7_deployed.py -q -s --timeout=1800 `
         -p no:cacheprovider -o addopts="" --junitxml (Join-Path $Out "junit.xml") *> (Join-Path $Out "lab.log")
     $code = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
     & $Py (Join-Path $PSScriptRoot "lab_report.py") (Join-Path $Out "junit.xml") (Join-Path $Out "REPORT.md") $code
     Write-Host (Get-Content (Join-Path $Out "REPORT.md") -Raw)
 }
