@@ -300,7 +300,8 @@ def unprotected_message(found: dict) -> str:
 
 def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str,
                           placeholder_name: str | None = None) -> dict[str, Path]:
-    """Create new FY folders on source and LAN. Returns dict of created Paths.
+    """LEGACY (no production caller since the rollover became a step journal: use create_source_folder / create_nas_folder).
+    Create new FY folders on source and LAN. Returns dict of created Paths.
 
     placeholder_name (rollover.source_placeholder_name): a short note written
     into the NEW source folder - never overwritten - so the first nights of

@@ -83,6 +83,12 @@ You should see the latest commit of `mvp-hardening` (as on GitHub).
 
 ## 4. Update config.yaml for this version
 
+**Year folders are mandatory (owner 2026-10-22).** `paths.source_drive` must end in the current financial-year folder
+(`D:\FY25-26`), and `paths.lan_destination` too while the NAS backup is on (same year). A config without it **does not
+load** - an existing install whose source has no year folder will refuse to start after this update, so fix `config.yaml`
+BEFORE restarting the services. Only the current year is backed up; older year folders (`D:\FY24-25`,
+`D:\archives\FY10-11`) need the separate one-time bulk upload at deployment (never into the current year's cloud folder).
+
 Open `C:\AAMBackup\config.yaml` in Notepad. In the `schedule:` section set:
 
 ```yaml

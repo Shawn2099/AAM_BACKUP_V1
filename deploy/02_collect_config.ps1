@@ -60,7 +60,9 @@ if ($month -ge 4) {
 $currentFY = "FY{0:D2}-{1:D2}" -f $fyStart, $fyEnd
 
 $yaml += "# -- Current FY --"
-$yaml += "# Source drive MUST end with the current FY folder"
+$yaml += "# Source drive MUST end with the current FY folder (mandatory: the config does not load without it)"
+$yaml += "# The NAS folder too, while the NAS backup is on. Only the CURRENT year is backed up; older years"
+$yaml += "# (for example D:\FY24-25, D:\archives\FY10-11) are uploaded once at deployment by a separate tool."
 $yaml += "current_fy: `"$currentFY`""
 $yaml += "# Example source_drive:  `"D:\YOUR_DATA\$currentFY`""
 $yaml += "# Example lan_destination:  `"\\NAS_IP\share\$currentFY`""

@@ -590,7 +590,7 @@ own completed summary; content verification is the weekly audit (V3).
 
 | # | Condition | Today | Plan |
 |---|---|---|---|
-| R1 | Source/NAS paths end in a 2-digit FY folder (`FY26-27`); otherwise rollover is permanently off | yes | — |
+| R1 | The SOURCE path MUST end in a 2-digit FY folder (`FY26-27`) whichever backup legs are on (config load refuses otherwise; owner 2026-10-22). The NAS path must end in the SAME FY folder while the NAS leg is on; with the NAS off it is an unused placeholder that nothing reads or rewrites. The source leaf alone decides the FY (`fy_rollover.configured_fy`). Only the current FY is backed up; older years are bulk-uploaded at deployment by a separate tool | yes | done |
 | R2 | Rollover happens when that FY differs from the FY of today's date (IST, April 1 boundary) | only exactly the next FY on a proven clock; clock behind (CLK-03), not proven (ROL-03) or a jump of more than one FY (G6 → approval card) stop it | done |
 | R3 | Final backup of the closing FY must succeed on every enabled leg (cloud COMPLETE/NO_CHANGES, LAN COMPLETE) + G6, else the step fails (ROL-01/02), retried daily; the LAN one does not shut the NAS down | through the normal pipelines inside the slot; a retry repeats it (D-17) | done |
 | R4 | Archive the old FY in GCS (gcloud, key as a file, `ARCHIVE` class) | failure = ROL-05 WARNING, retried every morning, ACTION_REQUIRED after `rollover.archive_alert_after_days` | done |

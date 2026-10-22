@@ -11,9 +11,11 @@ firm_name: "YourFirmName"
 
 # ═══════════════════════════════════════════════════
 # FILE SYSTEM PATHS
-# IMPORTANT: Both source_drive and lan_destination MUST end with the
-# current Fiscal Year folder (e.g. \FY25-26). The system uses this
-# suffix for GCS prefix routing and FY rollover detection.
+# IMPORTANT (mandatory, whichever backup is on): source_drive MUST end with the current Fiscal
+# Year folder (e.g. D:\FY25-26), and lan_destination too while the NAS backup is on. The system
+# uses this suffix for the cloud folder name, the safety checks and the yearly switch; a config
+# without it does not load. Only the CURRENT year is backed up: older year folders
+# (D:\FY24-25, D:\archives\FY10-11) are uploaded once at deployment by a separate tool.
 # ═══════════════════════════════════════════════════
 paths:
   source_drive: "D:\\YOUR_DATA\\FY25-26"
