@@ -2249,7 +2249,8 @@ def _send_summary_report(config, days: int, period: str) -> None:
                          else ReportPeriod.previous_week(scheduled))
         email = report.build_summary_email(db, config.firm_name, days, period,
                                            legs=_enabled_legs(config),
-                                           report_period=report_period)
+                                           report_period=report_period,
+                                           schedule=config.schedule)
         subject, body, attachments = email
         rungs, labels = attachment_ladder(attachments or [])
         result = send_email(config.notifications, subject, body, audience=AUDIENCE_REPORTS,

@@ -205,10 +205,17 @@ async function updateStatus() {
         renderAttention(data.attention);
         renderHero(data);
 
-        function agoClass(diffDays) {
-            if (diffDays < 1) return 'success-ago';
-            if (diffDays < 2) return 'warn-ago';
-            return 'critical-ago';
+        // The server decides whether a leg is on time, late or overdue from ITS schedule (a weekly plan
+        // is not "late" after a day): data.<leg>.timing.state.
+        function agoClass(state) {
+            if (state === 'overdue') return 'critical-ago';
+            if (state === 'late' || state === 'catching_up' || state === 'waiting') return 'warn-ago';
+            return 'success-ago';
+        }
+        function agoPrefix(state) {
+            if (state === 'overdue') return 'Overdue - ';
+            if (state === 'late') return 'Late - ';
+            return '';
         }
 
         function showLastSuccess(mode, lastSuccess) {
@@ -219,16 +226,14 @@ async function updateStatus() {
                 el.className = 'critical-ago';
                 return;
             }
-            var then = new Date(lastSuccess);
-            var now = new Date();
-            var diffDays = (now - then) / 86400000;
-            if (isNaN(diffDays)) {
+            if (isNaN(new Date(lastSuccess).getTime())) {
                 el.textContent = '! No successful backup yet';
                 el.className = 'critical-ago';
                 return;
             }
-            var cls = agoClass(diffDays);
-            var prefix = diffDays < 1 ? '' : (diffDays < 2 ? 'Late - ' : 'Overdue - ');
+            var timing = (data[mode] && data[mode].timing) || {};
+            var cls = agoClass(timing.state);
+            var prefix = agoPrefix(timing.state);
             var fullDate = formatFullDate(lastSuccess);
             el.textContent = prefix + 'Last success: ' + fullDate;
             el.className = cls;

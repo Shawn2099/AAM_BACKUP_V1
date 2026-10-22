@@ -32,6 +32,19 @@ def next_firing(cron: str, timezone_name: str, after: datetime) -> datetime:
     return next(iter(CronSim(cron, _aware(after, tz))))
 
 
+def firings_between(cron: str, timezone_name: str, start: datetime, end: datetime) -> int:
+    """How many scheduled firings fall in the half-open interval [start, end)."""
+    tz = ZoneInfo(timezone_name)
+    begin, stop = _aware(start, tz), _aware(end, tz)
+    count = 0
+    # CronSim returns times strictly after its start, so begin one minute earlier to include `start`
+    for when in CronSim(cron, begin - timedelta(minutes=1)):
+        if when >= stop:
+            break
+        count += 1
+    return count
+
+
 def deadline(cron: str, timezone_name: str, started: datetime, budget_hours: float,
              grace_hours: float) -> datetime:
     """The moment a leg whose last success started at `started` becomes overdue."""

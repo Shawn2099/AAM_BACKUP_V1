@@ -73,6 +73,55 @@ def _progressing_partial(run: dict | None) -> bool:
     return isinstance(budget, dict) and bool(budget.get("stopped"))
 
 
+def _leg_clock(db, config, leg: str, sched: dict):
+    """(last success or None, next scheduled run, overdue-at) for one leg - the one place that applies
+    the rule  overdue-at = next scheduled run after the last success started + run budget + grace.
+    The two times are None when no starting point is known or the time cannot be read."""
+    grace = config.dashboard.stale_grace_hours
+    budget_h = getattr(config.budget, f"{leg}_max_hours")
+    cron, tz = sched[f"{leg}_cron"], sched["timezone"]
+    last = db.last_successful_run(leg)
+    if last is not None:
+        base = last.get("started_at") or last.get("ended_at")
+    else:       # never succeeded: count from when the system (or this leg) came into being
+        base = _later(db.first_known_at(), db.last_config_change_at(f"{leg}.enabled"))
+    # a schedule that changed after that moment starts its own clock: the old plan's run history says
+    # nothing about when the NEW plan's first run is due (daily -> weekly must not look a week late)
+    base = _later(base, sched.get("since"))
+    if not base:
+        return last, None, None
+    parsed = pendulum.parse(base)
+    return (last, overdue.next_firing(cron, tz, parsed),
+            overdue.deadline(cron, tz, parsed, budget_h, grace))
+
+
+def leg_timing(db, config, leg: str, now=None) -> dict:
+    """Where one enabled leg stands against its schedule, for the dashboard card:
+    state  on_time | late (its run should have finished, grace left) | overdue | waiting (nothing has
+           run yet, nothing is late) | catching_up (a large upload is progressing over several nights)
+    due_at / overdue_at  ISO times (None when unknown). Same rule as the banner (`_overdue_item`)."""
+    now = now or pendulum.now(IST)
+    sched = _schedule_in_effect(db, config)
+    if not sched:
+        return {"state": "on_time", "due_at": None, "overdue_at": None}
+    try:
+        last, due, limit = _leg_clock(db, config, leg, sched)
+    except Exception as e:  # noqa: BLE001 - the card must still render
+        logger.warning(f"Timing of the {leg} leg could not be read ({e})")
+        return {"state": "on_time", "due_at": None, "overdue_at": None}
+    out = {"due_at": due.isoformat() if due else None,
+           "overdue_at": limit.isoformat() if limit else None}
+    if limit is None or now <= limit:
+        if last is None:
+            return {"state": "waiting", **out}
+        budget_h = getattr(config.budget, f"{leg}_max_hours")
+        run_should_have_finished = due + pendulum.duration(hours=float(budget_h))
+        return {"state": "late" if now > run_should_have_finished else "on_time", **out}
+    if _progressing_partial(db.last_run(leg)):
+        return {"state": "catching_up", **out}
+    return {"state": "overdue", **out}
+
+
 def _overdue_item(db, config, leg: str, sched: dict, now) -> dict | None:
     """The banner / watchdog item for one enabled leg, or None while it is on time.
 
@@ -83,26 +132,13 @@ def _overdue_item(db, config, leg: str, sched: dict, now) -> dict | None:
     phrase = _PHRASE.get(leg, leg)
     grace = config.dashboard.stale_grace_hours
     budget_h = getattr(config.budget, f"{leg}_max_hours")
-    cron = sched[f"{leg}_cron"]
-    tz = sched["timezone"]
-    last = db.last_successful_run(leg)
-    if last is not None:
-        base = last.get("started_at") or last.get("ended_at")
-    else:       # never succeeded: count from when the system (or this leg) came into being
-        base = _later(db.first_known_at(), db.last_config_change_at(f"{leg}.enabled"))
-    # a schedule that changed after that moment starts its own clock: the old plan's run history says
-    # nothing about when the NEW plan's first run is due (daily -> weekly must not look a week late)
-    base = _later(base, sched.get("since"))
     try:
-        due = overdue.next_firing(cron, tz, pendulum.parse(base)) if base else None
-        limit = overdue.deadline(cron, tz, pendulum.parse(base), budget_h, grace) if base else None
+        last, due, limit = _leg_clock(db, config, leg, sched)
     except Exception as e:  # noqa: BLE001 - an unreadable time must never hide an overdue leg
         logger.warning(f"Overdue check for the {leg} leg could not read its schedule/time ({e})")
-        due = limit = None
-        if last is not None or base:
-            return _item(RED, f"stale:{leg}",
-                         act(f"Check why the {phrase} has not succeeded",
-                             "The last success could not be placed on the schedule"))
+        return _item(RED, f"stale:{leg}",
+                     act(f"Check why the {phrase} has not succeeded",
+                         "The last success could not be placed on the schedule"))
     if limit is None or now <= limit:
         if last is None:
             when = f" (due {format_ist(due.isoformat())})" if due else ""

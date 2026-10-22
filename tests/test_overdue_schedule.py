@@ -331,3 +331,61 @@ def test_a_failure_to_record_never_stops_the_scheduler(tmp_path, monkeypatch):
     monkeypatch.setattr("core.manifest.ManifestDB.from_config",
                         classmethod(lambda cls, c: (_ for _ in ()).throw(OSError("db locked"))))
     serve._record_schedule_in_effect(_cfg(tmp_path))            # must not raise
+
+
+# ── per-leg timing for the dashboard card ────────────────────────────────────
+
+def _timing(db, cfg, now, leg="lan"):
+    from core.attention import leg_timing
+    return leg_timing(db, cfg, leg, now=now)
+
+
+def test_timing_states_on_time_late_overdue(tmp_path, db):
+    cfg = _cfg(tmp_path)                                          # daily 21:00, 4 h budget, 2 h grace
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    assert _timing(db, cfg, at(2026, 10, 23, 12))["state"] == "on_time"
+    assert _timing(db, cfg, at(2026, 10, 23, 22, 0))["state"] == "on_time"       # tonight's run is working
+    assert _timing(db, cfg, at(2026, 10, 24, 0, 30))["state"] == "on_time"       # inside its 4 h budget
+    assert _timing(db, cfg, at(2026, 10, 24, 1, 30))["state"] == "late"          # budget used up, grace left
+    assert _timing(db, cfg, at(2026, 10, 24, 3, 1))["state"] == "overdue"
+
+
+def test_timing_for_a_weekly_plan_is_on_time_all_week(tmp_path, db):
+    cfg = _cfg(tmp_path, lan_cron="0 2 * * SUN")
+    _success(db, at(2026, 10, 25, 2, 0).replace(second=9))
+    for day in (26, 27, 28, 29, 30, 31):
+        assert _timing(db, cfg, at(2026, 10, day, 12))["state"] == "on_time", day
+
+
+def test_timing_carries_the_due_and_overdue_moments(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    t = _timing(db, cfg, at(2026, 10, 23, 12))
+    assert t["due_at"].startswith("2026-10-23T21:00") and t["overdue_at"].startswith("2026-10-24T03:00")
+
+
+def test_timing_waiting_and_catching_up(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    assert _timing(db, cfg, at(2026, 10, 22, 12))["state"] == "waiting"
+    _success(db, at(2026, 10, 15, 21, 0))
+    _partial(db, at(2026, 10, 23, 21, 0))
+    assert _timing(db, cfg, at(2026, 10, 24, 12))["state"] == "catching_up"
+
+
+def test_the_status_endpoint_and_the_page_use_the_servers_timing(tmp_path, db, monkeypatch):
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from fastapi.testclient import TestClient
+
+    import ui
+
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(ui, "_cfg", lambda: cfg)
+    monkeypatch.setattr(ui, "get_db", lambda: db)
+    monkeypatch.setattr(ui, "_is_running", AsyncMock(return_value=False))
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    data = TestClient(ui.app, raise_server_exceptions=False).get("/status").json()
+    assert data["lan"]["timing"]["state"] in ("on_time", "late", "overdue", "waiting", "catching_up")
+    js = (Path(__file__).resolve().parent.parent / "static" / "js" / "dashboard.js").read_text(encoding="utf-8")
+    assert ".timing" in js and "diffDays < 2" not in js          # the fixed 1-day / 2-day labels are gone

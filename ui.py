@@ -36,7 +36,7 @@ from prefect.deployments import arun_deployment
 
 from core import (admin_auth, app_restart, messages, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
                   statuses)
-from core.attention import RED, compute_attention
+from core.attention import RED, compute_attention, leg_timing
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
 
@@ -564,6 +564,7 @@ async def status(request: Request):
             "enabled": cfg.cloud.enabled,
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
+            "timing": _leg_timing(db, cfg, "cloud"),
             "last_run_formatted": format_ist(cloud_last_run["started_at"]) if cloud_last_run else "No data",
             # Integrity status is a SEPARATE fact from the backup result:
             # VERIFIED only after a passing audit; NOT_VERIFIED when no
@@ -577,6 +578,7 @@ async def status(request: Request):
             "enabled": cfg.lan.enabled,
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
+            "timing": _leg_timing(db, cfg, "lan"),
             "last_run_formatted": format_ist(lan_last_run["started_at"]) if lan_last_run else "No data",
             "integrity": _integrity_summary(db, "lan"),
             "nights": _nights(db, "lan", cfg),
@@ -600,6 +602,15 @@ def _nights(db, mode: str, cfg) -> list[dict]:
     except Exception as e:  # noqa: BLE001 - the strip is decoration; never break the status call
         logger.warning(f"Night strip could not be built for {mode}: {e}")
         return []
+
+
+def _leg_timing(db, cfg, leg: str) -> dict:
+    """on_time | late | overdue | waiting | catching_up for the leg's card (core.attention.leg_timing)."""
+    try:
+        return leg_timing(db, cfg, leg)
+    except Exception as e:  # noqa: BLE001 - the card is decoration; the banner has the truth
+        logger.warning(f"Leg timing could not be evaluated for {leg}: {e}")
+        return {"state": "on_time", "due_at": None, "overdue_at": None}
 
 
 def _attention(db, cfg) -> list[dict]:
@@ -1399,10 +1410,10 @@ def trigger_weekly_email(request: Request):
     legs = _enabled_legs(cfg)
     rp = ReportPeriod.last_days(7)        # the dashboard sends the last 7 days up to now
     html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly", legs=legs,
-                                     report_period=rp)
+                                     report_period=rp, schedule=cfg.schedule)
     try:
         ok = send_weekly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
-                                legs=legs, report_period=rp)
+                                legs=legs, report_period=rp, schedule=cfg.schedule)
     except Exception as e:
         logger.exception("Failed to send weekly email report manual trigger")
         return JSONResponse(
@@ -1437,10 +1448,10 @@ def trigger_monthly_email(request: Request):
     legs = _enabled_legs(cfg)
     rp = ReportPeriod.last_days(30)        # the dashboard sends the last 30 days up to now
     html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly", legs=legs,
-                                     report_period=rp)
+                                     report_period=rp, schedule=cfg.schedule)
     try:
         ok = send_monthly_report(db, cfg.notifications, cfg.firm_name, body_html=html_body,
-                                 legs=legs, report_period=rp)
+                                 legs=legs, report_period=rp, schedule=cfg.schedule)
     except Exception as e:
         logger.exception("Failed to send monthly email report manual trigger")
         return JSONResponse(
@@ -1473,7 +1484,8 @@ def _serve_report(days: int, period: str) -> Response:
     from core.report import generate_report_html
     from core.report_period import ReportPeriod
     html_body = generate_report_html(db, cfg.firm_name, days, period, legs=_enabled_legs(cfg),
-                                     report_period=ReportPeriod.last_days(days))
+                                     report_period=ReportPeriod.last_days(days),
+                                     schedule=cfg.schedule)
 
     safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', cfg.firm_name)
     filename = f"{safe_firm}_{period}_Report_{pendulum.now(IST).format('YYYY-MM-DD')}.html"
