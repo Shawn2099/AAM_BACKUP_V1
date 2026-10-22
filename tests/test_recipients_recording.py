@@ -31,7 +31,7 @@ def _cfg(tmp_path, port=25, **notif) -> AppConfig:
     n.update(notif)
     return AppConfig(
         firm_name="AAM",
-        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\share",
+        paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": "\\\\nas\\share\\FY26-27",
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
         dashboard={"public_url": "http://backup-server:8080", **ui_login.DASHBOARD},

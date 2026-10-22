@@ -30,13 +30,13 @@ JS = (ROOT / "static" / "js" / "dashboard.js").read_text(encoding="utf-8")
 SETTINGS_JS = (ROOT / "static" / "js" / "settings.js").read_text(encoding="utf-8")
 TEMPLATE = (ROOT / "templates" / "dashboard.html").read_text(encoding="utf-8")
 KEY = {}      # the TestClient is signed in already (tests/conftest.py)
-UNC = "\\\\nas\\share"
+UNC = "\\\\nas\\share\\FY26-27"
 
 
 def _cfg(tmp_path, port=25, **dash) -> AppConfig:
     return AppConfig(
         firm_name="AAM",
-        paths={"source_drive": str(tmp_path), "lan_destination": UNC,
+        paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
         dashboard={"public_url": "http://backup-server:8080", **ui_login.DASHBOARD, **dash},

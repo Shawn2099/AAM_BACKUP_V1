@@ -100,12 +100,10 @@ def _fy_name(path_str: str) -> str | None:
 def _parent_path(path_str: str) -> str:
     """Get parent directory preserving separator style."""
     from pathlib import PurePosixPath, PureWindowsPath
-    if path_str.startswith("\\\\"):
-        p = PureWindowsPath(path_str)
-        return str(p.parent).rstrip("\\")
-    elif "\\" in path_str:
-        p = PureWindowsPath(path_str)
-        return str(p.parent).rstrip("\\")
+    if path_str.startswith("\\\\") or "\\" in path_str:
+        parent = str(PureWindowsPath(path_str).parent).rstrip("\\")
+        # a drive root keeps its backslash ("D:\"), otherwise _child_path would join with "/" ("D:/FY26-27")
+        return parent + "\\" if re.fullmatch(r"[A-Za-z]:", parent) else parent
     else:
         p = PurePosixPath(path_str)
         return str(p.parent).rstrip("/")

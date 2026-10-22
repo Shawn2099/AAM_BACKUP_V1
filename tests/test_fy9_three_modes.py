@@ -34,22 +34,31 @@ def _cloud_only(tmp_path, source, nas):
 
 
 @pytest.mark.parametrize("source, nas", [
-    (SRC_NONE, NAS_FY),      # the example config's NAS path with a source that has no FY folder (the bug)
     (SRC_FY, NAS_NONE),      # a plain placeholder
     (SRC_FY, NAS_OTHER),     # a placeholder from another year: nothing reads it
-    (SRC_FY, NAS_FY), (SRC_NONE, NAS_NONE),
+    (SRC_FY, NAS_FY),
 ])
 def test_cloud_only_loads_whatever_the_unused_nas_path_looks_like(tmp_path, source, nas):
     assert _cloud_only(tmp_path, source, nas).lan.enabled is False
 
 
-def test_cloud_only_with_a_non_fy_source_and_the_example_nas_path_has_no_rollover(tmp_path):
-    cfg = _cloud_only(tmp_path, SRC_NONE, NAS_FY)
-    assert fr.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination) is None
+@pytest.mark.parametrize("nas", [NAS_FY, NAS_NONE])
+def test_the_cloud_backup_needs_a_year_folder_so_its_cloud_folder_never_changes_by_itself(tmp_path, nas):
+    """Owner 2026-10-22: a year folder is mandatory whenever the cloud backup is on (predictable; no calendar
+    fallback that renames the cloud folder at midnight on 1 April)."""
+    with pytest.raises(ValidationError, match="year folder") as err:
+        _cloud_only(tmp_path, SRC_NONE, nas)
+    assert "FY26-27" in str(err.value) and "cloud" in str(err.value).lower()
+
+
+def test_a_nas_only_install_needs_the_year_folder_too():
+    with pytest.raises(ValidationError, match="financial-year folder"):
+        AppConfig(paths=PathsConfig(source_drive=SRC_NONE, lan_destination=NAS_NONE),
+                  lan=LanConfig(enabled=True), **_quiet_legs())
 
 
 @pytest.mark.parametrize("source, nas, word", [
-    (SRC_NONE, NAS_FY, "both"), (SRC_FY, NAS_NONE, "both"), (SRC_FY, NAS_OTHER, "same"),
+    (SRC_NONE, NAS_FY, "financial-year folder"), (SRC_FY, NAS_NONE, "both"), (SRC_FY, NAS_OTHER, "same"),
 ])
 def test_with_the_nas_on_the_paths_must_agree(source, nas, word):
     with pytest.raises(ValidationError, match=word) as err:
@@ -113,3 +122,21 @@ def test_a_source_without_an_fy_folder_is_never_rewritten(tmp_path):
     with pytest.raises(fr.RolloverError):
         fr.update_config_yaml(str(cfg), str(tmp_path / "SRC"), "\\\\nas\\share", "FY27-28", expect_fy="FY26-27")
     assert cfg.read_bytes() == before
+
+
+# ── drive-root layout: D:\FY25-26 (owner's example) ───────────────────────────
+
+def test_a_drive_root_keeps_its_backslash_so_the_new_path_is_clean():
+    assert fr._parent_path("D:\\FY25-26") == "D:\\"
+    assert fr._child_path(fr._parent_path("D:\\FY25-26"), "FY26-27") == "D:\\FY26-27"
+    assert fr._child_path(fr._parent_path("D:\\archives\\FY10-11"), "FY11-12") == "D:\\archives\\FY11-12"
+    assert fr._child_path(fr._parent_path("\\\\nas\\share\\FY25-26"), "FY26-27") == "\\\\nas\\share\\FY26-27"
+    assert fr._child_path(fr._parent_path("/data/FY25-26"), "FY26-27") == "/data/FY26-27"
+
+
+def test_the_switch_on_a_drive_root_writes_a_clean_windows_path(tmp_path):
+    cfg = _cloud_only_yaml(tmp_path, "D:\\FY26-27", "\\\\nas\\share\\FY26-27")
+    fr.update_config_yaml(str(cfg), fr._parent_path("D:\\FY26-27"), "\\\\nas\\share", "FY27-28",
+                          expect_fy="FY26-27")
+    text = cfg.read_text(encoding="utf-8")
+    assert "D:\\FY27-28" in text and "D:/" not in text

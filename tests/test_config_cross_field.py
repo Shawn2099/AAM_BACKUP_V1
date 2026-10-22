@@ -88,7 +88,8 @@ class TestCrossFieldValidation:
     ])
     def test_one_sided_fy_leaf_refused(self, source, nas):
         """FY folder on one path only → error (the rollover would rewrite the other to an empty folder)."""
-        with pytest.raises(ValidationError, match="both") as err:
+        # a source without a year folder is refused outright (owner 2026-10-22); a NAS without one by the pair rule
+        with pytest.raises(ValidationError, match="both|financial-year folder") as err:
             AppConfig(
                 paths=PathsConfig(source_drive=source, lan_destination=nas),
                 lan=LanConfig(enabled=True),
@@ -96,13 +97,14 @@ class TestCrossFieldValidation:
             )
         assert "FY" in str(err.value)
 
-    def test_no_fy_leaf_on_either_path_is_fine(self):
-        """Neither path has an FY folder → valid (the yearly switch is simply off)."""
-        AppConfig(
-            paths=PathsConfig(source_drive="E:\\SOURCE", lan_destination="\\\\nas\\share"),
-            lan=LanConfig(enabled=True),
-            **_quiet_legs(),
-        )
+    def test_no_fy_leaf_on_either_path_is_refused(self):
+        """Owner 2026-10-22: the source must be a year folder (predictable layout, no calendar fallback)."""
+        with pytest.raises(ValidationError, match="financial-year folder"):
+            AppConfig(
+                paths=PathsConfig(source_drive="E:\\SOURCE", lan_destination="\\\\nas\\share"),
+                lan=LanConfig(enabled=True),
+                **_quiet_legs(),
+            )
 
     def test_4digit_fy_rejected(self):
         """4-digit FY name → error."""

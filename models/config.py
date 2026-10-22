@@ -1222,6 +1222,17 @@ class AppConfig(StrictModel):
         lan_parts = self.paths.lan_destination.replace("\\", "/").rstrip("/").split("/")
         lan_fy = lan_parts[-1].upper() if fy_pattern.match(lan_parts[-1]) else None
 
+        # Owner 2026-10-22: the source MUST be a year folder, whichever backup legs are on. The cloud folder and
+        # the guard baselines are named after it; without one the name would silently fall back to the calendar
+        # year and change at midnight on 1 April (a full re-upload, no final backup, no archive, guards starting
+        # from nothing) and the yearly switch would never run. Predictable layout: D:\FY25-26, D:\FY24-25, ...
+        if not src_fy:
+            raise ValueError(
+                "The folder to back up must be a financial-year folder like FY26-27 (for example D:\\FY26-27). "
+                "The cloud copy and the safety checks are named after that folder; without it the name would "
+                "change by itself every 1 April and the yearly switch would not run. Fix it under "
+                "Settings > Advanced (or ask support).")
+
         # The source folder decides the financial year. The NAS path only counts while the NAS backup is on
         # (cloud-only keeps an unused placeholder that nothing reads, so it may look like anything).
         if self.lan.enabled and bool(src_fy) != bool(lan_fy):

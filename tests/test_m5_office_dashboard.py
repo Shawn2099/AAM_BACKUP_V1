@@ -13,12 +13,12 @@ from core.manifest import ManifestDB
 from models.config import AppConfig, DashboardConfig
 from tests.test_m4_installer import INSTALLER, READINESS, ROOT
 
-UNC = "\\\\nas\\backup"
+UNC = "\\\\nas\\backup\\FY26-27"
 
 
 def _cfg(tmp_path, **dash) -> AppConfig:
     return AppConfig(
-        paths={"source_drive": str(tmp_path), "lan_destination": UNC,
+        paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
         dashboard={**dash},

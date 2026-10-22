@@ -45,11 +45,14 @@ def test_a_new_drive_or_parent_with_the_same_fy_is_allowed(tmp_path, cfg_file):
     assert load_config(str(cfg_file)).paths.source_drive == changes["paths.source_drive"]
 
 
-def test_turning_the_fy_folders_off_or_on_is_a_support_edit(tmp_path, cfg_file):
+def test_turning_the_fy_folders_off_is_refused(tmp_path, cfg_file):
+    """A year folder is mandatory (owner 2026-10-22): the config no longer loads without one."""
     off = {"paths.source_drive": str(tmp_path / "src"), "paths.lan_destination": "\\\\nas\\share"}
-    with pytest.raises(ce.ConfigEditError, match="support") as err:
+    before = cfg_file.read_bytes()
+    with pytest.raises(ce.ConfigEditError) as err:
         _apply(cfg_file, off, phrase="x")
-    assert err.value.status == 409
+    assert err.value.status == 400 and "financial-year folder" in str(err.value.extra["errors"])
+    assert cfg_file.read_bytes() == before
 
 
 def test_settings_that_are_not_paths_are_not_affected(cfg_file):

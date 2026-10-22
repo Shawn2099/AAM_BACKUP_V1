@@ -202,8 +202,8 @@ class TestCanaryMessage:
 
 def _base_config(**path_overrides):
     paths = dict(
-        source_drive="D:\\\\FY25-26\\\\data",
-        lan_destination="\\\\\\\\nas\\\\FY25-26\\\\data",
+        source_drive="D:\\\\FY25-26",
+        lan_destination="\\\\\\\\nas\\\\FY25-26",
         gcs_key_path="keys/gcs.json",
         database_path="db/m.db",
         log_directory="logs",

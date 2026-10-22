@@ -11,7 +11,7 @@ from core.manifest import ManifestDB
 from models.config import AppConfig
 from test_support.smtp_server import smtp_server
 
-UNC = "\\\\nas\\backup"
+UNC = "\\\\nas\\backup\\FY26-27"
 
 
 def _cfg(tmp_path, port=25, **notif) -> AppConfig:
@@ -21,7 +21,7 @@ def _cfg(tmp_path, port=25, **notif) -> AppConfig:
          "send_on_failure": True}
     n.update(notif)
     return AppConfig(
-        paths={"source_drive": str(tmp_path), "lan_destination": UNC,
+        paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt")},
         wol={"enabled": False}, cloud={"enabled": False},
         dashboard={"public_url": "http://backup-server:8080"},

@@ -25,7 +25,7 @@ from core.time_utils import IST
 from models.config import AppConfig, WatchdogConfig
 from test_support.smtp_server import smtp_server
 
-UNC = "\\\\nas\\backup"
+UNC = "\\\\nas\\backup\\FY26-27"
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +38,7 @@ def _frozen_mid_afternoon():
 
 def _cfg(tmp_path, port=25, cloud=False):
     return AppConfig(
-        paths={"source_drive": str(tmp_path), "lan_destination": UNC,
+        paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": UNC,
                "runtime_dir": str(tmp_path / "rt"),
                "gcs_key_path": str(tmp_path / "key.json")},
         wol={"enabled": False},

@@ -182,7 +182,7 @@ def test_mail_server_down_never_stops_the_backup_and_the_failed_alert_is_recorde
     from models.config import AppConfig
 
     cfg = AppConfig(
-        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\backup",
+        paths={"source_drive": str(tmp_path / "FY26-27"), "lan_destination": "\\\\nas\\backup\\FY26-27",
                "runtime_dir": str(tmp_path / "rt"), "gcs_key_path": str(tmp_path / "key.json")},
         wol={"enabled": False}, cloud={"enabled": False},
         dashboard={},
