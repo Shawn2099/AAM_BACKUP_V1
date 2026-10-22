@@ -2371,9 +2371,44 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
     config = load_config(config_path)
     db = ManifestDB.from_config(config)
     try:
+        _alarm_unprotected_new_fy(config, db)     # first: the blocked days below raise before the end
         return _rollover_resume(config, config_path, approval_id, db)
     finally:
         db.close()
+
+
+def _resolve_unprotected_new_fy(config, db) -> None:
+    """The matching RESOLVED mail - once - when the switch made the new year's files protected, but only
+    for a problem the office was actually mailed about."""
+    configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+    if configured is None:
+        return
+    problem = db.last_notification(f"rollover:unprotected:{configured}", status="SENT")
+    if problem is None or db.last_notification(f"recovered:rollover:{configured}", status="SENT"):
+        return
+    notify(config, AlertEvent(
+        key=f"recovered:rollover:{configured}", kind="RECOVERED", mode="rollover",
+        title=f"Files in {configured} are backed up now",
+        message=f"The switch to {configured} is done: the files saved in its folder are part of the "
+                "backups now.",
+        status="RECOVERED", resolved_code="AAM-ROL-06"))
+
+
+def _alarm_unprotected_new_fy(config, db) -> None:
+    """Plan FY-6: files in the next FY's folder are not backed up until the switch. Read-only, so it also
+    runs while the rollover is blocked (G6 / unproven clock); a failure here never stops the rollover."""
+    try:
+        found = fy_rollover.unprotected_new_fy(config, db)
+        if not found:
+            _resolve_unprotected_new_fy(config, db)
+            return
+        notify(config, AlertEvent(
+            key=f"rollover:unprotected:{found['to_fy']}", kind="ACTION_REQUIRED", mode="rollover",
+            title=f"Files in {found['to_fy']} are not backed up yet",
+            message=fy_rollover.unprotected_message(found), occurred_at=now_iso(),
+            fault_code="AAM-ROL-06", cooldown_hours=config.alerts.stale_repeat_hours))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Check for unprotected files in the new financial year failed: {e}")
 
 
 def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):

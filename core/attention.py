@@ -318,6 +318,18 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            act("Add an address under \"Who gets problem alerts\" in Settings",
                                "The alerts list is empty, so problem alerts go to the reports list")))
 
+    from core import fy_rollover
+
+    try:                       # plan FY-6: files saved in the next year's folder before the switch
+        found = fy_rollover.unprotected_new_fy(config, db)
+    except Exception as e:  # noqa: BLE001 - the dashboard still renders
+        logger.warning(f"Could not check the new financial year's folder: {e}")
+        found = None
+    if found:
+        items.append(_item(RED, f"rollover:unprotected:{found['to_fy']}",
+                           act("Open the FY rollover card and finish the switch (or approve it)",
+                               fy_rollover.unprotected_message(found))))
+
     from core import alert_class
 
     for cls in alert_class.switched_off(config):

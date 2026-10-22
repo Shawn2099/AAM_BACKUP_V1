@@ -259,6 +259,11 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
        "leave its last changes unprotected.",
        "Fix the backup problem first (see its own email); the switch then runs "
        "automatically."),
+    _f("AAM-ROL-06", "Files in the new year are not backed up yet", ACTION, (YOU, SUPPORT),
+       "Files were saved in the new financial year's folder, but the backups still use the "
+       "old year's folder until the switch is done. Those new files exist on the server only.",
+       "Open the dashboard and approve the switch, or fix the problem it shows.",
+       "Do not move files out of the old year's folder until the switch is done."),
 
     # ── weekly safety check ───────────────────────────────────────────────
     _f("AAM-AUD-01", "Safety check found differences", ACTION, (SUPPORT,),
