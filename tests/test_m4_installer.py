@@ -191,4 +191,5 @@ def test_venv_is_built_with_copies_not_hard_links():
 def test_runtime_rights_reach_existing_files_on_an_upgrade():
     """Trial box 2026-10-15: logs/DB created earlier by LocalSystem kept their old rights,
     NSSM (as the account) could not open agent_svc.log and the agent did not start."""
-    assert '(OI)(CI)M" /T /C /Q' in INSTALLER
+    common = (ROOT / "deploy" / "_common.ps1").read_text(encoding="utf-8")
+    assert '(OI)(CI)M" /T /C /Q' in common and "Grant-AgentRights" in INSTALLER

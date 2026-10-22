@@ -33,10 +33,13 @@ def test_readiness_reads_the_optional_update_policy_value_safely_under_strict_mo
 
 
 def test_installer_grants_use_computer_slash_name_because_icacls_rejects_dot_slash():
-    ps1 = (DEPLOY / "06_install_services.ps1").read_text(encoding="utf-8", errors="replace")
-    assert '$AclAccount = if ($ServiceAccount.StartsWith(".\\"))' in ps1
-    assert ':(OI)(CI)M" /T /C /Q' in ps1 and '${AclAccount}:(OI)(CI)M' in ps1
-    assert '${ServiceAccount}:(OI)(CI)M' not in ps1
+    # the grants live in deploy/_common.ps1 (shared by 04 and 06, so the readiness check and the install agree)
+    common = (DEPLOY / "_common.ps1").read_text(encoding="utf-8", errors="replace")
+    assert 'if ($Account.StartsWith(".\\")) { return "$env:COMPUTERNAME\\"' in common
+    assert ':(OI)(CI)M" /T /C /Q' in common and '${acl}:(OI)(CI)M' in common
+    assert '${ServiceAccount}:(OI)(CI)M' not in common
+    for script in ("04_check_readiness.ps1", "06_install_services.ps1"):
+        assert "Grant-AgentRights" in (DEPLOY / script).read_text(encoding="utf-8", errors="replace"), script
 
 
 def test_readiness_resets_the_venv_acls_after_uv_sync():

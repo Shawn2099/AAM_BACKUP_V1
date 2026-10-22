@@ -5,19 +5,12 @@
 #   nightly preflight makes (plan WP4/WP16).
 param(
     [string]$ServiceAccount = "",
-    [string]$PasswordFile = ""
+    [string]$PasswordFile = "",
+    [switch]$SkipTestMail
 )
 
-# =======================================================================
-# Self-Elevate to Administrator (parameters are passed on)
-# =======================================================================
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $fwd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    if ($ServiceAccount) { $fwd += " -ServiceAccount `"$ServiceAccount`"" }
-    if ($PasswordFile) { $fwd += " -PasswordFile `"$PasswordFile`"" }
-    Start-Process powershell.exe -ArgumentList $fwd -Verb RunAs
-    exit
-}
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) "_common.ps1")
+Assert-Administrator
 
 # -PasswordFile (unattended install): a file holding the password as a DPAPI
 # secure string (ConvertFrom-SecureString) made by THIS Windows user on THIS
@@ -40,6 +33,16 @@ $passed = $true
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ProjectDir = Split-Path -Parent $ScriptDir
 $BinDir = Join-Path $ScriptDir "bin"
+$warnings = 0
+$cfgExit = 1
+$runtimeDir = "C:\BackupAgent"
+Set-InstallEnvironment ""
+
+function Warn-Item($Name, $Status) {
+    Write-Host "[WARN] " -NoNewline -ForegroundColor Yellow
+    Write-Host "$($Name): $Status"
+    $script:warnings++
+}
 
 function Check-Item($Name, $Status, $IsError) {
     if ($IsError) {
@@ -75,20 +78,8 @@ if ($uvPath) {
     $uvVer = & $uvPath --version 2>&1
     Check-Item "uv" "$uvVer ($uvPath)" $false
 
-    Write-Host "       -> Bootstrapping Python via uv... " -NoNewline
-    $pyVer = (& $uvPath run python --version 2>&1) -join " "
-    if ($LASTEXITCODE -eq 0 -and $pyVer -match "Python") {
-        Write-Host "[OK]" -ForegroundColor Green
-    } else {
-        Write-Host "[FAIL]" -ForegroundColor Red
-        Check-Item "Python Runtime" "Failed to bootstrap Python. Check internet." $true
-    }
-
-    # Managed Python outside any user profile (03_setup_system.bat sets this
-    # machine-wide; a shell opened before that does not see it yet)
-    if (-not $env:UV_PYTHON_INSTALL_DIR) {
-        $env:UV_PYTHON_INSTALL_DIR = Join-Path $env:ProgramData "uv\python"
-    }
+    # (UV_PYTHON_INSTALL_DIR / UV_CACHE_DIR were set at the top of this script, before any uv call; `uv sync`
+    #  below also installs Python when it is missing, so no separate "bootstrap" call is needed)
     # --frozen: exactly the versions in uv.lock, never a re-resolve (WP16)
     # --link-mode copy: uv otherwise HARD-LINKS the packages to its cache in this
     # admin's profile - a hard link shares that file's permissions, so the
@@ -240,9 +231,7 @@ if ($lanman -and $lanman.Status -eq "Running") {
 # 12. Antivirus Check (Warning only)
 $wd = Get-Service WinDefend -ErrorAction SilentlyContinue
 if ($wd -and $wd.Status -eq "Running") {
-    Write-Host "[WARN] " -NoNewline -ForegroundColor Yellow
-    Write-Host "Windows Defender is running. Ensure exclusions are set (run 03_setup_system.bat)."
-    Write-Host "       Exclusions needed: project folder, robocopy.exe, rclone.exe"
+    Warn-Item "Windows Defender" "is running. Ensure exclusions are set (run 03_setup_system.bat): project folder, robocopy.exe, rclone.exe"
 }
 
 # 13. Directory Write-Access
@@ -259,22 +248,8 @@ try {
 $cfg = Join-Path $ProjectDir "config.yaml"
 if (Test-Path $cfg) { Check-Item "config.yaml" "Found" $false } else { Check-Item "config.yaml" "Missing in project root" $true }
 
-$key = Join-Path $ScriptDir "keys\aam-gcs-key.json"
-if (Test-Path $key) {
-    try {
-        $keyJson = Get-Content $key -Raw | ConvertFrom-Json -ErrorAction Stop
-        if ($keyJson.type -eq "service_account") {
-            Check-Item "GCS Key" "Valid Service Account JSON" $false
-        } else {
-            Check-Item "GCS Key" "Invalid JSON (missing 'type: service_account')" $true
-        }
-    } catch {
-        Check-Item "GCS Key" "Corrupt or invalid JSON syntax" $true
-    }
-} else {
-    Write-Host "[WARN] " -NoNewline -ForegroundColor Yellow
-    Write-Host "GCS Key missing at $key (Required for cloud backups)"
-}
+# (the Google key named in config.yaml is checked below by install_checks.py - the path comes from the config,
+#  not from a fixed folder)
 
 # 15. Python the services will run (WP16: .venv's Python directly, no uv at boot)
 $venvPy = Join-Path $ProjectDir ".venv\Scripts\python.exe"
@@ -316,7 +291,35 @@ if (Test-Path $venvPy) {
     if ($linkExit -eq 0) {
         Check-Item "Dashboard link in emails" "$($linkInfo | Select-Object -Last 1) - works from office PCs" $false
     } else {
-        Check-Item "Dashboard link in emails" "$($linkOut | Select-Object -Last 1)" $true
+        Check-Item "Dashboard link in emails" "$($linkOut | Select-Object -Last 1) (set dashboard.bind_address to 0.0.0.0 or this server's office address in config.yaml)" $true
+    }
+
+    if ($cfgExit -eq 0) {
+        $runtimeDir = [string](& $venvPy (Join-Path $ScriptDir "read_config.py") $cfg paths.runtime_dir --default "C:\BackupAgent" | Select-Object -First 1)
+        Set-InstallEnvironment $runtimeDir
+        if (-not (Test-Path $runtimeDir)) { New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null }
+
+        # 16c. Install-time checks (deploy\install_checks.py): Windows time zone, the Google key named in the
+        # config, the source year = the current financial year, the Wake-on-LAN target = the NAS host.
+        Push-Location $ProjectDir
+        $icOut = & $venvPy (Join-Path $ScriptDir "install_checks.py") $cfg 2>&1
+        Pop-Location
+        foreach ($line in $icOut) {
+            $m = [regex]::Match([string]$line, '^(OK|WARN|FAIL) ([^:]+): (.*)$')
+            if (-not $m.Success) { Check-Item "Install checks" ([string]$line) $true }
+            elseif ($m.Groups[1].Value -eq "WARN") { Warn-Item $m.Groups[2].Value $m.Groups[3].Value }
+            else { Check-Item $m.Groups[2].Value $m.Groups[3].Value ($m.Groups[1].Value -eq "FAIL") }
+        }
+
+        # 16d. Mail password: a plain one in config.yaml is encrypted now (Windows DPAPI, machine scope); when
+        # the mail server needs a login and no password is stored, ask for it here, hidden, typed twice.
+        Push-Location $ProjectDir
+        & $venvPy (Join-Path $ScriptDir "encrypt_secrets.py") --config $cfg
+        $encExit = $LASTEXITCODE
+        & $venvPy (Join-Path $ScriptDir "set_mail_password.py") --config $cfg --only-missing
+        $pwExit = $LASTEXITCODE
+        Pop-Location
+        Check-Item "Mail password" $(if ($encExit -eq 0 -and $pwExit -eq 0) { "stored encrypted (or not needed)" } else { "not stored - see the message above" }) ($encExit -ne 0 -or $pwExit -ne 0)
     }
 } else {
     Check-Item "Project Python" "Missing $venvPy (uv sync --frozen failed above?)" $true
@@ -332,6 +335,12 @@ if ($ServiceAccount) {
         Check-Item "Service account" "$ServiceAccount not found or disabled (create it: lusrmgr.msc)" $true
     }
     if ($local -and (Test-Path $venvPy)) {
+        # The same rights 06 grants, BEFORE the probe checks them (04 must not depend on 06 having run)
+        if (Grant-AgentRights $runtimeDir $ProjectDir $cfg $ServiceAccount) {
+            Check-Item "Rights for $ServiceAccount" "Modify on $runtimeDir and on config.yaml + its folder" $false
+        } else {
+            Check-Item "Rights for $ServiceAccount" "could not grant Modify on $runtimeDir / $cfg (icacls failed)" $true
+        }
         try {
             $cred = if ($PasswordFile) { New-Object System.Management.Automation.PSCredential($ServiceAccount, (Read-PasswordFile $PasswordFile)) }
                     else { Get-Credential -UserName $ServiceAccount -Message "Password of $ServiceAccount (probe runs as this account)" }
@@ -391,9 +400,7 @@ if ($ServiceAccount) {
         }
     }
 } else {
-    Write-Host "[WARN] " -NoNewline -ForegroundColor Yellow
-    Write-Host "No -ServiceAccount given: NAS access is NOT verified. In a WORKGROUP the agent must"
-    Write-Host "       run as a dedicated account that also exists (same password) on the NAS."
+    Warn-Item "No -ServiceAccount given" "NAS access is NOT verified. In a WORKGROUP the agent must run as a dedicated account that also exists (same password) on the NAS."
 }
 
 # 18. Mail password readable by LocalSystem (the watchdog sends the alert emails; plan S5).
@@ -428,11 +435,27 @@ if (Test-Path $venvPy) {
     }
 }
 
+# 19. One real test mail to both recipient lists: proves host, port, TLS, login and the addresses now,
+# not at the first real alert. (Use -SkipTestMail when re-running this check to avoid another mail.)
+if ((Test-Path $venvPy) -and $cfgExit -eq 0) {
+    if ($SkipTestMail) {
+        Warn-Item "Test mail" "skipped (-SkipTestMail): the mail settings are NOT proven"
+    } else {
+        Push-Location $ProjectDir
+        $tmOut = (& $venvPy (Join-Path $ScriptDir "send_test_mail.py") $cfg 2>&1) | Select-Object -Last 1
+        $tmExit = $LASTEXITCODE
+        Pop-Location
+        Check-Item "Test mail" ([string]$tmOut -replace '^(OK|FAIL) Test mail: ', '') ($tmExit -ne 0)
+    }
+}
+
 Write-Host ""
-if ($passed) {
-    Write-Host ">>> SUCCESS: All readiness checks passed! You may proceed to 05_test_config.bat." -ForegroundColor Green
+if ($passed -and $warnings -eq 0) {
+    Write-Host ">>> SUCCESS: all readiness checks passed. Next: 06_install_services.ps1." -ForegroundColor Green
+} elseif ($passed) {
+    Write-Host ">>> PASSED WITH $warnings WARNING(S): read the yellow lines above; each one is something NOT proven." -ForegroundColor Yellow
 } else {
-    Write-Host ">>> ERROR: One or more checks failed. Fix the red items above before proceeding." -ForegroundColor Red
+    Write-Host ">>> ERROR: one or more checks failed. Fix the red items above, then run this script again." -ForegroundColor Red
 }
 Write-Host ""
-# pause
+exit $(if ($passed) { 0 } else { 1 })

@@ -14,17 +14,8 @@ param(
     [switch]$KeepServiceAccount
 )
 
-# =======================================================================
-# Self-Elevate to Administrator (parameters are passed on)
-# =======================================================================
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $fwd = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    if ($ServiceAccount) { $fwd += " -ServiceAccount `"$ServiceAccount`"" }
-    if ($PasswordFile) { $fwd += " -PasswordFile `"$PasswordFile`"" }
-    if ($KeepServiceAccount) { $fwd += " -KeepServiceAccount" }
-    Start-Process powershell.exe -ArgumentList $fwd -Verb RunAs
-    exit
-}
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Definition) "_common.ps1")
+Assert-Administrator
 
 # -PasswordFile (unattended install): a file holding the password as a DPAPI
 # secure string (ConvertFrom-SecureString) made by THIS Windows user on THIS
@@ -91,6 +82,7 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 $RuntimeDir = Read-ConfigValue "paths.runtime_dir" $DefaultRuntime
+Set-InstallEnvironment $RuntimeDir
 $BackupRoot = $RuntimeDir
 $LogDir     = Join-Path $BackupRoot "logs"
 $PrefectHome = Join-Path $BackupRoot ".prefect"
@@ -99,18 +91,7 @@ $SVC_SERVER   = "AamPrefectServer"
 $SVC_AGENT    = "AamBackupAgent"
 $SVC_WATCHDOG = "AamWatchdog"
 
-# -- Validate Google Cloud SDK ----------------------------------------
-$GcloudCmd = Get-Command gcloud -ErrorAction SilentlyContinue
-if (-not $GcloudCmd) {
-    $GcloudCmd = Join-Path $BinDir "google-cloud-sdk\bin\gcloud.cmd"
-}
-if (-not $GcloudCmd -and -not (Test-Path $GcloudCmd)) {
-    Write-Host ""
-    Write-Host "  ERROR: Google Cloud SDK not found in deploy\bin or PATH." -ForegroundColor Red
-    Write-Host "  Please run 03_setup_system.bat first to download and set up the SDK."
-    Write-Host ""
-    exit 1
-}
+# (the Google Cloud SDK is checked by 04_check_readiness.ps1, which must be green before this script)
 
 # -- Validate rclone --------------------------------------------------
 $RcloneExe = $null
@@ -170,6 +151,18 @@ if ($cfgExit -ne 0) {
     exit 1
 }
 
+# The dashboard address for the firewall rule is read NOW, before any service is touched: a failure here
+# used to happen after the services were installed, with no firewall rule, so the office could not reach it.
+Push-Location $ProjectDir
+$dashInfo = & $VenvPython -c "from models.config import load_config; d=load_config(r'$ConfigFile').dashboard; print(d.bind_address); print(d.port); print(','.join(d.firewall_remote_addresses))"
+$dashExit = $LASTEXITCODE
+Pop-Location
+if ($dashExit -ne 0 -or @($dashInfo).Count -lt 3) {
+    Write-Host "  ERROR: could not read the dashboard settings from $ConfigFile. Services were NOT changed." -ForegroundColor Red
+    exit 1
+}
+$dashBind = $dashInfo[0]; $dashPort = $dashInfo[1]; $dashRemote = $dashInfo[2] -split ","
+
 # -- Dashboard passwords (plan E4) ------------------------------------
 # The dashboard opens only when BOTH passwords exist (fail closed). Ask here, at the server
 # console, for the ones that have no hash yet; they are typed twice, hidden, and stored as
@@ -225,20 +218,11 @@ if ($ServiceAccount) {
         Write-Host "  ERROR: no password for $ServiceAccount could be read. Services were NOT changed." -ForegroundColor Red
         exit 1
     }
-    # The agent writes the DB, logs, run logs, lock and Prefect home under the
-    # runtime folder, and (FY rollover) config.yaml + its backup next to it.
-    # /T: also the files that ALREADY exist (an upgrade: logs and the DB were
-    # created by LocalSystem; without it NSSM could not open agent_svc.log as
-    # the account and the agent did not start - trial box 2026-10-15).
-    # icacls does not resolve dot-backslash-name: use COMPUTERNAME-backslash-name (found on the box)
-    $AclAccount = if ($ServiceAccount.StartsWith(".\")) { "$env:COMPUTERNAME\" + $ServiceAccount.Substring(2) } else { $ServiceAccount }
-    icacls $RuntimeDir /grant "${AclAccount}:(OI)(CI)M" /T /C /Q | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: could not give $ServiceAccount Modify on $RuntimeDir. Services were NOT changed." -ForegroundColor Red
+    # Same function 04_check_readiness.ps1 used before its probe (runtime folder, project folder, config.yaml)
+    if (-not (Grant-AgentRights $RuntimeDir $ProjectDir $ConfigFile $ServiceAccount)) {
+        Write-Host "  ERROR: could not give $ServiceAccount Modify on $RuntimeDir / $ConfigFile. Services were NOT changed." -ForegroundColor Red
         exit 1
     }
-    icacls $ProjectDir /grant "${AclAccount}:M" | Out-Null
-    icacls $ConfigFile /grant "${AclAccount}:M" | Out-Null
     Write-Host "[OK]   $ServiceAccount granted Modify on $RuntimeDir, and on $ConfigFile + its folder"
 } else {
     Write-Host "[WARN] No -ServiceAccount: AamBackupAgent runs as LocalSystem, which cannot" -ForegroundColor Yellow
@@ -442,28 +426,33 @@ Write-Host "[OK]   $SVC_WATCHDOG installed."
 # ====================================================================
 # Start all services in dependency order
 # ====================================================================
+function Wait-Http([string]$Url, [int]$Seconds) {
+    # any HTTP answer (even 503 "needs attention", normal before the first backup) = the server is up
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        try { Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5 | Out-Null; return $true }
+        catch { if ($_.Exception.Response) { return $true } }
+        Start-Sleep -Seconds 3
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+$startFailures = @()
+
 Write-Host ""
 Write-Host "[setup] Starting $SVC_SERVER..."
 net start $SVC_SERVER
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  ERROR: Failed to start $SVC_SERVER. This service must be running" -ForegroundColor Red
-    Write-Host "  before the others can start." -ForegroundColor Red
-}
+if ($LASTEXITCODE -ne 0) { $startFailures += "$SVC_SERVER did not start" }
 
-Write-Host "[setup] Waiting 15 seconds for Prefect API to initialize..."
-Start-Sleep -Seconds 15
+Write-Host "[setup] Waiting for the Prefect API (up to 3 minutes)..."
+if (-not (Wait-Http "http://127.0.0.1:4200/api/health" 180)) { $startFailures += "the Prefect API did not answer on port 4200" }
 
 Write-Host "[setup] Starting $SVC_AGENT..."
 net start $SVC_AGENT
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  WARNING: $SVC_AGENT failed to start. It will retry automatically." -ForegroundColor Yellow
-}
+if ($LASTEXITCODE -ne 0) { $startFailures += "$SVC_AGENT did not start" }
 
 Write-Host "[setup] Starting $SVC_WATCHDOG..."
 net start $SVC_WATCHDOG
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  WARNING: $SVC_WATCHDOG failed to start. It will retry automatically." -ForegroundColor Yellow
-}
+if ($LASTEXITCODE -ne 0) { $startFailures += "$SVC_WATCHDOG did not start" }
 
 # ====================================================================
 # DASHBOARD FIREWALL RULE (owner 2026-10-18: office network only)
@@ -472,12 +461,6 @@ if ($LASTEXITCODE -ne 0) {
 # (default LocalSubnet). Prefect's API (4200, no login) stays on 127.0.0.1 and
 # is never opened. Re-running the installer replaces the rule.
 $FwRuleName = "AAM Backup Dashboard"
-$dashInfo = & $VenvPython -c "from models.config import load_config; d=load_config(r'$ConfigFile').dashboard; print(d.bind_address); print(d.port); print(','.join(d.firewall_remote_addresses))"
-if ($LASTEXITCODE -ne 0 -or $dashInfo.Count -lt 3) {
-    Write-Host "  ERROR: could not read the dashboard settings for the firewall rule." -ForegroundColor Red
-    exit 1
-}
-$dashBind = $dashInfo[0]; $dashPort = $dashInfo[1]; $dashRemote = $dashInfo[2] -split ","
 Get-NetFirewallRule -DisplayName $FwRuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 # An older 03_setup_system.bat opened Prefect's port (4200, any address); that rule must not survive.
 Get-NetFirewallRule -DisplayName "AAM Backup Prefect" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -492,13 +475,30 @@ if ($dashBind -in @("127.0.0.1", "localhost", "::1")) {
     Write-Host "[OK]   Firewall: dashboard port $dashPort open to $($dashRemote -join ', ') only"
 }
 
+# -- Verify what the banner below claims (Windows' own view, not the exit codes of net start) -------
+foreach ($svc in @($SVC_SERVER, $SVC_AGENT, $SVC_WATCHDOG)) {
+    $st = (Get-Service $svc -ErrorAction SilentlyContinue)
+    if (-not $st -or $st.Status -ne "Running") { $startFailures += "$svc is not Running" }
+}
+$probeHost = if ($dashBind -in @("0.0.0.0", "::", "")) { "127.0.0.1" } else { $dashBind }
+Write-Host "[setup] Waiting for the dashboard on port $dashPort (up to 3 minutes)..."
+if (-not (Wait-Http "http://${probeHost}:$dashPort/health" 180)) { $startFailures += "the dashboard did not answer on port $dashPort" }
+if ($startFailures.Count -gt 0) {
+    Write-Host ""
+    Write-Host "===================================================================" -ForegroundColor Red
+    Write-Host "  INSTALL FAILED - the system is NOT running" -ForegroundColor Red
+    $startFailures | Select-Object -Unique | ForEach-Object { Write-Host "   - $_" -ForegroundColor Red }
+    Write-Host "  Look at the logs in $LogDir (agent_svc.log, prefect_svc.log), fix the cause, run this script again."
+    Write-Host "===================================================================" -ForegroundColor Red
+    exit 1
+}
+
 Write-Host ""
 Write-Host "==================================================================="
-Write-Host "  INSTALLATION COMPLETE"
+Write-Host "  INSTALLATION COMPLETE (3 services running, Prefect API and dashboard answered)"
 Write-Host "==================================================================="
-Write-Host "  Services:    Open services.msc to verify status"
-Write-Host "  Prefect UI:  http://localhost:4200"
-Write-Host "  Dashboard:   http://localhost:8080"
+Write-Host "  Dashboard:   http://<this server>:$dashPort  - open it from an office PC with Chrome or Edge"
+Write-Host "  Prefect UI:  http://localhost:4200 (this server only)"
 Write-Host "  Logs:        $LogDir"
 Write-Host "==================================================================="
 Write-Host ""

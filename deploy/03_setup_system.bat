@@ -2,7 +2,7 @@
 :: =======================================================================
 :: AAM Backup Automation V1 - SYSTEM SETUP (run ONCE per server)
 ::
-:: Run this BEFORE 06_install_services.ps1 on a fresh server.
+:: Run this FIRST on a fresh server (then 04_check_readiness.ps1, then 06_install_services.ps1).
 :: All steps are idempotent - safe to re-run if needed.
 ::
 :: What it does:
@@ -10,8 +10,9 @@
 ::   1. Enables Windows Long Path support (>260 chars)
 ::   2. Suppresses Windows Update auto-reboots during backup windows
 ::   3. Adds Microsoft Defender exclusions for project dir and transfer processes
-::   4. Opens Windows Firewall ports 4200 (Prefect) and 8080 (Dashboard)
-::   5. Downloads the isolated Google Cloud SDK to deploy/bin
+::   4. (no firewall change here - 06_install_services.ps1 opens the dashboard port)
+::   5. Downloads and unpacks the isolated Google Cloud SDK to deploy/bin
+::   6. Locks the code folder (only Administrators/SYSTEM may change it - the services run from it)
 ::
 :: Runtime: ~1-2 minutes (most time is SDK download + extraction, first run only)
 :: =======================================================================
@@ -54,7 +55,7 @@ echo ===================================================================
 :: the correct Python version - no manual Python install needed.
 :: ====================================================================
 echo.
-echo [0/3] Checking uv package manager...
+echo [0/6] Checking uv package manager...
 
 :: Check all known install locations
 set "UV_EXE="
@@ -122,7 +123,7 @@ echo [OK]   Python 3.12 ready ^(readable by the service account^).
 :: rclone without this. Essential for deep accounting folder trees.
 :: ====================================================================
 echo.
-echo [1/3] Enabling Windows Long Path support ^(paths ^> 260 chars^)...
+echo [1/6] Enabling Windows Long Path support ^(paths ^> 260 chars^)...
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Long paths enabled.
@@ -139,7 +140,7 @@ if %ERRORLEVEL% equ 0 (
 :: are blocked until an Administrator manually approves.
 :: ====================================================================
 echo.
-echo [2/3] Suppressing Windows Update automatic reboots...
+echo [2/6] Suppressing Windows Update automatic reboots...
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Auto-reboot suppressed. Server will NOT reboot automatically after updates.
@@ -179,7 +180,7 @@ if %ERRORLEVEL% equ 0 (
 :: monitoring to prevent CPU throttling and file locking.
 :: ====================================================================
 echo.
-echo [3/5] Adding Microsoft Defender exclusions for project directory and transfer processes...
+echo [3/6] Adding Microsoft Defender exclusions for project directory and transfer processes...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath '%PROJECT_DIR%' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'robocopy.exe', 'rclone.exe' -ErrorAction SilentlyContinue"
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Antivirus exclusions added for: %PROJECT_DIR% and transfer processes.
@@ -199,7 +200,7 @@ if %ERRORLEVEL% equ 0 (
 :: address would undo that scope whenever this script is run again (A5).
 :: ====================================================================
 echo.
-echo [4/5] Firewall: nothing to do here - 06_install_services.ps1 opens the dashboard port (office network only).
+echo [4/6] Firewall: nothing to do here - 06_install_services.ps1 opens the dashboard port (office network only).
 echo [OK]   No firewall rule created by this script.
 
 :: ====================================================================
@@ -210,7 +211,7 @@ echo [OK]   No firewall rule created by this script.
 :: global gcloud SDK version changes.
 :: ====================================================================
 echo.
-echo [5/5] Checking Google Cloud SDK...
+echo [5/6] Checking Google Cloud SDK...
 
 :: 1. Check if gcloud is already in PATH
 where gcloud >nul 2>&1
@@ -248,23 +249,49 @@ if not exist "%GCLOUD_ZIP%" (
 echo [OK]   Download complete.
 
 :extract_instructions
-:: Instruct user to manually extract to avoid Antivirus hang
-echo.
-echo [*]    ACTION REQUIRED: Antivirus makes auto-extraction very slow.
-echo [*]    Please manually extract the downloaded file:
-echo [*]    %GCLOUD_ZIP%
-echo [*]    Extract it so the folder is: %PROJECT_DIR%\deploy\bin\google-cloud-sdk
-echo.
-echo [....] Opening the folder for you now...
-explorer "%PROJECT_DIR%\deploy\bin"
+if not exist "%SEVENZIP%" (
+    echo [WARN] 7za.exe is missing at %SEVENZIP% - cannot unpack the SDK automatically.
+    echo [WARN] Extract %GCLOUD_ZIP% by hand so that this file exists: %GCLOUD_CMD%
+    goto :gcloud_done
+)
+echo [....] Unpacking the SDK with 7za ^(antivirus can make this take a few minutes^)...
+"%SEVENZIP%" x "%GCLOUD_ZIP%" -o"%PROJECT_DIR%\deploy\bin" -y >nul
+if not exist "%GCLOUD_CMD%" (
+    echo [WARN] Unpacking did not produce %GCLOUD_CMD%.
+    echo [WARN] Delete %GCLOUD_ZIP% and run this script again, or extract it by hand
+    echo [WARN] so the folder is %PROJECT_DIR%\deploy\bin\google-cloud-sdk ^(not a folder inside a folder^).
+    goto :gcloud_done
+)
+echo [OK]   Google Cloud SDK ready: %GCLOUD_CMD%
 
 :gcloud_done
+
+:: ====================================================================
+:: STEP 6: Lock the code folder. AamPrefectServer and AamWatchdog run as LocalSystem FROM this folder: if a
+:: normal user could drop a .py file here, it would run as SYSTEM. Administrators and SYSTEM may change it;
+:: everyone else only reads (SIDs, so this also works on a non-English Windows). 06_install_services.ps1 then
+:: gives the backup account Modify on config.yaml and the folder itself (the FY switch writes next to it).
+:: ====================================================================
+echo.
+echo [6/6] Locking the code folder ^(Administrators + SYSTEM may change it, everyone else read-only^)...
+icacls "%PROJECT_DIR%" /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /C /Q >nul
+if errorlevel 1 (
+    echo [WARN] Could not lock %PROJECT_DIR%. Do it by hand: only Administrators and SYSTEM may have write access.
+) else (
+    echo [OK]   %PROJECT_DIR% locked.
+)
+
+:: The time zone matters: a clean Windows Server defaults to Pacific time, and the Update Active Hours above,
+:: the robocopy and log times all follow it. 04_check_readiness.ps1 fails until it matches config.yaml.
+echo.
+for /f "delims=" %%Z in ('tzutil /g') do echo [INFO] Windows time zone now: %%Z
+echo        For an India office set it with:  tzutil /s "India Standard Time"  and then  w32tm /resync
 
 echo.
 echo ===================================================================
 echo   SYSTEM SETUP COMPLETE
 echo ===================================================================
-echo   Next step: Run 06_install_services.ps1 to install the 3 services.
+echo   Next step: create config.yaml ^(docs\INSTALL_FRESH.md step 8^), then run 04_check_readiness.ps1.
 echo ===================================================================
 echo.
 pause
