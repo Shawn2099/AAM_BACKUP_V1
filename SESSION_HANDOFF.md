@@ -29,6 +29,22 @@ config.yaml moving the FY stays an accepted risk. **Box facts:** schedule now cl
 Advanced password is still unknown - the two must differ, min 10 chars; reset with `deploy/set_dashboard_passwords.py`, ask is
 injectable); `report_recipients` now set by the owner; `wol.server_ip` still the stale 10.10.186.231 (WoL is Off on the box);
 LAN destination already uses the real NAS 10.10.151.53. The 21:00 LAN run of 22 Oct was LAN_COMPLETE (slot fix proven).
+**FIRST in the next session - Opus code review of FY-1..8 found 1 blocker + 5 should-fix, NOT fixed yet (box runs the unfixed code):**
+(B) FY-1 check is skipped when `lan.enabled` is false, but `configured_fy` still reads the LAN leaf and `update_config_yaml` rewrites
+the source -> a cloud-only config with the example NAS path ending in an FY folder and source `D:\DATA` would get its source rewritten to
+an empty `D:/FY26-27` on 1 April: drop the `self.lan.enabled and` condition in `models/config.py` (+ regression test, + check the
+fallout in tests/lab). (S2) the FY-6 RESOLVED mail uses `mode="rollover"` and so ends unrelated open rollover incidents (e.g. the
+ROL-05 archive warning): give it its own mode or only send when the newest open rollover incident is the ROL-06 one. (S3)
+`fy_rollover.new_fy_file_count` uses `os.walk` (follows junctions on py3.12) and runs on every `compute_attention`: use
+`guards.first_regular_file(root, SOURCE_IGNORE_NAMES | {placeholder})` for the dashboard (presence only), count only for the daily
+mail. (S4) picker: `list_folders("D:\\")` returns parent `"D:"` (drive-relative) and `check_source_parent` accepts non-absolute
+parents: drive root -> parent None, refuse non-absolute / UNC parents, `os.path.normpath` first; `_is_link` checks only the last
+component. (S5) the FY-2 `reentered_message` and the D7 message tell the owner to put the paths back by hand, which Settings now
+refuses (`_refuse_fy_change`): say "ask support to change config.yaml on the server". (S6) a failed early SOURCE_FOLDER step is only
+logged: add the error to the G6 block message / a WARNING. (Nit) wrap `browseFolders`/`useFolder` fetches in try/catch (a 500
+leaves "Loading..."). Also: warn in the deploy notes that an existing one-sided-leaf production config will now refuse to load.
+**The owner runs the audit lab themselves:** `powershell -ExecutionPolicy Bypass -File tools\run_audit_lab.ps1` writes
+`agent_runs\audit_lab_<stamp>\REPORT.md` (+ lab.log, junit.xml); read that report first and fix whatever it lists.
 **Next:** verify the 02:01 cloud run of 23 Oct; alert-controls steps D-G; audit lab + Opus review of FY-1..8; owner acceptance
 items (previews, reports, 7 nights, restore drill, NAS shutdown test only with the owner at the NAS).
 
