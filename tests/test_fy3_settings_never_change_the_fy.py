@@ -56,3 +56,8 @@ def test_settings_that_are_not_paths_are_not_affected(cfg_file):
     changes = {"budget.lan_max_hours": 5}
     verdict = ce.validate_changes(str(cfg_file), changes)
     assert verdict["ok"] is True
+
+
+def test_the_two_folder_paths_are_advanced_settings():
+    for key in ("paths.source_drive", "paths.lan_destination"):
+        assert key not in ce.BASIC_KEYS and ce.is_risky(key), key

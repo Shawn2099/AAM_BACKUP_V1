@@ -95,7 +95,7 @@ BASIC_KEYS = frozenset({
     "notifications.smtp_port", "notifications.smtp_username", "notifications.smtp_password",
     "notifications.smtp_security",
     "notifications.weekly_enabled", "notifications.monthly_enabled",
-    "lan.enabled", "cloud.enabled", "paths.source_drive", "paths.lan_destination",
+    "lan.enabled", "cloud.enabled",      # the two folder paths are Advanced (owner 2026-10-22, plan FY-4)
     "lan.shutdown_after_backup", "wol.enabled", "wol.mac_address", "wol.server_ip",
     "budget.lan_max_hours", "budget.cloud_max_hours", "budget.audit_max_hours",
     "cloud.bandwidth_limit", "dashboard.public_url",
