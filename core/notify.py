@@ -148,6 +148,7 @@ class DeliveryResult:
     attempts: int = 0
     message_id: str | None = None
     rung: int | None = None       # index into attachment_rungs that was delivered (None = no ladder)
+    recipients: list[str] | None = None   # the addresses it was addressed to (None = never resolved)
 
 
 # ── SMTP transport ────────────────────────────────────────────────────────
@@ -310,6 +311,7 @@ def send_email(notifications, subject: str, body_html: str,
         logger.error(f"Email not sent ({subject!r}): {problem}")
         return DeliveryResult(FAILED, problem, 0)
     target = resolve_recipients(notifications, audience)
+    to = list(target.addresses)
     if target.note:
         logger.warning(f"Email {subject!r}: {target.note}")
 
@@ -370,11 +372,12 @@ def send_email(notifications, subject: str, body_html: str,
                 continue
             kind = "permanent SMTP error, not retried" if _is_permanent_smtp_error(e)                 else f"failed after {attempts} attempt(s)"
             logger.error(f"Email {kind} {subject!r}: {e}")
-            return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts, message_id)
+            return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts, message_id,
+                                  recipients=to)
     rung = state["rung"] if ladder else None
     logger.info(f"Email sent: {subject!r} (attempt {attempts}"
                 + (f", attachment rung {rung}" if ladder else "") + ")")
-    return DeliveryResult(SENT, None, attempts, message_id, rung)
+    return DeliveryResult(SENT, None, attempts, message_id, rung, recipients=to)
 
 
 def attachment_ladder(attachments: list[dict]) -> tuple[list[list[dict]], list[str]]:
@@ -543,7 +546,8 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
                     "subject": event.title, "status": result.status, "error": result.error,
                     "attempts": result.attempts, "created_at": now_iso(),
                     "fault_code": event.fault_code, "message_id": result.message_id,
-                    "thread_id": None, "attachments_rung": None})
+                    "thread_id": None, "attachments_rung": None,
+                    "audience": event.audience, "recipients": result.recipients})
             except Exception as rec_err:  # noqa: BLE001
                 logger.error(f"Could not record the short notice for {event.key}: {rec_err}")
     finally:
@@ -615,6 +619,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
             "thread_id": (root or result.message_id) if result.status == SENT else None,
             "attachments_rung": (labels[result.rung] if labels and result.rung is not None
                                  else None),
+            "audience": event.audience, "recipients": result.recipients,
         })
     except Exception as e:  # noqa: BLE001
         logger.error(f"Could not record notification outcome for {event.key}: {e}")

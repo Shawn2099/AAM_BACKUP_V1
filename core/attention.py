@@ -160,6 +160,19 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                    f"The email settings were changed on {format_ist(changed)} "
                                    "and not tested yet")))
 
+    notif = config.notifications
+    alerts_to, reports_to = getattr(notif, "recipients", None), getattr(notif, "report_recipients", None)
+    if alerts_to is None or reports_to is None:      # a config without the lists: nothing to judge
+        pass
+    elif not alerts_to and not reports_to:
+        items.append(_item(RED, "recipients_none",
+                           act("Add an email address in Settings (\"Who gets problem alerts\")",
+                               "No email address is set, so nobody receives any alert or report")))
+    elif not alerts_to:
+        items.append(_item(AMBER, "alerts_list_empty",
+                           act("Add an address under \"Who gets problem alerts\" in Settings",
+                               "The alerts list is empty, so problem alerts go to the reports list")))
+
     if not config.notifications.send_on_failure:
         items.append(_item(AMBER, "alerts_off",
                            act("Switch failure emails back on in Settings > Advanced",

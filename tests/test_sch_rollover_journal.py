@@ -30,7 +30,7 @@ def test_fresh_database_has_every_new_table_and_column(tmp_path):
     fresh = ManifestDB(str(path))
     fresh.rollover_incomplete()          # the connection (and the schema) is created lazily
     fresh.close()
-    assert SCHEMA_VERSION == 4
+    assert SCHEMA_VERSION == 5
     assert {"from_fy", "to_fy", "created_at"} <= _columns(path, "rollover_journal")
     assert {"journal_id", "step", "state", "attempts", "last_error", "started_at",
             "finished_at", "run_id"} <= _columns(path, "rollover_journal_steps")

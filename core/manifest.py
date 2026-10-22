@@ -21,7 +21,7 @@ from models.config import MaintenanceConfig, model_default
 # Critical-6: version gate for schema migrations. Bump when DDL or the
 # legacy-migration steps below change. Fresh databases are stamped straight
 # to this value; pre-versioning databases run _migrate_legacy_schema once.
-SCHEMA_VERSION = 4   # v3: notifications.fault_code / message_id / thread_id
+SCHEMA_VERSION = 5   # v3: notifications.fault_code / message_id / thread_id; v5: audience / recipients
                      # v4 (plan SCH): rollover_journal(+_steps), notifications.attachments_rung
 
 # Per-connection pragmas. journal_mode=WAL is persistent (set once per file)
@@ -122,7 +122,9 @@ CREATE TABLE IF NOT EXISTS notifications (
     fault_code  TEXT,           -- core.faults code (v3, audit 2026-10-18)
     message_id  TEXT,           -- Message-ID of the email sent (v3)
     thread_id   TEXT,           -- Message-ID of the incident's first email (v3)
-    attachments_rung TEXT       -- which attachment rung was delivered (v4, plan B)
+    attachments_rung TEXT,      -- which attachment rung was delivered (v4, plan B)
+    audience    TEXT,           -- alerts | reports | both: which recipient list it was FOR (v5)
+    recipients  TEXT            -- JSON list of the addresses it was addressed to (v5)
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_key ON notifications(event_key, created_at);
@@ -344,7 +346,8 @@ class ManifestDB:
                     row["name"]
                     for row in conn.execute("PRAGMA table_info(notifications)").fetchall()
                 }
-                for column in ("fault_code", "message_id", "thread_id", "attachments_rung"):
+                for column in ("fault_code", "message_id", "thread_id", "attachments_rung",
+                               "audience", "recipients"):
                     if n_columns and column not in n_columns:
                         conn.execute(f"ALTER TABLE notifications ADD COLUMN {column} TEXT")
                 # Legacy tables may predate UNIQUE(run_id): drop duplicate
@@ -1026,12 +1029,13 @@ class ManifestDB:
             conn.execute(
                 """INSERT INTO notifications
                    (event_key, kind, mode, subject, status, error, attempts, created_at,
-                    fault_code, message_id, thread_id, attachments_rung)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    fault_code, message_id, thread_id, attachments_rung, audience, recipients)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (data["event_key"], data["kind"], data.get("mode"), data.get("subject"),
                  data["status"], data.get("error"), data.get("attempts", 0),
                  data["created_at"], data.get("fault_code"), data.get("message_id"),
-                 data.get("thread_id"), data.get("attachments_rung")),
+                 data.get("thread_id"), data.get("attachments_rung"), data.get("audience"),
+                 json.dumps(data["recipients"]) if data.get("recipients") is not None else None),
             )
             conn.commit()
 
@@ -1168,15 +1172,20 @@ class ManifestDB:
 
     def notification_failures_since(self, days: int) -> list[dict]:
         """Emails that could not be delivered in the last `days` days AND are newer than the last
-        SENT email (D3): email is one transport, so a later SENT proves delivery works again and the
-        earlier failures no longer describe the present. SUPPRESSED / DISABLED are not proof."""
+        SENT email of the SAME audience (D3): a later SENT proves delivery to those addresses works
+        again, so the earlier failure no longer describes the present. A SENT `both` mail (the test
+        email) proves either list. A delivered report must not hide a rejected alert address, so one
+        audience never clears another. Rows from before v5 have no audience and count as alerts.
+        SUPPRESSED / DISABLED are not proof."""
         cutoff = cutoff_iso(days)
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
-                "SELECT * FROM notifications WHERE status = 'FAILED' AND created_at >= ? "
-                "AND id > COALESCE((SELECT MAX(id) FROM notifications WHERE status = 'SENT'), 0) "
-                "ORDER BY id DESC", (cutoff,)).fetchall()
+                "SELECT n.* FROM notifications n WHERE n.status = 'FAILED' AND n.created_at >= ? "
+                "AND n.id > COALESCE((SELECT MAX(s.id) FROM notifications s WHERE s.status = 'SENT' "
+                "AND (COALESCE(s.audience, 'alerts') = COALESCE(n.audience, 'alerts') "
+                "OR s.audience = 'both')), 0) "
+                "ORDER BY n.id DESC", (cutoff,)).fetchall()
             return [dict(r) for r in rows]
 
     def record_config_change(self, data: dict) -> None:
