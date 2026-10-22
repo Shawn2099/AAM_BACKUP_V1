@@ -1,0 +1,53 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# FIRST-INSTALL CONFIG TEMPLATE - copy to C:\AAMBackup\config.yaml and fill in every line marked  <-- FILL IN
+# Everything not listed here uses its safe default (config.example.yaml documents all keys).
+#
+# Paths use SINGLE quotes: write them exactly as Windows shows them, no doubled backslashes.
+# Year folders are mandatory: the source (and the NAS folder while the NAS backup is on) must END in the
+# CURRENT financial-year folder (April-March), e.g. ...\FY26-27, and both must name the SAME year.
+# Do not type the dashboard passwords or the mail password here: 04_check_readiness.ps1 / 06_install_services.ps1
+# ask for them on the server (hidden) and store them encrypted / hashed.
+# ═══════════════════════════════════════════════════════════════════════════
+
+firm_name: "FILL IN firm name"                            # <-- FILL IN (shown in emails)
+
+paths:
+  source_drive: 'D:\FY26-27'                              # <-- FILL IN the CURRENT year folder to back up (must hold files)
+  lan_destination: '\\10.0.0.50\backup\FY26-27'           # <-- FILL IN \\NAS-address\share\<same year folder> (create it on the NAS first)
+  runtime_dir: 'C:\BackupAgent'                           # logs, database, locks (outside the code folder)
+  gcs_key_path: 'C:\AAMBackup\deploy\keys\aam-gcs-key.json'   # <-- the Google service-account key file you downloaded
+
+lan:
+  enabled: true                                           # false = cloud only (the NAS path above is then an unused placeholder)
+  shutdown_after_backup: false                            # keep false until the NAS shutdown test was done WITH the owner at the NAS
+
+wol:
+  enabled: false                                          # true only after you filled in the two lines below and tested wake-up
+  mac_address: ""                                         # NAS network card MAC, e.g. 00:11:22:33:44:55
+  server_ip: "10.0.0.50"                                  # MUST be the same NAS address as in lan_destination
+
+cloud:
+  enabled: true                                           # false = NAS only
+  bucket: "FILL-IN-BUCKET-NAME"                           # <-- FILL IN
+  project_number: "123456789012"                          # <-- FILL IN (Google Cloud project NUMBER)
+  location: "asia-south1"                                 # <-- the bucket's region
+
+notifications:
+  smtp_host: "smtp.example.com"                           # <-- FILL IN
+  smtp_port: 587
+  smtp_security: "auto"                                   # auto = SSL on port 465, STARTTLS otherwise
+  smtp_username: "alerts@example.com"                     # <-- FILL IN (the password is asked for on the server)
+  sender: "alerts@example.com"                            # <-- FILL IN
+  recipients: ["owner@example.com"]                       # <-- FILL IN: problems and action needed
+  report_recipients: ["owner@example.com"]                # <-- FILL IN: weekly / monthly reports
+
+dashboard:
+  bind_address: "0.0.0.0"                                 # office PCs open the dashboard; 127.0.0.1 = this server only
+  public_url: ""                                          # optional, e.g. "http://backup-server:8080" (used in email links)
+
+schedule:
+  timezone: "Asia/Kolkata"                                # the server's Windows time zone must match (04 checks it)
+  lan_cron: "0 21 * * *"                                  # 21:00 every night
+  cloud_cron: "0 2 * * *"                                 # 02:00 every night
+  monthly_cron: "30 8 1 * *"
+  audit_cron: "0 8 * * SUN"
