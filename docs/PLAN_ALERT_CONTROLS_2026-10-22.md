@@ -112,3 +112,18 @@ section 6, runbook.
 3. Failure delay: infrastructure faults (NAS unreachable, cannot start) - proposed: also delayed like other
    `backup:<leg>:*` failures when the setting is on, or exempt? (decision/overdue/service mails never delayed.)
 4. Password-changed notice: proposed NOT switchable (security). Financial-year-started is switchable (`send_info`).
+
+## Owner answers (2026-10-22 evening) - rev 3, binding
+
+1. The current behaviour stays the default (follow-up reminders ON). The new thing the owner wants: **follow-ups
+   switchable** so a client inbox is not spammed. Three follow-up switches (bool, default true), each also keeping its
+   interval and maximum: `alerts.follow_ups_general` (failure + action classes), `alerts.follow_ups_overdue`,
+   `alerts.follow_ups_decision`. Off = only the first mail of an incident; the banner and the approval card stay.
+   (Typed phrase; the decision switch shows the strongest amber note.) The minimum of 1 for the decision maximum applies
+   only while its switch is on.
+2. After the reminder limit nothing more is sent (no daily fallback mail, no unlimited slow reminder). The overdue mail
+   keeps its own rule (once per `stale_repeat_hours` and only if no failure mail already told the owner).
+3. With `failure_alert_after_hours` on, infrastructure faults stay IMMEDIATE (NAS unreachable `AAM-NAS-*`, cannot start /
+   interrupted / stuck slot `AAM-SYS-01/02/08`): a new `delay_exempt` flag on those entries of `core/faults.CATALOG`
+   (data, not a literal at the call site). Decision, overdue and service problems are never delayed.
+4. The password-changed notice is not switchable (class `security`).
