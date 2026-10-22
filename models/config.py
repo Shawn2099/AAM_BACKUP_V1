@@ -1235,14 +1235,12 @@ class AppConfig(StrictModel):
 
         # The source folder decides the financial year. The NAS path only counts while the NAS backup is on
         # (cloud-only keeps an unused placeholder that nothing reads, so it may look like anything).
-        if self.lan.enabled and bool(src_fy) != bool(lan_fy):
-            side = "NAS folder" if src_fy else "source folder"
+        if self.lan.enabled and src_fy and not lan_fy:
             raise ValueError(
-                f"Make both paths end in a financial-year folder like FY26-27, or neither. Only the "
-                f"{'source' if src_fy else 'NAS'} path does (the {side} does not). With one "
-                "path only, the yearly switch would point the other at a new empty folder and the real "
-                "data would stop being backed up. Fix the NAS folder under Settings > Advanced (or ask support)."
-            )
+                f"While the NAS backup is on, both folders must end in the same financial-year folder: the "
+                f"source ends in {src_fy} but the NAS folder does not. Otherwise the yearly switch would point "
+                "the NAS at a new empty folder and the real data would stop being backed up. "
+                "Fix the NAS folder under Settings > Advanced (or ask support).")
 
         if self.lan.enabled and src_fy and lan_fy and src_fy != lan_fy:
             raise ValueError(
