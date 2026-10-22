@@ -5,6 +5,7 @@ different times, no contention).
 """
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -254,6 +255,9 @@ class ManifestDB:
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
+            # decided BEFORE connecting: sqlite creates the file on connect, and the schema script runs
+            # on every open, so only "the file did not exist" proves this open creates the database
+            fresh = self.db_path != ":memory:" and not os.path.exists(self.db_path)
             # M-6: the busy handler must be active BEFORE the first statement.
             # sqlite3.connect(timeout=) installs it at open time, and the
             # PRAGMA below pins the same value; previously the DDL ran with
@@ -271,6 +275,10 @@ class ManifestDB:
                 for pragma in _CONNECTION_PRAGMAS:
                     conn.execute(pragma)
                 self._retry_on_lock(lambda: self._apply_ddl(conn))
+                if fresh:       # INSERT OR IGNORE: several processes may open a new file together
+                    conn.execute("INSERT OR IGNORE INTO db_meta (key, value) VALUES ('created_at', ?)",
+                                 (now_iso(),))
+                    conn.commit()
             except BaseException:
                 conn.close()
                 raise
@@ -1199,6 +1207,69 @@ class ManifestDB:
                  data.get("new_value"), int(data.get("risky", 0)), data.get("backup_file")),
             )
             conn.commit()
+
+    # ── what the overdue check needs to know (core.overdue, core.attention) ─────────────
+
+    def _meta(self, key: str) -> str | None:
+        with self._lock:
+            row = self._get_conn().execute("SELECT value FROM db_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def _set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("INSERT OR REPLACE INTO db_meta (key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+
+    def meta_created_at(self) -> str | None:
+        """When this database file was created (None for one that predates the marker)."""
+        return self._meta("created_at")
+
+    def set_meta_created_at(self, iso_ts: str) -> None:
+        self._set_meta("created_at", iso_ts)
+
+    def first_known_at(self) -> str | None:
+        """The earliest moment this installation is known to have existed: the creation marker or the
+        oldest run, whichever is earlier (a pre-marker database has only the runs)."""
+        import pendulum
+
+        with self._lock:
+            row = self._get_conn().execute("SELECT MIN(started_at) FROM run_history").fetchone()
+        candidates = [t for t in (self.meta_created_at(), row[0] if row else None) if t]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda t: pendulum.parse(t).timestamp())
+
+    _SCHEDULE_KEYS = ("cloud_cron", "lan_cron", "timezone")
+
+    def _stored_schedule(self) -> dict | None:
+        raw = self._meta("schedule_in_effect")
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        if (isinstance(data, dict) and all(isinstance(data.get(k), str) and data[k]
+                                           for k in self._SCHEDULE_KEYS)):
+            since = data.get("since")
+            return {**{k: data[k] for k in self._SCHEDULE_KEYS},
+                    "since": since if isinstance(since, str) and since else None}
+        return None
+
+    def set_schedule_in_effect(self, schedule: dict, since: str | None = None) -> None:
+        """Record the schedules the service actually registered (written by serve.py just before it
+        starts serving). A schedule saved in Settings but not yet applied is NOT in effect.
+        `since` = when this schedule took effect: kept while the schedule is unchanged (a restart must
+        not move it), set to now (or `since`) when a cron string or the timezone changed."""
+        new = {k: str(schedule[k]) for k in self._SCHEDULE_KEYS}
+        old = self._stored_schedule()
+        unchanged = old is not None and all(old[k] == new[k] for k in self._SCHEDULE_KEYS)
+        stamp = old["since"] if unchanged and old.get("since") else (since or now_iso())
+        self._set_meta("schedule_in_effect", json.dumps({**new, "since": stamp}))
+
+    def get_schedule_in_effect(self) -> dict | None:
+        """The recorded schedules (+ `since`), or None when missing or not valid (callers fall back
+        to the config)."""
+        return self._stored_schedule()
 
     def last_config_change_at(self, key_prefix: str) -> str | None:
         """When a setting starting with `key_prefix` was last changed on the dashboard."""

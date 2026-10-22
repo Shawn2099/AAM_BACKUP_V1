@@ -13,6 +13,8 @@ import json
 import sys
 from types import SimpleNamespace
 
+from test_support import attention_cfg
+
 import pendulum
 import pytest
 from pydantic import ValidationError
@@ -331,9 +333,10 @@ def db(tmp_path):
 def _att_cfg():
     return SimpleNamespace(
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
-        dashboard=SimpleNamespace(stale_after_hours=26, alert_failure_window_days=7,
+        dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
-        notifications=SimpleNamespace(send_on_failure=True))
+        notifications=SimpleNamespace(send_on_failure=True),
+        schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET)
 
 
 def _ok_runs(db):

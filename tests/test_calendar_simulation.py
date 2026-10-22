@@ -286,7 +286,8 @@ def test_overdue_is_raised_exactly_when_the_last_success_is_older_than_the_limit
 
     with Calendar(site) as cal:
         cfg = load_config(str(site))
-        limit_h = cfg.dashboard.stale_after_hours
+        grace_h = cfg.dashboard.stale_grace_hours
+        budget_h = cfg.budget.cloud_max_hours
 
         def check(when, job):
             db = ManifestDB.from_config(cfg)
@@ -304,7 +305,10 @@ def test_overdue_is_raised_exactly_when_the_last_success_is_older_than_the_limit
         cal.leg_status["cloud"] = "CLOUD_FAILED"            # every cloud night now fails
         cal.run(_at(2026, 6, 4), _at(2026, 6, 9), after_each=check)
 
-        deadline = last_ok.add(hours=limit_h)
+        # next scheduled cloud run after the last success started + run budget + grace (core.overdue)
+        from core import overdue
+        deadline = pendulum.instance(overdue.deadline(
+            cfg.schedule.cloud_cron, cfg.schedule.timezone, last_ok, budget_h, grace_h))
         for when, stale in seen:
             if when > _at(2026, 6, 1, 23):
                 assert stale == (when > deadline), (when, deadline)

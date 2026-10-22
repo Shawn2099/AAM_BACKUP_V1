@@ -7,6 +7,8 @@ the unresolved divergence disappeared from every surface. One fix, in the one pl
 
 from types import SimpleNamespace
 
+from test_support import attention_cfg
+
 import pendulum
 import pytest
 
@@ -33,12 +35,11 @@ def db(tmp_path):
 def _cfg():
     return SimpleNamespace(
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
-        dashboard=SimpleNamespace(stale_after_hours=26, alert_failure_window_days=7,
+        dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
         paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"), firm_name="T",
         notifications=SimpleNamespace(send_on_failure=True),
-        schedule=SimpleNamespace(cloud_cron="0 22 * * *", lan_cron="0 21 * * *",
-                                 timezone="Asia/Kolkata"))
+        schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET)
 
 
 def _seed(db, statuses, leg="lan"):

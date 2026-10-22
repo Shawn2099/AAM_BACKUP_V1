@@ -240,9 +240,10 @@ dashboard:
   # Bind address: 127.0.0.1 = localhost only. 0.0.0.0 = all interfaces (LAN accessible)
   bind_address: "127.0.0.1"
   port: 8080
-  # Banner and /health turn red when a leg has had no successful backup for this
-  # many hours (1–720)
-  stale_after_hours: 26
+  # Banner, /health and the overdue email turn red when a leg has had no successful backup by
+  # its next scheduled run + its run budget (budget.*_max_hours) + this many hours of grace
+  # (0-168). Follows the schedule: a daily plan is about 26 h, a weekly plan about a week.
+  stale_grace_hours: 2
   # ...or when an alert/report email failed to send within this many days (1–90)
   alert_failure_window_days: 7
   # Advanced settings have their own login (a second password). A salted hash, written by
@@ -572,6 +573,6 @@ watchdog:
   # The watchdog's own log: logs\watchdog_app.log (NSSM keeps watchdog_svc.log)
   log_rotation_mb: 10
   # Every this many seconds the watchdog checks that each enabled leg had a
-  # successful backup within dashboard.stale_after_hours; a stale leg is emailed
-  # (again every alerts.repeat_cooldown_hours while it stays stale). 60–86400
+  # successful backup by its next scheduled run + run budget + dashboard.stale_grace_hours; an
+  # overdue leg is emailed (again every alerts.repeat_cooldown_hours). 60–86400
   stale_check_interval_seconds: 1800

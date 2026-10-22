@@ -28,6 +28,14 @@ from test_support.smtp_server import smtp_server
 UNC = "\\\\nas\\backup\\FY26-27"
 
 
+@pytest.fixture(autouse=True)
+def _frozen_mid_afternoon():
+    """The overdue rule follows the schedule (default cloud 18:00 + 6 h budget, LAN 01:00 + 4 h, 2 h
+    grace), so "40 h ago" must mean the same thing whatever the time of day the suite runs."""
+    with pendulum.travel_to(pendulum.datetime(2026, 10, 22, 15, 0, tz="Asia/Kolkata"), freeze=True):
+        yield
+
+
 def _cfg(tmp_path, port=25, cloud=False):
     return AppConfig(
         paths={"source_drive": str(tmp_path), "lan_destination": UNC,
@@ -36,8 +44,7 @@ def _cfg(tmp_path, port=25, cloud=False):
         wol={"enabled": False},
         cloud={"enabled": True, "bucket": "aam-test-bucket", "project_number": "0"}
         if cloud else {"enabled": False},
-        dashboard={"public_url": "http://backup-server:8080",
-                   "stale_after_hours": 26},
+        dashboard={"public_url": "http://backup-server:8080"},
         notifications={"smtp_host": "127.0.0.1", "smtp_port": port, "sender": "b@test.local",
                        "recipients": ["ops@test.local"], "smtp_security": "none",
                        "smtp_auth": False, "retry_attempts": 1, "retry_base_seconds": 0.01,
@@ -96,7 +103,16 @@ def test_fresh_and_disabled_legs_send_nothing(tmp_path, monkeypatch):
 def test_never_succeeded_leg_is_stale_too(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(nt, "notify", lambda cfg, ev, db=None: sent.append(ev))
-    assert wd._check_stale_legs(_cfg(tmp_path, cloud=True)) == ["cloud", "lan"]
+    cfg = _cfg(tmp_path, cloud=True)
+    db = ManifestDB.from_config(cfg)
+    try:    # the installation is three days old and no backup ever finished
+        for leg in ("cloud", "lan"):
+            t = pendulum.now(IST).subtract(days=3).isoformat()
+            db.insert_run({"run_id": f"old-{leg}", "mode": leg, "started_at": t, "ended_at": t,
+                           "status": f"{leg.upper()}_FAILED"})
+    finally:
+        db.close()
+    assert wd._check_stale_legs(cfg) == ["cloud", "lan"]
     assert [e.key for e in sent] == ["stale:cloud", "stale:lan"]
     assert all(e.kind == "ACTION_REQUIRED" for e in sent)
 

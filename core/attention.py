@@ -15,8 +15,9 @@ from __future__ import annotations
 import json
 
 import pendulum
+from loguru import logger
 
-from core import statuses
+from core import overdue, statuses
 from core.time_utils import IST, format_ist
 
 RED = "red"
@@ -37,29 +38,109 @@ def _hours_since(iso_ts: str, now) -> float:
     return (now - pendulum.parse(iso_ts)).total_seconds() / 3600
 
 
+def _schedule_in_effect(db, config) -> dict | None:
+    """The cron strings + timezone the scheduler is actually serving: what serve.py recorded when it
+    registered them (a schedule saved in Settings but not yet applied is NOT in effect), else the
+    configured ones. None when neither can be read."""
+    stored = db.get_schedule_in_effect() if hasattr(db, "get_schedule_in_effect") else None
+    if isinstance(stored, dict):
+        return stored
+    sched = getattr(config, "schedule", None)
+    try:
+        return {"cloud_cron": str(sched.cloud_cron), "lan_cron": str(sched.lan_cron),
+                "timezone": str(sched.timezone)}
+    except AttributeError:
+        return None
+
+
+def _later(a: str | None, b: str | None) -> str | None:
+    both = [t for t in (a, b) if t]
+    return max(both, key=lambda t: pendulum.parse(t).timestamp()) if both else None
+
+
+def _progressing_partial(run: dict | None) -> bool:
+    """The latest run is a budget-stopped PARTIAL that copied something: a large upload spread over
+    several nights (first full upload, big change) - slow, not stuck."""
+    if not run or run.get("status") not in statuses.PARTIAL_STATUSES:
+        return False
+    if not (run.get("bytes_copied") or 0) > 0:
+        return False
+    try:
+        metrics = json.loads(run.get("extended_metrics") or "{}")
+    except ValueError:
+        return False
+    budget = metrics.get("budget") if isinstance(metrics, dict) else None
+    return isinstance(budget, dict) and bool(budget.get("stopped"))
+
+
+def _overdue_item(db, config, leg: str, sched: dict, now) -> dict | None:
+    """The banner / watchdog item for one enabled leg, or None while it is on time.
+
+    Overdue = now is past  (next scheduled run after the last success started) + (the leg's run
+    budget) + dashboard.stale_grace_hours  - see core.overdue. Codes: `stale:<leg>` (red, the only
+    one the watchdog emails), `first_run:<leg>` (amber, nothing has run yet but nothing is late),
+    `catching_up:<leg>` (amber, a big upload is progressing over several nights)."""
+    phrase = _PHRASE.get(leg, leg)
+    grace = config.dashboard.stale_grace_hours
+    budget_h = getattr(config.budget, f"{leg}_max_hours")
+    cron = sched[f"{leg}_cron"]
+    tz = sched["timezone"]
+    last = db.last_successful_run(leg)
+    if last is not None:
+        base = last.get("started_at") or last.get("ended_at")
+    else:       # never succeeded: count from when the system (or this leg) came into being
+        base = _later(db.first_known_at(), db.last_config_change_at(f"{leg}.enabled"))
+    # a schedule that changed after that moment starts its own clock: the old plan's run history says
+    # nothing about when the NEW plan's first run is due (daily -> weekly must not look a week late)
+    base = _later(base, sched.get("since"))
+    try:
+        due = overdue.next_firing(cron, tz, pendulum.parse(base)) if base else None
+        limit = overdue.deadline(cron, tz, pendulum.parse(base), budget_h, grace) if base else None
+    except Exception as e:  # noqa: BLE001 - an unreadable time must never hide an overdue leg
+        logger.warning(f"Overdue check for the {leg} leg could not read its schedule/time ({e})")
+        due = limit = None
+        if last is not None or base:
+            return _item(RED, f"stale:{leg}",
+                         act(f"Check why the {phrase} has not succeeded",
+                             "The last success could not be placed on the schedule"))
+    if limit is None or now <= limit:
+        if last is None:
+            when = f" (due {format_ist(due.isoformat())})" if due else ""
+            return _item(AMBER, f"first_run:{leg}",
+                         act("Nothing to do yet",
+                             f"No {phrase} has finished yet; the first scheduled run is still ahead{when}"))
+        return None
+    if _progressing_partial(db.last_run(leg)):
+        return _item(AMBER, f"catching_up:{leg}",
+                     act("Nothing to do - leave it running",
+                         f"The {phrase} is copying a large amount over several nights and is "
+                         "making progress"))
+    if last is None:
+        return _item(RED, f"stale:{leg}",
+                     act(f"Run the {phrase} now from its card, or check why it has not run",
+                         "It has never completed successfully"))
+    age = _hours_since(last.get("ended_at") or last.get("started_at"), now)
+    return _item(RED, f"stale:{leg}",
+                 act(f"Check why the {phrase} has not succeeded",
+                     f"The last success was {age:.0f} h ago; the next scheduled run was due "
+                     f"{format_ist(due.isoformat())} and it was not finished by "
+                     f"{format_ist(limit.isoformat())} (next scheduled run + {budget_h:g} h run "
+                     f"budget + {grace:g} h grace)"))
+
+
 def compute_attention(db, config, now=None) -> list[dict]:
     """Ordered list of {level, code, message}; empty when all is well."""
     now = now or pendulum.now(IST)
     items: list[dict] = []
-    stale_h = config.dashboard.stale_after_hours
+    sched = _schedule_in_effect(db, config)
 
     for leg in ("cloud", "lan"):
         if not getattr(config, leg).enabled:
             continue
         name = _LEG_NAME[leg]
-        last = db.last_successful_run(leg)
-        if last is None:
-            items.append(_item(RED, f"stale:{leg}",
-                               act(f"Run the {_PHRASE.get(leg, leg)} now from its card, or check why it has not run",
-                                   "It has never completed successfully")))
-        else:
-            when = last.get("ended_at") or last.get("started_at")
-            age = _hours_since(when, now)
-            if age > stale_h:
-                items.append(_item(
-                    RED, f"stale:{leg}",
-                    act(f"Check why the {_PHRASE.get(leg, leg)} has not succeeded",
-                        f"The last success was {age:.0f} h ago (limit {stale_h} h)")))
+        item = _overdue_item(db, config, leg, sched, now) if sched else None
+        if item:
+            items.append(item)
 
         run = db.last_run(leg)
         if run and statuses.category(run.get("status")) == statuses.CATEGORY_FAILED:

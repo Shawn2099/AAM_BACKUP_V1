@@ -6,7 +6,7 @@ emails were invisible; the FY shown came from the calendar while backups
 used the configured FY.
 """
 
-from test_support import ui_login  # noqa: E402
+from test_support import attention_cfg, ui_login  # noqa: E402
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,17 +22,16 @@ from core.time_utils import IST
 from models.config import DashboardConfig
 
 
-def _cfg(cloud=True, lan=True, stale=26):
+def _cfg(cloud=True, lan=True):
     return SimpleNamespace(
         cloud=SimpleNamespace(enabled=cloud), lan=SimpleNamespace(enabled=lan),
-        dashboard=SimpleNamespace(stale_after_hours=stale, alert_failure_window_days=7,
+        dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   **ui_login.DASHBOARD,
                                   public_url="http://backup-server:8080"),
         paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
         firm_name="T",
         notifications=SimpleNamespace(send_on_failure=True),
-        schedule=SimpleNamespace(cloud_cron="0 22 * * *", lan_cron="0 21 * * *",
-                                 timezone="Asia/Kolkata"),
+        schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET,
     )
 
 
@@ -103,7 +102,8 @@ def test_degraded_run_logs_are_amber(db):
 
 def test_dashboard_config_keys():
     d = DashboardConfig()
-    assert (d.stale_after_hours, d.alert_failure_window_days) == (26, 7)
+    assert (d.stale_grace_hours, d.alert_failure_window_days) == (2, 7)
+    assert not hasattr(d, "stale_after_hours")      # the fixed window is gone: the limit follows the schedule
 
 
 # ── /health and /status ───────────────────────────────────────────────────
@@ -117,7 +117,15 @@ def client(monkeypatch, db):
     return TestClient(ui.app, raise_server_exceptions=False)
 
 
+def _old_installation_without_a_success(db):
+    """Three days of failed nights and never a success: the legs are overdue (an EMPTY database is only
+    "waiting for the first scheduled run")."""
+    _run(db, "oc", "cloud", "CLOUD_FAILED", 72)
+    _run(db, "ol", "lan", "LAN_FAILED", 72)
+
+
 def test_health_is_503_with_reasons_when_anything_is_red(client, db):
+    _old_installation_without_a_success(db)
     resp = client.get("/health")
     assert resp.status_code == 503
     body = resp.json()
@@ -138,6 +146,7 @@ def test_health_that_cannot_be_evaluated_is_not_healthy(client, monkeypatch):
 
 
 def test_status_carries_the_attention_banner_and_the_backups_fy(client, db):
+    _old_installation_without_a_success(db)
     data = client.get("/status").json()
     assert {i["code"] for i in data["attention"]} >= {"stale:cloud", "stale:lan"}
     assert data["fy_prefix"] == "FY26-27"        # the configured FY the backups use

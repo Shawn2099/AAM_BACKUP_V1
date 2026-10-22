@@ -1,0 +1,333 @@
+"""Overdue that follows the schedule (plan docs/PLAN_RECIPIENTS_AND_SCHEDULE_ALERTS_2026-10-22.md, Part B).
+
+A leg is overdue when  now > (next scheduled firing after the last success STARTED)
+                              + that leg's run budget + dashboard.stale_grace_hours.
+It replaces the fixed 26 h, which raised false alarms for any schedule that is not daily."""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from core import overdue
+from core.attention import AMBER, RED, compute_attention
+from core.manifest import ManifestDB
+from models.config import AppConfig
+from test_support import ui_login
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def at(y, mo, d, h=0, mi=0, tz=IST) -> datetime:
+    return datetime(y, mo, d, h, mi, tzinfo=tz)
+
+
+# ── the pure rule ────────────────────────────────────────────────────────────
+
+def test_deadline_is_next_firing_plus_budget_plus_grace():
+    # daily 21:00, 4 h budget, 2 h grace: success started Thu 21:00:05 -> due Fri 21:00 + 6 h = Sat 03:00
+    d = overdue.deadline("0 21 * * *", "Asia/Kolkata", at(2026, 10, 22, 21, 0).replace(second=5), 4, 2)
+    assert d == at(2026, 10, 24, 3, 0)
+
+
+def test_a_run_started_exactly_on_a_firing_minute_belongs_to_that_firing():
+    d = overdue.deadline("0 21 * * *", "Asia/Kolkata", at(2026, 10, 22, 21, 0), 4, 2)
+    assert d == at(2026, 10, 24, 3, 0)
+
+
+def test_weekdays_only_waits_over_the_weekend():
+    # success Friday 21:00 -> next firing Monday 21:00
+    d = overdue.deadline("0 21 * * MON-FRI", "Asia/Kolkata", at(2026, 10, 23, 21, 5), 4, 2)
+    assert d == at(2026, 10, 27, 3, 0)            # Tue 03:00
+
+
+def test_weekly_and_monthly():
+    assert overdue.deadline("0 2 * * SUN", "Asia/Kolkata", at(2026, 10, 25, 2, 10), 6, 2) == \
+        at(2026, 11, 1, 10, 0)
+    assert overdue.deadline("30 3 1 * *", "Asia/Kolkata", at(2026, 10, 1, 3, 40), 6, 2) == \
+        at(2026, 11, 1, 11, 30)
+
+
+def test_every_two_days_of_month():
+    d = overdue.deadline("0 1 */2 * *", "Asia/Kolkata", at(2026, 10, 3, 1, 5), 4, 2)
+    assert d == at(2026, 10, 5, 7, 0)
+
+
+def test_a_late_start_counts_from_the_next_firing_not_the_missed_one():
+    # the 21:00 run only started at 09:30 next morning: due tonight's firing + budget + grace
+    d = overdue.deadline("0 21 * * *", "Asia/Kolkata", at(2026, 10, 23, 9, 30), 4, 2)
+    assert d == at(2026, 10, 24, 3, 0)
+
+
+def test_naive_and_other_timezone_inputs_are_read_in_the_schedule_timezone():
+    utc = ZoneInfo("UTC")
+    # 15:35 UTC == 21:05 IST
+    d = overdue.deadline("0 21 * * *", "Asia/Kolkata", datetime(2026, 10, 22, 15, 35, tzinfo=utc), 4, 2)
+    assert d == at(2026, 10, 24, 3, 0)
+
+
+def test_the_deadline_is_real_elapsed_time_across_a_dst_change():
+    ny = ZoneInfo("America/New_York")
+    # firing Nov 1 00:30 EDT (04:30 UTC) + 2 h budget + 2 h grace = 08:30 UTC = 03:30 EST (the clocks
+    # went back at 02:00 EDT); wall-clock arithmetic would say 04:30
+    d = overdue.deadline("30 0 * * *", "America/New_York", datetime(2026, 10, 31, 0, 35, tzinfo=ny), 2, 2)
+    assert d == datetime(2026, 11, 1, 3, 30, tzinfo=ny)
+
+
+# ── attention ────────────────────────────────────────────────────────────────
+
+def _cfg(tmp_path, lan_cron="0 21 * * *", cloud_enabled=False, grace=2.0, **sched):
+    return AppConfig(
+        firm_name="T",
+        paths={"source_drive": str(tmp_path), "lan_destination": "\\\\nas\\share\\FY26-27",
+               "runtime_dir": str(tmp_path / "rt")},
+        wol={"enabled": False}, cloud={"enabled": cloud_enabled},
+        schedule={"lan_cron": lan_cron, **sched},
+        budget={"lan_max_hours": 4},
+        dashboard={"public_url": "http://backup-server:8080", "stale_grace_hours": grace,
+                   **ui_login.DASHBOARD},
+        notifications={"recipients": ["a@x.com"]},
+    )
+
+
+@pytest.fixture
+def db(tmp_path):
+    d = ManifestDB(str(tmp_path / "m.db"))
+    yield d
+    d.close()
+
+
+def _success(db, started, status="LAN_COMPLETE", run_id=None, **extra):
+    db.insert_run({"run_id": run_id or f"r{started.isoformat()}", "mode": "lan",
+                   "started_at": started.isoformat(), "ended_at": (started + timedelta(minutes=30)).isoformat(),
+                   "status": status, **extra})
+
+
+def _stale(db, cfg, now):
+    return [i for i in compute_attention(db, cfg, now=now) if i["code"] == "stale:lan"]
+
+
+def test_daily_schedule_matches_the_old_26_hours(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 22, 21, 0, ).replace(second=3))
+    assert not _stale(db, cfg, at(2026, 10, 24, 2, 59))          # still inside: 21:00 + 4 h + 2 h = 03:00
+    [item] = _stale(db, cfg, at(2026, 10, 24, 3, 1))
+    assert item["level"] == RED
+
+
+def test_weekdays_only_is_quiet_all_weekend_and_red_on_tuesday(tmp_path, db):
+    cfg = _cfg(tmp_path, lan_cron="0 21 * * MON-FRI")
+    _success(db, at(2026, 10, 23, 21, 0).replace(second=3))      # Friday night
+    for quiet in (at(2026, 10, 24, 12), at(2026, 10, 25, 23), at(2026, 10, 26, 20), at(2026, 10, 27, 2, 59)):
+        assert not _stale(db, cfg, quiet), quiet
+    assert _stale(db, cfg, at(2026, 10, 27, 3, 1))               # Monday's run never succeeded
+
+
+def test_weekly_schedule_has_no_false_alarm_midweek(tmp_path, db):
+    cfg = _cfg(tmp_path, lan_cron="0 2 * * SUN")
+    _success(db, at(2026, 10, 25, 2, 0).replace(second=9))
+    assert not _stale(db, cfg, at(2026, 10, 29, 12))
+    assert not _stale(db, cfg, at(2026, 11, 1, 6, 1))            # Sunday 02:00 fired, its run may take 4 h
+    assert _stale(db, cfg, at(2026, 11, 1, 8, 1))                # ... + 2 h grace passed, still no success
+
+
+def test_a_healthy_run_that_ends_after_the_next_firing_is_not_overdue(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    # last success started Thu 21:00; tonight's (Fri) run is still going at Sat 01:30 -> inside the budget
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    assert not _stale(db, cfg, at(2026, 10, 24, 1, 30))
+
+
+def test_a_manual_run_between_firings_moves_the_deadline(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 23, 12, 0))                        # manual, midday
+    assert not _stale(db, cfg, at(2026, 10, 23, 23, 0))          # the 21:00 run of that day is still due
+    assert not _stale(db, cfg, at(2026, 10, 24, 2, 59))          # 21:00 + 4 h budget + 2 h grace = 03:00
+    assert _stale(db, cfg, at(2026, 10, 24, 3, 1))               # ... and that run never succeeded
+
+
+def test_a_manual_run_just_before_a_firing_that_then_fails_goes_red_at_that_firings_deadline(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 23, 20, 55))                       # manual run at 20:55, firing at 21:00 failed
+    assert not _stale(db, cfg, at(2026, 10, 24, 2, 59))
+    assert _stale(db, cfg, at(2026, 10, 24, 3, 1))               # that run has its own alert; accepted
+
+
+def test_schedule_changed_daily_to_weekly_does_not_alarm(tmp_path, db):
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))      # last success under the daily plan
+    db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 2 * * SUN",
+                               "timezone": "Asia/Kolkata"}, since=at(2026, 10, 26, 8, 0).isoformat())
+    cfg = _cfg(tmp_path, lan_cron="0 2 * * SUN")
+    assert not _stale(db, cfg, at(2026, 10, 26, 12))             # Monday after the change: not a week late
+    assert not _stale(db, cfg, at(2026, 11, 1, 7, 59))           # the new plan's first run is due Sunday
+    assert _stale(db, cfg, at(2026, 11, 1, 8, 1))                # ... and only then does it count
+
+
+def test_schedule_changed_weekly_to_daily_starts_its_own_clock(tmp_path, db):
+    _success(db, at(2026, 10, 20, 2, 0))                         # last success under the weekly plan
+    db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *",
+                               "timezone": "Asia/Kolkata"}, since=at(2026, 10, 24, 12, 0).isoformat())
+    cfg = _cfg(tmp_path)
+    assert not _stale(db, cfg, at(2026, 10, 24, 20, 0))          # first daily run is still ahead
+    assert _stale(db, cfg, at(2026, 10, 25, 3, 1))               # it did not succeed: now red
+
+
+def test_the_since_stamp_survives_a_restart_but_moves_with_a_change(tmp_path, db):
+    first = {"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *", "timezone": "Asia/Kolkata"}
+    db.set_schedule_in_effect(first, since="2026-10-01T00:00:00+05:30")
+    db.set_schedule_in_effect(first)                             # service restarted, same schedule
+    assert db.get_schedule_in_effect()["since"] == "2026-10-01T00:00:00+05:30"
+    db.set_schedule_in_effect({**first, "lan_cron": "0 22 * * *"}, since="2026-10-05T00:00:00+05:30")
+    assert db.get_schedule_in_effect()["since"] == "2026-10-05T00:00:00+05:30"
+
+
+def test_the_schedule_in_effect_wins_over_the_saved_config(tmp_path, db):
+    cfg = _cfg(tmp_path, lan_cron="0 2 * * SUN")                 # saved: weekly
+    db.set_schedule_in_effect({"cloud_cron": "0 2 * * *", "lan_cron": "0 21 * * *",
+                               "timezone": "Asia/Kolkata"})       # but the service still serves daily
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    assert _stale(db, cfg, at(2026, 10, 24, 3, 1))
+
+
+def test_garbage_schedule_in_effect_falls_back_to_the_config(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    db._get_conn().execute("INSERT OR REPLACE INTO db_meta (key, value) VALUES ('schedule_in_effect', 'nonsense')")
+    db._get_conn().commit()
+    assert db.get_schedule_in_effect() is None
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    assert _stale(db, cfg, at(2026, 10, 24, 3, 1))
+
+
+def test_the_message_explains_the_limit_in_the_legs_own_terms(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 22, 21, 0).replace(second=3))
+    [item] = _stale(db, cfg, at(2026, 10, 24, 5))
+    assert "next scheduled run" in item["message"] and "26 Oct" not in item["message"]
+    assert "2 h" in item["message"]
+
+
+# ── never succeeded / first install ──────────────────────────────────────────
+
+def test_a_fresh_install_is_amber_until_the_first_scheduled_run_is_due(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    db.set_meta_created_at(at(2026, 10, 22, 10, 0).isoformat())
+    items = compute_attention(db, cfg, now=at(2026, 10, 22, 12))
+    assert not [i for i in items if i["code"] == "stale:lan"]
+    waiting = [i for i in items if i["code"] == "first_run:lan"]
+    assert waiting and waiting[0]["level"] == AMBER
+    items = compute_attention(db, cfg, now=at(2026, 10, 23, 3, 1))     # 21:00 + 4 + 2 h passed
+    assert [i for i in items if i["code"] == "stale:lan" and i["level"] == RED]
+
+
+def test_a_database_without_the_marker_uses_the_oldest_run(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    db._get_conn().execute("DELETE FROM db_meta WHERE key = 'created_at'")        # a pre-marker database
+    db._get_conn().commit()
+    db.insert_run({"run_id": "f1", "mode": "lan", "started_at": at(2026, 10, 22, 21, 0).isoformat(),
+                   "ended_at": at(2026, 10, 22, 21, 1).isoformat(), "status": "LAN_FAILED"})
+    assert db.first_known_at() == at(2026, 10, 22, 21, 0).isoformat()
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 24, 3, 1)) if i["code"] == "stale:lan"]
+
+
+def test_a_database_with_nothing_at_all_is_amber_not_red(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    items = compute_attention(db, cfg, now=at(2026, 10, 22, 12))
+    assert [i for i in items if i["code"] == "first_run:lan"]
+    assert not [i for i in items if i["code"] == "stale:lan"]
+
+
+def test_a_leg_switched_on_later_waits_for_its_own_first_run(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    db.set_meta_created_at(at(2026, 1, 1).isoformat())
+    db.record_config_change({"changed_at": at(2026, 10, 22, 22, 0).isoformat(), "changed_by": "x",
+                             "key": "lan.enabled", "old_value": "False", "new_value": "True",
+                             "risky": 0, "backup_file": ""})
+    items = compute_attention(db, cfg, now=at(2026, 10, 23, 12))
+    assert [i for i in items if i["code"] == "first_run:lan"] and not [i for i in items if i["code"] == "stale:lan"]
+
+
+def test_the_marker_is_written_only_for_a_database_that_did_not_exist(tmp_path):
+    path = str(tmp_path / "fresh.db")
+    first = ManifestDB(path)
+    created = first.meta_created_at()
+    first.close()
+    assert created
+    again = ManifestDB(path)
+    try:
+        assert again.meta_created_at() == created                 # never rewritten by a later open
+    finally:
+        again.close()
+
+
+# ── partial uploads that are making progress ─────────────────────────────────
+
+def _partial(db, started, bytes_copied=1000, stopped=True):
+    db.insert_run({"run_id": f"p{started.isoformat()}", "mode": "lan", "started_at": started.isoformat(),
+                   "ended_at": started.isoformat(), "status": "LAN_PARTIAL", "bytes_copied": bytes_copied,
+                   "extended_metrics": json.dumps({"budget": {"stopped": stopped}})})
+
+
+def test_overdue_but_progressing_partial_uploads_are_amber_and_not_stale(tmp_path, db):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 15, 21, 0))
+    _partial(db, at(2026, 10, 23, 21, 0))
+    items = compute_attention(db, cfg, now=at(2026, 10, 24, 12))
+    assert not [i for i in items if i["code"] == "stale:lan"]
+    catching = [i for i in items if i["code"] == "catching_up:lan"]
+    assert catching and catching[0]["level"] == AMBER
+
+
+@pytest.mark.parametrize("bytes_copied,stopped", [(0, True), (1000, False)])
+def test_a_partial_without_progress_stays_red(tmp_path, db, bytes_copied, stopped):
+    cfg = _cfg(tmp_path)
+    _success(db, at(2026, 10, 15, 21, 0))
+    _partial(db, at(2026, 10, 23, 21, 0), bytes_copied, stopped)
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 24, 12)) if i["code"] == "stale:lan"]
+
+
+# ── nothing else is affected ─────────────────────────────────────────────────
+
+def test_a_disabled_leg_never_alerts(tmp_path, db):
+    cfg = _cfg(tmp_path, cloud_enabled=False)
+    assert not [i for i in compute_attention(db, cfg, now=at(2026, 10, 22, 12)) if i["code"].endswith(":cloud")]
+
+
+def test_the_old_fixed_window_key_is_dropped_with_a_warning(tmp_path):
+    import yaml
+
+    from models.config import load_config
+    from tests.test_m4_settings_ux import _write_config
+
+    path = _write_config(tmp_path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data.setdefault("dashboard", {})["stale_after_hours"] = 26
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    cfg = load_config(str(path))                                   # still loads
+    assert not hasattr(cfg.dashboard, "stale_after_hours")
+    assert cfg.dashboard.stale_grace_hours == 2
+
+
+# ── the service records the schedule it serves ───────────────────────────────
+
+def test_serve_records_the_schedule_it_registers(tmp_path):
+    import serve
+
+    cfg = _cfg(tmp_path, lan_cron="0 20 * * MON-FRI")
+    serve._record_schedule_in_effect(cfg)
+    db = ManifestDB.from_config(cfg)
+    try:
+        stored = db.get_schedule_in_effect()
+    finally:
+        db.close()
+    assert stored["lan_cron"] == "0 20 * * MON-FRI" and stored["timezone"] == "Asia/Kolkata"
+    assert stored["since"]
+
+
+def test_a_failure_to_record_never_stops_the_scheduler(tmp_path, monkeypatch):
+    import serve
+
+    monkeypatch.setattr("core.manifest.ManifestDB.from_config",
+                        classmethod(lambda cls, c: (_ for _ in ()).throw(OSError("db locked"))))
+    serve._record_schedule_in_effect(_cfg(tmp_path))            # must not raise

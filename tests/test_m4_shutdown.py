@@ -12,6 +12,8 @@ handoff): exit code = Win32 error; text on stderr as `<host>: <text>(<code>)`;
 
 import json
 from types import SimpleNamespace
+
+from test_support import attention_cfg
 from unittest.mock import MagicMock, patch
 
 import pendulum
@@ -31,9 +33,10 @@ from test_support.fake_tools import fake_run_tool
 def _att_cfg():
     return SimpleNamespace(
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
-        dashboard=SimpleNamespace(stale_after_hours=26, alert_failure_window_days=7,
+        dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
         notifications=SimpleNamespace(send_on_failure=True),
+        schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET,
     )
 
 

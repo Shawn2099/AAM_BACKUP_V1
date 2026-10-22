@@ -38,7 +38,9 @@ DEPRECATED_KEYS: dict[str, frozenset[str]] = {
     "alerts": frozenset({"attachment_max_kb"}),
     # plan E: sign-in is always on and the API key is gone. An upgraded server's config.yaml still
     # lists them: drop with a warning (code review 2026-10-19) instead of refusing to start.
-    "dashboard": frozenset({"api_key", "auth_enabled"}),
+    # owner 2026-10-22: a fixed number of hours raised false "overdue" alarms for any schedule that
+    # is not daily; the limit now follows the schedule (dashboard.stale_grace_hours).
+    "dashboard": frozenset({"api_key", "auth_enabled", "stale_after_hours"}),
 }
 
 
@@ -908,8 +910,8 @@ class WatchdogConfig(StrictModel):
     stale_check_interval_seconds: int = Field(
         default=1800, ge=60, le=86_400,
         description="How often the watchdog checks that every enabled leg had a successful "
-                    "backup within dashboard.stale_after_hours; a stale leg is emailed "
-                    "(repeated per alerts.repeat_cooldown_hours while it stays stale)")
+                    "backup by its next scheduled run + run budget + dashboard.stale_grace_hours; "
+                    "an overdue leg is emailed (again per alerts.repeat_cooldown_hours)")
 
 
 class DashboardConfig(StrictModel):
@@ -931,10 +933,11 @@ class DashboardConfig(StrictModel):
                     "a CIDR (10.10.151.0/24) or a range (10.10.151.10-10.10.151.50). "
                     "Applied by deploy/06_install_services.ps1 when bind_address is not "
                     "127.0.0.1.")
-    stale_after_hours: float = Field(
-        default=26, ge=1, le=720,
-        description="Banner + /health turn red when an enabled leg has had no successful "
-                    "backup for this many hours.")
+    stale_grace_hours: float = Field(
+        default=2, ge=0, le=168,
+        description="Banner, /health and the overdue email turn red when an enabled leg has had no "
+                    "successful backup by its next scheduled run + the run budget + this many hours "
+                    "of grace (a daily schedule: about 26 h, a weekly one: about a week).")
     alert_failure_window_days: int = Field(
         default=7, ge=1, le=90,
         description="Banner + /health turn red when an alert or report email failed to be "

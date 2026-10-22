@@ -100,7 +100,27 @@ def _deployments():
         )
     )
 
+    _record_schedule_in_effect(config)
     return tuple(deployments_out)
+
+
+def _record_schedule_in_effect(config) -> None:
+    """Remember which schedules THIS process registers. The dashboard and the watchdog judge
+    "overdue" against these: a schedule saved in Settings but not applied yet (it takes effect
+    when the agent restarts) must not change what counts as late. Written just before serve()
+    starts, from the same config object the deployments were built from."""
+    try:
+        from core.manifest import ManifestDB
+
+        db = ManifestDB.from_config(config)
+        try:
+            db.set_schedule_in_effect({"cloud_cron": config.schedule.cloud_cron,
+                                       "lan_cron": config.schedule.lan_cron,
+                                       "timezone": config.schedule.timezone})
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - never stops the scheduler; the config is the fallback
+        print(f"[serve] could not record the schedule in effect: {e}")
 
 
 if __name__ == "__main__":
