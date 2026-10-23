@@ -28,13 +28,16 @@ no backup.lock; stop AamWatchdog, restart AamBackupAgent, start AamWatchdog; no 
 rollback = `git reset --keep 9906026` + same restart order; DB schema unchanged).
 
 Open checklist (tick when done):
+**2026-10-23 (later): TARGET SERVER = DOMAIN CONTROLLER?** `deploy/server_discovery_report.md` (AAMBDC001, domain caaam.com, Server 2016 Datacenter, subnet 192.168.10.x, Enterprise Admins among local admins) says the install target is a domain controller: NO local accounts, so `.ambackup` / New-LocalUser / Get-LocalUser do not work. 04 now uses `Get-ServiceAccountState` (domain or local) and INSTALL_FRESH step 5 has the DOMAIN\aambackup variant. OWNER MUST CONFIRM it is a DC and which account to use; the domain's GPO decides batch/service logon rights.
+Lab rerun on this code still to do (previous report was against rigs without a year folder; fixed in 433adbf).
+
 - [ ] Lab REPORT.md read, failures fixed
 - [ ] Deploy to the trial box (above), verify 02:01 cloud run + no spam mail
-- [ ] I-4 WoL host check in Settings save (core/config_edit.py) - after the lab (imports it)
-- [ ] I-13 `core/permissions.py` message: folder missing / NAS asleep vs missing rights - after the lab
-- [ ] `core/notify.py:420` `_nas_host` prefers wol.server_ip even when WoL is off (trial box stale 10.10.186.231 leaks into alerts) - after the lab
-- [ ] R-12 cloud probe AS the service account in 04 (rclone lsd + `_aam_preflight` write/delete); today the first cloud proof is the first manual cloud run
-- [ ] I-15 nits: 08_uninstall kills EVERY robocopy/rclone/uv process (limit to ours); two scripts numbered 07; RUN_GCLOUD_LOGIN.bat hard-coded path; remove committed server_discovery_report.*; SESSION_HANDOFF line mojibake
+- [x] I-4 WoL host check in Settings save (`core/wol_target.py`, used by `config_edit._refuse_wol_target_mismatch` and `deploy/install_checks.py`); `wol.server_ip` has NO default any more (was 192.168.10.10)
+- [x] I-13 `core/permissions._explain_write_failure`: unreachable (AAM-NAS-01) / folder missing / missing rights
+- [x] `core/notify._nas_host` uses the NAS path host; wol.server_ip only when WoL is on
+- [x] R-12 `deploy/probe_service_account.py` check "cloud bucket" (bucket read + `_aam_preflight` write/delete) runs AS the service account
+- [x] I-15 nits (08_uninstall kills only OUR rclone/robocopy/prefect/uv; gcloud script is now 12_configure_gcloud.ps1; RUN_GCLOUD_LOGIN.bat uses its own folder; deploy/server_discovery_report.* is the REAL target server's report - kept) - was: 08_uninstall kills EVERY robocopy/rclone/uv process (limit to ours); two scripts numbered 07; RUN_GCLOUD_LOGIN.bat hard-coded path; remove committed server_discovery_report.*; SESSION_HANDOFF line mojibake
 - [ ] I-16 old-year bulk upload tool (own plan: rclone copy never sync, one prefix per old folder, never into the current FY prefix, ARCHIVE class, bandwidth limit, ends with rclone check --one-way)
 - [ ] Clean-VM dry run of INSTALL_FRESH.md - verify: Authenticated Users in BUILTIN\Users, SDK zip layout + bundled Python (CLOUDSDK_PYTHON), uv Python readable by aambackup, W32Time start type, Get-Credential window, filtered token vs SeBackupPrivilege (probe -RunLevel Limited), Notepad CRLF, B2 (account writes next to config.yaml) as the real account
 - [ ] Alert-controls steps D-G (docs/PLAN_ALERT_CONTROLS_2026-10-22.md)

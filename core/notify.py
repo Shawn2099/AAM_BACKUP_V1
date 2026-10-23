@@ -417,12 +417,16 @@ _link_cache: dict = {}
 
 
 def _nas_host(config) -> str | None:
-    host = getattr(getattr(config, "wol", None), "server_ip", "") or ""
-    if host:
-        return host
+    """The host the backup really connects to (the NAS path); wol.server_ip only when Wake-on-LAN is on,
+    because it keeps a stale value while WoL is off."""
     dest = getattr(getattr(config, "paths", None), "lan_destination", "") or ""
     if dest.startswith("\\\\"):
-        return dest.lstrip("\\").split("\\", 1)[0] or None
+        host = dest.lstrip("\\").split("\\", 1)[0]
+        if host:
+            return host
+    wol = getattr(config, "wol", None)
+    if getattr(wol, "enabled", False):
+        return getattr(wol, "server_ip", "") or None
     return None
 
 

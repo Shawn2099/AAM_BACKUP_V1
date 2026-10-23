@@ -392,6 +392,28 @@ def _refuse_fy_change(current, candidate) -> None:
         f"the old year, then switches"))
 
 
+_WOL_TARGET_KEYS = {"wol.enabled", "wol.server_ip", "wol.mac_address", "paths.lan_destination", "lan.enabled"}
+
+
+def _refuse_wol_target_mismatch(candidate, wanted: dict) -> None:
+    """The wake-up and the remote shutdown go to wol.server_ip, the backup goes to the NAS path: they must be
+    the same machine, and no example values (plan I-4). Only judged when this save touches one of those
+    settings, so a site that is already in this state can still change unrelated settings."""
+    from core.wol_target import check_wol_target
+
+    if not _WOL_TARGET_KEYS & set(wanted):
+        return
+    lines = check_wol_target(candidate.lan.enabled, candidate.wol.enabled, candidate.paths.lan_destination,
+                             candidate.wol.server_ip, candidate.wol.mac_address)
+    problems = [(what, detail) for level, what, detail in lines if level == "FAIL"]
+    if not problems:
+        return
+    key = "paths.lan_destination" if any(w == "NAS folder" for w, _ in problems) else "wol.server_ip"
+    raise ConfigEditError(
+        400, messages.act("Fix the highlighted settings, then save again", "Nothing was saved because the NAS address is not consistent"),
+        errors=[{"key": key, "message": detail} for _, detail in problems])
+
+
 def _prepare(config_path: str, changes: dict, allow_advanced: bool = True):
     """(current config, {key: typed new value}) - raises ConfigEditError when the
     request is not allowed or the resulting config would not load. Shared by
@@ -427,6 +449,7 @@ def _prepare(config_path: str, changes: dict, allow_advanced: bool = True):
         raise ConfigEditError(400, messages.act("Fix the highlighted settings, then save again", "Nothing was saved because a value is not valid"),
                               errors=_validation_messages(e)) from e
     _refuse_fy_change(current, candidate)
+    _refuse_wol_target_mismatch(candidate, wanted)
     # the typed values the services will actually see ("3" -> 3)
     typed = {k: _current_value(candidate, k) for k in wanted}
     return current, {k: v for k, v in typed.items()

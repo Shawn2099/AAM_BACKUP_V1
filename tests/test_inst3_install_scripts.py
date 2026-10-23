@@ -115,3 +115,12 @@ def test_the_install_guide_has_no_control_characters_and_names_real_files():
     for name in re.findall(r"deploy\\([\w.]+\.(?:ps1|bat|py|yaml))", text):
         assert (DEPLOY / name).exists(), name
     assert "--clear-soft-delete-policy" not in text
+
+
+def test_the_service_account_check_works_for_domain_accounts_and_a_domain_controller():
+    """The target server (AAMBDC001, caaam.com) looks like a domain controller: it has no local accounts, so
+    Get-LocalUser cannot be the only check (found in deploy/server_discovery_report.md, 2026-10-23)."""
+    readiness, common = _t("04_check_readiness.ps1"), _t("_common.ps1")
+    assert "Get-LocalUser" not in readiness.replace("Get-LocalUser /", "")
+    assert "Get-ServiceAccountState $ServiceAccount" in readiness
+    assert "DomainRole" in common and "PrincipalContext" in common and "domain controller" in common

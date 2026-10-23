@@ -345,14 +345,14 @@ if (Test-Path $venvPy) {
 
 # 17. Service account: exists, and the probe runs AS it (plan §10 item 2)
 if ($ServiceAccount) {
-    $shortName = ($ServiceAccount -split '\\')[-1]
-    $local = Get-LocalUser -Name $shortName -ErrorAction SilentlyContinue
-    if ($local -and $local.Enabled) {
+    $acct = Get-ServiceAccountState $ServiceAccount
+    if ($acct.Exists -and $acct.Enabled) {
         Check-Item "Service account" "$ServiceAccount exists and is enabled" $false
     } else {
-        Check-Item "Service account" "$ServiceAccount not found or disabled (create it: lusrmgr.msc)" $true
+        $why = if ($acct.Note -and $acct.Note -ne "not found") { $acct.Note } else { "not found or disabled (create it: lusrmgr.msc, or Active Directory Users and Computers on a domain)" }
+        Check-Item "Service account" "$ServiceAccount $why" $true
     }
-    if ($local -and (Test-Path $venvPy)) {
+    if ($acct.Exists -and (Test-Path $venvPy)) {
         # The same rights 06 grants, BEFORE the probe checks them (04 must not depend on 06 having run)
         if (Grant-AgentRights $runtimeDir $ProjectDir $cfg $ServiceAccount) {
             Check-Item "Rights for $ServiceAccount" "Modify on $runtimeDir and on config.yaml + its folder" $false

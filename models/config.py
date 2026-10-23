@@ -184,7 +184,7 @@ class WolConfig(StrictModel):
     # meaningful when WoL is enabled; requiring it for disabled pipelines made
     # lan-only / cloud-only deployments carry a fake MAC.
     mac_address: str = ""
-    server_ip: str = "192.168.10.10"
+    server_ip: str = ""     # no made-up default: must be the NAS host when Wake-on-LAN is on
     broadcast_address: str = Field(
         default="",
         description=(
@@ -243,6 +243,8 @@ class WolConfig(StrictModel):
     def _mac_required_when_enabled(self) -> "WolConfig":
         if self.enabled and not self.mac_address:
             raise ValueError("Enter the NAS network (MAC) address, or switch Wake-on-LAN off. The NAS cannot be woken without it.")
+        if self.enabled and not self.server_ip:
+            raise ValueError("Enter the NAS address (IP), or switch Wake-on-LAN off. The NAS cannot be woken or switched off without it.")
         return self
 
     @model_validator(mode="after")
@@ -258,6 +260,8 @@ class WolConfig(StrictModel):
     @field_validator("server_ip")
     @classmethod
     def valid_ipv4(cls, v: str) -> str:
+        if not v:       # allowed only while Wake-on-LAN is off; _mac_required_when_enabled checks the rest
+            return v
         try:
             ipaddress.IPv4Address(v)
         except ipaddress.AddressValueError:

@@ -8,8 +8,8 @@
 #
 # Idempotent: re-running detects the correct value and skips writes.
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File deploy\07_configure_gcloud.ps1
-#   powershell -ExecutionPolicy Bypass -File deploy\07_configure_gcloud.ps1 -RestartServices
+#   powershell -ExecutionPolicy Bypass -File deploy\12_configure_gcloud.ps1
+#   powershell -ExecutionPolicy Bypass -File deploy\12_configure_gcloud.ps1 -RestartServices
 
 param(
     [switch]$RestartServices

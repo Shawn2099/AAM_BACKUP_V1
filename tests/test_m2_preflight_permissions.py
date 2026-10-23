@@ -320,3 +320,38 @@ def test_cloud_access_failure_is_cloud_failed_and_nothing_synced(rec, _db, _h, _
         flow._run_cloud_pipeline(_pcfg(), "run-c", now_iso())
     sync.with_options.return_value.assert_not_called()
     assert rec.call_args.args[4] == "CLOUD_FAILED"
+
+
+# ── I-13: the write-probe message says WHY, not always "missing rights" ───
+
+def _open_raising(exc):
+    real_open = open
+
+    def raiser(path, mode="r", *a, **k):
+        if "w" in mode:
+            raise exc
+        return real_open(path, mode, *a, **k)
+    return raiser
+
+
+def test_write_probe_missing_folder_says_create_the_folder(tmp_path):
+    exc = FileNotFoundError(2, "The system cannot find the path specified", str(tmp_path))
+    exc.winerror = 3
+    with patch("builtins.open", _open_raising(exc)), pytest.raises(perm.PermissionCheckError) as ei:
+        perm.probe_destination_write(str(tmp_path), "run-1")
+    msg = str(ei.value)
+    assert "does not exist" in msg and "year folder" in msg
+    assert "modify rights" not in msg and "service account" not in msg
+    assert ei.value.fault_code == "AAM-NAS-03"
+
+
+@pytest.mark.parametrize("winerror", [53, 67, 1231, 64])
+def test_write_probe_unreachable_nas_says_switched_on_not_rights(tmp_path, winerror):
+    exc = OSError(0, "The network path was not found", str(tmp_path))
+    exc.winerror = winerror
+    with patch("builtins.open", _open_raising(exc)), pytest.raises(perm.PermissionCheckError) as ei:
+        perm.probe_destination_write(str(tmp_path), "run-1")
+    msg = str(ei.value)
+    assert "cannot be reached" in msg and "Switch the NAS on" in msg
+    assert "modify rights" not in msg
+    assert ei.value.fault_code == "AAM-NAS-01"

@@ -18,6 +18,7 @@ if %errorlevel% neq 0 (
 set SCRIPT_DIR=%~dp0
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
+set "AAM_PROJECT_DIR=%PROJECT_DIR%"
 set NSSM=%PROJECT_DIR%\deploy\bin\nssm.exe
 
 echo.
@@ -113,30 +114,26 @@ echo.
 echo  [3/4] Killing data transfer processes...
 echo.
 
-echo  Killing rclone.exe (cloud sync)...
-taskkill /F /IM rclone.exe /T 2>nul
-if %errorlevel% equ 0 ( echo   Done. ) else ( echo   Not running. )
+echo  Killing OUR rclone.exe (the one in this install's deploy\bin)...
+powershell -NoProfile -Command ^
+    "$bin = (Join-Path $env:AAM_PROJECT_DIR 'deploy\bin') + '\'; $n = 0; Get-CimInstance Win32_Process -Filter \"Name='rclone.exe'\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bin, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $n++; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; if ($n) { Write-Host ('  Done (' + $n + ').') } else { Write-Host '  Not running.' }"
 
-echo  Killing robocopy.exe (LAN sync)...
-taskkill /F /IM robocopy.exe /T 2>nul
-if %errorlevel% equ 0 ( echo   Done. ) else ( echo   Not running. )
+echo  Killing OUR robocopy.exe (the backup's own: it always excludes the .aam_write_probe_ files)...
+powershell -NoProfile -Command ^
+    "$n = 0; Get-CimInstance Win32_Process -Filter \"Name='robocopy.exe'\" | Where-Object { $_.CommandLine -like '*.aam_write_probe_*' } | ForEach-Object { $n++; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; if ($n) { Write-Host ('  Done (' + $n + ').') } else { Write-Host '  Not running.' }"
 
 :: -------------------------------------------------------
-:: STEP 4: Kill remaining binary launcher processes
+:: STEP 4: Kill remaining launcher processes of THIS install
 :: prefect.exe and uv.exe are killed LAST since they are
-:: parent launchers — killing them first could mask child python processes
+:: parent launchers; only those started from this install's folder
+:: (another uv or prefect on the machine is not ours to stop)
 :: -------------------------------------------------------
 echo.
 echo  [4/4] Killing launcher processes...
 echo.
 
-echo  Killing prefect.exe...
-taskkill /F /IM prefect.exe /T 2>nul
-if %errorlevel% equ 0 ( echo   Done. ) else ( echo   Not running. )
-
-echo  Killing uv.exe (service launcher)...
-taskkill /F /IM uv.exe /T 2>nul
-if %errorlevel% equ 0 ( echo   Done. ) else ( echo   Not running. )
+powershell -NoProfile -Command ^
+    "$root = $env:AAM_PROJECT_DIR.TrimEnd('\') + '\'; $n = 0; Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq 'prefect.exe' -or $_.Name -eq 'uv.exe') -and (($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) -or ($_.CommandLine -and $_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0)) } | ForEach-Object { $n++; Write-Host ('  Killing ' + $_.Name + ' PID ' + $_.ProcessId); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; if (-not $n) { Write-Host '  Not running.' }"
 
 echo.
 echo ===================================================

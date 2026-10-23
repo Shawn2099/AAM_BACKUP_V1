@@ -14,7 +14,7 @@
       3. 04_check_readiness.ps1   (official readiness gate)
       4. 05_test_config.bat       (official config validator)
       5. 06_install_services.ps1  (official NSSM service installer)
-      6. 07_configure_gcloud.ps1  (sets CLOUDSDK_PYTHON for the FY rollover)
+      6. 12_configure_gcloud.ps1  (sets CLOUDSDK_PYTHON for the FY rollover)
       7. service account          (setup_service_account.ps1)
       8. starts the services and verifies them
 
@@ -154,9 +154,9 @@ if ($PSCmdlet.ShouldProcess("services", "install")) {
 }
 
 # ── 6. gcloud python wiring ────────────────────────────────────────────────────
-Write-Step "6/8  07_configure_gcloud.ps1 -RestartServices"
+Write-Step "6/8  12_configure_gcloud.ps1 -RestartServices"
 if ((Test-Path $gcloudCmd) -and $PSCmdlet.ShouldProcess("gcloud", "configure CLOUDSDK_PYTHON")) {
-    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "deploy\07_configure_gcloud.ps1") -RestartServices
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "deploy\12_configure_gcloud.ps1") -RestartServices
 }
 
 # ── 7. service account ─────────────────────────────────────────────────────────

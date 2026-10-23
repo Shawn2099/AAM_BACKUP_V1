@@ -193,3 +193,56 @@ def test_runtime_rights_reach_existing_files_on_an_upgrade():
     NSSM (as the account) could not open agent_svc.log and the agent did not start."""
     common = (ROOT / "deploy" / "_common.ps1").read_text(encoding="utf-8")
     assert '(OI)(CI)M" /T /C /Q' in common and "Grant-AgentRights" in INSTALLER
+
+
+class TestProbeCloud:
+    """R-12: the first cloud proof happens in the readiness probe, AS the service account."""
+
+    def _cloud_cfg(self, tmp_path):
+        cfg = _config(tmp_path)
+        key = tmp_path / "key.json"
+        key.write_text("{}", encoding="utf-8")
+        text = cfg.read_text(encoding="utf-8").replace("cloud:\n  enabled: false\n",
+                                                       "cloud:\n  enabled: true\n  bucket: my-bucket-1\n  project_number: '12345'\n")
+        text = text.replace("gcs_key_path: ''", f"gcs_key_path: '{key}'")
+        cfg.write_text(text, encoding="utf-8")
+        return cfg
+
+    def test_cloud_leg_off_skips_the_cloud_check(self, probe, tmp_path):
+        result = tmp_path / "result.txt"
+        probe.main(["p", str(_config(tmp_path)), str(result)])
+        assert any(x.startswith("SKIP cloud bucket") for x in _lines(result))
+
+    def test_bucket_read_and_write_are_proven(self, probe, tmp_path, monkeypatch):
+        from core import cloud_preflight, permissions
+        calls = []
+        monkeypatch.setattr(cloud_preflight, "run_cloud_dry_run",
+                            lambda **kw: calls.append(("read", kw["bucket"], kw["fy_prefix"])) or {"ok": True})
+        monkeypatch.setattr(permissions, "probe_cloud_write",
+                            lambda bucket, run_id, conf, timeout, artefacts, error_tail_lines=100:
+                            calls.append(("write", bucket)))
+        result = tmp_path / "result.txt"
+        code = probe.main(["p", str(self._cloud_cfg(tmp_path)), str(result)])
+        assert code == 0, _lines(result)
+        assert ("read", "my-bucket-1", "FY26-27") in calls and ("write", "my-bucket-1") in calls
+        assert any(x.startswith("OK cloud bucket") for x in _lines(result))
+
+    def test_a_bucket_the_account_cannot_read_fails_with_the_reason(self, probe, tmp_path, monkeypatch):
+        from core import cloud_preflight
+        monkeypatch.setattr(cloud_preflight, "run_cloud_dry_run",
+                            lambda **kw: {"ok": False, "error": "403 forbidden"})
+        result = tmp_path / "result.txt"
+        assert probe.main(["p", str(self._cloud_cfg(tmp_path)), str(result)]) == 1
+        [line] = [x for x in _lines(result) if x.startswith("FAIL")]
+        assert line.startswith("FAIL cloud bucket") and "403 forbidden" in line
+
+    def test_a_bucket_the_account_cannot_write_fails(self, probe, tmp_path, monkeypatch):
+        from core import cloud_preflight, permissions
+        monkeypatch.setattr(cloud_preflight, "run_cloud_dry_run", lambda **kw: {"ok": True})
+
+        def denied(*a, **k):
+            raise permissions.PermissionCheckError("Cloud write check failed")
+        monkeypatch.setattr(permissions, "probe_cloud_write", denied)
+        result = tmp_path / "result.txt"
+        assert probe.main(["p", str(self._cloud_cfg(tmp_path)), str(result)]) == 1
+        assert any(x.startswith("FAIL cloud bucket") and "Cloud write check failed" in x for x in _lines(result))

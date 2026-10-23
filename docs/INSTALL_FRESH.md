@@ -90,6 +90,15 @@ net localgroup "Backup Operators" aambackup /add
 Use the **same password as on the NAS (A2)**. *Backup Operators* gives the account both the "back up files" right and
 "log on as a batch job" that the checks need.
 
+**If this server is a domain controller** (the site's discovery report shows `AAMBDC001` in `caaam.com` with *Enterprise
+Admins* among the local administrators): a domain controller has **no local accounts**, so `New-LocalUser` and
+`.\aambackup` do not exist there. Create the account in *Active Directory Users and Computers* (password never expires,
+member of the domain *Backup Operators* group), give it the same password as on the NAS, and use it everywhere as
+`CAAAM\aambackup`: `04_check_readiness.ps1 -ServiceAccount CAAAM\aambackup`, then `06_install_services.ps1 -ServiceAccount
+CAAAM\aambackup`. On a domain controller the domain policy decides who may log on as a service or batch job: if `04`
+reports exit 267011 or the service will not start, ask the domain admin to allow that account to "Log on as a service" and
+"Log on as a batch job" in the Default Domain Controllers Policy.
+
 ### 6. Install Git and get the code
 Install Git for Windows from the USB stick, open a **new** Administrator PowerShell, then:
 ```powershell
@@ -153,7 +162,7 @@ line `>>> SUCCESS` (green), or `PASSED WITH n WARNING(S)`. Yellow `[WARN]` lines
 
 ### 10b. Let the yearly archive step find Python
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\deploy\07_configure_gcloud.ps1
+powershell -ExecutionPolicy Bypass -File .\deploy\12_configure_gcloud.ps1
 ```
 (Without it the 1 April move of the closed year to the cheaper storage class silently does nothing.)
 

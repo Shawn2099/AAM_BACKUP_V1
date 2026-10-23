@@ -118,6 +118,28 @@ def _remove_quietly(path: str) -> None:
         logger.warning(f"Write probe {path} could not be removed: {e}")
 
 
+# Windows error numbers for "the NAS cannot be reached" (not a rights problem): network path not found,
+# network name not found, host not found / no longer available, semaphore timeout, network down.
+_UNREACHABLE_WINERRORS = {53, 67, 64, 59, 121, 1222, 1231, 1232}
+_PATH_NOT_FOUND_WINERROR = 3
+
+
+def _explain_write_failure(dest: str, e: OSError, rights_fix: str) -> tuple[str, str]:
+    """(fault code, message) for a failed destination write: unreachable NAS, missing folder or missing
+    rights are three different repairs (plan I-13)."""
+    winerror = getattr(e, "winerror", None)
+    if winerror in _UNREACHABLE_WINERRORS or isinstance(e, (TimeoutError, ConnectionError)):
+        return "AAM-NAS-01", (
+            f"The LAN destination {dest} cannot be reached: {e}. The NAS may be switched off or asleep, or "
+            "its address or the network is wrong. Switch the NAS on (or fix the address in the settings) "
+            "and run again - this is not a rights problem.")
+    if winerror == _PATH_NOT_FOUND_WINERROR or isinstance(e, FileNotFoundError):
+        return "AAM-NAS-03", (
+            f"The LAN destination folder {dest} does not exist on the NAS: {e}. Create the share and the "
+            "financial-year folder (for example FY26-27) on the NAS first, then run again.")
+    return "AAM-NAS-03", f"Cannot write to the LAN destination {dest}: {e}. {rights_fix}"
+
+
 def probe_destination_write(dest: str, run_id: str) -> None:
     """Create, write, read back and delete a probe file at the destination root.
 
@@ -136,7 +158,8 @@ def probe_destination_write(dest: str, run_id: str) -> None:
         data = _read_back(path)
     except OSError as e:
         _remove_quietly(path)
-        raise _fail("AAM-NAS-03", f"Cannot write to the LAN destination {dest}: {e}. {fix}") from e
+        code, text = _explain_write_failure(dest, e, fix)
+        raise _fail(code, text) from e
     if data != _PROBE_PAYLOAD:
         _remove_quietly(path)
         raise _fail("AAM-NAS-11",

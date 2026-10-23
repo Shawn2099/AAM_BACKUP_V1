@@ -89,6 +89,33 @@ def run_checks(config_path: str) -> list[tuple[str, str, str]]:
     else:
         results.append(("SKIP", "NAS write", "lan.enabled is false"))
 
+    if config.cloud.enabled:
+        def cloud() -> str:
+            from core import cloud_preflight, fy_rollover
+            from core.rclone_config import temp_rclone_config
+            fy = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+            artefacts = RunArtefacts.ephemeral("readiness-cloud")
+            # read: the sync's own bucket probe (credentials, bucket exists, network)
+            read = cloud_preflight.run_cloud_dry_run(
+                source=config.paths.source_drive, bucket=config.cloud.bucket, fy_prefix=fy,
+                gcs_key_path=config.paths.gcs_key_path, project_number=config.cloud.project_number,
+                storage_class=config.cloud.storage_class, location=config.cloud.location,
+                timeout=config.cloud.preflight_timeout_seconds, retries=config.cloud.probe_retries,
+                retries_sleep_seconds=config.cloud.probe_retries_sleep_seconds, artefacts=artefacts)
+            if not read["ok"]:
+                raise RuntimeError(f"cannot read gs://{config.cloud.bucket}/{fy}: {read['error']}")
+            # write: the same create + delete probe the nightly run makes, outside every FY prefix
+            with temp_rclone_config(config.paths.gcs_key_path, config.cloud.location,
+                                    config.cloud.project_number, config.cloud.storage_class) as rclone_conf:
+                permissions.probe_cloud_write(
+                    config.cloud.bucket, f"readiness-{uuid.uuid4().hex[:8]}", rclone_conf,
+                    config.cloud.preflight_timeout_seconds, artefacts,
+                    error_tail_lines=config.cloud.error_tail_lines)
+            return f"read and create/delete proven on gs://{config.cloud.bucket}"
+        check("cloud bucket", cloud)
+    else:
+        results.append(("SKIP", "cloud bucket", "cloud.enabled is false"))
+
     results.append(("SKIP", "NAS remote shutdown",
                     "cannot be tested without shutting the NAS down - verified by the "
                     "NAS shutdown check after the first real LAN backup (WP10)"))

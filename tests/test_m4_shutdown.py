@@ -141,7 +141,7 @@ class TestShutdownServer:
 
 class TestShutdownConfig:
     def _wol(self, **kw):
-        return WolConfig(mac_address="AA:BB:CC:DD:EE:FF", **kw)
+        return WolConfig(mac_address="AA:BB:CC:DD:EE:FF", server_ip="10.0.0.5", **kw)
 
     def test_defaults(self):
         w = self._wol()
