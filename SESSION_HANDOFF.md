@@ -28,11 +28,12 @@ no backup.lock; stop AamWatchdog, restart AamBackupAgent, start AamWatchdog; no 
 rollback = `git reset --keep 9906026` + same restart order; DB schema unchanged).
 
 Open checklist (tick when done):
+**2026-10-23 08:53 IST - TRIAL BOX DEPLOYED to `9461ac2`** (was 433adbf; DB copy `manifest.db.bak-before-inst8-*`, services restarted idle: agent, watchdog; /health healthy, no warnings; next runs LAN 21:01, cloud 02:01 IST). Same step set `wol.server_ip` -> 10.10.151.53 (config backup `config.yaml.bak-inst8-*`, WoL still Off) and the Advanced password was set (owner typed it in chat: advise changing it in Settings once the trial ends). Lab run on this code was started 08:5x IST (`agent_runsudit_lab_<stamp>\REPORT.md`) - read it.
 **2026-10-23 (later): TARGET SERVER = DOMAIN CONTROLLER?** `deploy/server_discovery_report.md` (AAMBDC001, domain caaam.com, Server 2016 Datacenter, subnet 192.168.10.x, Enterprise Admins among local admins) says the install target is a domain controller: NO local accounts, so `.ambackup` / New-LocalUser / Get-LocalUser do not work. 04 now uses `Get-ServiceAccountState` (domain or local) and INSTALL_FRESH step 5 has the DOMAIN\aambackup variant. OWNER MUST CONFIRM it is a DC and which account to use; the domain's GPO decides batch/service logon rights.
 Lab rerun on this code still to do (previous report was against rigs without a year folder; fixed in 433adbf).
 
 - [ ] Lab REPORT.md read, failures fixed
-- [ ] Deploy to the trial box (above), verify 02:01 cloud run + no spam mail
+- [x] Deploy to the trial box (done 08:53 IST, see above); 02:01 cloud run was CLOUD_NO_CHANGES_COMPLETE, no spam mail
 - [x] I-4 WoL host check in Settings save (`core/wol_target.py`, used by `config_edit._refuse_wol_target_mismatch` and `deploy/install_checks.py`); `wol.server_ip` has NO default any more (was 192.168.10.10)
 - [x] I-13 `core/permissions._explain_write_failure`: unreachable (AAM-NAS-01) / folder missing / missing rights
 - [x] `core/notify._nas_host` uses the NAS path host; wol.server_ip only when WoL is on
@@ -41,7 +42,7 @@ Lab rerun on this code still to do (previous report was against rigs without a y
 - [ ] I-16 old-year bulk upload tool (own plan: rclone copy never sync, one prefix per old folder, never into the current FY prefix, ARCHIVE class, bandwidth limit, ends with rclone check --one-way)
 - [ ] Clean-VM dry run of INSTALL_FRESH.md - verify: Authenticated Users in BUILTIN\Users, SDK zip layout + bundled Python (CLOUDSDK_PYTHON), uv Python readable by aambackup, W32Time start type, Get-Credential window, filtered token vs SeBackupPrivilege (probe -RunLevel Limited), Notepad CRLF, B2 (account writes next to config.yaml) as the real account
 - [ ] Alert-controls steps D-G (docs/PLAN_ALERT_CONTROLS_2026-10-22.md)
-- [ ] Owner items: Advanced password (different from dashboard, >=10 chars), WoL server_ip fix on the box (10.10.151.53), acceptance items
+- [ ] Owner items: Advanced password (different from dashboard, >=10 chars), acceptance items (Advanced password and WoL server_ip: done 23 Oct)
 
 ---
 
