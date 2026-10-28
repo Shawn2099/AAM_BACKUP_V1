@@ -41,3 +41,10 @@ audit_lab/raw/*_report.txt
 
 # Worker-agent runs (AGENT_TASKS.md): claims, full logs, reports stay local
 agent_runs/
+
+# Server health check output (regenerated daily, kept locally)
+reports/server_health/
+
+# Cloud restore/upload logs and reports (local evidence)
+restore_logs/
+upload_logs/
