@@ -18,7 +18,7 @@ def prefect_harness():
 class TestCheckPrefectApi:
     def test_success_returns_true(self):
         from launch import _check_prefect_api
-        with patch("httpx.get") as mock_get:
+        with patch("httpx2.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_get.return_value = mock_resp
@@ -26,17 +26,17 @@ class TestCheckPrefectApi:
 
     def test_connect_error_returns_false(self):
         from launch import _check_prefect_api
-        with patch("httpx.get", side_effect=Exception("connection refused")):
+        with patch("httpx2.get", side_effect=Exception("connection refused")):
             assert _check_prefect_api() is False
 
     def test_timeout_returns_false(self):
         from launch import _check_prefect_api
-        with patch("httpx.get", side_effect=Exception("timeout")):
+        with patch("httpx2.get", side_effect=Exception("timeout")):
             assert _check_prefect_api() is False
 
     def test_non_200_returns_false(self):
         from launch import _check_prefect_api
-        with patch("httpx.get") as mock_get:
+        with patch("httpx2.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.status_code = 503
             mock_get.return_value = mock_resp
@@ -44,7 +44,7 @@ class TestCheckPrefectApi:
 
     def test_custom_url(self):
         from launch import _check_prefect_api
-        with patch("httpx.get") as mock_get:
+        with patch("httpx2.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_get.return_value = mock_resp

@@ -61,12 +61,12 @@ def _supervise_dashboard(thread: threading.Thread, interval_seconds: int = 60) -
 
 def _check_prefect_api(url="http://127.0.0.1:4200/api"):
     """Verify Prefect API server is running. Raises if not reachable."""
-    import httpx
+    import httpx2
     try:
-        resp = httpx.get(f"{url}/health", timeout=5)
+        resp = httpx2.get(f"{url}/health", timeout=5)
         if resp.status_code == 200:
             return True
-    except httpx.ConnectError:
+    except httpx2.ConnectError:
         pass
     except Exception:
         pass

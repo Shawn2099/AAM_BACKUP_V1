@@ -155,9 +155,9 @@ def test_d2_prefect_api_and_deployments():
 
 def test_d3_dashboard_endpoints():
     _require_services()
-    import httpx
+    import httpx2
 
-    with httpx.Client(base_url=DASH, timeout=20) as c:
+    with httpx2.Client(base_url=DASH, timeout=20) as c:
         h = c.get("/health")
         st = c.get("/status")
         root = c.get("/")

@@ -269,11 +269,11 @@ def test_w8_dashboard_trigger_and_duplicate_guard(pf_rig, monkeypatch):
     # …and the endpoint itself must REFUSE the second click (400 already_running)
     monkeypatch.setattr(ui, "_config", pf_rig["cfg"])
     monkeypatch.setattr(ui, "_config_loaded_at", time.time())
-    import httpx
+    import httpx2
 
     async def _post_twice():
-        transport = httpx.ASGITransport(app=ui.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://aam-lab",
+        transport = httpx2.ASGITransport(app=ui.app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://aam-lab",
                                      cookies={"session": ui_login.SESSION_TOKEN}) as c:
             r2 = await c.post("/trigger/lan")
             body = r2.json() if r2.headers.get("content-type", "").startswith("application/json") else {}
@@ -316,11 +316,11 @@ def test_w8_dashboard_trigger_fails_closed_without_prefect(pf_rig, monkeypatch):
     monkeypatch.setattr(ui, "_config_loaded_at", time.time())
 
     dead = f"http://127.0.0.1:{_dead_port()}/api"
-    import httpx
+    import httpx2
 
     async def _call():
-        transport = httpx.ASGITransport(app=ui.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://aam-lab",
+        transport = httpx2.ASGITransport(app=ui.app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://aam-lab",
                                      cookies={"session": ui_login.SESSION_TOKEN}) as c:
             with temporary_settings(updates={PREFECT_API_URL: dead}):
                 trig = await c.post("/trigger/lan")

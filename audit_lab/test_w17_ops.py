@@ -396,7 +396,7 @@ def test_w17_services_stop_never_raises(monkeypatch):
     assert wd.services.stop("svc", timeout_s=30).ok is False
 
 def test_w17_check_health_branches(monkeypatch):
-    import httpx
+    import httpx2
     import watchdog as wd
 
     class Ok:
@@ -405,15 +405,15 @@ def test_w17_check_health_branches(monkeypatch):
     class Bad:
         status_code = 503
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout=None: Ok())
+    monkeypatch.setattr(httpx2, "get", lambda url, timeout=None: Ok())
     assert wd._check_health() is True
-    monkeypatch.setattr(httpx, "get", lambda url, timeout=None: Bad())
+    monkeypatch.setattr(httpx2, "get", lambda url, timeout=None: Bad())
     assert wd._check_health() is False
 
     def boom(url, timeout=None):
-        raise httpx.ConnectError("down")
+        raise httpx2.ConnectError("down")
 
-    monkeypatch.setattr(httpx, "get", boom)
+    monkeypatch.setattr(httpx2, "get", boom)
     assert wd._check_health() is False
 
 

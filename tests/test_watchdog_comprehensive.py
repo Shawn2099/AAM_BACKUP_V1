@@ -203,21 +203,21 @@ class TestCheckHealth:
     def test_http_200_returns_true(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        with patch("httpx.get", return_value=mock_resp):
+        with patch("httpx2.get", return_value=mock_resp):
             assert watchdog._check_health() is True
 
     def test_http_503_returns_false(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 503
-        with patch("httpx.get", return_value=mock_resp):
+        with patch("httpx2.get", return_value=mock_resp):
             assert watchdog._check_health() is False
 
     def test_exception_returns_false(self):
-        with patch("httpx.get", side_effect=Exception("connection error")):
+        with patch("httpx2.get", side_effect=Exception("connection error")):
             assert watchdog._check_health() is False
 
     def test_connect_error_returns_false(self):
-        with patch("httpx.get", side_effect=Exception("connect error")):
+        with patch("httpx2.get", side_effect=Exception("connect error")):
             assert watchdog._check_health() is False
 
 
@@ -247,12 +247,12 @@ class TestMainLoop:
     def test_healthy_resets_counters(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        with patch("httpx.get", return_value=mock_resp):
+        with patch("httpx2.get", return_value=mock_resp):
             mock_sleep = self._run_loop(1)
             assert mock_sleep.call_args_list[0][0][0] == watchdog.CHECK_INTERVAL_SECONDS
 
     def test_unhealthy_increments_failure(self):
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_is_running", return_value=True), \
@@ -262,7 +262,7 @@ class TestMainLoop:
             assert mock_sleep.call_count >= watchdog.FAILURE_THRESHOLD
 
     def test_threshold_transferring_defers(self):
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=True):
             mock_sleep = self._run_loop(watchdog.FAILURE_THRESHOLD)
@@ -270,7 +270,7 @@ class TestMainLoop:
             assert mock_sleep.call_args_list[-1][0][0] == watchdog.BACKUP_WAIT_INTERVAL
 
     def test_threshold_lock_held_defers(self):
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=True), \
              patch("watchdog._transfer_process_running", return_value=False):
             mock_sleep = self._run_loop(watchdog.FAILURE_THRESHOLD)
@@ -279,7 +279,7 @@ class TestMainLoop:
     def test_no_backup_restarts(self):
         """Hung service (RUNNING but API dead) gets the ordered restart (WP13). The loop now
         branches on _service_state, so patch that to 'RUNNING'."""
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_state", return_value="RUNNING"), \
@@ -290,7 +290,7 @@ class TestMainLoop:
     def test_transfer_deferral_cap_forces_restart(self):
         """After MAX_TRANSFER_DEFERRALS, force restart."""
         mock_lock = MagicMock()
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=True), \
              patch("watchdog._service_is_running", return_value=True), \
@@ -307,7 +307,7 @@ class TestMainLoop:
         This test explicitly proves the old forced-unlock behavior is gone."""
         mock_lock = MagicMock()
         mock_logger = MagicMock()
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=True), \
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._restart_stack") as mock_stop, \
@@ -335,7 +335,7 @@ class TestMainLoop:
         """F6: a STOPPED service is started (sc start), never sc stop.
         The pre-fix test here expected the watchdog to 'skip' a stopped
         service — that was the blind spot (it would wait forever)."""
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_state", return_value="STOPPED"), \
@@ -347,7 +347,7 @@ class TestMainLoop:
 
     def test_service_transitioning_waits(self):
         """F6: START_PENDING = NSSM is already restarting — wait, don't act."""
-        with patch("httpx.get", side_effect=Exception("dead")), \
+        with patch("httpx2.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
              patch("watchdog._service_state", return_value="START_PENDING"), \

@@ -35,7 +35,7 @@
   jumps except those listed, certifi fixed.
 - [x] **OV-0.3 Sync + suite.** `uv sync`; full unit suite; fix every failure caused by the upgrade (behaviour, not by
   loosening tests). Done when: suite = baseline or better.
-- [ ] **OV-0.4 httpx2 for our own calls + TestClient.** Add `httpx2`; `launch.py` and `watchdog.py` health checks
+- [x] **OV-0.4 httpx2 for our own calls + TestClient.** Add `httpx2`; `launch.py` and `watchdog.py` health checks
   use it; our tests that patch `httpx.get` / build `httpx.Client` follow; Starlette's TestClient picks up httpx2 (the
   baseline shows its deprecation warning for httpx - it must be gone). `httpx` stays only for Prefect. Test first: the
   existing watchdog / launch health tests point at the httpx2 path. Done when: no project file imports `httpx`

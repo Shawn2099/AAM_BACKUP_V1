@@ -16,6 +16,7 @@ dependencies = [
     "fastapi==0.150.0",
     "uvicorn==0.54.0",
     "httpx==0.28.1",
+    "httpx2==2.16.2",
     "pendulum==3.3.0",
     "psutil==7.2.2",
     "ruamel.yaml==0.19.1",

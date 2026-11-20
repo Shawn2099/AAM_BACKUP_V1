@@ -3,7 +3,7 @@ import socket
 import threading
 import time
 
-import httpx
+import httpx2
 import pytest
 import uvicorn
 import yaml
@@ -49,7 +49,7 @@ def server(tmp_path, monkeypatch):
 
 
 def _browser(base):
-    return httpx.Client(base_url=base, follow_redirects=False,
+    return httpx2.Client(base_url=base, follow_redirects=False,
                         headers={"Accept": "application/json"})
 
 

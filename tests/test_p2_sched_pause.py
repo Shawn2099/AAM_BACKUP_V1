@@ -129,8 +129,8 @@ asyncio.run(main())
 
 def _is_prefect_live() -> bool:
     try:
-        import httpx
-        return httpx.get("http://127.0.0.1:4200/api/health", timeout=1.0).status_code == 200
+        import httpx2
+        return httpx2.get("http://127.0.0.1:4200/api/health", timeout=1.0).status_code == 200
     except Exception:
         return False
 

@@ -8,7 +8,7 @@ Companion to Wave 17 (core/wol.py + watchdog.py). This part covers:
   * core/cloud_preflight.py    (was 57%) — run_cloud_dry_run branches
   * core/lan_preflight.py      (was 62%) — run_lan_dry_run branches
 
-Safety: subprocess, sockets, httpx and the Prefect client are all faked;
+Safety: subprocess, sockets, httpx2 and the Prefect client are all faked;
 launch.py's PREFECT_API_URL env write is restored after every test.
 """
 from __future__ import annotations
@@ -169,7 +169,7 @@ def test_w18_supervise_dashboard_warns_on_dead_thread(monkeypatch, capsys):
 
 
 def test_w18_check_prefect_api_branches(monkeypatch):
-    import httpx
+    import httpx2
     import launch
 
     class Ok:
@@ -178,21 +178,21 @@ def test_w18_check_prefect_api_branches(monkeypatch):
     class Bad:
         status_code = 500
 
-    monkeypatch.setattr(httpx, "get", lambda url, timeout=None: Ok())
+    monkeypatch.setattr(httpx2, "get", lambda url, timeout=None: Ok())
     assert launch._check_prefect_api() is True
-    monkeypatch.setattr(httpx, "get", lambda url, timeout=None: Bad())
+    monkeypatch.setattr(httpx2, "get", lambda url, timeout=None: Bad())
     assert launch._check_prefect_api() is False
 
     def conn(url, timeout=None):
-        raise httpx.ConnectError("refused")
+        raise httpx2.ConnectError("refused")
 
-    monkeypatch.setattr(httpx, "get", conn)
+    monkeypatch.setattr(httpx2, "get", conn)
     assert launch._check_prefect_api() is False
 
     def other(url, timeout=None):
         raise RuntimeError("weird")
 
-    monkeypatch.setattr(httpx, "get", other)
+    monkeypatch.setattr(httpx2, "get", other)
     assert launch._check_prefect_api() is False
 
 

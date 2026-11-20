@@ -61,7 +61,7 @@ the same path from config.yaml at startup via _resolve_paths(). It validates
 the PID is still alive before honouring the lock, so stale locks from a
 previous crash do not prevent restarts indefinitely.
 
-Zero new dependencies: httpx and loguru are already project requirements.
+Zero new dependencies: httpx2 and loguru are already project requirements (httpx stays only for Prefect).
 """
 
 import contextlib
@@ -539,9 +539,9 @@ def _restart_stack() -> bool:
 
 def _check_health() -> bool:
     """Return True if Prefect API health endpoint responds HTTP 200."""
-    import httpx
+    import httpx2
     try:
-        resp = httpx.get(PREFECT_HEALTH_URL, timeout=REQUEST_TIMEOUT)
+        resp = httpx2.get(PREFECT_HEALTH_URL, timeout=REQUEST_TIMEOUT)
         return resp.status_code == 200
     except Exception:
         return False

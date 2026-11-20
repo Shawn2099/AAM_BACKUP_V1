@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 import watchdog
@@ -92,7 +92,7 @@ def _run_loop(max_sleeps, events, lock_path):
 def _unhealthy_httpx():
     # FAILURE_THRESHOLD-1 pre-threshold cycles each sleep CHECK_INTERVAL_SECONDS;
     # every cycle afterwards reaches the transfer/lock decision logic.
-    with patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+    with patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         yield
 
 
@@ -104,7 +104,7 @@ def test_transfer_deferrals_do_not_presatisfy_lock_cap(mock_sc_run, temp_lock_fi
 
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
          patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
-         patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+         patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         # sleeps: 4 threshold + 20 transfer-deferral + 14 lock-deferral grace,
         # then the 15th cycle (lock stale/dead) forces -> stop. Budget covers it all.
         _run_loop(60, events, temp_lock_file)
@@ -132,7 +132,7 @@ def test_transfer_cap_force_restarts_in_same_iteration(mock_sc_run, temp_lock_fi
 
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
          patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
-         patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+         patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         _run_loop(400, events, temp_lock_file)
 
     stops = [i for i, e in enumerate(events) if e[0] == "sc" and "stop" in e[1]]
@@ -157,7 +157,7 @@ def test_live_lock_owner_never_unlinked_or_restarted(mock_sc_run, temp_lock_file
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
          patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
          patch("watchdog._alert_wedged_lock") as mock_alert, \
-         patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+         patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         # Run beyond MAX_DEFERRALS (15)
         _run_loop(25, events, temp_lock_file)
 
@@ -170,7 +170,7 @@ def test_live_lock_owner_never_unlinked_or_restarted(mock_sc_run, temp_lock_file
 def test_healthy_cycle_resets_both_counters(mock_sc_run, temp_lock_file):
     """A healthy API response resets both deferral counters. Budget of 1
     sleep = exactly one full healthy cycle (check -> agent check -> sleep)."""
-    with patch("httpx.get") as m_httpx:
+    with patch("httpx2.get") as m_httpx:
         resp = MagicMock()
         resp.status_code = 200
         m_httpx.return_value = resp
