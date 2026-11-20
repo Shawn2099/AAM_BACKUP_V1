@@ -275,7 +275,7 @@ class TestRolloverEndpoints:
 
     def test_last_attempt_is_shown_in_ist(self, rollover_rig):
         rollover_rig.monkeypatch.setattr(ui, "get_fy_prefix", lambda: "FY27-28")
-        rollover_rig.db.insert_run({"run_id": "r1", "mode": "rollover",
+        rollover_rig.db.insert_run({"fy": "FY27-28", "run_id": "r1", "mode": "rollover",
                                     "started_at": "2027-04-01T00:30:00+00:00",
                                     "status": "ROLLOVER_BLOCKED", "error_message": "final LAN backup failed"})
         last = rollover_rig.client.get("/api/rollover", headers=H).json()["last_attempt"]

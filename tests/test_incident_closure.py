@@ -54,7 +54,7 @@ def _same(db, event):
 
 def _run(db, mode, status, hours_ago, run_id):
     t = _ago(hours_ago)
-    db.insert_run({"run_id": run_id, "mode": mode, "started_at": t, "ended_at": t, "status": status})
+    db.insert_run({"run_id": run_id, "mode": mode, "fy": "FY26-27", "started_at": t, "ended_at": t, "status": status})
 
 
 # ── legs: a later success closes ─────────────────────────────────────────────
@@ -96,7 +96,7 @@ def test_a_later_verified_audit_closes_an_audit_incident(db):
          hours_ago=100)
     key = "audit:all:lan=VERIFICATION_FAILED"
     assert _same(db, _event(key, "audit", "ACTION_REQUIRED", "AAM-AUD-01")) is not None
-    db.record_audit({"audit_id": "a1", "mode": "lan", "started_at": _ago(20), "status": "VERIFIED",
+    db.record_audit({"audit_id": "a1", "mode": "lan", "fy": "FY26-27", "started_at": _ago(20), "status": "VERIFIED",
                      "created_at": _ago(20)})
     assert _same(db, _event(key, "audit", "ACTION_REQUIRED", "AAM-AUD-01")) is None
 
@@ -104,7 +104,7 @@ def test_a_later_verified_audit_closes_an_audit_incident(db):
 def test_a_failed_later_audit_does_not_close_it(db):
     key = "audit:all:lan=VERIFICATION_FAILED"
     _row(db, key, "audit", kind="ACTION_REQUIRED", code="AAM-AUD-01", hours_ago=100)
-    db.record_audit({"audit_id": "a2", "mode": "lan", "started_at": _ago(20),
+    db.record_audit({"audit_id": "a2", "mode": "lan", "fy": "FY26-27", "started_at": _ago(20),
                      "status": "VERIFICATION_FAILED", "created_at": _ago(20)})
     assert _same(db, _event(key, "audit", "ACTION_REQUIRED", "AAM-AUD-01")) is not None
 

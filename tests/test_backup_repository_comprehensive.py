@@ -14,6 +14,7 @@ class TestRecordRunHistory:
             db=tmp_db,
             run_id="run-success-1",
             mode="cloud",
+            fy="FY26-27",
             status="CLOUD_COMPLETE",
             started_at="2026-01-01T00:00:00",
             ended_at="2026-01-01T01:00:00",
@@ -23,7 +24,7 @@ class TestRecordRunHistory:
             bytes_copied=10000,
         )
         assert result is True
-        assert tmp_db.last_run("cloud")["run_id"] == "run-success-1"
+        assert tmp_db.last_run("cloud", fy="FY26-27")["run_id"] == "run-success-1"
 
     def test_with_error_message(self, tmp_db):
         """Record with error message."""
@@ -31,6 +32,7 @@ class TestRecordRunHistory:
             db=tmp_db,
             run_id="run-failed-1",
             mode="lan",
+            fy="FY26-27",
             status="LAN_FAILED",
             started_at="2026-01-01T00:00:00",
             ended_at="2026-01-01T00:30:00",
@@ -41,7 +43,7 @@ class TestRecordRunHistory:
             error_message="Network timeout",
         )
         assert result is True
-        assert tmp_db.last_run("lan")["error_message"] == "Network timeout"
+        assert tmp_db.last_run("lan", fy="FY26-27")["error_message"] == "Network timeout"
 
     def test_with_extended_metrics(self, tmp_db):
         """Record with extended metrics JSON."""
@@ -49,6 +51,7 @@ class TestRecordRunHistory:
             db=tmp_db,
             run_id="run-metrics-1",
             mode="cloud",
+            fy="FY26-27",
             status="CLOUD_COMPLETE",
             started_at="2026-01-01T00:00:00",
             ended_at="2026-01-01T01:00:00",
@@ -57,7 +60,7 @@ class TestRecordRunHistory:
             extended_metrics='{"diff_partial": true}',
         )
         assert result is True
-        assert tmp_db.last_run("cloud")["extended_metrics"] == '{"diff_partial": true}'
+        assert tmp_db.last_run("cloud", fy="FY26-27")["extended_metrics"] == '{"diff_partial": true}'
 
 
 class TestRecordSyncResults:
@@ -67,11 +70,11 @@ class TestRecordSyncResults:
             {"Path": "file1.txt", "Size": 100, "ModTime": "2026-01-01T00:00:00Z"},
             {"Path": "file2.txt", "Size": 200, "ModTime": "2026-01-01T01:00:00Z"},
         ]
-        record_sync_results(tmp_db, "cloud", entries)
-        count = tmp_db.file_count("cloud_status")
+        record_sync_results(tmp_db, "cloud", entries, fy="FY26-27")
+        count = tmp_db.file_count("cloud_status", fy="FY26-27")
         assert count == 2
-        assert tmp_db.get_entry("file1.txt") is not None
-        assert tmp_db.get_entry("file2.txt") is not None
+        assert tmp_db.get_entry("file1.txt", fy="FY26-27") is not None
+        assert tmp_db.get_entry("file2.txt", fy="FY26-27") is not None
 
     def test_walk_shaped_entries(self, tmp_db):
         """walk-shaped entries are upserted."""
@@ -79,11 +82,11 @@ class TestRecordSyncResults:
             {"path": "file1.txt", "size": 100, "mtime": 1700000000.0},
             {"path": "file2.txt", "size": 200, "mtime": 1700000001.0},
         ]
-        record_sync_results(tmp_db, "lan", entries)
-        count = tmp_db.file_count("lan_status")
+        record_sync_results(tmp_db, "lan", entries, fy="FY26-27")
+        count = tmp_db.file_count("lan_status", fy="FY26-27")
         assert count == 2
-        assert tmp_db.get_entry("file1.txt") is not None
-        assert tmp_db.get_entry("file2.txt") is not None
+        assert tmp_db.get_entry("file1.txt", fy="FY26-27") is not None
+        assert tmp_db.get_entry("file2.txt", fy="FY26-27") is not None
 
     def test_cross_mode_delete(self, tmp_db):
         """Both modes track the same path independently — recording one mode
@@ -92,9 +95,9 @@ class TestRecordSyncResults:
         entries = [
             {"Path": "file1.txt", "Size": 100, "ModTime": "2026-01-01T00:00:00Z"},
         ]
-        record_sync_results(tmp_db, "cloud", entries)
+        record_sync_results(tmp_db, "cloud", entries, fy="FY26-27")
         # Now record for LAN — the cloud entry must be untouched
-        record_sync_results(tmp_db, "lan", entries)
+        record_sync_results(tmp_db, "lan", entries, fy="FY26-27")
         # Both should have the entry
-        assert tmp_db.file_count("cloud_status") == 1
-        assert tmp_db.file_count("lan_status") == 1
+        assert tmp_db.file_count("cloud_status", fy="FY26-27") == 1
+        assert tmp_db.file_count("lan_status", fy="FY26-27") == 1

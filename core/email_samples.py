@@ -54,7 +54,7 @@ def _report_samples(config, now) -> list[dict]:
                                      ("lan", "LAN_COMPLETE", "LAN_FAILED")):
                     failed = leg == "lan" and d == 9
                     started = day.replace(hour=21 if leg == "lan" else 2, minute=0, second=0)
-                    db.insert_run({"run_id": f"preview-{leg}-{d}", "mode": leg,
+                    db.insert_run({"run_id": f"preview-{leg}-{d}", "mode": leg, "fy": "FY26-27",
                                    "started_at": started.isoformat(),
                                    "ended_at": started.add(minutes=40).isoformat(),
                                    "status": bad if failed else ok, "files_copied": 120 + d,

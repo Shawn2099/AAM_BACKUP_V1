@@ -140,6 +140,7 @@ def test_running_row_is_written_before_the_slot(tmp_path):
     db_path = str(tmp_path / "m.db")
     cfg = MagicMock()
     cfg.paths.database_path = db_path
+    cfg.paths.source_drive = "E:\DATA\FY26-27"
     cfg.maintenance = MaintenanceConfig()
     seen = {}
 
@@ -148,7 +149,7 @@ def test_running_row_is_written_before_the_slot(tmp_path):
     @contextmanager
     def slot(config):
         db = ManifestDB(db_path)
-        seen["status_at_slot"] = db.last_run("lan")["status"]
+        seen["status_at_slot"] = db.last_run("lan", fy="FY26-27")["status"]
         db.close()
         yield
 
@@ -162,6 +163,7 @@ def test_slot_not_obtained_records_slot_timeout_and_reraises(tmp_path):
     db_path = str(tmp_path / "m.db")
     cfg = MagicMock()
     cfg.paths.database_path = db_path
+    cfg.paths.source_drive = "E:\DATA\FY26-27"
     cfg.maintenance = MaintenanceConfig()
 
     from contextlib import contextmanager
@@ -177,7 +179,7 @@ def test_slot_not_obtained_records_slot_timeout_and_reraises(tmp_path):
             body_ran.append(True)
     db = ManifestDB(db_path)
     try:
-        row = db.last_run("cloud")
+        row = db.last_run("cloud", fy="FY26-27")
     finally:
         db.close()
     assert body_ran == []
@@ -205,12 +207,12 @@ def test_stale_running_rows_become_abandoned(tmp_path):
             ("a", "lan", old, "LAN_RUNNING"), ("b", "cloud", old, "CLOUD_RUNNING"),
             ("c", "lan", fresh, "LAN_RUNNING"), ("d", "lan", old, "LAN_COMPLETE"),
         ):
-            db.insert_run({"run_id": run_id, "mode": mode, "started_at": started,
+            db.insert_run({"fy": "FY26-27", "run_id": run_id, "mode": mode, "started_at": started,
                            "status": status})
         # rows without an owner process (written before owners were recorded):
         # the age backstop decides (owner liveness: tests/test_m5_abandoned_runs.py)
         assert len(db.abandon_dead_runs(lambda token: None, older_than_hours=24)) == 2
-        rows = {r["run_id"]: r for r in db.get_recent_runs(10)}
+        rows = {r["run_id"]: r for r in db.get_recent_runs(10, fy="FY26-27")}
         assert rows["a"]["status"] == "LAN_ABANDONED" and rows["a"]["error_message"]
         assert rows["b"]["status"] == "CLOUD_ABANDONED"
         assert rows["c"]["status"] == "LAN_RUNNING"

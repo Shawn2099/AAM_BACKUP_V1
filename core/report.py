@@ -16,7 +16,7 @@ from loguru import logger
 
 from core import faults, statuses
 from core.email_compose import LEG_LABEL
-from core.manifest import ManifestDB
+from core.manifest import ALL_FYS, ManifestDB
 from core.notify import AUDIENCE_ALERTS, AUDIENCE_REPORTS, SENT, send_email
 from core.report_period import ReportPeriod
 from core.time_utils import IST, format_ist, now_formatted
@@ -175,7 +175,7 @@ def resolve_period(days: int, period: str, now=None, report_period=None) -> Repo
 def period_runs(db: ManifestDB, days: int, period: str, now=None, report_period=None):
     """(runs, label) of a report period (audit 2026-10-18 item 5; plan C)."""
     rp = resolve_period(days, period, now, report_period)
-    return db.get_runs_between(rp.start, rp.end), rp.label
+    return db.get_runs_between(rp.start, rp.end, fy=ALL_FYS), rp.label
 
 
 def _when(run: dict):
@@ -216,7 +216,7 @@ def leg_summaries(db, runs: list[dict], legs) -> list[dict]:
                              "resolved": any(t > _when(r) for t in ok_times),
                              "_at": _when(r)})
         try:
-            last = db.last_successful_run(leg)
+            last = db.last_successful_run(leg, fy=ALL_FYS)
         except Exception:  # noqa: BLE001 - a partial DB (tests) has no history query
             last = None
         # P3: a failure is resolved by ANY later good run, also one after the period ends
@@ -253,7 +253,7 @@ def report_headline(db, summaries: list[dict]) -> tuple[str, bool]:
             return f"action needed: {s['label']} - {open_problems[-1]['title']}", True
     for s in summaries:
         try:
-            audit = db.latest_audit(s["leg"])
+            audit = db.latest_audit(s["leg"], fy=ALL_FYS)
         except Exception:  # noqa: BLE001
             audit = None
         if isinstance(audit, dict) and audit.get("status") == "VERIFICATION_FAILED":
@@ -270,7 +270,7 @@ def report_headline(db, summaries: list[dict]) -> tuple[str, bool]:
 
 def _audit_row(db, leg: str) -> dict:
     try:
-        audit = db.latest_audit(leg)
+        audit = db.latest_audit(leg, fy=ALL_FYS)
     except Exception:  # noqa: BLE001 - a partial DB (tests) has no audit query
         audit = None
     if not isinstance(audit, dict) or not audit:
@@ -314,7 +314,7 @@ def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, s
     per_leg   files / bytes copied per leg, never added together across legs (P4)
     summaries per leg: runs OK, last good copy, problems; "resolved" looks at the whole history (P3)
     audits    latest independent audit of each ENABLED leg only (P5)"""
-    runs = [r for r in db.get_runs_between(report_period.start, report_period.end)
+    runs = [r for r in db.get_runs_between(report_period.start, report_period.end, fy=ALL_FYS)
             if r.get("mode") in BACKUP_LEGS]
     legs = tuple(legs) if legs is not None else BACKUP_LEGS
     summaries = leg_summaries(db, runs, legs)

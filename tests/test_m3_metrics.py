@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import flow
-from core.manifest import SCHEMA_VERSION, ManifestDB
+from core.manifest import SCHEMA_VERSION, ManifestDB, ManifestSchemaError
 from core.run_artefacts import RunArtefacts
 from models.config import LanConfig
 from test_support.fake_tools import fake_run_tool, robocopy_log
@@ -82,10 +82,10 @@ def test_run_lan_sync_reports_copied_bytes_and_deleted_files(tmp_path):
 # ── schema v2: size/mtime per leg ─────────────────────────────────────────
 
 def test_schema_v2_has_per_leg_columns(tmp_path):
-    assert SCHEMA_VERSION >= 2
+    assert SCHEMA_VERSION == 6
     db = ManifestDB(str(tmp_path / "m.db"))
     try:
-        db.file_count()
+        db.file_count(fy="FY26-27")
         conn = sqlite3.connect(str(tmp_path / "m.db"))
         cols = {r[1] for r in conn.execute("PRAGMA table_info(file_entries)")}
         version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -96,7 +96,7 @@ def test_schema_v2_has_per_leg_columns(tmp_path):
     assert version == SCHEMA_VERSION
 
 
-def test_v1_database_is_migrated_without_inventing_per_leg_values(tmp_path):
+def test_v1_database_is_refused_and_left_unchanged(tmp_path):
     path = str(tmp_path / "v1.db")
     conn = sqlite3.connect(path)
     conn.executescript("""
@@ -119,14 +119,17 @@ def test_v1_database_is_migrated_without_inventing_per_leg_values(tmp_path):
         PRAGMA user_version = 1;
     """)
     conn.close()
+    before = open(path, "rb").read()
     db = ManifestDB(path)
     try:
-        assert db.get_cloud_synced_entries() == {"a.txt": (None, None)}   # unknown, not guessed
+        with pytest.raises(ManifestSchemaError):
+            db.get_cloud_synced_entries(fy="FY26-27")        # no legacy migration: refused
     finally:
         db.close()
     conn = sqlite3.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
     conn.close()
+    assert open(path, "rb").read() == before                 # left unchanged
 
 
 def test_lan_writes_never_change_the_cloud_baseline(tmp_path):
@@ -135,9 +138,9 @@ def test_lan_writes_never_change_the_cloud_baseline(tmp_path):
     db = ManifestDB(str(tmp_path / "m.db"))
     try:
         db.bulk_upsert_synced([{"path": "a.txt", "size": 10,
-                                "mtime": "2026-10-01T10:00:00Z"}], "cloud")
-        db.bulk_upsert_synced([{"path": "a.txt", "size": 10, "mtime": 1727777777.5}], "lan")
-        assert db.get_cloud_synced_entries() == {"a.txt": (10, "2026-10-01T10:00:00Z")}
+                                "mtime": "2026-10-01T10:00:00Z"}], "cloud", fy="FY26-27")
+        db.bulk_upsert_synced([{"path": "a.txt", "size": 10, "mtime": 1727777777.5}], "lan", fy="FY26-27")
+        assert db.get_cloud_synced_entries(fy="FY26-27") == {"a.txt": (10, "2026-10-01T10:00:00Z")}
     finally:
         db.close()
 

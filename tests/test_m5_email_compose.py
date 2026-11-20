@@ -40,7 +40,7 @@ def db(tmp_path):
 
 
 def _ok(db, leg, when):
-    db.insert_run({"run_id": f"{leg}-ok", "mode": leg, "started_at": when, "ended_at": when,
+    db.insert_run({"run_id": f"{leg}-ok", "mode": leg, "fy": "FY26-27", "started_at": when, "ended_at": when,
                    "status": f"{leg.upper()}_COMPLETE"})
 
 
@@ -175,10 +175,10 @@ def test_resolved_email_names_the_fixed_code(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     db = ManifestDB.from_config(cfg)
     try:
-        db.insert_run({"run_id": "bad", "mode": "lan", "started_at": "2026-10-17T21:00:00+05:30",
+        db.insert_run({"run_id": "bad", "mode": "lan", "fy": "FY26-27", "started_at": "2026-10-17T21:00:00+05:30",
                        "status": "LAN_FAILED",
                        "extended_metrics": json.dumps({"fault_code": "AAM-NAS-01"})})
-        db.insert_run({"run_id": "good", "mode": "lan", "started_at": "2026-10-18T21:00:00+05:30",
+        db.insert_run({"run_id": "good", "mode": "lan", "fy": "FY26-27", "started_at": "2026-10-18T21:00:00+05:30",
                        "status": "LAN_COMPLETE"})
     finally:
         db.close()

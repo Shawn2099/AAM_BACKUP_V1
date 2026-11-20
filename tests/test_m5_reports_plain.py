@@ -27,7 +27,7 @@ def db(tmp_path):
 
 
 def _run(db, rid, leg, when, status, code=None):
-    db.insert_run({"run_id": rid, "mode": leg, "started_at": when.isoformat(),
+    db.insert_run({"fy": "FY26-27", "run_id": rid, "mode": leg, "started_at": when.isoformat(),
                    "ended_at": when.add(minutes=5).isoformat(), "status": status,
                    "files_copied": 3,
                    "extended_metrics": json.dumps({"fault_code": code} if code else {})})

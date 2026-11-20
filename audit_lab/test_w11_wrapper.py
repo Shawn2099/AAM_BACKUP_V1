@@ -316,8 +316,8 @@ def test_w11_record_sync_results_writes_manifest(sandbox):
     rclone_entries = [{"Path": "a/b.txt", "Size": 10, "ModTime": "2026-10-10T10:00:00Z"},
                       {"Path": "c.txt", "Size": 20, "ModTime": "2026-10-10T10:00:00Z"}]
     walk_entries = [{"path": "d/e.txt", "size": 30, "mtime": 1700000000.0}]
-    record_sync_results(db, "cloud", rclone_entries)
-    record_sync_results(db, "lan", walk_entries)
+    record_sync_results(db, "cloud", rclone_entries, fy="FY26-27")
+    record_sync_results(db, "lan", walk_entries, fy="FY26-27")
 
     cloud_rows = {r["path"] for r in db.get_manifest_entries("cloud")} \
         if hasattr(db, "get_manifest_entries") else set()
@@ -328,10 +328,10 @@ def test_w11_record_sync_results_writes_manifest(sandbox):
              f"walk-shaped entries={[e['path'] for e in walk_entries]} | "
              f"db read-back API available={hasattr(db, 'get_manifest_entries')}",
              "OK — both entry shapes accepted without error"
-             if db.file_count("cloud_status") >= 2
+             if db.file_count("cloud_status", fy="FY26-27") >= 2
              else "ISSUE — entries were not stored")
-    print(f"[W11.2c] cloud rows in db={db.file_count('cloud_status')} "
-          f"lan rows={db.file_count('lan_status')}")
+    print(f"[W11.2c] cloud rows in db={db.file_count('cloud_status', fy="FY26-27")} "
+          f"lan rows={db.file_count('lan_status', fy="FY26-27")}")
     db.close()
     assert db_path.exists()
 

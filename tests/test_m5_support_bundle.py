@@ -77,7 +77,7 @@ def _zip_texts(content: bytes) -> dict[str, str]:
 
 
 def test_support_report_and_logs_zip(tmp_path, db):
-    db.insert_run({"run_id": "old-1", "mode": "lan", "started_at": "2026-10-17T21:00:00+05:30",
+    db.insert_run({"run_id": "old-1", "mode": "lan", "fy": "FY26-27", "started_at": "2026-10-17T21:00:00+05:30",
                    "status": "LAN_COMPLETE"})
     files = _by_name(sb.build(_cfg(tmp_path), _event(_run_dir(tmp_path)), db))
     assert set(files) == {"AAM-support_20261018-2108_AAM-LAN-02.txt",

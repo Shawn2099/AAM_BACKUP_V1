@@ -24,6 +24,7 @@ def _cfg(tmp_path):
     cfg = MagicMock()
     cfg.paths.database_path = str(tmp_path / "m.db")
     cfg.paths.backup_lock_path = tmp_path / "backup.lock"
+    cfg.paths.source_drive = str(tmp_path / "FY26-27")
     cfg.maintenance = MaintenanceConfig()
     return cfg
 
@@ -41,7 +42,7 @@ def _run(cfg, leg="cloud"):
             pass
     db = ManifestDB(cfg.paths.database_path)
     try:
-        row = db.last_run(leg)
+        row = db.last_run(leg, fy=flow._effective_fy_prefix(cfg))
     finally:
         db.close()
     [event] = [c.args[1] for c in notify.call_args_list if c.args[1].kind == "FAILURE"]

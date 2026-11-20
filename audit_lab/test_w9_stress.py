@@ -616,7 +616,7 @@ def test_w9_manifest_db_concurrency_stress(sandbox):
             try:
                 m = ManifestDB(db, busy_timeout_ms=8000)
                 for i in range(n):
-                    m.insert_run({"run_id": f"{tag}-{i}", "mode": "cloud",
+                    m.insert_run({"fy": "FY26-26", "run_id": f"{tag}-{i}", "mode": "cloud",
                                   "started_at": now_iso(), "status": "CLOUD_COMPLETE"})
                     if jitter:
                         time.sleep(random.uniform(0, jitter))
@@ -632,7 +632,7 @@ def test_w9_manifest_db_concurrency_stress(sandbox):
             t.join()
 
         m = ManifestDB(db)
-        rows = len(m.get_recent_runs(10000))
+        rows = len(m.get_recent_runs(10000, fy="FY26-26"))
         m.close()
         expected = threads * per_thread
         lost = expected - rows

@@ -32,6 +32,7 @@ from test_support.fake_tools import fake_run_tool
 
 def _att_cfg():
     return SimpleNamespace(
+        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
         dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
@@ -42,7 +43,7 @@ def _att_cfg():
 
 def _run(db, run_id, mode, status, hours_ago, em=None):
     ts = pendulum.now(IST).subtract(hours=hours_ago).isoformat()
-    db.insert_run({"run_id": run_id, "mode": mode, "started_at": ts, "ended_at": ts,
+    db.insert_run({"fy": "FY26-27", "run_id": run_id, "mode": mode, "started_at": ts, "ended_at": ts,
                    "status": status, "extended_metrics": em})
 
 

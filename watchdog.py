@@ -389,6 +389,7 @@ def _check_stale_legs(cfg=None) -> list[str]:
     alerts.stale_repeat_hours. Returns the stale legs; never raises."""
     try:
         from core import notify as nt
+        from core.manifest import ALL_FYS
         from core.attention import compute_attention
         from core.manifest import ManifestDB
         from models.config import CONFIG_PATH, load_config
@@ -400,7 +401,9 @@ def _check_stale_legs(cfg=None) -> list[str]:
             for item in stale:
                 leg = item["code"].split(":", 1)[1]
                 logger.error(f"Stale backup: {item['message']}")
-                if item.get("due_at") and db.told_about_leg_since(leg, item["due_at"]):
+                # ALL_FYS until OV-4.1 stamps `fy` on the alerts: today every mail row has fy NULL,
+                # so a per-FY lookup would never find the failure mail and would send a duplicate
+                if item.get("due_at") and db.told_about_leg_since(leg, item["due_at"], fy=ALL_FYS):
                     logger.info(f"Stale {leg} backup: the missed run was already reported by email")
                     continue
                 nt.notify(cfg, nt.AlertEvent(

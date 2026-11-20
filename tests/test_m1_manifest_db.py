@@ -3,7 +3,9 @@
 import sqlite3
 import threading
 
-from core.manifest import SCHEMA_VERSION, ManifestDB
+import pytest
+
+from core.manifest import SCHEMA_VERSION, ManifestDB, ManifestSchemaError
 
 
 def _legacy_db(path):
@@ -30,22 +32,41 @@ def _legacy_db(path):
     con.close()
 
 
-def test_legacy_db_is_migrated_once_with_unique_run_id(tmp_path):
+def test_legacy_db_is_refused_and_left_unchanged(tmp_path):
+    """v6 (plan 5.4, D-7): an old-schema file is never migrated. Opening it raises
+    ManifestSchemaError and the file is byte-for-byte what it was."""
     path = tmp_path / "legacy.db"
     _legacy_db(path)
-    db = ManifestDB(path)
+    before = path.read_bytes()
+    with pytest.raises(ManifestSchemaError, match="rename"):
+        db = ManifestDB(path)
+        try:
+            db.get_recent_runs(10, fy="FY26-27")
+        finally:
+            db.close()
+    assert path.read_bytes() == before
+    con = sqlite3.connect(path)
     try:
-        rows = db.get_recent_runs(10)
-        assert sorted(r["run_id"] for r in rows) == ["r1", "r2"]
-        # first row of the duplicate pair kept
-        assert next(r for r in rows if r["run_id"] == "r1")["status"] == "LAN_COMPLETE"
-        # upsert on run_id now works (requires the unique index)
-        db.insert_run({"run_id": "r1", "mode": "lan",
+        assert con.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION
+        assert con.execute("SELECT COUNT(*) FROM run_history").fetchone()[0] == 3
+    finally:
+        con.close()
+
+
+def test_schema_version_is_6_and_fresh_db_has_unique_run_id_and_fy(tmp_path):
+    assert SCHEMA_VERSION == 6
+    db = ManifestDB(tmp_path / "fresh6.db")
+    try:
+        cols = [r[1] for r in db._get_conn().execute("PRAGMA table_info(run_history)")]
+        assert "fy" in cols and "extended_metrics" in cols
+        db.insert_run({"fy": "FY26-27", "run_id": "r1", "mode": "lan",
+                       "started_at": "2026-01-01T00:00:00+05:30", "status": "LAN_COMPLETE"})
+        # upsert on run_id works (needs the unique index)
+        db.insert_run({"fy": "FY26-27", "run_id": "r1", "mode": "lan",
                        "started_at": "2026-01-01T00:00:00+05:30", "status": "LAN_PARTIAL",
                        "extended_metrics": "{}"})
-        assert len(db.get_recent_runs(10)) == 2
-        conn = db._get_conn()
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        rows = db.get_recent_runs(10, fy="FY26-27")
+        assert [r["status"] for r in rows] == ["LAN_PARTIAL"]
     finally:
         db.close()
 
@@ -68,20 +89,20 @@ def test_opening_does_not_write_run_history(tmp_path):
     connection committed a write."""
     path = tmp_path / "m.db"
     db = ManifestDB(path)
-    db.insert_run({"run_id": "a", "mode": "lan",
+    db.insert_run({"fy": "FY26-27", "run_id": "a", "mode": "lan",
                    "started_at": "2026-01-01T00:00:00+05:30", "status": "LAN_COMPLETE"})
     db.close()
     observer = sqlite3.connect(path)
     try:
         v_before = observer.execute("PRAGMA data_version").fetchone()[0]
         db2 = ManifestDB(path)
-        db2.get_recent_runs(5)
+        db2.get_recent_runs(5, fy="FY26-27")
         db2.close()
         v_after = observer.execute("PRAGMA data_version").fetchone()[0]
         assert v_after == v_before
         # sanity: a real write IS detected by this observer
         db3 = ManifestDB(path)
-        db3.insert_run({"run_id": "b", "mode": "lan",
+        db3.insert_run({"fy": "FY26-27", "run_id": "b", "mode": "lan",
                         "started_at": "2026-01-02T00:00:00+05:30", "status": "LAN_COMPLETE"})
         db3.close()
         assert observer.execute("PRAGMA data_version").fetchone()[0] != v_after
@@ -98,7 +119,7 @@ def test_concurrent_first_open_of_fresh_db_loses_no_rows(tmp_path):
         db = ManifestDB(path, busy_timeout_ms=15000)
         try:
             for i in range(per_thread):
-                db.insert_run({"run_id": f"{tag}-{i}", "mode": "cloud",
+                db.insert_run({"fy": "FY26-27", "run_id": f"{tag}-{i}", "mode": "cloud",
                                "started_at": "2026-01-01T00:00:00+05:30",
                                "status": "CLOUD_COMPLETE"})
         except Exception as e:  # noqa: BLE001
@@ -114,7 +135,7 @@ def test_concurrent_first_open_of_fresh_db_loses_no_rows(tmp_path):
     assert not errors, errors
     db = ManifestDB(path)
     try:
-        assert len(db.get_recent_runs(1000)) == per_thread * threads
+        assert len(db.get_recent_runs(1000, fy="FY26-27")) == per_thread * threads
     finally:
         db.close()
 

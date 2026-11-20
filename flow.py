@@ -357,8 +357,9 @@ def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
     try:
         db = ManifestDB.from_config(config)
         try:
-            previous = db.previous_run_status(leg, run_id)
-            previous_code = db.previous_run_fault_code(leg, run_id)
+            fy = _effective_fy_prefix(config)
+            previous = db.previous_run_status(leg, run_id, fy=fy)
+            previous_code = db.previous_run_fault_code(leg, run_id, fy=fy)
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 - never affects the run
@@ -424,7 +425,8 @@ def _record_running(config, leg: str, run_id: str, started_at: str) -> None:
                 sweep_abandoned_runs(config, db)
             except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup
                 logger.error(f"Could not check for abandoned runs before {leg} run {run_id}: {e}")
-            start_run_row(db, run_id=run_id, mode=leg, started_at=started_at)
+            start_run_row(db, run_id=run_id, mode=leg, fy=_effective_fy_prefix(config),
+                          started_at=started_at)
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup
@@ -978,7 +980,7 @@ def cloud_record_task(
     try:
         manifest = verify_data.get("manifest", [])
         removed = verify_data.get("diff", {}).get("removed", [])
-        record_sync_results(db, "cloud", manifest, removed)
+        record_sync_results(db, "cloud", manifest, removed, fy=_effective_fy_prefix(config))
         logger.info(f"Recorded {len(manifest)} cloud entries to database")
     finally:
         db.close()
@@ -1098,7 +1100,8 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
         db = ManifestDB.from_config(config)
         try:
             approval_id = db.open_approval_request(
-                leg=leg, blocked_run_id=run_id, fy=guard_record.get("fy"),
+                leg=leg, blocked_run_id=run_id,
+                fy=guard_record.get("fy") or _effective_fy_prefix(config),
                 guards=[{k: r.get(k) for k in ("guard", "reason", "metrics")} for r in blocked],
                 phrase=approvals.request_phrase(blocked), created_at=now_iso())
         finally:
@@ -1296,7 +1299,8 @@ def lan_record_task(
         # snapshot_to_dict returns {path: (size, mtime)} tuples
         files_list = [{"path": k, "size": v[0], "mtime": v[1]}
                       for k, v in after_dict.items()]
-        record_sync_results(db, "lan", files_list, diff.get("removed"))
+        record_sync_results(db, "lan", files_list, diff.get("removed"),
+                            fy=_effective_fy_prefix(config))
         logger.info(
             f"LAN recorded: {len(after_dict)} files, "
             f"+{len(diff['added'])} -{len(diff['removed'])} "
@@ -1439,7 +1443,7 @@ def _pending_context(config, db, leg: str):
     from core import audit_pending
 
     try:
-        last = db.last_successful_run(leg)
+        last = db.last_successful_run(leg, fy=_effective_fy_prefix(config))
         started = last.get("started_at") if isinstance(last, dict) else None
     except Exception as e:  # noqa: BLE001 - unknown means "no reference", never a crash
         logger.warning(f"Last successful {leg} backup unknown for the safety check: {e}")
@@ -1570,7 +1574,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         db = ManifestDB.from_config(config)
         before_dict = {}
         try:
-            before_dict = db.get_cloud_synced_entries()
+            before_dict = db.get_cloud_synced_entries(fy=fy_prefix)
         except Exception as e:
             logger.warning(f"Could not fetch database state before cloud sync: {e}")
         finally:
@@ -2198,7 +2202,7 @@ def _record_run(
     try:
         if not record_run_history(
             db,
-            run_id=run_id, mode=mode,
+            run_id=run_id, mode=mode, fy=_effective_fy_prefix(config),
             started_at=started_at, ended_at=ended_at,
             status=status, exit_code=exit_code,
             duration_seconds=duration, error_message=error_msg,
@@ -2859,7 +2863,8 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         recorded.add(leg)
         try:
             db.record_audit({
-                "audit_id": audit_id, "mode": leg, "scope": result["scope"],
+                "audit_id": audit_id, "mode": leg, "fy": _effective_fy_prefix(config),
+                "scope": result["scope"],
                 "started_at": started_at, "ended_at": now_iso(),
                 "status": result["status"],
                 "files_checked": _nullable_audit_count(result.get("files_checked")),

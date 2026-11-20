@@ -46,7 +46,7 @@ def _seed(db, statuses, leg="lan"):
     """Audits oldest -> newest, one every 24 h, the newest 2 h ago."""
     for i, status in enumerate(statuses):
         hours = 2 + 24 * (len(statuses) - 1 - i)
-        db.record_audit({"audit_id": f"{leg}-{i}", "mode": leg, "started_at": _ago(hours),
+        db.record_audit({"fy": "FY26-27", "audit_id": f"{leg}-{i}", "mode": leg, "started_at": _ago(hours),
                          "ended_at": _ago(hours), "status": status,
                          "detail": "3 files differ" if status == F else f"detail {status}",
                          "created_at": _ago(hours)})
@@ -54,7 +54,7 @@ def _seed(db, statuses, leg="lan"):
 
 def _fresh_runs(db):
     for rid, mode, st in (("c", "cloud", "CLOUD_COMPLETE"), ("l", "lan", "LAN_COMPLETE")):
-        db.insert_run({"run_id": rid, "mode": mode, "started_at": _ago(1), "ended_at": _ago(1),
+        db.insert_run({"fy": "FY26-27", "run_id": rid, "mode": mode, "started_at": _ago(1), "ended_at": _ago(1),
                        "status": st})
 
 
@@ -70,17 +70,17 @@ def _fresh_runs(db):
 ])
 def test_latest_audit_keeps_an_unresolved_failure_authoritative(db, sequence, expected, shows_newer):
     _seed(db, sequence)
-    audit = db.latest_audit("lan")
+    audit = db.latest_audit("lan", fy="FY26-27")
     assert audit["status"] == expected
     assert ("newer_incomplete_at" in audit) is shows_newer
 
 
 def test_scope_filter_applies_to_both_lookups(db):
     for aid, scope, status, hours in (("a", "full", F, 50), ("b", "full", I, 26), ("c", "quick", V, 2)):
-        db.record_audit({"audit_id": aid, "mode": "lan", "scope": scope, "started_at": _ago(hours),
+        db.record_audit({"fy": "FY26-27", "audit_id": aid, "mode": "lan", "scope": scope, "started_at": _ago(hours),
                          "status": status, "detail": "d", "created_at": _ago(hours)})
-    assert db.latest_audit("lan", scope="full")["status"] == F
-    assert db.latest_audit("lan", scope="quick")["status"] == V
+    assert db.latest_audit("lan", scope="full", fy="FY26-27")["status"] == F
+    assert db.latest_audit("lan", scope="quick", fy="FY26-27")["status"] == V
 
 
 def test_banner_stays_red_with_the_newer_check_mentioned(db):

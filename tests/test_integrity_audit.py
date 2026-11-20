@@ -121,8 +121,9 @@ class TestAuditManifest:
     def test_record_and_latest_audit(self, tmp_path):
         db = ManifestDB(tmp_path / "m.db")
         try:
-            assert db.latest_audit("lan") is None  # NOT_VERIFIED default
+            assert db.latest_audit("lan", fy="FY26-27") is None  # NOT_VERIFIED default
             db.record_audit({
+                "fy": "FY26-27",
                 "audit_id": "a1", "mode": "lan", "scope": "full",
                 "started_at": "2026-09-06T03:00:00",
                 "ended_at": "2026-09-06T03:10:00",
@@ -131,10 +132,11 @@ class TestAuditManifest:
                 "detail": "capability=HASH_MD5_RCLONE_LOCAL clean",
                 "created_at": "2026-09-06T03:10:00",
             })
-            row = db.latest_audit("lan")
+            row = db.latest_audit("lan", fy="FY26-27")
             assert row["status"] == "VERIFIED"
             # A later failure stays authoritative until a later pass.
             db.record_audit({
+                "fy": "FY26-27",
                 "audit_id": "a2", "mode": "lan", "scope": "full",
                 "started_at": "2026-09-13T03:00:00",
                 "ended_at": "2026-09-13T03:10:00",
@@ -142,9 +144,9 @@ class TestAuditManifest:
                 "bytes_checked": 1000, "mismatches": 2,
                 "detail": "diverged", "created_at": "2026-09-13T03:10:00",
             })
-            assert db.latest_audit("lan")["status"] == "VERIFICATION_FAILED"
+            assert db.latest_audit("lan", fy="FY26-27")["status"] == "VERIFICATION_FAILED"
             # Backup rows untouched by audits.
-            assert db.last_run("lan") is None
+            assert db.last_run("lan", fy="FY26-27") is None
         finally:
             db.close()
 
@@ -153,6 +155,7 @@ class TestAuditManifest:
         try:
             with pytest.raises(ValueError):
                 db.record_audit({
+                    "fy": "FY26-27",
                     "audit_id": "bad", "mode": "lan",
                     "started_at": "2026-09-06T03:00:00", "status": "COMPLETE",
                 })
@@ -166,12 +169,14 @@ class TestIntegrityReporting:
         try:
             recent = pendulum.now("Asia/Kolkata").isoformat()
             db.insert_run({
+                "fy": "FY26-27",
                 "run_id": "r1", "mode": "cloud",
                 "started_at": recent,
                 "ended_at": recent,
                 "status": "CLOUD_COMPLETE", "exit_code": 0,
             })
             db.record_audit({
+                "fy": "FY26-27",
                 "audit_id": "r1", "mode": "cloud", "scope": "full",
                 "started_at": recent,
                 "ended_at": recent,

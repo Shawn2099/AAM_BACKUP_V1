@@ -36,6 +36,7 @@ import pendulum
 from loguru import logger
 
 from core import netinfo
+from core.manifest import ALL_FYS
 from core.time_utils import now_iso
 
 SENT = "SENT"
@@ -141,6 +142,7 @@ class AlertEvent:
     first_reported_at: str | None = None   # set by _notify on a reminder of an open incident
     audience: str = AUDIENCE_ALERTS    # which recipient list(s): alerts | reports | both
     cooldown_hours: float | None = None   # repeat window of THIS alert; None = alerts.repeat_cooldown_hours
+    fy: str | None = None              # the FY folder it is about (v6); None = global / not per-FY
 
 
 @dataclass
@@ -574,7 +576,8 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
                     "attempts": result.attempts, "created_at": now_iso(),
                     "fault_code": event.fault_code, "message_id": result.message_id,
                     "thread_id": None, "attachments_rung": None,
-                    "audience": event.audience, "recipients": result.recipients})
+                    "audience": event.audience, "recipients": result.recipients,
+                    "fy": event.fy})
             except Exception as rec_err:  # noqa: BLE001
                 logger.error(f"Could not record the short notice for {event.key}: {rec_err}")
     finally:
@@ -594,11 +597,12 @@ def _incident_closed(event: AlertEvent, db, config, prior: dict) -> bool:
     Reminder limits count the mails of one incident, so an incident that never closed would silence the
     first mail of a NEW problem with the same key."""
     mode, since = event.mode, prior["created_at"]
+    fy = event.fy or ALL_FYS     # an event of one FY looks at that FY only (an FY-less one at all)
     try:
         if mode in ("cloud", "lan"):
-            return db.leg_success_after(mode, since)
+            return db.leg_success_after(mode, since, fy=fy)
         if mode == "audit":
-            return db.audit_verified_after(since)
+            return db.audit_verified_after(since, fy=fy)
         if mode == "watchdog":
             healthy = db.watchdog_healthy_at()
             return bool(healthy) and _is_after(healthy, since)
@@ -628,14 +632,15 @@ def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | No
     the leg starts a new incident, so its first email is never suppressed. An incident also ends when
     the problem itself ended (`_incident_closed`), even if no RESOLVED mail was sent."""
     prior = db.last_notification(event.key, status=SENT)
+    fy = event.fy or ALL_FYS
     if event.kind == "RECOVERED":
         same = prior if prior and not db.sent_in_mode_after(
-            event.mode, prior["id"], recovered=False) else None
-        open_problem = db.last_open_incident(event.mode) or {}
+            event.mode, prior["id"], recovered=False, fy=fy) else None
+        open_problem = db.last_open_incident(event.mode, fy=fy) or {}
         root = open_problem.get("thread_id") or open_problem.get("message_id")
         return same, root
     unchanged = (prior is not None and prior.get("fault_code") == event.fault_code
-                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True)
+                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True, fy=fy)
                  and not (config is not None and _incident_closed(event, db, config, prior)))
     same = prior if unchanged else None
     root = (same.get("thread_id") or same.get("message_id")) if same else None
@@ -683,6 +688,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
             "attachments_rung": (labels[result.rung] if labels and result.rung is not None
                                  else None),
             "audience": event.audience, "recipients": result.recipients,
+            "fy": event.fy,
         })
     except Exception as e:  # noqa: BLE001
         logger.error(f"Could not record notification outcome for {event.key}: {e}")

@@ -33,9 +33,11 @@ def _ago(minutes):
 
 def _setup(monkeypatch, last, minutes=60, cloud=True, lan=True):
     cfg = SimpleNamespace(cloud=SimpleNamespace(enabled=cloud), lan=SimpleNamespace(enabled=lan),
+                          paths=SimpleNamespace(source_drive="E:\DATA\FY26-27"),
                           audit=SimpleNamespace(backup_first_prompt_minutes=minutes))
     db = MagicMock()
-    db.last_successful_run.side_effect = lambda leg: last.get(leg)
+    db.last_successful_run.side_effect = lambda leg, *, fy: last.get(leg)
+    db.last_successful_run_or_earlier.side_effect = lambda leg, *, fy: last.get(leg)
     monkeypatch.setattr(ui, "_require_auth", lambda r: None)
     monkeypatch.setattr(ui, "_check_rate_limit", lambda k, m: True)
     monkeypatch.setattr(ui, "_cfg", lambda: cfg)

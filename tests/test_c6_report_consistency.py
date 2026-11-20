@@ -21,7 +21,7 @@ def db(tmp_path):
                                         ("cloud", "CLOUD_NO_CHANGES_COMPLETE"), ("lan", "LAN_FAILED"),
                                         ("rollover", "ROLLOVER_COMPLETE")]):
         t = f"2026-10-{13 + i}T23:00:00+05:30"
-        d.insert_run({"run_id": f"r{i}", "mode": mode, "started_at": t, "ended_at": t,
+        d.insert_run({"run_id": f"r{i}", "mode": mode, "fy": "FY26-27", "started_at": t, "ended_at": t,
                       "status": status, "files_copied": 10 + i, "bytes_copied": 100 * (i + 1)})
     yield d
     d.close()

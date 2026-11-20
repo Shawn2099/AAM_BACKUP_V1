@@ -17,7 +17,7 @@ import json
 import pendulum
 from loguru import logger
 
-from core import overdue, statuses
+from core import fy_rollover, overdue, statuses
 from core.time_utils import IST, format_ist
 
 RED = "red"
@@ -57,6 +57,11 @@ def _schedule_in_effect(db, config) -> dict | None:
         return None
 
 
+def _fy(config) -> str:
+    """The FY folder this check is about: the configured one (per-FY checks come with WP6)."""
+    return fy_rollover.effective_fy_prefix(config.paths.source_drive)
+
+
 def _later(a: str | None, b: str | None) -> str | None:
     both = [t for t in (a, b) if t]
     return max(both, key=lambda t: pendulum.parse(t).timestamp()) if both else None
@@ -67,7 +72,7 @@ def _progressing_partial(db, config, leg: str, last: dict | None, now) -> bool:
     several nights (first full upload, big change) - slow, not stuck. Only for
     `dashboard.catching_up_max_days` after the first partial run following the last success: an
     upload that never finishes is a problem, not "catching up" forever."""
-    run = db.last_run(leg)
+    run = db.last_run(leg, fy=_fy(config))
     if not run or run.get("status") not in statuses.PARTIAL_STATUSES:
         return False
     if not (run.get("bytes_copied") or 0) > 0:
@@ -84,7 +89,7 @@ def _progressing_partial(db, config, leg: str, last: dict | None, now) -> bool:
     max_days = getattr(config.dashboard, "catching_up_max_days",
                        model_default(DashboardConfig, "catching_up_max_days"))
     since = (last.get("started_at") or last.get("ended_at")) if last else None
-    first = db.first_partial_after(leg, since)
+    first = db.first_partial_after(leg, since, fy=_fy(config))
     if not first:
         return True
     return (now.timestamp() - pendulum.parse(first).timestamp()) <= max_days * 86400
@@ -97,7 +102,7 @@ def _leg_clock(db, config, leg: str, sched: dict):
     grace = config.dashboard.stale_grace_hours
     budget_h = getattr(config.budget, f"{leg}_max_hours")
     cron, tz = sched[f"{leg}_cron"], sched["timezone"]
-    last = db.last_successful_run(leg)
+    last = db.last_successful_run_or_earlier(leg, fy=_fy(config))
     if last is not None:
         base = last.get("started_at") or last.get("ended_at")
     else:       # never succeeded: count from when the system (or this leg) came into being
@@ -206,7 +211,7 @@ def compute_attention(db, config, now=None) -> list[dict]:
         if item:
             items.append(item)
 
-        run = db.last_run(leg)
+        run = db.last_run(leg, fy=_fy(config))
         if run and statuses.category(run.get("status")) == statuses.CATEGORY_FAILED:
             # D2: a failed night is not "healthy" until the leg is overdue (next scheduled run + run budget + grace).
             # A missed night (server off or busy) is a warning; PARTIAL / RUNNING are not alarms.
@@ -239,7 +244,7 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                        "It was not confirmed off after the last LAN backup "
                                        f"({shutdown.get('detail') or shutdown.get('outcome')})")))
 
-        audit = db.latest_audit(leg)
+        audit = db.latest_audit(leg, fy=_fy(config))
         if audit and audit.get("status") == "VERIFICATION_FAILED":
             newer = audit.get("newer_incomplete_at")   # A1: a later check that could not run
             newer_note = f" The newer check on {format_ist(newer)} could not run." if newer else ""

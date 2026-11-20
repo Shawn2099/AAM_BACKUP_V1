@@ -57,12 +57,12 @@ def _seed_db(db_path: Path, *, runs=(), audits=(), entries=0):
 
     db = ManifestDB(str(db_path), busy_timeout_ms=5000)
     for r in runs:
-        db.insert_run(r)
+        db.insert_run({"fy": "FY26-27", **r})
     for a in audits:
-        db.record_audit(a)
+        db.record_audit({"fy": "FY26-27", **a})
     for i in range(entries):
         db.upsert_file_entry(f"Clients/f{i:03d}.txt", 100 + i, 1700000000.0 + i,
-                             lan_status="synced" if i % 2 == 0 else None,
+                             fy="FY26-27", lan_status="synced" if i % 2 == 0 else None,
                              cloud_status="synced" if i % 3 == 0 else None)
     db.close()
     return db_path
@@ -277,7 +277,7 @@ def test_w14_integrity_summary_never_implies_verified(ui_rig):
         problems.append(f"a COMPLETE backup with no audit reads {no_audit.get('status')!r} - "
                         "H-1: the dashboard must not imply verification it never ran")
 
-    db.record_audit({"audit_id": "a1", "mode": "cloud", "scope": "cloud/full",
+    db.record_audit({"fy": "FY26-27", "audit_id": "a1", "mode": "cloud", "scope": "cloud/full",
                      "started_at": "2026-10-11T03:00:00+05:30",
                      "ended_at": "2026-10-11T03:05:00+05:30", "status": "VERIFIED",
                      "detail": "capability=HASH_GCS_ADVERTISED"})
@@ -286,7 +286,7 @@ def test_w14_integrity_summary_never_implies_verified(ui_rig):
     if verified.get("status") != "VERIFIED" or verified.get("checked_at") is None:
         problems.append(f"a VERIFIED audit row rendered as {verified}")
 
-    db.record_audit({"audit_id": "a2", "mode": "cloud", "scope": "cloud/full",
+    db.record_audit({"fy": "FY26-27", "audit_id": "a2", "mode": "cloud", "scope": "cloud/full",
                      "started_at": "2026-10-12T03:00:00+05:30",
                      "ended_at": "2026-10-12T03:05:00+05:30",
                      "status": "VERIFICATION_FAILED",
@@ -318,7 +318,7 @@ def test_w14_integrity_summary_never_implies_verified(ui_rig):
         problems.append("a mode with no runs produced a summary instead of None")
 
     # a long error message must be truncated for the page
-    db.insert_run({"run_id": "r-long", "mode": "lan",
+    db.insert_run({"fy": "FY26-27", "run_id": "r-long", "mode": "lan",
                    "started_at": "2026-10-12T01:00:00+05:30", "status": "LAN_FAILED",
                    "error_message": "E" * 5000, "duration_seconds": 12.6,
                    "files_copied": 3, "files_failed": 1})
@@ -494,7 +494,7 @@ def test_w14_report_endpoints_without_data(ui_rig):
         from core.manifest import ManifestDB
 
         empty_db = ManifestDB(str(missing), busy_timeout_ms=5000)
-        empty_db.file_count("lan_status")   # one read -> the file exists on disk
+        empty_db.file_count("lan_status", fy="FY26-27")   # one read -> the file exists on disk
         empty_db.close()
         ui._DB_INSTANCE = None
         r_empty = client.get("/report/weekly")

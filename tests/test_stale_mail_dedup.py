@@ -222,10 +222,10 @@ def test_a_run_still_in_progress_does_not_count_as_the_owed_run(tmp_path, sent):
     db = _db(cfg)
     try:
         t = NOW.subtract(days=3).replace(hour=1).isoformat()          # last LAN success: 3 days ago
-        db.insert_run({"run_id": "old", "mode": "lan", "started_at": t, "ended_at": t, "status": "LAN_COMPLETE"})
+        db.insert_run({"fy": "FY26-27", "run_id": "old", "mode": "lan", "started_at": t, "ended_at": t, "status": "LAN_COMPLETE"})
         db.record_notification({                                     # last night's failure mail, 21:30 on the 21st
-            "event_key": "backup:lan:LAN_FAILED", "kind": "FAILURE", "mode": "lan", "subject": "s",
-            "status": "SENT", "created_at": NOW.subtract(days=1).set(hour=21, minute=30).isoformat()})
+            "fy": "FY26-27", "event_key": "backup:lan:LAN_FAILED", "kind": "FAILURE", "mode": "lan",
+            "subject": "s", "status": "SENT", "created_at": NOW.subtract(days=1).set(hour=21, minute=30).isoformat()})
     finally:
         db.close()
     with pendulum.travel_to(NOW.set(hour=21, minute=10), freeze=True):

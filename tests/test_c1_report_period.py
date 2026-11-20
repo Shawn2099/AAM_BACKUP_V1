@@ -60,7 +60,7 @@ def test_contains_is_half_open():
 
 
 def _run(db, rid, started, mode="cloud", status="CLOUD_COMPLETE"):
-    db.insert_run({"run_id": rid, "mode": mode, "started_at": started, "status": status})
+    db.insert_run({"run_id": rid, "mode": mode, "fy": "FY26-27", "started_at": started, "status": status})
 
 
 def test_get_runs_between_boundaries_and_midnight_run(tmp_path):
@@ -71,8 +71,8 @@ def test_get_runs_between_boundaries_and_midnight_run(tmp_path):
         _run(db, "c", "2026-10-18T23:30:00+05:30")      # over-midnight run belongs to its START day
         _run(db, "d", "2026-10-19T00:00:00+05:30")      # end excluded
         _run(db, "e", "2026-10-15T01:00:00+05:30", status="RUNNING")   # in progress still returned
-        got = db.get_runs_between(_ist(2026, 10, 12), _ist(2026, 10, 19))
+        got = db.get_runs_between(_ist(2026, 10, 12), _ist(2026, 10, 19), fy="FY26-27")
         assert [r["run_id"] for r in got] == ["c", "e", "b"]       # newest first
-        assert db.get_runs_between(_ist(2026, 10, 12), _ist(2026, 10, 19), mode="lan") == []
+        assert db.get_runs_between(_ist(2026, 10, 12), _ist(2026, 10, 19), mode="lan", fy="FY26-27") == []
     finally:
         db.close()

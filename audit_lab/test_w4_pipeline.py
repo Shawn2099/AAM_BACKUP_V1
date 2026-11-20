@@ -137,8 +137,8 @@ def test_w4_cloud_pipeline_happy_path(sandbox, monkeypatch):
 
     from core.manifest import ManifestDB
     m = ManifestDB(cfg.paths.database_path)
-    runs = m.get_recent_runs(5)
-    entries = m.file_count("cloud_status")
+    runs = m.get_recent_runs(5, fy="FY26-26")
+    entries = m.file_count("cloud_status", fy="FY26-26")
     m.close()
 
     L.record("W4.1.cloud_happy",
@@ -233,8 +233,8 @@ def test_w4_cloud_killed_mid_sync_is_rejected_by_gate(sandbox, monkeypatch):
     landed = len([p for p in (bucket_root / 'lab-bucket' / fy_today).rglob('*') if p.is_file()])
     from core.manifest import ManifestDB
     m = ManifestDB(cfg.paths.database_path)
-    runs = m.get_recent_runs(5)
-    success = m.last_successful_run("cloud")
+    runs = m.get_recent_runs(5, fy="FY26-26")
+    success = m.last_successful_run("cloud", fy="FY26-26")
     m.close()
 
     L.record("W4.2.cloud_kill_gate",
@@ -292,8 +292,8 @@ def test_w4_lan_pipeline_happy_path_loopback_unc(sandbox, monkeypatch):
 
     from core.manifest import ManifestDB
     m = ManifestDB(cfg.paths.database_path)
-    runs = m.get_recent_runs(5)
-    entries = m.file_count("lan_status")
+    runs = m.get_recent_runs(5, fy="FY26-26")
+    entries = m.file_count("lan_status", fy="FY26-26")
     m.close()
 
     L.record("W4.3.lan_happy_unc",

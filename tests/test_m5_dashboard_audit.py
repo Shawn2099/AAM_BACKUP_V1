@@ -65,9 +65,9 @@ def _client(monkeypatch, cfg, db):
 # ── low: fault code on the run rows ──────────────────────────────────────
 
 def test_run_rows_carry_the_fault_code_and_plain_title(tmp_path, db, monkeypatch):
-    db.insert_run({"run_id": "r1", "mode": "lan", "started_at": now_iso(), "status": "LAN_FAILED",
+    db.insert_run({"fy": "FY26-27", "run_id": "r1", "mode": "lan", "started_at": now_iso(), "status": "LAN_FAILED",
                    "extended_metrics": json.dumps({"fault_code": "AAM-NAS-01"})})
-    db.insert_run({"run_id": "r0", "mode": "lan", "started_at": "2026-10-01T21:00:00+05:30",
+    db.insert_run({"fy": "FY26-27", "run_id": "r0", "mode": "lan", "started_at": "2026-10-01T21:00:00+05:30",
                    "status": "LAN_FAILED"})                       # old row: no code stored
     data = _client(monkeypatch, _cfg(tmp_path), db).get("/status", headers=KEY).json()
     new, old = data["recent_runs"][0], data["recent_runs"][1]

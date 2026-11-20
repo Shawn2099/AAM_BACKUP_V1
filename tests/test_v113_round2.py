@@ -213,11 +213,12 @@ def test_c_flow_all_mode_runs_enabled_leg_only(tmp_path, monkeypatch):
 # D–H — dashboard truthfulness (backend payload + template + JS contract)
 def _fake_db():
     return SimpleNamespace(
-        get_recent_runs=lambda n: [],
-        last_run=lambda mode: None,
-        last_successful_run=lambda mode: None,
-        latest_audit=lambda mode: None,
-        file_count=lambda status: 0,
+        get_recent_runs=lambda n, *, fy: [],
+        last_run=lambda mode, *, fy: None,
+        last_successful_run=lambda mode, *, fy: None,
+        last_successful_run_or_earlier=lambda mode, *, fy: None,
+        latest_audit=lambda mode, *, fy: None,
+        file_count=lambda status, *, fy: 0,
     )
 
 

@@ -73,7 +73,7 @@ def test_w21_lan_pipeline_fails_on_free_space_and_copies_nothing(sandbox, monkey
         flow._run_lan_pipeline(cfg, "w21-space", now_iso(), time.monotonic())
     db = ManifestDB.from_config(cfg)
     try:
-        row = db.last_run("lan")
+        row = db.last_run("lan", fy="FY26-26")
     finally:
         db.close()
     copied = sorted(p.name for p in dest.rglob("*") if p.is_file())

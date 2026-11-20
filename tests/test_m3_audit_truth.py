@@ -123,9 +123,9 @@ def test_audit_settings_are_config():
 def test_db_accepts_audit_incomplete(tmp_path):
     db = ManifestDB(str(tmp_path / "m.db"))
     try:
-        db.record_audit({"audit_id": "a", "mode": "lan", "started_at": "2026-10-11T03:00:00",
+        db.record_audit({"fy": "FY26-27", "audit_id": "a", "mode": "lan", "started_at": "2026-10-11T03:00:00",
                          "status": "AUDIT_INCOMPLETE", "detail": "DNS", "created_at": "x"})
-        assert db.latest_audit("lan")["status"] == "AUDIT_INCOMPLETE"
+        assert db.latest_audit("lan", fy="FY26-27")["status"] == "AUDIT_INCOMPLETE"
     finally:
         db.close()
 

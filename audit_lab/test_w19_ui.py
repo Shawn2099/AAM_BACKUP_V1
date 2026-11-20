@@ -78,7 +78,7 @@ def _seed_runs(db_path, runs):
 
     db = ManifestDB(str(db_path), busy_timeout_ms=5000)
     for r in runs:
-        db.insert_run(r)
+        db.insert_run({"fy": "FY26-27", **r})
     db.close()
     return db_path
 
@@ -279,7 +279,7 @@ def test_w19_status_db_unavailable(ui_rig):
     ui = ui_rig["ui"]
 
     class BadDB:
-        def get_recent_runs(self, n):
+        def get_recent_runs(self, n, *, fy):
             raise FileNotFoundError("no db")
 
     ui_rig["monkeypatch"].setattr(ui, "get_db", lambda: BadDB())
@@ -630,7 +630,7 @@ def test_w19_health_endpoint(ui_rig):
     old = ManifestDB(str(ui_rig["cfg"].paths.database_path))
     stamp = pendulum.now(IST).subtract(days=3).isoformat()
     for leg in ("cloud", "lan"):
-        old.insert_run({"run_id": f"old-{leg}", "mode": leg, "started_at": stamp, "ended_at": stamp,
+        old.insert_run({"fy": "FY26-27", "run_id": f"old-{leg}", "mode": leg, "started_at": stamp, "ended_at": stamp,
                         "status": f"{leg.upper()}_FAILED"})
     old.close()
     with TestClient(ui.app) as client:
@@ -643,7 +643,7 @@ def test_w19_health_endpoint(ui_rig):
     now = pendulum.now(IST).isoformat()
     db = ManifestDB(str(ui_rig["cfg"].paths.database_path))
     for leg, status in (("cloud", "CLOUD_COMPLETE"), ("lan", "LAN_COMPLETE")):
-        db.insert_run({"run_id": f"h-{leg}", "mode": leg, "started_at": now, "ended_at": now,
+        db.insert_run({"fy": "FY26-27", "run_id": f"h-{leg}", "mode": leg, "started_at": now, "ended_at": now,
                        "status": status})
     db.close()
     with TestClient(ui.app) as client:
@@ -730,20 +730,20 @@ def test_w19_integrity_summary_branches(ui_rig):
     ui = ui_rig["ui"]
 
     class RaisingDB:
-        def latest_audit(self, mode):
+        def latest_audit(self, mode, scope=None, *, fy):
             raise RuntimeError("db gone")
 
     assert ui._integrity_summary(RaisingDB(), "cloud") == {
         "status": "NOT_VERIFIED", "checked_at": None, "detail": None}
 
     class WeirdDB:
-        def latest_audit(self, mode):
+        def latest_audit(self, mode, scope=None, *, fy):
             return "not-a-dict"          # defensive: non-dict audit
 
     assert ui._integrity_summary(WeirdDB(), "lan")["status"] == "NOT_VERIFIED"
 
     class OkDB:
-        def latest_audit(self, mode):
+        def latest_audit(self, mode, scope=None, *, fy):
             return {"status": "VERIFICATION_FAILED", "ended_at": "2026-10-13T09:00:00",
                     "detail": "content mismatch (content-changed=1)"}
 

@@ -17,7 +17,7 @@ from pathlib import Path
 import pendulum
 from cronsim import CronSim
 
-from core import faults
+from core import faults, fy_rollover
 from core.cloud_sync import RCLONE_EXIT_MEANING
 from core.time_utils import IST, format_ist
 
@@ -128,7 +128,8 @@ def _data_safety(config, db, now) -> list[str]:
         if not getattr(config, leg).enabled:
             continue
         try:
-            last = db.last_successful_run(leg) if db is not None else None
+            last = (db.last_successful_run_or_earlier(leg, fy=fy_rollover.effective_fy_prefix(config.paths.source_drive))
+                    if db is not None else None)
         except Exception:  # noqa: BLE001
             last = None
         if last:

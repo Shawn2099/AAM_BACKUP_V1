@@ -11,7 +11,7 @@ import sqlite3
 import pytest
 
 from core import notify as nt
-from core.manifest import SCHEMA_VERSION, ManifestDB
+from core.manifest import SCHEMA_VERSION, ManifestDB, ManifestSchemaError
 from models.config import AppConfig
 from test_support.smtp_server import smtp_server
 
@@ -100,7 +100,7 @@ def test_delivery_record_keeps_code_and_ids(tmp_path, db):
     assert row["message_id"] == msg["Message-ID"] == row["thread_id"]
 
 
-def test_v2_database_is_upgraded_in_place(tmp_path):
+def test_v2_database_is_refused_and_left_unchanged(tmp_path):
     path = tmp_path / "old.db"
     conn = sqlite3.connect(path)
     conn.executescript("""
@@ -112,10 +112,15 @@ def test_v2_database_is_upgraded_in_place(tmp_path):
         PRAGMA user_version = 2;
     """)
     conn.close()
-    db = ManifestDB(path)
+    before = path.read_bytes()
+    assert SCHEMA_VERSION == 6
+    refused = ManifestDB(path)                              # opening is lazy: the first use refuses
+    with pytest.raises(ManifestSchemaError):
+        refused._get_conn()
+    assert path.read_bytes() == before                      # refused, not migrated, not touched
+    check = sqlite3.connect(path)
     try:
-        row = db.last_notification("k")
-        assert row["status"] == "SENT" and row["fault_code"] is None and row["message_id"] is None
-        assert db._get_conn().execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION >= 3
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert [r[1] for r in check.execute("PRAGMA table_info(notifications)")][-1] == "created_at"
     finally:
-        db.close()
+        check.close()

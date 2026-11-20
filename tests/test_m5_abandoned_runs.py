@@ -43,7 +43,7 @@ def _dead_token() -> str:
 
 
 def _rows(db) -> dict:
-    return {r["run_id"]: r for r in db.get_recent_runs(50)}
+    return {r["run_id"]: r for r in db.get_recent_runs(50, fy="FY26-27")}
 
 
 # -- process identity ------------------------------------------------------
@@ -86,7 +86,7 @@ def test_abandon_dead_runs_by_owner_not_by_age(tmp_path):
             ("legacy-old", "cloud", old, "CLOUD_RUNNING", None),
             ("done", "lan", fresh, "LAN_COMPLETE", dead),
         ):
-            db.insert_run({"run_id": run_id, "mode": mode, "started_at": started,
+            db.insert_run({"fy": "FY26-27", "run_id": run_id, "mode": mode, "started_at": started,
                            "status": status,
                            "extended_metrics": json.dumps({"owner": owner}) if owner else None})
         changed = db.abandon_dead_runs(process.token_alive, older_than_hours=24)
@@ -107,6 +107,7 @@ def test_abandon_dead_runs_by_owner_not_by_age(tmp_path):
 def _cfg(db_path):
     cfg = MagicMock()
     cfg.paths.database_path = db_path
+    cfg.paths.source_drive = "E:/DATA/FY26-27"
     cfg.maintenance = MaintenanceConfig()
     return cfg
 
@@ -115,7 +116,7 @@ def test_sweep_sends_one_failure_alert_per_abandoned_run(tmp_path):
     db_path = str(tmp_path / "m.db")
     db = ManifestDB(db_path)
     try:
-        db.insert_run({"run_id": "r1", "mode": "cloud", "started_at": now_iso(),
+        db.insert_run({"fy": "FY26-27", "run_id": "r1", "mode": "cloud", "started_at": now_iso(),
                        "status": "CLOUD_RUNNING",
                        "extended_metrics": json.dumps({"owner": _dead_token()})})
         with patch.object(repo, "notify") as notify:
@@ -134,7 +135,7 @@ def test_pipeline_start_sweeps_then_writes_its_own_owned_row(tmp_path):
     pipeline start records it (no agent restart needed)."""
     db_path = str(tmp_path / "m.db")
     db = ManifestDB(db_path)
-    db.insert_run({"run_id": "crashed", "mode": "lan", "started_at": now_iso(),
+    db.insert_run({"fy": "FY26-27", "run_id": "crashed", "mode": "lan", "started_at": now_iso(),
                    "status": "LAN_RUNNING",
                    "extended_metrics": json.dumps({"owner": _dead_token()})})
     db.close()
@@ -160,7 +161,7 @@ def test_sweep_failure_never_blocks_the_running_row(tmp_path):
         flow._record_running(_cfg(db_path), "lan", "run-x", now_iso())
     db = ManifestDB(db_path)
     try:
-        assert db.last_run("lan")["status"] == "LAN_RUNNING"
+        assert db.last_run("lan", fy="FY26-27")["status"] == "LAN_RUNNING"
     finally:
         db.close()
 
@@ -194,7 +195,7 @@ def test_mail_server_down_never_stops_the_backup_and_the_failed_alert_is_recorde
     )
     db = ManifestDB.from_config(cfg)
     try:
-        db.insert_run({"run_id": "crashed", "mode": "lan", "started_at": now_iso(),
+        db.insert_run({"fy": "FY26-27", "run_id": "crashed", "mode": "lan", "started_at": now_iso(),
                        "status": "LAN_RUNNING",
                        "extended_metrics": json.dumps({"owner": _dead_token()})})
     finally:
@@ -224,7 +225,7 @@ def test_real_killed_run_is_abandoned_at_agent_start(tmp_path):
         "from core.manifest import ManifestDB\n"
         "from core.backup_repository import start_run_row\n"
         f"db = ManifestDB({db_path!r})\n"
-        "start_run_row(db, run_id='killed', mode='cloud', started_at=sys.argv[1])\n"
+        "start_run_row(db, run_id='killed', mode='cloud', started_at=sys.argv[1], fy='FY26-27')\n"
         "db.close()\n"
         "os._exit(1)\n"
     )
@@ -232,7 +233,7 @@ def test_real_killed_run_is_abandoned_at_agent_start(tmp_path):
                    cwd=str(REPO))
     db = ManifestDB(db_path)
     try:
-        assert db.last_run("cloud")["status"] == "CLOUD_RUNNING"
+        assert db.last_run("cloud", fy="FY26-27")["status"] == "CLOUD_RUNNING"
     finally:
         db.close()
 
@@ -243,7 +244,7 @@ def test_real_killed_run_is_abandoned_at_agent_start(tmp_path):
         launch._mark_abandoned_runs()
     db = ManifestDB(db_path)
     try:
-        row = db.last_run("cloud")
+        row = db.last_run("cloud", fy="FY26-27")
     finally:
         db.close()
     assert row["status"] == "CLOUD_ABANDONED"

@@ -171,13 +171,14 @@ def test_slot_timeout_alerts(tmp_path):
 def test_recovered_email_after_a_failure_only(tmp_path, previous, expected):
     db = ManifestDB(str(tmp_path / "m.db"))
     if previous:
-        db.insert_run({"run_id": "old", "mode": "lan", "started_at": "2026-10-13T21:00:00",
+        db.insert_run({"fy": "FY26-27", "run_id": "old", "mode": "lan", "started_at": "2026-10-13T21:00:00",
                        "status": previous})
-    db.insert_run({"run_id": "new", "mode": "lan", "started_at": "2026-10-14T21:00:00",
+    db.insert_run({"fy": "FY26-27", "run_id": "new", "mode": "lan", "started_at": "2026-10-14T21:00:00",
                    "status": "LAN_COMPLETE"})
     db.close()
     cfg = MagicMock()
     cfg.paths.database_path = str(tmp_path / "m.db")
+    cfg.paths.source_drive = "E:\\DATA\\FY26-27"
     cfg.maintenance = MaintenanceConfig()
     with patch("flow.notify") as notify:
         flow._send_recovery_if_needed(cfg, "lan", "new")

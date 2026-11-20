@@ -85,7 +85,7 @@ def test_f3_f4_a_crashed_rollover_is_swept_with_a_rollover_specific_alert(tmp_pa
     cfg.paths.database_path = db_path
     cfg.maintenance = MaintenanceConfig()
     try:
-        db.insert_run({"run_id": "ro1", "mode": "rollover", "started_at": now_iso(),
+        db.insert_run({"fy": "FY26-27", "run_id": "ro1", "mode": "rollover", "started_at": now_iso(),
                        "status": "ROLLOVER_RUNNING",
                        "extended_metrics": json.dumps({"owner": _dead_token(),
                                                        "to_fy": TO})})

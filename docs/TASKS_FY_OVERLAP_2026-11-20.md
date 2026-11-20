@@ -47,21 +47,21 @@
 
 ## WP1 - Database v6 (plan §5.4, D-7)
 
-- [ ] **OV-1.1 Schema.** DDL v6: `fy` on `file_entries` (`UNIQUE(fy, relative_path)`), `run_history.fy NOT NULL`,
+- [x] **OV-1.1 Schema.** DDL v6: `fy` on `file_entries` (`UNIQUE(fy, relative_path)`), `run_history.fy NOT NULL`,
   `integrity_audits.fy`, `notifications.fy` (nullable), `approvals.fy` required for backup approvals; table
   `overlap_activations`; `SCHEMA_VERSION = 6`; a v5 file is refused with the rename message. Tests:
   `tests/test_ov1_schema_v6.py` (fresh DB has the columns / unique key; v5 file refused; activations never purged).
-- [ ] **OV-1.2 File catalog scoped.** `upsert_file_entry`, `get_entry`, `prune_stale_synced`, `clear_mode_status`,
+- [x] **OV-1.2 File catalog scoped.** `upsert_file_entry`, `get_entry`, `prune_stale_synced`, `clear_mode_status`,
   `delete_entries`, `file_count`, `get_cloud_synced_entries`, `get_synced_paths`, `backup_repository.record_sync_results`
   take `fy` (no default). Test: same relative path in two FYs stays independent; pruning / clearing one FY leaves the
   other (R-1 part, G-1).
-- [ ] **OV-1.3 Run history scoped.** `insert_run` / `start_run_row` / `record_run_history` / `sweep_abandoned_runs`
+- [x] **OV-1.3 Run history scoped.** `insert_run` / `start_run_row` / `record_run_history` / `sweep_abandoned_runs`
   write `fy` (sweep reads it from the RUNNING row); readers `last_successful_run`, `last_run`, `previous_run_status`,
   `previous_run_fault_code`, `leg_success_after`, `first_partial_after`, `guard_baseline`, `get_recent_runs`
   (`fy` or explicit `ALL`). Test: one FY's success / failure never answers for the other (R-2, R-6, R-8).
-- [ ] **OV-1.4 Audits + notifications scoped.** `latest_audit`, `audit_verified_after`, `told_about_leg_since`,
+- [x] **OV-1.4 Audits + notifications scoped.** `latest_audit`, `audit_verified_after`, `told_about_leg_since`,
   `sent_in_mode_after`, `last_open_incident`, `record_notification` take / store `fy`. Test: per-FY answers (R-2, R-5).
-- [ ] **OV-1.5 Callers compile.** Every caller passes the FY of its config (`_effective_fy_prefix(config)`); a missed
+- [x] **OV-1.5 Callers compile.** Every caller passes the FY of its config (`_effective_fy_prefix(config)`); a missed
   caller fails the suite (no default). Done when: full suite green, behaviour unchanged with one FY.
 
 ## WP2 - Active set, activation, sibling check (plan §3, §5.1, §5.2)

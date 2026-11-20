@@ -343,7 +343,7 @@ class TestFilesFailedWiring:
             ok = record_run_history(
                 db, run_id="r1", mode="lan", started_at="2026-08-01T01:00:00",
                 ended_at="2026-08-01T02:00:00", status="LAN_PARTIAL",
-                exit_code=9, duration_seconds=3600.0, files_failed=7,
+                exit_code=9, duration_seconds=3600.0, files_failed=7, fy="FY26-27",
             )
             assert ok
             row = db._conn.execute(
@@ -362,7 +362,7 @@ class TestFilesFailedWiring:
             ok = record_run_history(
                 db, run_id="r2", mode="cloud", started_at="2026-08-01T01:00:00",
                 ended_at="2026-08-01T02:00:00", status="CLOUD_COMPLETE",
-                exit_code=0, duration_seconds=3600.0,
+                exit_code=0, duration_seconds=3600.0, fy="FY26-27",
             )
             assert ok
             row = db._conn.execute(

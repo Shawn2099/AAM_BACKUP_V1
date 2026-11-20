@@ -55,7 +55,7 @@ def _cfg(tmp_path, port=25, cloud=False):
 
 def _success(db, leg, hours_ago):
     t = pendulum.now(IST).subtract(hours=hours_ago).isoformat()
-    db.insert_run({"run_id": f"{leg}-{hours_ago}", "mode": leg, "started_at": t, "ended_at": t,
+    db.insert_run({"fy": "FY26-27", "run_id": f"{leg}-{hours_ago}", "mode": leg, "started_at": t, "ended_at": t,
                    "status": f"{leg.upper()}_COMPLETE"})
 
 
@@ -108,7 +108,7 @@ def test_never_succeeded_leg_is_stale_too(tmp_path, monkeypatch):
     try:    # the installation is three days old and no backup ever finished
         for leg in ("cloud", "lan"):
             t = pendulum.now(IST).subtract(days=3).isoformat()
-            db.insert_run({"run_id": f"old-{leg}", "mode": leg, "started_at": t, "ended_at": t,
+            db.insert_run({"fy": "FY26-27", "run_id": f"old-{leg}", "mode": leg, "started_at": t, "ended_at": t,
                            "status": f"{leg.upper()}_FAILED"})
     finally:
         db.close()

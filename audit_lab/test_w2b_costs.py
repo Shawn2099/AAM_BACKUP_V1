@@ -83,10 +83,10 @@ def test_w2b_lan_and_db_costs(sandbox):
     db = ManifestDB(str(db_path), busy_timeout_ms=8000)
     entries = [{"path": f"bulk/f_{i:07d}.txt", "size": 64, "mtime": 1700000000.0} for i in range(N)]
     t0 = time.perf_counter()
-    db.bulk_upsert_synced(entries, "cloud")
+    db.bulk_upsert_synced(entries, "cloud", fy="FY26-27")
     t_up = time.perf_counter() - t0
     t0 = time.perf_counter()
-    before_dict = db.get_cloud_synced_entries()
+    before_dict = db.get_cloud_synced_entries(fy="FY26-27")
     t_read = time.perf_counter() - t0
     rss3 = _rss()
     L.record("W2b.db_before_dict",

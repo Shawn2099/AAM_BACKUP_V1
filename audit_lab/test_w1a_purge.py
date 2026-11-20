@@ -66,7 +66,7 @@ def test_w1a_d1_empty_subdirs_source_is_blocked_lan(sandbox, monkeypatch):
 
     db = ManifestDB.from_config(cfg)
     try:
-        row = db.last_run("lan")
+        row = db.last_run("lan", fy="FY26-26")
     finally:
         db.close()
     after = _tree_bytes(dest)

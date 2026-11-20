@@ -81,7 +81,7 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
         exc1 = run("w5c-1")
         db = ManifestDB.from_config(cfg)
         try:
-            row1 = db.last_run("lan")
+            row1 = db.last_run("lan", fy="FY26-26")
             [req] = db.open_approvals()
         finally:
             db.close()
@@ -108,7 +108,7 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
         exc3 = run("w5c-3", approval_id=req["approval_id"])
         db = ManifestDB.from_config(cfg)
         try:
-            row3 = db.last_run("lan")
+            row3 = db.last_run("lan", fy="FY26-26")
             used = db.get_approval(req["approval_id"])
         finally:
             db.close()

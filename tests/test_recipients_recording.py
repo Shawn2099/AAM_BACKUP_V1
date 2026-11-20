@@ -14,7 +14,7 @@ import pytest
 
 from core import notify as nt
 from core.attention import AMBER, RED, compute_attention
-from core.manifest import SCHEMA_VERSION, ManifestDB
+from core.manifest import SCHEMA_VERSION, ManifestDB, ManifestSchemaError
 from core.time_utils import now_iso
 from models.config import AppConfig
 from test_support import ui_login
@@ -53,8 +53,16 @@ def _row(db, status, audience, *, n=1, key="k"):
 
 # ── schema v5 ────────────────────────────────────────────────────────────────
 
-def test_schema_is_v5_and_a_v4_database_is_upgraded_in_place(tmp_path):
-    assert SCHEMA_VERSION == 5
+def test_schema_is_v6_notification_columns_exist_and_a_v4_database_is_refused(tmp_path):
+    assert SCHEMA_VERSION == 6
+    fresh = ManifestDB(str(tmp_path / "fresh.db"))
+    try:
+        cols = {r[1] for r in fresh._get_conn().execute("PRAGMA table_info(notifications)")}
+        version = fresh._get_conn().execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        fresh.close()
+    assert {"audience", "recipients"} <= cols and version == 6
+
     path = str(tmp_path / "old.db")
     first = ManifestDB(path)
     first.record_notification({"event_key": "old", "kind": "FAILURE", "mode": "lan", "subject": "s",
@@ -66,16 +74,12 @@ def test_schema_is_v5_and_a_v4_database_is_upgraded_in_place(tmp_path):
     raw.execute("PRAGMA user_version = 4")
     raw.commit()
     raw.close()
+    before = open(path, "rb").read()
 
-    upgraded = ManifestDB(path)
-    try:
-        cols = {r[1] for r in upgraded._get_conn().execute("PRAGMA table_info(notifications)")}
-        version = upgraded._get_conn().execute("PRAGMA user_version").fetchone()[0]
-        old = upgraded.last_notification("old")
-    finally:
-        upgraded.close()
-    assert {"audience", "recipients"} <= cols and version == 5
-    assert old["status"] == "SENT" and old["audience"] is None      # old rows keep working
+    refused = ManifestDB(path)                              # opening is lazy: the first use refuses
+    with pytest.raises(ManifestSchemaError):
+        refused._get_conn()
+    assert open(path, "rb").read() == before                # refused and left unchanged
 
 
 # ── what notify() records ────────────────────────────────────────────────────

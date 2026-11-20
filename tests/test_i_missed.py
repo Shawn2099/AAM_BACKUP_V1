@@ -79,6 +79,7 @@ def test_no_flow_context_means_no_lateness():
 def _cfg(tmp_path):
     cfg = MagicMock()
     cfg.paths.database_path = str(tmp_path / "m.db")
+    cfg.paths.source_drive = str(tmp_path / "FY26-27")
     cfg.maintenance = MaintenanceConfig()
     cfg.budget = BudgetConfig()
     return cfg
@@ -97,7 +98,7 @@ def test_no_budget_left_records_missed_and_one_warning_without_taking_the_slot(
     slot.assert_not_called()
     db = ManifestDB(cfg.paths.database_path)
     try:
-        row = db.last_run(leg)
+        row = db.last_run(leg, fy="FY26-27")
     finally:
         db.close()
     assert row["status"] == f"{leg.upper()}_MISSED" and row["ended_at"]

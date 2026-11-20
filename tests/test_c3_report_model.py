@@ -19,7 +19,7 @@ def db(tmp_path):
 
 
 def _run(db, rid, started, mode="cloud", status="CLOUD_COMPLETE", files=0, size=0):
-    db.insert_run({"run_id": rid, "mode": mode, "started_at": started, "ended_at": started,
+    db.insert_run({"fy": "FY26-27", "run_id": rid, "mode": mode, "started_at": started, "ended_at": started,
                    "status": status, "files_copied": files, "bytes_copied": size})
 
 

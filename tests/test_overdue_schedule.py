@@ -100,7 +100,7 @@ def db(tmp_path):
 
 
 def _success(db, started, status="LAN_COMPLETE", run_id=None, **extra):
-    db.insert_run({"run_id": run_id or f"r{started.isoformat()}", "mode": "lan",
+    db.insert_run({"run_id": run_id or f"r{started.isoformat()}", "mode": "lan", "fy": "FY26-27",
                    "started_at": started.isoformat(), "ended_at": (started + timedelta(minutes=30)).isoformat(),
                    "status": status, **extra})
 
@@ -220,7 +220,7 @@ def test_a_database_without_the_marker_uses_the_oldest_run(tmp_path, db):
     cfg = _cfg(tmp_path)
     db._get_conn().execute("DELETE FROM db_meta WHERE key = 'created_at'")        # a pre-marker database
     db._get_conn().commit()
-    db.insert_run({"run_id": "f1", "mode": "lan", "started_at": at(2026, 10, 22, 21, 0).isoformat(),
+    db.insert_run({"run_id": "f1", "mode": "lan", "fy": "FY26-27", "started_at": at(2026, 10, 22, 21, 0).isoformat(),
                    "ended_at": at(2026, 10, 22, 21, 1).isoformat(), "status": "LAN_FAILED"})
     assert db.first_known_at() == at(2026, 10, 22, 21, 0).isoformat()
     assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 24, 3, 1)) if i["code"] == "stale:lan"]
@@ -259,7 +259,7 @@ def test_the_marker_is_written_only_for_a_database_that_did_not_exist(tmp_path):
 # ── partial uploads that are making progress ─────────────────────────────────
 
 def _partial(db, started, bytes_copied=1000, stopped=True):
-    db.insert_run({"run_id": f"p{started.isoformat()}", "mode": "lan", "started_at": started.isoformat(),
+    db.insert_run({"run_id": f"p{started.isoformat()}", "mode": "lan", "fy": "FY26-27", "started_at": started.isoformat(),
                    "ended_at": started.isoformat(), "status": "LAN_PARTIAL", "bytes_copied": bytes_copied,
                    "extended_metrics": json.dumps({"budget": {"stopped": stopped}})})
 

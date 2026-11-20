@@ -116,12 +116,12 @@ class TestConcurrencyConditions:
         db1 = ManifestDB(str(tmp_path / "test.db"))
         db2 = ManifestDB(str(tmp_path / "test.db"))
         # Both should work without crashing (insert_run is dict-based).
-        db1.insert_run({"run_id": "r1", "mode": "cloud", "status": "CLOUD_COMPLETE",
+        db1.insert_run({"fy": "FY26-27", "run_id": "r1", "mode": "cloud", "status": "CLOUD_COMPLETE",
                         "started_at": "2026-01-01T00:00:00"})
-        db2.insert_run({"run_id": "r2", "mode": "lan", "status": "LAN_COMPLETE",
+        db2.insert_run({"fy": "FY26-27", "run_id": "r2", "mode": "lan", "status": "LAN_COMPLETE",
                         "started_at": "2026-01-01T00:00:00"})
-        assert db1.last_run("cloud")["status"] == "CLOUD_COMPLETE"
-        assert db2.last_run("lan")["status"] == "LAN_COMPLETE"
+        assert db1.last_run("cloud", fy="FY26-27")["status"] == "CLOUD_COMPLETE"
+        assert db2.last_run("lan", fy="FY26-27")["status"] == "LAN_COMPLETE"
         db1.close()
         db2.close()
 

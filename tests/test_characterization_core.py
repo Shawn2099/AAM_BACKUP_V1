@@ -231,15 +231,15 @@ class TestBackupRepositoryCharacterization:
         from core.backup_repository import record_sync_results
 
         entries = [{"Path": "docs/a.pdf", "Size": 100, "ModTime": 1700000000.0}]
-        record_sync_results(tmp_db, "cloud", entries)
-        assert tmp_db.get_entry("docs/a.pdf") is not None
+        record_sync_results(tmp_db, "cloud", entries, fy="FY26-27")
+        assert tmp_db.get_entry("docs/a.pdf", fy="FY26-27") is not None
 
     def test_record_sync_results_walk_shaped(self, tmp_db):
         from core.backup_repository import record_sync_results
 
         entries = [{"path": "docs/b.pdf", "size": 50, "mtime": 1700000000.0}]
-        record_sync_results(tmp_db, "lan", entries)
-        assert tmp_db.get_entry("docs/b.pdf") is not None
+        record_sync_results(tmp_db, "lan", entries, fy="FY26-27")
+        assert tmp_db.get_entry("docs/b.pdf", fy="FY26-27") is not None
 
     def test_record_run_history_success(self, tmp_db):
         from core.backup_repository import record_run_history
@@ -255,9 +255,10 @@ class TestBackupRepositoryCharacterization:
             duration_seconds=600.0,
             files_copied=3,
             bytes_copied=1024,
+            fy="FY26-27",
         )
         assert ok is True
-        assert tmp_db.last_run("cloud")["run_id"] == "run-1"
+        assert tmp_db.last_run("cloud", fy="FY26-27")["run_id"] == "run-1"
 
     def test_record_run_history_never_raises(self, tmp_db):
         from core.backup_repository import record_run_history
@@ -273,6 +274,7 @@ class TestBackupRepositoryCharacterization:
                 status="CLOUD_COMPLETE",
                 exit_code=0,
                 duration_seconds=1.0,
+                fy="FY26-27",
             )
         assert ok is False
 
@@ -916,7 +918,7 @@ class TestReportCharacterization:
         from core.report import generate_report_html
         from core.time_utils import now_iso
 
-        tmp_db.insert_run({
+        tmp_db.insert_run({"fy": "FY26-27",
             "run_id": "r1", "mode": "cloud", "started_at": now_iso(),
             "ended_at": now_iso(), "status": "CLOUD_COMPLETE", "exit_code": 0,
             "files_copied": 3, "bytes_copied": 1024, "duration_seconds": 5.0,

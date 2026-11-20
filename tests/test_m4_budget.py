@@ -219,6 +219,7 @@ def test_audit_with_no_budget_left_is_incomplete_and_does_not_wake_the_nas(monke
     db = MagicMock()
     db.record_audit.side_effect = recorded.append
     cfg = MagicMock()
+    cfg.paths.source_drive = "E:\DATA\FY26-27"
     cfg.cloud.enabled = False
     cfg.lan.enabled = True
     cfg.budget.audit_max_hours = 0.0001        # used up immediately

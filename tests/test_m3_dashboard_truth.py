@@ -47,7 +47,7 @@ def db(tmp_path):
 
 
 def _run(db, run_id, mode, status, hours_ago, em=None):
-    db.insert_run({"run_id": run_id, "mode": mode, "started_at": _ago(hours_ago),
+    db.insert_run({"fy": "FY26-27", "run_id": run_id, "mode": mode, "started_at": _ago(hours_ago),
                    "ended_at": _ago(hours_ago), "status": status, "extended_metrics": em})
 
 
@@ -81,10 +81,10 @@ def test_open_approval_audit_and_undelivered_alerts(db):
     db.open_approval_request(leg="lan", blocked_run_id="b", fy="FY26-27",
                              guards=[{"guard": "G3_MASS_DELETE", "reason": "r", "metrics": {}}],
                              phrase="DELETE 9", created_at=_ago(1))
-    db.record_audit({"audit_id": "a1", "mode": "cloud", "started_at": _ago(2),
+    db.record_audit({"fy": "FY26-27", "audit_id": "a1", "mode": "cloud", "started_at": _ago(2),
                      "status": "VERIFICATION_FAILED", "detail": "content-changed=1",
                      "created_at": _ago(2)})
-    db.record_audit({"audit_id": "a2", "mode": "lan", "started_at": _ago(2),
+    db.record_audit({"fy": "FY26-27", "audit_id": "a2", "mode": "lan", "started_at": _ago(2),
                      "status": "AUDIT_INCOMPLETE", "detail": "DNS", "created_at": _ago(2)})
     db.record_notification({"event_key": "backup:lan:LAN_FAILED", "kind": "FAILURE",
                             "subject": "s", "status": "FAILED", "error": "535 auth",

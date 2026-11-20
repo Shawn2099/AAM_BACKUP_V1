@@ -223,13 +223,14 @@ def _att_cfg():
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
         dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
+        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
         notifications=SimpleNamespace(send_on_failure=True),
         schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET)
 
 
 def _run(db, run_id, mode, status, em=None):
     ts = pendulum.now(IST).subtract(hours=1).isoformat()
-    db.insert_run({"run_id": run_id, "mode": mode, "started_at": ts, "ended_at": ts,
+    db.insert_run({"fy": "FY26-27", "run_id": run_id, "mode": mode, "started_at": ts, "ended_at": ts,
                    "status": status, "extended_metrics": em})
 
 

@@ -19,10 +19,10 @@ def test_sweep_covers_every_run_mode_with_its_own_key_and_wording(tmp_path):
     cfg.maintenance = MaintenanceConfig()
     try:
         for mode in ("cloud", "lan", "rollover"):
-            db.insert_run({"run_id": f"r-{mode}", "mode": mode, "started_at": now_iso(),
+            db.insert_run({"fy": "FY26-27", "run_id": f"r-{mode}", "mode": mode, "started_at": now_iso(),
                            "status": f"{mode.upper()}_RUNNING",
                            "extended_metrics": json.dumps({"owner": _dead_token()})})
-        db.insert_run({"run_id": "r-missed", "mode": "lan", "started_at": now_iso(),
+        db.insert_run({"fy": "FY26-27", "run_id": "r-missed", "mode": "lan", "started_at": now_iso(),
                        "ended_at": now_iso(), "status": "LAN_MISSED"})
         with patch.object(repo, "notify") as notify:
             rows = repo.sweep_abandoned_runs(cfg, db)

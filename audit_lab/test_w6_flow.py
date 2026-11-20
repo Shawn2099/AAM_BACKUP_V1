@@ -100,9 +100,9 @@ def _db_rows(cfg_path: Path):
     from models.config import load_config
     c = load_config(str(cfg_path))
     m = ManifestDB(c.paths.database_path)
-    rows = m.get_recent_runs(10)
-    lan_rows = m.file_count("lan_status")
-    cloud_rows = m.file_count("cloud_status")
+    rows = m.get_recent_runs(10, fy="FY26-26")
+    lan_rows = m.file_count("lan_status", fy="FY26-26")
+    cloud_rows = m.file_count("cloud_status", fy="FY26-26")
     m.close()
     return rows, lan_rows, cloud_rows
 
@@ -297,7 +297,7 @@ def test_w6_integrity_audit_flow(rig, monkeypatch):
 
     c = load_config(str(rig["cfg_path"]))
     m = ManifestDB(c.paths.database_path)
-    audits = [m.latest_audit("lan")]
+    audits = [m.latest_audit("lan", fy="FY26-26")]
     m.close()
     L.record("W6.integrity_audit_flow",
              "integrity_audit_flow records a durable audit row for the LAN leg",

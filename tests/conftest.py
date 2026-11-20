@@ -34,11 +34,11 @@ def populated_db(tmp_db):
     """Database pre-populated with files synced to both cloud and lan."""
     tmp_db.bulk_upsert_synced(
         [{"path": "docs/client_report.pdf", "size": 2048, "mtime": 1700000000.0}],
-        mode="lan",
+        mode="lan", fy="FY26-27",
     )
     tmp_db.bulk_upsert_synced(
         [{"path": "docs/client_report.pdf", "size": 2048, "mtime": 1700000000.0}],
-        mode="cloud",
+        mode="cloud", fy="FY26-27",
     )
     return tmp_db
 

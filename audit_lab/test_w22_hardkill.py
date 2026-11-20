@@ -184,7 +184,7 @@ def _no_blocks(cfg_path: Path) -> tuple[list[str], int]:
     cfg = load_config(str(cfg_path))
     db = ManifestDB(cfg.paths.database_path)
     try:
-        blocked = [r["status"] for r in db.get_recent_runs(20) if "BLOCKED" in r["status"]]
+        blocked = [r["status"] for r in db.get_recent_runs(20, fy="FY26-26") if "BLOCKED" in r["status"]]
         return blocked, len(db.open_approvals())
     finally:
         db.close()
@@ -239,7 +239,7 @@ def test_w22_kill_mid_audit_leaves_no_false_verdict_and_the_next_audit_runs(hard
     outcome = _spawn_and_kill(rig, "audit", need_tool=False)
     db = ManifestDB(cfg.paths.database_path)
     try:
-        before = (db.latest_audit("cloud"), db.latest_audit("lan"))
+        before = (db.latest_audit("cloud", fy="FY26-26"), db.latest_audit("lan", fy="FY26-26"))
     finally:
         db.close()
     assert before == (None, None), "a killed audit must leave no verdict behind"
@@ -249,7 +249,7 @@ def test_w22_kill_mid_audit_leaves_no_false_verdict_and_the_next_audit_runs(hard
     waited = time.monotonic() - t0
     db = ManifestDB(cfg.paths.database_path)
     try:
-        after = (db.latest_audit("cloud"), db.latest_audit("lan"))
+        after = (db.latest_audit("cloud", fy="FY26-26"), db.latest_audit("lan", fy="FY26-26"))
     finally:
         db.close()
     blocked, approvals = _no_blocks(rig["cfg_path"])

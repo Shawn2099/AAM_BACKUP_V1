@@ -8,7 +8,6 @@ import json
 import os
 import sqlite3
 import threading
-import time
 from pathlib import Path
 
 from loguru import logger
@@ -19,11 +18,17 @@ from core.statuses import AuditStatus
 from core.time_utils import IST, cutoff_iso, now_iso
 from models.config import MaintenanceConfig, model_default
 
-# Critical-6: version gate for schema migrations. Bump when DDL or the
-# legacy-migration steps below change. Fresh databases are stamped straight
-# to this value; pre-versioning databases run _migrate_legacy_schema once.
-SCHEMA_VERSION = 5   # v3: notifications.fault_code / message_id / thread_id; v5: audience / recipients
+# Version gate. Bump when the DDL changes. A fresh database is stamped straight to this
+# value; a file of any other version is refused (v6, D-7: nothing is migrated).
+SCHEMA_VERSION = 6   # v3: notifications.fault_code / message_id / thread_id; v5: audience / recipients
                      # v4 (plan SCH): rollover_journal(+_steps), notifications.attachments_rung
+                     # v6 (FY overlap, D-7): `fy` on file_entries / run_history / integrity_audits /
+                     # notifications / approvals + overlap_activations. FRESH database only: an older
+                     # file is refused (rename it and start fresh), never migrated.
+
+# `fy=ALL_FYS` is the explicit "every FY" of a reader (a global list). Every method that reads
+# per-FY data takes `fy` with NO default, so a caller can never forget the scope (plan 5.4).
+ALL_FYS = "*"
 
 # Per-connection pragmas. journal_mode=WAL is persistent (set once per file)
 # and is applied separately with a bounded retry: SQLite does not invoke the
@@ -39,7 +44,8 @@ _CONNECTION_PRAGMAS = (
 DDL = """
 CREATE TABLE IF NOT EXISTS file_entries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    relative_path   TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    fy              TEXT NOT NULL,          -- v6: the same relative path in two FY folders is two files
+    relative_path   TEXT NOT NULL COLLATE NOCASE,
     file_size       INTEGER NOT NULL DEFAULT 0,
     mtime           REAL NOT NULL DEFAULT 0,
     md5_checksum    TEXT DEFAULT 'pending',
@@ -55,7 +61,8 @@ CREATE TABLE IF NOT EXISTS file_entries (
     cloud_size      INTEGER,
     cloud_mtime     REAL,
     created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    UNIQUE (fy, relative_path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_entries_lan_status ON file_entries(lan_status);
@@ -65,6 +72,7 @@ CREATE TABLE IF NOT EXISTS run_history (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id          TEXT NOT NULL UNIQUE,
     mode            TEXT NOT NULL,
+    fy              TEXT NOT NULL,          -- v6: the FY folder this run backed up
     started_at      TEXT NOT NULL,
     ended_at        TEXT,
     status          TEXT NOT NULL,
@@ -79,6 +87,7 @@ CREATE TABLE IF NOT EXISTS run_history (
 
 CREATE INDEX IF NOT EXISTS idx_run_history_started_at ON run_history(started_at);
 CREATE INDEX IF NOT EXISTS idx_run_history_mode ON run_history(mode);
+CREATE INDEX IF NOT EXISTS idx_run_history_fy_mode ON run_history(fy, mode, started_at);
 
 CREATE TABLE IF NOT EXISTS db_meta (
     key     TEXT PRIMARY KEY,
@@ -95,6 +104,7 @@ CREATE TABLE IF NOT EXISTS integrity_audits (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     audit_id        TEXT NOT NULL UNIQUE,
     mode            TEXT NOT NULL,          -- 'lan' | 'cloud'
+    fy              TEXT NOT NULL,          -- v6
     scope           TEXT NOT NULL DEFAULT 'full',
     started_at      TEXT NOT NULL,
     ended_at        TEXT,
@@ -125,7 +135,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     thread_id   TEXT,           -- Message-ID of the incident's first email (v3)
     attachments_rung TEXT,      -- which attachment rung was delivered (v4, plan B)
     audience    TEXT,           -- alerts | reports | both: which recipient list it was FOR (v5)
-    recipients  TEXT            -- JSON list of the addresses it was addressed to (v5)
+    recipients  TEXT,           -- JSON list of the addresses it was addressed to (v5)
+    fy          TEXT            -- FY the mail is about (v6); NULL for global mails (watchdog, NAS shutdown)
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_key ON notifications(event_key, created_at);
@@ -138,7 +149,7 @@ CREATE TABLE IF NOT EXISTS approvals (
     approval_id     TEXT NOT NULL UNIQUE,
     leg             TEXT NOT NULL,          -- 'lan' | 'cloud'
     blocked_run_id  TEXT NOT NULL,
-    fy              TEXT,
+    fy              TEXT,                   -- v6: required for backup approvals (checked in open_approval_request)
     guards          TEXT NOT NULL,          -- JSON [{guard, reason, metrics}]
     phrase          TEXT NOT NULL,
     status          TEXT NOT NULL,          -- core.approvals PENDING/APPROVED/...
@@ -190,17 +201,24 @@ CREATE TABLE IF NOT EXISTS rollover_journal_steps (
     PRIMARY KEY (journal_id, step)
 );
 
+-- FY overlap (v6, D-9): one row when the next FY folder started to be backed up. Never purged.
+CREATE TABLE IF NOT EXISTS overlap_activations (
+    fy              TEXT PRIMARY KEY,
+    activated_at    TEXT NOT NULL,
+    source_path     TEXT NOT NULL,
+    created_by_app  INTEGER NOT NULL DEFAULT 0,
+    clock_state     TEXT
+);
+
 INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
 
 
 class ManifestSchemaError(RuntimeError):
-    """Critical-6: a schema migration could not be applied.
-
-    Raised instead of silently continuing with a schema that insert_run
-    cannot write to (which previously lost every subsequent run_history
-    record with no visible error). Startup fails loudly; NSSM restarts the
-    service and the operator sees the cause in the log.
+    """The database file cannot be used: it holds another schema version (v6 is a fresh
+    database, D-7). Raised instead of silently continuing with a schema that insert_run
+    cannot write to (which would lose every run_history record with no visible error).
+    Startup fails loudly; NSSM restarts the service and the operator sees the cause in the log.
     """
 
 
@@ -271,10 +289,13 @@ class ManifestDB:
             conn.row_factory = sqlite3.Row
             conn.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
             try:
+                # v6 (D-7): look BEFORE anything is written. A file that already holds tables but is
+                # not v6 is refused untouched; an empty file (nothing in it yet) is a fresh database.
+                is_new = self._check_schema_version(conn)
                 self._retry_on_lock(lambda: conn.execute("PRAGMA journal_mode=WAL"))
                 for pragma in _CONNECTION_PRAGMAS:
                     conn.execute(pragma)
-                self._retry_on_lock(lambda: self._apply_ddl(conn))
+                self._retry_on_lock(lambda: self._apply_ddl(conn, stamp=is_new))
                 if fresh:       # INSERT OR IGNORE: several processes may open a new file together
                     conn.execute("INSERT OR IGNORE INTO db_meta (key, value) VALUES ('created_at', ?)",
                                  (now_iso(),))
@@ -286,107 +307,26 @@ class ManifestDB:
             # "full" is applied on top so the toggle takes effect per open.
             if self.synchronous == "full":
                 conn.execute("PRAGMA synchronous=FULL")
-
-            # Critical-6: version-gated schema migration. Fresh databases are
-            # stamped straight to SCHEMA_VERSION (DDL already creates every
-            # column, so no ALTER is needed); legacy databases — user_version
-            # 0 — run the migration steps exactly once.
-            if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
-                try:
-                    self._migrate_legacy_schema(conn)
-                except BaseException:
-                    # Never cache a connection whose schema could not be
-                    # brought current — the next open retries from scratch.
-                    conn.close()
-                    raise
-
             self._conn = conn
         return self._conn
 
-    def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
-        """Bring a pre-versioning database up to SCHEMA_VERSION.
-
-        Critical-6: a failed migration must be LOUD. The old code swallowed
-        the ALTER TABLE failure with ``logger.error`` and returned a usable
-        connection — after which every insert_run failed (missing column)
-        and record_run_history silently dropped all run history.
-
-        Retries transient SQLITE_BUSY up to 3 times; permanent failure
-        raises ManifestSchemaError (caller closes the connection).
-
-        Note: sqlite3's implicit transactions cover DML only — DDL would
-        otherwise autocommit and rollback() could not undo it. The ALTER +
-        version stamp therefore run inside an explicit BEGIN IMMEDIATE so
-        they commit atomically or not at all.
-        """
-        last_exc: sqlite3.OperationalError | None = None
-        for attempt in range(1, 4):
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                # Re-check inside the write lock: another process may have
-                # migrated between our version read and BEGIN IMMEDIATE.
-                if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
-                    conn.rollback()
-                    return
-                columns = {
-                    row["name"]
-                    for row in conn.execute(
-                        "PRAGMA table_info(run_history)"
-                    ).fetchall()
-                }
-                if "extended_metrics" not in columns:
-                    conn.execute(
-                        "ALTER TABLE run_history ADD COLUMN extended_metrics TEXT"
-                    )
-                # v2 (WP6): per-leg size/mtime. Existing rows stay NULL - the
-                # old shared value cannot be attributed to a leg truthfully.
-                fe_columns = {
-                    row["name"]
-                    for row in conn.execute("PRAGMA table_info(file_entries)").fetchall()
-                }
-                for column, sql_type in (("lan_size", "INTEGER"), ("lan_mtime", "REAL"),
-                                         ("cloud_size", "INTEGER"), ("cloud_mtime", "REAL")):
-                    if column not in fe_columns:
-                        conn.execute(
-                            f"ALTER TABLE file_entries ADD COLUMN {column} {sql_type}")
-                # v3 (audit 2026-10-18): incidents - fault code and email ids
-                n_columns = {
-                    row["name"]
-                    for row in conn.execute("PRAGMA table_info(notifications)").fetchall()
-                }
-                for column in ("fault_code", "message_id", "thread_id", "attachments_rung",
-                               "audience", "recipients"):
-                    if n_columns and column not in n_columns:
-                        conn.execute(f"ALTER TABLE notifications ADD COLUMN {column} TEXT")
-                # Legacy tables may predate UNIQUE(run_id): drop duplicate
-                # run_ids (keep the first) and add the unique index that
-                # insert_run's ON CONFLICT(run_id) relies on. Runs once,
-                # under the version gate — never on every connection open.
-                if not self._run_id_is_unique(conn):
-                    conn.execute(
-                        "DELETE FROM run_history WHERE id NOT IN "
-                        "(SELECT MIN(id) FROM run_history GROUP BY run_id)"
-                    )
-                    conn.execute(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS "
-                        "idx_run_history_run_id ON run_history(run_id)"
-                    )
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                conn.commit()
-                return
-            except sqlite3.OperationalError as exc:
-                conn.rollback()
-                last_exc = exc
-                if "locked" not in str(exc).lower() or attempt == 3:
-                    break
-                logger.warning(
-                    f"Schema migration attempt {attempt}/3 hit a locked "
-                    "database - retrying"
-                )
-                time.sleep(1.0 * attempt)
-        raise ManifestSchemaError(
-            f"run_history schema migration failed: {last_exc}"
-        ) from last_exc
+    def _check_schema_version(self, conn: sqlite3.Connection) -> bool:
+        """True when the file holds no tables yet (this open creates the schema); raises
+        ManifestSchemaError when it holds tables of any other schema version (v6 is a fresh
+        database by decision D-7: nothing is migrated, nothing is changed in the old file)."""
+        tables = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%'").fetchone()[0]
+        if tables == 0:
+            return True
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version != SCHEMA_VERSION:
+            raise ManifestSchemaError(
+                f"The backup database {self.db_path} has schema version {version}, but this version of "
+                f"the backup agent needs version {SCHEMA_VERSION} (one backup history per financial "
+                "year). It is not migrated and nothing in it was discarded. Stop the services, rename "
+                "the file (together with its -wal and -shm files) to keep it, and start fresh.")
+        return False
 
     def _retry_on_lock(self, operation):
         """Run `operation`, retrying only on SQLITE_BUSY/locked errors.
@@ -414,26 +354,18 @@ class ManifestDB:
         )(operation)()
 
     @staticmethod
-    def _apply_ddl(conn: sqlite3.Connection) -> None:
-        """Create/verify the schema atomically under a RESERVED write lock."""
+    def _apply_ddl(conn: sqlite3.Connection, stamp: bool = False) -> None:
+        """Create/verify the schema atomically under a RESERVED write lock. A new database is
+        stamped with SCHEMA_VERSION in the SAME transaction, so no other process can ever see
+        tables without the version (and refuse a file that is just being created)."""
         try:
-            conn.executescript(f"BEGIN IMMEDIATE;{DDL}COMMIT;")
+            conn.executescript(
+                f"BEGIN IMMEDIATE;{DDL}"
+                f"{f'PRAGMA user_version = {SCHEMA_VERSION};' if stamp else ''}COMMIT;")
         except BaseException:
             if conn.in_transaction:
                 conn.rollback()
             raise
-
-    @staticmethod
-    def _run_id_is_unique(conn: sqlite3.Connection) -> bool:
-        """True if some UNIQUE index covers exactly run_history(run_id)."""
-        for idx in conn.execute("PRAGMA index_list(run_history)").fetchall():
-            if not idx["unique"]:
-                continue
-            cols = [r["name"] for r in conn.execute(
-                f"PRAGMA index_info('{idx['name']}')").fetchall()]
-            if cols == ["run_id"]:
-                return True
-        return False
 
     def close(self):
         with self._lock:
@@ -444,6 +376,23 @@ class ManifestDB:
                     pass
                 self._conn = None
 
+    @staticmethod
+    def _fy_filter(fy: str, column: str = "fy") -> tuple[str, tuple]:
+        """SQL ` AND <column> = ?` for one FY; nothing for fy=ALL_FYS. No default anywhere: a reader
+        that forgot its scope is a TypeError, a blank / non-text scope is a ValueError."""
+        if not isinstance(fy, str) or not fy.strip():
+            raise ValueError(f"fy must be an FY name like 'FY26-27' or ALL_FYS, got {fy!r}")
+        if fy == ALL_FYS:
+            return "", ()
+        return f" AND {column} = ?", (fy,)
+
+    @staticmethod
+    def _need_fy(fy: str) -> str:
+        """A WRITER needs one real FY (never ALL_FYS)."""
+        if not isinstance(fy, str) or not fy.strip() or fy == ALL_FYS:
+            raise ValueError(f"fy must be one FY name like 'FY26-27', got {fy!r}")
+        return fy
+
     # ── File Entries ─────────────────────────────────────────
 
     def upsert_file_entry(
@@ -452,23 +401,25 @@ class ManifestDB:
         file_size: int,
         mtime: float,
         *,
+        fy: str,
         lan_status: str | None = None,
         cloud_status: str | None = None,
         md5_checksum: str | None = None,
     ):
         relative_path = relative_path.replace("\\", "/")
+        self._need_fy(fy)
         with self._lock:
             conn = self._get_conn()
             now = now_iso()
             conn.execute(
                 """INSERT INTO file_entries
-                   (relative_path, file_size, mtime, md5_checksum,
+                   (fy, relative_path, file_size, mtime, md5_checksum,
                     lan_status, cloud_status, lan_last_synced_at, cloud_last_synced_at,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?,
+                   VALUES (?, ?, ?, ?, ?,
                            ?, ?, ?, ?,
                            ?, ?)
-                   ON CONFLICT(relative_path) DO UPDATE SET
+                   ON CONFLICT(fy, relative_path) DO UPDATE SET
                        file_size = excluded.file_size,
                        mtime = excluded.mtime,
                        md5_checksum = COALESCE(excluded.md5_checksum, file_entries.md5_checksum),
@@ -486,6 +437,7 @@ class ManifestDB:
                        END,
                        updated_at = excluded.updated_at""",
                 (
+                    fy,
                     relative_path,
                     file_size,
                     mtime,
@@ -504,6 +456,8 @@ class ManifestDB:
         self,
         entries: list[dict],
         mode: str,
+        *,
+        fy: str,
     ) -> None:
         """Bulk upsert file entries and mark as synced in one transaction.
 
@@ -520,6 +474,7 @@ class ManifestDB:
 
         if mode not in ("cloud", "lan"):
             raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
+        self._need_fy(fy)
 
         status_field = f"{mode}_status"
         ts_field = f"{mode}_last_synced_at"
@@ -535,13 +490,13 @@ class ManifestDB:
                 chunk = entries[i : i + 100]
                 conn.executemany(
                     f"""INSERT INTO file_entries
-                        (relative_path, file_size, mtime, {size_field}, {mtime_field},
+                        (fy, relative_path, file_size, mtime, {size_field}, {mtime_field},
                          md5_checksum, {status_field}, {ts_field},
                          created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?,
+                        VALUES (?, ?, ?, ?, ?, ?, ?,
                                 'synced', ?,
                                 ?, ?)
-                        ON CONFLICT(relative_path) DO UPDATE SET
+                        ON CONFLICT(fy, relative_path) DO UPDATE SET
                             file_size = excluded.file_size,
                             mtime = excluded.mtime,
                             {size_field} = excluded.{size_field},
@@ -556,6 +511,7 @@ class ManifestDB:
                             updated_at = excluded.updated_at""",
                     [
                         (
+                            fy,
                             e["path"].replace("\\", "/"),
                             e.get("size", 0),
                             e.get("mtime", 0),
@@ -571,10 +527,11 @@ class ManifestDB:
                 )
             conn.commit()
 
-    def delete_entries(self, paths: list[str]):
+    def delete_entries(self, paths: list[str], *, fy: str):
         """Delete entries for files no longer on destination. Chunk to avoid SQLite variable limit."""
         if not paths:
             return
+        self._need_fy(fy)
         normalized = [p.replace("\\", "/") for p in paths]
         with self._lock:
             conn = self._get_conn()
@@ -582,12 +539,12 @@ class ManifestDB:
                 chunk = normalized[i : i + 500]
                 placeholders = ",".join("?" for _ in chunk)
                 conn.execute(
-                    f"DELETE FROM file_entries WHERE relative_path IN ({placeholders})",
-                    chunk,
+                    f"DELETE FROM file_entries WHERE fy = ? AND relative_path IN ({placeholders})",
+                    (fy, *chunk),
                 )
             conn.commit()
 
-    def clear_mode_status(self, mode: str, paths: list[str]) -> int:
+    def clear_mode_status(self, mode: str, paths: list[str], *, fy: str) -> int:
         """Null-out sync status for one mode; delete row only when both modes are NULL.
 
         Replaces the unconditional DELETE used by record_sync_results so that pruning
@@ -598,6 +555,7 @@ class ManifestDB:
         """
         if mode not in ("cloud", "lan"):
             raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
+        self._need_fy(fy)
         if not paths:
             return 0
         status_field = f"{mode}_status"
@@ -612,53 +570,57 @@ class ManifestDB:
                     conn.execute(
                         f"UPDATE file_entries SET {status_field} = NULL, "
                         f"{ts_field} = NULL "
-                        f"WHERE relative_path IN ({placeholders})",
-                        chunk,
+                        f"WHERE fy = ? AND relative_path IN ({placeholders})",
+                        (fy, *chunk),
                     )
                 # Orphan cleanup: delete rows that are truly gone from both destinations
                 conn.execute(
                     "DELETE FROM file_entries "
-                    "WHERE lan_status IS NULL AND cloud_status IS NULL"
+                    "WHERE fy = ? AND lan_status IS NULL AND cloud_status IS NULL", (fy,)
                 )
         return len(normalized)
 
 
-    def get_entry(self, relative_path: str) -> dict | None:
+    def get_entry(self, relative_path: str, *, fy: str) -> dict | None:
         relative_path = relative_path.replace("\\", "/")
+        self._need_fy(fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT * FROM file_entries WHERE relative_path = ?", (relative_path,)
+                "SELECT * FROM file_entries WHERE fy = ? AND relative_path = ?", (fy, relative_path)
             ).fetchone()
             return dict(row) if row else None
 
-    def file_count(self, status_field: str = "lan_status") -> int:
+    def file_count(self, status_field: str = "lan_status", *, fy: str) -> int:
         _ALLOWED = {"lan_status", "cloud_status"}
         if status_field not in _ALLOWED:
             raise ValueError(f"status_field must be one of {_ALLOWED}, got {status_field!r}")
+        clause, args = self._fy_filter(fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                f"SELECT COUNT(*) as cnt FROM file_entries WHERE {status_field} = 'synced'"
+                f"SELECT COUNT(*) as cnt FROM file_entries WHERE {status_field} = 'synced'{clause}",
+                args,
             ).fetchone()
             return row["cnt"] if row else 0
 
-    def get_cloud_synced_entries(self) -> dict[str, tuple[int, float]]:
+    def get_cloud_synced_entries(self, *, fy: str) -> dict[str, tuple[int, float]]:
         """Cloud-synced entries as {relative_path: (cloud_size, cloud_mtime)}.
 
         The CLOUD leg's own last-recorded values (schema v2) - never the LAN
         leg's. None = unknown (rows from before v2). Used only for the
         metrics cross-check (plan WP6).
         """
+        self._need_fy(fy)
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT relative_path, cloud_size, cloud_mtime "
-                "FROM file_entries WHERE cloud_status = 'synced'"
+                "FROM file_entries WHERE cloud_status = 'synced' AND fy = ?", (fy,)
             ).fetchall()
         return {r["relative_path"]: (r["cloud_size"], r["cloud_mtime"]) for r in rows}
 
-    def get_synced_paths(self, mode: str) -> list[str]:
+    def get_synced_paths(self, mode: str, *, fy: str) -> list[str]:
         """Return all relative_paths where the given mode status is 'synced'.
 
         Used by backup_repository for self-healing stale-entry detection.
@@ -666,19 +628,22 @@ class ManifestDB:
         if mode not in ("cloud", "lan"):
             raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
         status_field = f"{mode}_status"
+        self._need_fy(fy)
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
-                f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced'"
+                f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced' AND fy = ?",
+                (fy,),
             ).fetchall()
         return [r["relative_path"] for r in rows]
 
-    def prune_stale_synced(self, mode: str, active_paths: set[str]) -> int:
+    def prune_stale_synced(self, mode: str, active_paths: set[str], *, fy: str) -> int:
         """Null-out sync status for entries no longer present on destination.
 
         Self-healing: entries marked 'synced' but absent from the live manifest
         are reset so they are re-evaluated on the next run. Entries with both
-        lan_status and cloud_status NULL are fully deleted.
+        lan_status and cloud_status NULL are fully deleted. Only the rows of `fy`
+        are looked at: another FY folder's catalog is never touched (R-1, G-1).
 
         Args:
             mode: 'cloud' or 'lan'.
@@ -691,11 +656,13 @@ class ManifestDB:
             raise ValueError(f"mode must be 'cloud' or 'lan', got {mode!r}")
         status_field = f"{mode}_status"
         ts_field = f"{mode}_last_synced_at"
+        self._need_fy(fy)
         with self._lock:
             conn = self._get_conn()
             with conn:
                 rows = conn.execute(
-                    f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced'"
+                    f"SELECT relative_path FROM file_entries WHERE {status_field} = 'synced' "
+                    "AND fy = ?", (fy,)
                 ).fetchall()
                 db_paths = {r["relative_path"] for r in rows}
                 stale_paths = [p for p in db_paths if p not in active_paths]
@@ -703,29 +670,30 @@ class ManifestDB:
                     return 0
                 conn.executemany(
                     f"UPDATE file_entries SET {status_field} = NULL, "
-                    f"{ts_field} = NULL WHERE relative_path = ?",
-                    [(path,) for path in stale_paths],
+                    f"{ts_field} = NULL WHERE fy = ? AND relative_path = ?",
+                    [(fy, path) for path in stale_paths],
                 )
                 conn.execute(
                     "DELETE FROM file_entries "
-                    "WHERE lan_status IS NULL AND cloud_status IS NULL"
+                    "WHERE fy = ? AND lan_status IS NULL AND cloud_status IS NULL", (fy,)
                 )
         return len(stale_paths)
 
     # ── Run History ──────────────────────────────────────────
 
     def insert_run(self, data: dict):
-        required = ("run_id", "mode", "started_at", "status")
+        required = ("run_id", "mode", "fy", "started_at", "status")
         missing = [k for k in required if k not in data]
         if missing:
             raise KeyError(f"insert_run missing required keys: {missing}")
+        self._need_fy(data["fy"])
         with self._lock:
             conn = self._get_conn()
             conn.execute(
                 """INSERT INTO run_history
-                   (run_id, mode, started_at, ended_at, status, exit_code,
+                   (run_id, mode, fy, started_at, ended_at, status, exit_code,
                     files_copied, bytes_copied, files_failed, duration_seconds, error_message, extended_metrics)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(run_id) DO UPDATE SET
                        ended_at = excluded.ended_at,
                        status = excluded.status,
@@ -739,6 +707,7 @@ class ManifestDB:
                 (
                     data["run_id"],
                     data["mode"],
+                    data["fy"],
                     data["started_at"],
                     data.get("ended_at"),
                     data["status"],
@@ -753,33 +722,11 @@ class ManifestDB:
             )
             conn.commit()
 
-    def get_runs_since(self, days: int, mode: str | None = None) -> list[dict]:
+    def get_runs_since(self, days: int, mode: str | None = None, *, fy: str) -> list[dict]:
         cutoff = cutoff_iso(days)
-        with self._lock:
-            conn = self._get_conn()
-            if mode:
-                rows = conn.execute(
-                    """SELECT * FROM run_history
-                       WHERE started_at >= ?
-                       AND mode = ?
-                       ORDER BY started_at DESC""",
-                    (cutoff, mode),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """SELECT * FROM run_history
-                       WHERE started_at >= ?
-                       ORDER BY started_at DESC""",
-                    (cutoff,),
-                ).fetchall()
-            return [dict(r) for r in rows]
-
-    def get_runs_between(self, start, end, mode: str | None = None) -> list[dict]:
-        """Runs whose START lies in [start, end), newest first (plan C2). `started_at` is stored
-        as an IST ISO string with its offset, so the bounds are rendered the same way."""
-        lo, hi = start.in_timezone(IST).isoformat(), end.in_timezone(IST).isoformat()
-        sql = "SELECT * FROM run_history WHERE started_at >= ? AND started_at < ?"
-        args: list = [lo, hi]
+        clause, fy_args = self._fy_filter(fy)
+        sql = "SELECT * FROM run_history WHERE started_at >= ?" + clause
+        args: list = [cutoff, *fy_args]
         if mode:
             sql += " AND mode = ?"
             args.append(mode)
@@ -787,21 +734,33 @@ class ManifestDB:
             rows = self._get_conn().execute(sql + " ORDER BY started_at DESC", args).fetchall()
             return [dict(r) for r in rows]
 
-    def last_run(self, mode: str | None = None) -> dict | None:
+    def get_runs_between(self, start, end, mode: str | None = None, *, fy: str) -> list[dict]:
+        """Runs whose START lies in [start, end), newest first (plan C2). `started_at` is stored
+        as an IST ISO string with its offset, so the bounds are rendered the same way."""
+        lo, hi = start.in_timezone(IST).isoformat(), end.in_timezone(IST).isoformat()
+        clause, fy_args = self._fy_filter(fy)
+        sql = "SELECT * FROM run_history WHERE started_at >= ? AND started_at < ?" + clause
+        args: list = [lo, hi, *fy_args]
+        if mode:
+            sql += " AND mode = ?"
+            args.append(mode)
         with self._lock:
-            conn = self._get_conn()
-            if mode:
-                row = conn.execute(
-                    "SELECT * FROM run_history WHERE mode = ? ORDER BY started_at DESC LIMIT 1",
-                    (mode,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM run_history ORDER BY started_at DESC LIMIT 1"
-                ).fetchone()
+            rows = self._get_conn().execute(sql + " ORDER BY started_at DESC", args).fetchall()
+            return [dict(r) for r in rows]
+
+    def last_run(self, mode: str | None = None, *, fy: str) -> dict | None:
+        clause, fy_args = self._fy_filter(fy)
+        sql = "SELECT * FROM run_history WHERE 1 = 1" + clause
+        args: list = [*fy_args]
+        if mode:
+            sql += " AND mode = ?"
+            args.append(mode)
+        with self._lock:
+            row = self._get_conn().execute(
+                sql + " ORDER BY started_at DESC LIMIT 1", args).fetchone()
             return dict(row) if row else None
 
-    def last_successful_run(self, mode: str) -> dict | None:
+    def last_successful_run(self, mode: str, *, fy: str) -> dict | None:
         """Return the last successful run for this mode.
 
         "Successful" is the exact set core.statuses.SUCCESS_STATUSES —
@@ -811,31 +770,42 @@ class ManifestDB:
 
         success = sorted(SUCCESS_STATUSES)
         placeholders = ",".join("?" for _ in success)
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                f"SELECT * FROM run_history WHERE mode = ? AND status IN ({placeholders}) "
+                f"SELECT * FROM run_history WHERE mode = ? AND status IN ({placeholders}){clause} "
                 "ORDER BY started_at DESC LIMIT 1",
-                (mode, *success),
+                (mode, *success, *fy_args),
             ).fetchone()
             return dict(row) if row else None
 
-    def previous_run_status(self, mode: str, run_id: str) -> str | None:
-        """Status of the latest run of this leg other than `run_id`."""
+    def last_successful_run_or_earlier(self, mode: str, *, fy: str) -> dict | None:
+        """The last successful run of `fy`, else the last one of ANY FY. For "when did this leg
+        last work" displays and the overdue base: right after the April switch the new FY has no
+        history yet, and that must not read as "never backed up" (the old FY's success still
+        counts, as it did before the catalog was kept per FY)."""
+        return (self.last_successful_run(mode, fy=fy)
+                or self.last_successful_run(mode, fy=ALL_FYS))
+
+    def previous_run_status(self, mode: str, run_id: str, *, fy: str) -> str | None:
+        """Status of the latest run of this leg (in this FY) other than `run_id`."""
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT status FROM run_history WHERE mode = ? AND run_id != ? "
-                "ORDER BY started_at DESC LIMIT 1", (mode, run_id)).fetchone()
+                f"SELECT status FROM run_history WHERE mode = ? AND run_id != ?{clause} "
+                "ORDER BY started_at DESC LIMIT 1", (mode, run_id, *fy_args)).fetchone()
         return row[0] if row else None
 
-    def previous_run_fault_code(self, mode: str, run_id: str) -> str | None:
-        """core.faults code stored on the latest run of this leg other than `run_id`."""
+    def previous_run_fault_code(self, mode: str, run_id: str, *, fy: str) -> str | None:
+        """core.faults code stored on the latest run of this leg (in this FY) other than `run_id`."""
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT extended_metrics FROM run_history WHERE mode = ? AND run_id != ? "
-                "ORDER BY started_at DESC LIMIT 1", (mode, run_id)).fetchone()
+                f"SELECT extended_metrics FROM run_history WHERE mode = ? AND run_id != ?{clause} "
+                "ORDER BY started_at DESC LIMIT 1", (mode, run_id, *fy_args)).fetchone()
         try:
             metrics = json.loads(row[0]) if row and row[0] else {}
         except ValueError:
@@ -859,19 +829,21 @@ class ManifestDB:
             row = conn.execute(
                 f"SELECT extended_metrics FROM run_history "
                 f"WHERE mode = ? AND status IN ({placeholders}) "
+                "AND fy = ? "
                 "AND json_valid(extended_metrics) "
                 "AND json_extract(extended_metrics, '$.guards.fy') = ? "
                 "ORDER BY started_at DESC LIMIT 1",
-                (mode, *success, fy),
+                (mode, *success, fy, fy),
             ).fetchone()
         return json.loads(row[0])["guards"] if row else None
 
-    def get_recent_runs(self, limit: int = 10) -> list[dict]:
+    def get_recent_runs(self, limit: int = 10, *, fy: str) -> list[dict]:
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
-                "SELECT * FROM run_history ORDER BY started_at DESC LIMIT ?",
-                (limit,),
+                f"SELECT * FROM run_history WHERE 1 = 1{clause} ORDER BY started_at DESC LIMIT ?",
+                (*fy_args, limit),
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -879,10 +851,11 @@ class ManifestDB:
 
     def record_audit(self, data: dict):
         """Persist one integrity-audit execution (upsert on audit_id)."""
-        required = ("audit_id", "mode", "started_at", "status")
+        required = ("audit_id", "mode", "fy", "started_at", "status")
         missing = [k for k in required if k not in data]
         if missing:
             raise KeyError(f"record_audit missing required keys: {missing}")
+        self._need_fy(data["fy"])
         if data["status"] not in (AuditStatus.VERIFIED, AuditStatus.VERIFICATION_FAILED,
                                   AuditStatus.AUDIT_INCOMPLETE, AuditStatus.PENDING_BACKUP):
             raise ValueError(f"invalid audit status: {data['status']!r}")
@@ -890,9 +863,9 @@ class ManifestDB:
             conn = self._get_conn()
             conn.execute(
                 """INSERT INTO integrity_audits
-                   (audit_id, mode, scope, started_at, ended_at, status,
+                   (audit_id, mode, fy, scope, started_at, ended_at, status,
                     files_checked, bytes_checked, mismatches, detail, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(audit_id) DO UPDATE SET
                        ended_at = excluded.ended_at,
                        status = excluded.status,
@@ -903,6 +876,7 @@ class ManifestDB:
                 (
                     data["audit_id"],
                     data["mode"],
+                    data["fy"],
                     data.get("scope", "full"),
                     data["started_at"],
                     data.get("ended_at"),
@@ -916,7 +890,7 @@ class ManifestDB:
             )
             conn.commit()
 
-    def latest_audit(self, mode: str, scope: str | None = None) -> dict | None:
+    def latest_audit(self, mode: str, scope: str | None = None, *, fy: str) -> dict | None:
         """Return the audit row that counts for a mode (and optional scope).
 
         Returns None when no audit has ever run — callers render that as
@@ -928,18 +902,20 @@ class ManifestDB:
         """
         with self._lock:
             conn = self._get_conn()
-            newest = self._newest_audit(conn, mode, scope)
+            newest = self._newest_audit(conn, mode, scope, fy=fy)
             if newest is None or newest["status"] != AuditStatus.AUDIT_INCOMPLETE:
                 return newest
-            verdict = self._newest_audit(conn, mode, scope, statuses.AUDIT_VERDICT_STATUSES)
+            verdict = self._newest_audit(conn, mode, scope, statuses.AUDIT_VERDICT_STATUSES, fy=fy)
             if verdict is not None and verdict["status"] == AuditStatus.VERIFICATION_FAILED:
                 return {**verdict,
                         "newer_incomplete_at": newest.get("ended_at") or newest["started_at"]}
             return newest
 
     @staticmethod
-    def _newest_audit(conn, mode: str, scope: str | None, only_statuses=None) -> dict | None:
-        sql, params = "SELECT * FROM integrity_audits WHERE mode = ?", [mode]
+    def _newest_audit(conn, mode: str, scope: str | None, only_statuses=None, *,
+                      fy: str) -> dict | None:
+        clause, fy_args = ManifestDB._fy_filter(fy)
+        sql, params = "SELECT * FROM integrity_audits WHERE mode = ?" + clause, [mode, *fy_args]
         if scope is not None:
             sql += " AND scope = ?"
             params.append(scope)
@@ -953,18 +929,20 @@ class ManifestDB:
 
     # ── Approvals (plan §6.2) ─────────────────────────────────────────────
 
-    def open_approval_request(self, *, leg: str, blocked_run_id: str, fy: str | None,
+    def open_approval_request(self, *, leg: str, blocked_run_id: str, fy: str,
                               guards: list[dict], phrase: str, created_at: str) -> str:
-        """Record a request for a blocked run; older PENDING ones of the leg
-        are SUPERSEDED (only the latest situation can be approved)."""
+        """Record a request for a blocked run; older PENDING ones of the same leg AND FY
+        are SUPERSEDED (only the latest situation of that folder can be approved; an
+        approval of one FY never replaces or serves another)."""
         from core import approvals as ap
 
+        self._need_fy(fy)
         approval_id = ap.new_approval_id()
         with self._lock:
             conn = self._get_conn()
             with conn:
-                conn.execute("UPDATE approvals SET status = ? WHERE leg = ? AND status = ?",
-                             (ap.SUPERSEDED, leg, ap.PENDING))
+                conn.execute("UPDATE approvals SET status = ? WHERE leg = ? AND fy = ? AND status = ?",
+                             (ap.SUPERSEDED, leg, fy, ap.PENDING))
                 conn.execute(
                     """INSERT INTO approvals (approval_id, leg, blocked_run_id, fy, guards,
                                               phrase, status, created_at)
@@ -1037,13 +1015,14 @@ class ManifestDB:
             conn.execute(
                 """INSERT INTO notifications
                    (event_key, kind, mode, subject, status, error, attempts, created_at,
-                    fault_code, message_id, thread_id, attachments_rung, audience, recipients)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    fault_code, message_id, thread_id, attachments_rung, audience, recipients, fy)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (data["event_key"], data["kind"], data.get("mode"), data.get("subject"),
                  data["status"], data.get("error"), data.get("attempts", 0),
                  data["created_at"], data.get("fault_code"), data.get("message_id"),
                  data.get("thread_id"), data.get("attachments_rung"), data.get("audience"),
-                 json.dumps(data["recipients"]) if data.get("recipients") is not None else None),
+                 json.dumps(data["recipients"]) if data.get("recipients") is not None else None,
+                 data.get("fy")),
             )
             conn.commit()
 
@@ -1149,26 +1128,29 @@ class ManifestDB:
                     "ORDER BY id DESC LIMIT 1", (event_key,)).fetchone()
             return dict(row) if row else None
 
-    def sent_in_mode_after(self, mode: str, after_id: int, *, recovered: bool) -> bool:
+    def sent_in_mode_after(self, mode: str, after_id: int, *, recovered: bool, fy: str) -> bool:
         """Was a RECOVERED (recovered=True) or a problem email (False) of this
-        mode SENT after notification `after_id`? Ends / starts an incident."""
+        mode (and FY) SENT after notification `after_id`? Ends / starts an incident."""
         op = "=" if recovered else "!="
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
                 f"SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
-                f"AND kind {op} 'RECOVERED' LIMIT 1", (mode, after_id)).fetchone()
+                f"AND kind {op} 'RECOVERED'{clause} LIMIT 1", (mode, after_id, *fy_args)).fetchone()
         return row is not None
 
-    def last_open_incident(self, mode: str) -> dict | None:
-        """Newest SENT problem email of this mode with no RECOVERED after it."""
+    def last_open_incident(self, mode: str, *, fy: str) -> dict | None:
+        """Newest SENT problem email of this mode (and FY) with no RECOVERED after it. A
+        RECOVERED mail of one FY never closes the incident of another."""
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT * FROM notifications WHERE mode = ? AND status = 'SENT' "
+                f"SELECT * FROM notifications WHERE mode = ? AND status = 'SENT'{clause} "
                 "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
-                "WHERE mode = ? AND status = 'SENT' AND kind = 'RECOVERED'), 0) "
-                "ORDER BY id DESC LIMIT 1", (mode, mode)).fetchone()
+                f"WHERE mode = ? AND status = 'SENT' AND kind = 'RECOVERED'{clause}), 0) "
+                "ORDER BY id DESC LIMIT 1", (mode, *fy_args, mode, *fy_args)).fetchone()
         return dict(row) if row else None
 
     def notification_by_message_id(self, message_id: str) -> dict | None:
@@ -1283,17 +1265,18 @@ class ManifestDB:
         to the config)."""
         return self._stored_schedule()
 
-    def first_partial_after(self, mode: str, since_iso: str | None) -> str | None:
+    def first_partial_after(self, mode: str, since_iso: str | None, *, fy: str) -> str | None:
         """When the earliest PARTIAL run of this leg after `since_iso` started (None if there is none):
         how long a large upload has been spread over several nights."""
         import pendulum
 
         partial = sorted(statuses.PARTIAL_STATUSES)
         marks = ",".join("?" for _ in partial)
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             rows = self._get_conn().execute(
-                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks})",
-                (mode, *partial)).fetchall()
+                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks}){clause}",
+                (mode, *partial, *fy_args)).fetchall()
         floor = pendulum.parse(since_iso).timestamp() if since_iso else float("-inf")
         found = []
         for (started,) in rows:
@@ -1305,27 +1288,30 @@ class ManifestDB:
                 found.append((ts, started))
         return min(found)[1] if found else None
 
-    def leg_success_after(self, mode: str, after_iso: str) -> bool:
+    def leg_success_after(self, mode: str, after_iso: str, *, fy: str) -> bool:
         """Did a SUCCESSFUL run of this leg start after `after_iso`? (exact SUCCESS_STATUSES)"""
         import pendulum
         from core.statuses import SUCCESS_STATUSES
 
         marks = ",".join("?" for _ in SUCCESS_STATUSES)
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             rows = self._get_conn().execute(
-                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks}) "
-                "ORDER BY started_at DESC LIMIT 20", (mode, *sorted(SUCCESS_STATUSES))).fetchall()
+                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks}){clause} "
+                "ORDER BY started_at DESC LIMIT 20",
+                (mode, *sorted(SUCCESS_STATUSES), *fy_args)).fetchall()
         floor = pendulum.parse(after_iso).timestamp()
         return any(pendulum.parse(r[0]).timestamp() > floor for r in rows)
 
-    def audit_verified_after(self, after_iso: str) -> bool:
-        """Did an integrity audit reach VERIFIED after `after_iso`?"""
+    def audit_verified_after(self, after_iso: str, *, fy: str) -> bool:
+        """Did an integrity audit of this FY reach VERIFIED after `after_iso`?"""
         import pendulum
 
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             rows = self._get_conn().execute(
-                "SELECT created_at FROM integrity_audits WHERE status = 'VERIFIED' "
-                "ORDER BY created_at DESC LIMIT 20").fetchall()
+                f"SELECT created_at FROM integrity_audits WHERE status = 'VERIFIED'{clause} "
+                "ORDER BY created_at DESC LIMIT 20", fy_args).fetchall()
         floor = pendulum.parse(after_iso).timestamp()
         return any(pendulum.parse(r[0]).timestamp() > floor for r in rows)
 
@@ -1336,7 +1322,7 @@ class ManifestDB:
     def watchdog_healthy_at(self) -> str | None:
         return self._meta("watchdog_healthy_at")
 
-    def told_about_leg_since(self, mode: str, since_iso: str) -> bool:
+    def told_about_leg_since(self, mode: str, since_iso: str, *, fy: str) -> bool:
         """True when a failure / action email for this leg was created after `since_iso` and the owner
         therefore already knows: SENT, or SUPPRESSED (only ever written when an earlier mail of the same
         unchanged incident was SENT). FAILED and DISABLED mails told nobody, and the overdue mail
@@ -1345,12 +1331,13 @@ class ManifestDB:
         import pendulum
 
         since = pendulum.parse(since_iso).timestamp()
+        clause, fy_args = self._fy_filter(fy)
         with self._lock:
             rows = self._get_conn().execute(
                 "SELECT created_at FROM notifications WHERE mode = ? AND status IN ('SENT', 'SUPPRESSED') "
                 "AND kind IN ('FAILURE', 'ACTION_REQUIRED') AND event_key NOT LIKE 'stale:%' "
-                "AND COALESCE(audience, 'alerts') IN ('alerts', 'both') "
-                "ORDER BY id DESC LIMIT 200", (mode,)).fetchall()
+                f"AND COALESCE(audience, 'alerts') IN ('alerts', 'both'){clause} "
+                "ORDER BY id DESC LIMIT 200", (mode, *fy_args)).fetchall()
         for (created,) in rows:
             try:
                 if pendulum.parse(created).timestamp() > since:
@@ -1392,6 +1379,36 @@ class ManifestDB:
                 "ORDER BY id DESC LIMIT 1", (mode, cutoff)).fetchone()
             return dict(row) if row else None
 
+    # ── FY overlap activations (v6, plan 5.1): never purged ──────────────────
+
+    def record_activation(self, fy: str, *, activated_at: str, source_path: str,
+                          created_by_app: bool, clock_state: str | None = None) -> bool:
+        """Remember that `fy` started to be backed up early. First write wins (the
+        activation moment never moves); returns False when it was already recorded."""
+        self._need_fy(fy)
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                return conn.execute(
+                    "INSERT OR IGNORE INTO overlap_activations "
+                    "(fy, activated_at, source_path, created_by_app, clock_state) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (fy, activated_at, source_path, int(bool(created_by_app)), clock_state),
+                ).rowcount == 1
+
+    def get_activation(self, fy: str) -> dict | None:
+        self._need_fy(fy)
+        with self._lock:
+            row = self._get_conn().execute(
+                "SELECT * FROM overlap_activations WHERE fy = ?", (fy,)).fetchone()
+        return dict(row) if row else None
+
+    def activations(self) -> list[dict]:
+        with self._lock:
+            rows = self._get_conn().execute(
+                "SELECT * FROM overlap_activations ORDER BY activated_at").fetchall()
+        return [dict(r) for r in rows]
+
     # ── Maintenance ──────────────────────────────────────────
 
     def wal_checkpoint(self):
@@ -1410,7 +1427,7 @@ class ManifestDB:
           * True -> never touched (the run is really in progress);
           * None or no owner (unknown, rows written before owners were
             recorded) -> ABANDONED only after `older_than_hours`.
-        Returns the changed rows ({run_id, mode, status, started_at, error_message}).
+        Returns the changed rows ({run_id, mode, fy, status, started_at, error_message}).
         """
         import pendulum
 
@@ -1420,11 +1437,11 @@ class ManifestDB:
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
-                "SELECT run_id, mode, status, started_at, extended_metrics FROM run_history "
+                "SELECT run_id, mode, status, started_at, extended_metrics, fy FROM run_history "
                 "WHERE status IN ('CLOUD_RUNNING', 'LAN_RUNNING', 'ROLLOVER_RUNNING')"
             ).fetchall()
         changed = []
-        for run_id, mode, status, started_at, metrics in rows:
+        for run_id, mode, status, started_at, metrics, run_fy in rows:
             try:
                 owner = (json.loads(metrics) or {}).get("owner") if metrics else None
             except (ValueError, AttributeError):
@@ -1454,7 +1471,7 @@ class ManifestDB:
                         "WHERE run_id = ? AND status = ?",
                         (new_status, now_iso(), reason, run_id, status))
             if cur.rowcount == 1:   # the run did not finish meanwhile
-                changed.append({"run_id": run_id, "mode": mode, "status": new_status,
+                changed.append({"run_id": run_id, "mode": mode, "fy": run_fy, "status": new_status,
                                 "started_at": started_at, "error_message": reason})
         return changed
 

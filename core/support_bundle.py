@@ -31,6 +31,7 @@ from loguru import logger
 
 from core import faults
 from core.email_compose import _data_safety, exit_meaning, software_version
+from core.manifest import ALL_FYS
 from core.time_utils import IST, format_ist
 
 KINDS_WITH_ATTACHMENTS = frozenset({"FAILURE", "ACTION_REQUIRED", "WARNING"})
@@ -118,7 +119,7 @@ def _settings(config) -> list[str]:
 
 def _last_runs(db, leg: str | None, count: int = 5) -> list[str]:
     try:
-        runs = db.get_recent_runs(50) if db is not None else []
+        runs = db.get_recent_runs(50, fy=ALL_FYS) if db is not None else []
     except Exception:  # noqa: BLE001
         return ["(run history not readable)"]
     rows = [r for r in runs if leg is None or r.get("mode") == leg][:count]

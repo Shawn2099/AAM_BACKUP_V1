@@ -970,31 +970,31 @@ class TestManifestModeGuards:
     @pytest.mark.parametrize("bad", ["users; DROP TABLE file_entries", "LAN", "", "lan_status"])
     def test_bulk_upsert_rejects_bad_mode(self, db, bad):
         with pytest.raises(ValueError):
-            db.bulk_upsert_synced([{"path": "a", "size": 1, "mtime": 0.0}], mode=bad)
+            db.bulk_upsert_synced([{"path": "a", "size": 1, "mtime": 0.0}], mode=bad, fy="FY26-27")
 
     @pytest.mark.parametrize("bad", ["x", "", "cloud_status"])
     def test_clear_mode_status_rejects_bad_mode(self, db, bad):
         with pytest.raises(ValueError):
-            db.clear_mode_status(bad, ["a"])
+            db.clear_mode_status(bad, ["a"], fy="FY26-27")
 
     @pytest.mark.parametrize("bad", ["x", "", "cloud_status"])
     def test_prune_stale_rejects_bad_mode(self, db, bad):
         with pytest.raises(ValueError):
-            db.prune_stale_synced(bad, set())
+            db.prune_stale_synced(bad, set(), fy="FY26-27")
 
     @pytest.mark.parametrize("bad", ["x", "", "lan_status = NULL --"])
     def test_get_synced_paths_rejects_bad_mode(self, db, bad):
         with pytest.raises(ValueError):
-            db.get_synced_paths(bad)
+            db.get_synced_paths(bad, fy="FY26-27")
 
     @pytest.mark.parametrize("bad", ["x", "1=1", "lan_status; --"])
     def test_file_count_rejects_bad_status_field(self, db, bad):
         with pytest.raises(ValueError):
-            db.file_count(bad)
+            db.file_count(bad, fy="FY26-27")
 
     def test_valid_modes_accepted(self, db):
-        db.bulk_upsert_synced([{"path": "a", "size": 1, "mtime": 0.0}], mode="cloud")
-        assert db.file_count("cloud_status") == 1
+        db.bulk_upsert_synced([{"path": "a", "size": 1, "mtime": 0.0}], mode="cloud", fy="FY26-27")
+        assert db.file_count("cloud_status", fy="FY26-27") == 1
 
 
 def test_run_final_backup_lan_partial_guard_is_unreachable():

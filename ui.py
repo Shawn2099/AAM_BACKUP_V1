@@ -37,7 +37,7 @@ from prefect.deployments import arun_deployment
 from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
                   statuses)
 from core.attention import RED, compute_attention, leg_timing
-from core.manifest import ManifestDB
+from core.manifest import ALL_FYS, ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
 
 # In-memory rate limiter, one bucket per kind of action and address (audit
@@ -518,7 +518,7 @@ async def status(request: Request):
 
     db = get_db()
     try:
-        runs = db.get_recent_runs(25)
+        runs = db.get_recent_runs(25, fy=ALL_FYS)
     except Exception:
         return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
 
@@ -584,8 +584,8 @@ async def status(request: Request):
             "nights": _nights(db, "lan", cfg),
         },
         "manifest": {
-            "lan_files": db.file_count("lan_status"),
-            "cloud_files": db.file_count("cloud_status"),
+            "lan_files": db.file_count("lan_status", fy=_configured_fy()),
+            "cloud_files": db.file_count("cloud_status", fy=_configured_fy()),
         },
         "health": await _get_health(),
         "recent_runs": recent_runs
@@ -597,7 +597,7 @@ def _nights(db, mode: str, cfg) -> list[dict]:
     try:
         days = cfg.dashboard.history_nights
         end = pendulum.now(IST).add(days=1).start_of("day")
-        return night_strip.build(db.get_runs_between(end.subtract(days=days), end, mode),
+        return night_strip.build(db.get_runs_between(end.subtract(days=days), end, mode, fy=_configured_fy()),
                                  days=days)
     except Exception as e:  # noqa: BLE001 - the strip is decoration; never break the status call
         logger.warning(f"Night strip could not be built for {mode}: {e}")
@@ -1243,7 +1243,7 @@ async def rollover_status(request: Request):
     journal = _open_rollover_journal()
     if journal is not None:           # an unfinished rollover can always be continued
         state = {**state, "can_run": True, "message": _unfinished_rollover_message(journal)}
-    last = get_db().last_run("rollover")
+    last = get_db().last_run("rollover", fy=ALL_FYS)
     approval = next((a for a in get_db().open_approvals() if a["leg"] == "rollover"), None)
     return {
         "configured_fy": configured, "current_fy": current, **state,
@@ -1341,7 +1341,7 @@ def _backup_first_question(cfg, mode: str) -> str | None:
         for leg in ("lan", "cloud"):
             if mode not in (leg, "all") or not getattr(cfg, leg).enabled:
                 continue
-            last = db.last_successful_run(leg)
+            last = db.last_successful_run_or_earlier(leg, fy=_configured_fy())
             started = last.get("started_at") if isinstance(last, dict) else None
             name = "LAN" if leg == "lan" else "cloud"
             if not started:
@@ -1550,9 +1550,14 @@ def _serve_report(days: int, period: str) -> Response:
 # ── Helpers ──────────────────────────────────────────────────
 
 
+def _configured_fy() -> str:
+    """The configured FY folder (the dashboard shows one card per FY from WP7 on)."""
+    return fy_rollover.effective_fy_prefix(_cfg().paths.source_drive)
+
+
 def _get_last_success(db: ManifestDB, mode: str) -> str | None:
     """Return ended_at timestamp of the last successful run for this mode."""
-    run = db.last_successful_run(mode)
+    run = db.last_successful_run_or_earlier(mode, fy=_configured_fy())
     if run:
         return run.get("ended_at")
     return None
@@ -1565,7 +1570,7 @@ def _integrity_summary(db: ManifestDB, mode: str) -> dict:
     no audit yet reports NOT_VERIFIED (never implied VERIFIED).
     """
     try:
-        audit = db.latest_audit(mode)
+        audit = db.latest_audit(mode, fy=_configured_fy())
     except Exception:
         audit = None
     if not isinstance(audit, dict):
@@ -1601,7 +1606,7 @@ def _status_fields(run: dict) -> dict:
 
 
 def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
-    run = db.last_run(mode)
+    run = db.last_run(mode, fy=_configured_fy())
     if not run:
         return None
     err_msg = run.get("error_message") or ""

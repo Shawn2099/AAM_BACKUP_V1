@@ -135,9 +135,9 @@ def _db_rows(cfg_path: Path):
     from models.config import load_config
     c = load_config(str(cfg_path))
     m = ManifestDB(c.paths.database_path)
-    rows = m.get_recent_runs(10)
-    lan_rows = m.file_count("lan_status")
-    cloud_rows = m.file_count("cloud_status")
+    rows = m.get_recent_runs(10, fy="FY26-26")
+    lan_rows = m.file_count("lan_status", fy="FY26-26")
+    cloud_rows = m.file_count("cloud_status", fy="FY26-26")
     m.close()
     return rows, lan_rows, cloud_rows
 
@@ -559,11 +559,11 @@ def test_w8_report_flows_contain_smtp_outage(pf_rig):
     # one recent run, so the report has content (not the STALE case)
     db = ManifestDB(str(pf_rig["cfg"].paths.database_path))
     now = pendulum.now(IST).isoformat()
-    db.insert_run({"run_id": "w8-seed", "mode": "lan", "started_at": now, "ended_at": now,
+    db.insert_run({"fy": "FY26-26", "run_id": "w8-seed", "mode": "lan", "started_at": now, "ended_at": now,
                    "status": "LAN_COMPLETE"})
     # the monthly report covers the previous calendar month -> seed a run there too
     prev = pendulum.now(IST).start_of("month").subtract(months=1).add(days=14).isoformat()
-    db.insert_run({"run_id": "w8-seed-prev", "mode": "lan", "started_at": prev, "ended_at": prev,
+    db.insert_run({"fy": "FY26-26", "run_id": "w8-seed-prev", "mode": "lan", "started_at": prev, "ended_at": prev,
                    "status": "LAN_COMPLETE"})
     db.close()
 

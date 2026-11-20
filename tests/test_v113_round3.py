@@ -125,14 +125,14 @@ def test_r3_failure_telemetry_empty_when_nothing_ran():
 def test_r3_last_successful_ignores_incomplete(tmp_path):
     from core.manifest import ManifestDB
     db = ManifestDB(str(tmp_path / "m.db"))
-    db.insert_run({"run_id": "a", "mode": "cloud", "started_at": "2026-01-01T00:00:00",
+    db.insert_run({"fy": "FY26-27", "run_id": "a", "mode": "cloud", "started_at": "2026-01-01T00:00:00",
                    "ended_at": "2026-01-01T00:01:00", "status": "INCOMPLETE",
                    "exit_code": 1, "duration_seconds": 1.0})
-    assert db.last_successful_run("cloud") is None
-    db.insert_run({"run_id": "b", "mode": "cloud", "started_at": "2026-01-02T00:00:00",
+    assert db.last_successful_run("cloud", fy="FY26-27") is None
+    db.insert_run({"fy": "FY26-27", "run_id": "b", "mode": "cloud", "started_at": "2026-01-02T00:00:00",
                    "ended_at": "2026-01-02T00:01:00", "status": "CLOUD_COMPLETE",
                    "exit_code": 0, "duration_seconds": 1.0})
-    assert db.last_successful_run("cloud")["run_id"] == "b"
+    assert db.last_successful_run("cloud", fy="FY26-27")["run_id"] == "b"
 
 
 # P3-C: classifier alignment

@@ -68,16 +68,16 @@ def _write_cfg(base: Path, cfg) -> Path:
     return p
 
 
-def _db_rows(cfg_path: Path):
+def _db_rows(cfg_path: Path, fy: str = "FY26-27"):
     from core.manifest import ManifestDB
 
     from models.config import load_config
 
     c = load_config(str(cfg_path))
     m = ManifestDB(c.paths.database_path)
-    rows = m.get_recent_runs(30)
-    lan_rows = m.file_count("lan_status")
-    cloud_rows = m.file_count("cloud_status")
+    rows = m.get_recent_runs(30, fy=fy)
+    lan_rows = m.file_count("lan_status", fy=fy)
+    cloud_rows = m.file_count("cloud_status", fy=fy)
     m.close()
     return rows, lan_rows, cloud_rows
 
@@ -469,16 +469,16 @@ def test_w12_retention_purge_boundaries(sandbox):
         offsets = [0, 1, 89, 90, 91, 365]
         for d in offsets:
             at = now.subtract(days=d)
-            db.insert_run({"run_id": f"r-{d:03d}", "mode": "lan",
+            db.insert_run({"fy": "FY26-27", "run_id": f"r-{d:03d}", "mode": "lan",
                            "started_at": at.isoformat(), "status": "LAN_COMPLETE"})
         # file_entries must survive the run_history purge untouched
-        db.upsert_file_entry("Clients/a.txt", 10, 1700000000.0, lan_status="synced")
-        db.upsert_file_entry("Clients/b.txt", 20, 1700000000.0, cloud_status="synced")
+        db.upsert_file_entry("Clients/a.txt", 10, 1700000000.0, lan_status="synced", fy="FY26-27")
+        db.upsert_file_entry("Clients/b.txt", 20, 1700000000.0, cloud_status="synced", fy="FY26-27")
 
-        before = {r["run_id"] for r in db.get_recent_runs(50)}
+        before = {r["run_id"] for r in db.get_recent_runs(50, fy="FY26-27")}
         db.purge_old_runs(retention_days=90)
-        after = {r["run_id"] for r in db.get_recent_runs(50)}
-        entries = db.file_count("lan_status") + db.file_count("cloud_status")
+        after = {r["run_id"] for r in db.get_recent_runs(50, fy="FY26-27")}
+        entries = db.file_count("lan_status", fy="FY26-27") + db.file_count("cloud_status", fy="FY26-27")
         db.close()
 
     kept = sorted(after)
@@ -504,7 +504,7 @@ def test_w12_retention_purge_boundaries(sandbox):
     with labclock.fake_clock(frozen.add(minutes=1), tick=0.001):
         db = ManifestDB(str(db_path))
         db.purge_old_runs(retention_days=0)
-        left = {r["run_id"] for r in db.get_recent_runs(50)}
+        left = {r["run_id"] for r in db.get_recent_runs(50, fy="FY26-27")}
         db.close()
     if left:
         problems.append(f"retention_days=0 left rows behind: {sorted(left)}")
@@ -588,8 +588,8 @@ def test_w12_seven_day_cycle_through_the_production_flows(w12_rig):
     rows_log: list[str] = []
     problems: list[str] = []
 
-    def _snapshot():
-        rows, lan_rows, cloud_rows = _db_rows(cfg_path)
+    def _snapshot(fy=FY_OLD):
+        rows, lan_rows, cloud_rows = _db_rows(cfg_path, fy)
         return rows, lan_rows, cloud_rows
 
     def _fy_of_cloud():
@@ -684,7 +684,7 @@ def test_w12_seven_day_cycle_through_the_production_flows(w12_rig):
             from models.config import load_config
 
             m = ManifestDB(load_config(str(cfg_path)).paths.database_path)
-            audits = [m.latest_audit("cloud"), m.latest_audit("lan")]
+            audits = [m.latest_audit("cloud", fy="FY26-27"), m.latest_audit("lan", fy="FY26-27")]
             m.close()
             audit_status = [(a["status"] if a else None) for a in audits]
             rows_log.append(f"  weekly audit after night 4: {audit_status}")
@@ -716,7 +716,7 @@ def test_w12_seven_day_cycle_through_the_production_flows(w12_rig):
     # -- then the scheduled rollover fires, and night 8 converges --------------
     with labclock.fake_clock(BOUNDARY.add(minutes=90), tick=0.001):
         result = _flow_call(flow.rollover_check_flow, config_path=str(cfg_path))
-        rows8, _l8, _c8 = _snapshot()
+        rows8, _l8, _c8 = _snapshot(FY_NEW)
 
     from models.config import load_config
 
@@ -730,7 +730,7 @@ def test_w12_seven_day_cycle_through_the_production_flows(w12_rig):
         for i in range(3):
             L.write_file(new_src / f"new_fy_{i}.txt", f"FY{FY_NEW} ledger {i}\n".encode() * 20)
         _flow_backup(flow, cfg_path)[0]
-        rows9, _l9, _c9 = _snapshot()
+        rows9, _l9, _c9 = _snapshot(FY_NEW)
 
     src_new_map = _tree_map(new_src)
     nas_new_map = _tree_map(new_lan)

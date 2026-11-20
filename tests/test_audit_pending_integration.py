@@ -137,7 +137,7 @@ def test_flow_context_uses_the_start_of_the_last_successful_run():
     assert ctx.reference == 1792368000.0
     assert ctx.dest_root == "\\\\nas\\share\\FY26-27" and ctx.source_root == "E:\\FY26-27"
     assert (ctx.max_delete_files, ctx.max_delete_percent) == (500, 10.0)
-    db.last_successful_run.assert_called_once_with("lan")
+    db.last_successful_run.assert_called_once_with("lan", fy="FY26-27")
 
 
 def test_flow_context_has_no_destination_folder_for_the_cloud():

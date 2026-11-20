@@ -328,7 +328,7 @@ def test_w16_lan_flow_random_tree_is_lossless_and_honest(files, sandbox, monkeyp
     # read the run_history row the flow wrote
     from core.manifest import ManifestDB
     db = ManifestDB(str(cfg.paths.database_path))
-    rows = db.get_recent_runs(5)
+    rows = db.get_recent_runs(5, fy="FY26-26")
     db.close()
     status = rows[0]["status"] if rows else "NO_ROW"
 
@@ -389,7 +389,7 @@ def test_w16_cloud_flow_random_tree_is_lossless_and_honest(files, sandbox, monke
 
         from core.manifest import ManifestDB
         db = ManifestDB(str(rig.cfg.paths.database_path))
-        rows = db.get_recent_runs(5)
+        rows = db.get_recent_runs(5, fy="FY26-26")
         db.close()
         status = rows[0]["status"] if rows else "NO_ROW"
 
@@ -909,23 +909,23 @@ def test_w16_backup_repository_record_and_prune():
             {"Path": "Clients/a.txt", "Size": 100, "ModTime": "2026-01-01T00:00:00Z"},
             {"Path": "Clients/b.txt", "Size": 200, "ModTime": "2026-01-01T00:00:00Z"},
         ]
-        record_sync_results(db, "cloud", rclone_entries)
+        record_sync_results(db, "cloud", rclone_entries, fy="FY26-27")
 
         # walk-shaped entries
         walk_entries = [
             {"path": "Clients/c.txt", "size": 300, "mtime": 1700000000.0},
         ]
-        record_sync_results(db, "lan", walk_entries)
+        record_sync_results(db, "lan", walk_entries, fy="FY26-27")
 
-        cloud_count = db.file_count("cloud_status")
-        lan_count = db.file_count("lan_status")
+        cloud_count = db.file_count("cloud_status", fy="FY26-27")
+        lan_count = db.file_count("lan_status", fy="FY26-27")
 
         # prune: remove a cloud entry that no longer exists
-        record_sync_results(db, "cloud", [], removed=["Clients/b.txt"])
-        cloud_after_prune = db.file_count("cloud_status")
+        record_sync_results(db, "cloud", [], removed=["Clients/b.txt"], fy="FY26-27")
+        cloud_after_prune = db.file_count("cloud_status", fy="FY26-27")
 
         # record_run_history must never raise
-        ok = record_run_history(db, run_id="w16-test", mode="cloud",
+        ok = record_run_history(db, run_id="w16-test", mode="cloud", fy="FY26-27",
                                 started_at="2026-01-01T00:00:00+00:00",
                                 ended_at="2026-01-01T00:01:00+00:00",
                                 status="CLOUD_COMPLETE", exit_code=0,
@@ -1128,7 +1128,7 @@ def test_w16_flow_all_mode_records_both_legs(sandbox, monkeypatch):
 
     from core.manifest import ManifestDB
     db = ManifestDB(str(cfg.paths.database_path))
-    rows = db.get_recent_runs(10)
+    rows = db.get_recent_runs(10, fy="FY26-26")
     db.close()
     statuses = [f"{r['mode']}:{r['status']}" for r in rows]
 
@@ -1550,7 +1550,7 @@ def test_w16_ui_email_report_triggers(sandbox, monkeypatch):
     # case 2: runs present but SMTP fails → 500
     from core.manifest import ManifestDB
     db = ManifestDB(str(cfg.paths.database_path))
-    db.insert_run({"run_id": "r1", "mode": "cloud",
+    db.insert_run({"fy": "FY26-27", "run_id": "r1", "mode": "cloud",
                    "started_at": "2026-10-12T18:00:00+05:30",
                    "ended_at": "2026-10-12T18:05:00+05:30",
                    "status": "CLOUD_COMPLETE", "exit_code": 0,

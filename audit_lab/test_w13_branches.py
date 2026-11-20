@@ -1123,7 +1123,7 @@ def test_w13_manifest_run_history_branches(sandbox):
     rows, problems = [], []
 
     def _run(run_id, mode, status, minutes=0):
-        db.insert_run({"run_id": run_id, "mode": mode,
+        db.insert_run({"fy": "FY26-27", "run_id": run_id, "mode": mode,
                        "started_at": f"2026-10-{10 - (minutes // 1440):02d}"
                                      f"T{max(0, 60 - minutes):02d}:00:00+05:30",
                        "status": status})
@@ -1136,14 +1136,14 @@ def test_w13_manifest_run_history_branches(sandbox):
     # duplicate run_id must UPSERT, not duplicate (the DDL has a UNIQUE index and
     # the pre-migration dedup keeps MIN(id) - the dedup that drops rows for M-6)
     _run("r1", "lan", "LAN_PARTIAL", 0)
-    stored = [r["run_id"] for r in db.get_recent_runs(50)]
+    stored = [r["run_id"] for r in db.get_recent_runs(50, fy="FY26-27")]
     rows.append(f"rows after re-inserting run_id r1: {sorted(stored)}")
     if sorted(stored) != ["r1", "r2", "r3", "r4"]:
         problems.append(f"run_id upsert produced {sorted(stored)}")
 
-    last_any = db.last_run()
-    last_lan = db.last_run("lan")
-    last_cloud = db.last_run("cloud")
+    last_any = db.last_run(fy="FY26-27")
+    last_lan = db.last_run("lan", fy="FY26-27")
+    last_cloud = db.last_run("cloud", fy="FY26-27")
     rows.append(f"last_run()={last_any['run_id']} last_run('lan')={last_lan['run_id']} "
                 f"last_run('cloud')={last_cloud['run_id']}")
     if last_lan and last_lan["run_id"] != "r4":
@@ -1155,24 +1155,24 @@ def test_w13_manifest_run_history_branches(sandbox):
     if last_cloud and last_cloud["mode"] != "cloud":
         problems.append(f"mode scoping leaked: last_run('cloud').mode={last_cloud['mode']}")
     # last_successful_run ignores *_FAILED for the same mode
-    succ_lan = db.last_successful_run("lan")
+    succ_lan = db.last_successful_run("lan", fy="FY26-27")
     rows.append(f"last_successful_run('lan')={succ_lan['run_id'] if succ_lan else None} "
                 f"({succ_lan['status'] if succ_lan else None})")
     if succ_lan and succ_lan["run_id"] != "r4":
         problems.append(f"last_successful_run('lan') returned {succ_lan['run_id']}, want r4")
-    succ_none = db.last_successful_run("nonexistent-mode")
+    succ_none = db.last_successful_run("nonexistent-mode", fy="FY26-27")
     if succ_none is not None:
         problems.append(f"last_successful_run('nonexistent-mode') returned {succ_none}")
 
     # wal_checkpoint must not raise or lose data
-    db.upsert_file_entry("Clients/a.txt", 1, 1.0, lan_status="synced")
+    db.upsert_file_entry("Clients/a.txt", 1, 1.0, lan_status="synced", fy="FY26-27")
     db.wal_checkpoint()
-    if db.file_count("lan_status") != 1:
+    if db.file_count("lan_status", fy="FY26-27") != 1:
         problems.append("wal_checkpoint lost file_entries rows")
 
     # ---- retention is covered by W12.purge_retention; here only the call path
     db.purge_old_runs(retention_days=365)
-    if len(db.get_recent_runs(50)) != 4:
+    if len(db.get_recent_runs(50, fy="FY26-27")) != 4:
         problems.append("purge_old_runs(365) removed rows it should have kept")
     db.close()
 
@@ -1209,7 +1209,7 @@ def test_w13_record_run_history_failure_is_loud(sandbox):
     sink = logger.add(lambda m: captured.append((m.record["level"].name, m.record["message"])),
                       level="DEBUG")
     try:
-        ok = record_run_history(_BrokenDB(), run_id="r-broken", mode="lan",
+        ok = record_run_history(_BrokenDB(), run_id="r-broken", mode="lan", fy="FY26-27",
                                 started_at="2026-10-10T01:00:00+05:30",
                                 ended_at="2026-10-10T01:00:05+05:30",
                                 status="LAN_COMPLETE", exit_code=1,
@@ -1244,10 +1244,12 @@ def test_w13_record_run_history_failure_is_loud(sandbox):
 
 
 def test_w13_legacy_schema_migration(sandbox):
-    """A pre-versioning database is migrated on open and stamped."""
+    """v6 rule (plan FY overlap D-7): a database of another schema version is REFUSED
+    (ManifestSchemaError) and left unchanged; a fresh database is created complete and stamped."""
     import sqlite3
 
-    from core.manifest import SCHEMA_VERSION, ManifestDB
+
+    from core.manifest import SCHEMA_VERSION, ManifestDB, ManifestSchemaError
 
     db_path = sandbox / "runtime" / "legacy.db"
     conn = sqlite3.connect(str(db_path))
@@ -1262,29 +1264,50 @@ def test_w13_legacy_schema_migration(sandbox):
     conn.commit()
     conn.close()
 
-    db = ManifestDB(str(db_path))
-    cols = {r[1] for r in db._get_conn().execute("PRAGMA table_info(run_history)").fetchall()}
-    version = db._get_conn().execute("PRAGMA user_version").fetchone()[0]
-    db.insert_run({"run_id": "post-migration", "mode": "lan",
-                   "started_at": "2026-10-10T01:00:00+05:30", "status": "LAN_COMPLETE"})
-    rows = [r["status"] for r in db.get_recent_runs(10)]
-    db.close()
+    def _snapshot():
+        c = sqlite3.connect(str(db_path))
+        try:
+            return (c.execute("PRAGMA user_version").fetchone()[0],
+                    c.execute("SELECT name, sql FROM sqlite_master ORDER BY name").fetchall())
+        finally:
+            c.close()
 
+    before = _snapshot()
     problems = []
-    if "extended_metrics" not in cols:
-        problems.append(f"extended_metrics was not added: {sorted(cols)}")
+    refused = None
+    db = ManifestDB(str(db_path))
+    try:
+        db._get_conn()
+    except ManifestSchemaError as e:
+        refused = str(e)
+    finally:
+        db.close()
+    if refused is None:
+        problems.append("an old-version database was opened instead of refused")
+    if _snapshot() != before:
+        problems.append("the refused old-version database file was changed")
+
+    fresh_path = sandbox / "runtime" / "fresh.db"
+    fresh = ManifestDB(str(fresh_path))
+    cols = {r[1] for r in fresh._get_conn().execute("PRAGMA table_info(run_history)").fetchall()}
+    version = fresh._get_conn().execute("PRAGMA user_version").fetchone()[0]
+    fresh.insert_run({"run_id": "fresh-1", "mode": "lan", "fy": "FY26-27",
+                      "started_at": "2026-10-10T01:00:00+05:30", "status": "LAN_COMPLETE"})
+    rows = [r["status"] for r in fresh.get_recent_runs(10, fy="FY26-27")]
+    fresh.close()
+    if "extended_metrics" not in cols or "fy" not in cols:
+        problems.append(f"fresh db lacks columns: {sorted(cols)}")
     if version != SCHEMA_VERSION:
         problems.append(f"user_version={version}, want {SCHEMA_VERSION}")
     if rows != ["LAN_COMPLETE"]:
-        problems.append(f"insert after migration returned {rows}")
+        problems.append(f"insert into a fresh db returned {rows}")
 
     L.record("W13.legacy_schema_migration",
-              "opening a pre-versioning manifest.db runs the version-gated migration "
-              "once: the extended_metrics column is added, user_version is stamped to "
-              f"{SCHEMA_VERSION}, and inserts work afterwards",
-              f"columns after migration: {sorted(cols)}\nuser_version={version}\n"
-              f"post-migration insert: {rows}",
-              "OK - the legacy migration is complete and idempotent"
+              "v6 has no migration: an old-version manifest.db is refused with ManifestSchemaError and "
+              f"left unchanged; a fresh database has every column and is stamped {SCHEMA_VERSION}",
+              f"refusal: {refused!r}\nfresh columns: {sorted(cols)}\nuser_version={version}\n"
+              f"fresh insert: {rows}",
+              "OK - old files refused untouched, fresh files complete"
               if not problems else f"ISSUE - {problems[:3]}")
     print(f"[W13.9c] version={version} problems={problems[:3]}")
     assert not problems, problems[:3]

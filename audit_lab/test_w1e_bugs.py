@@ -140,9 +140,9 @@ def test_w1e_bug2_cloud_no_changes_gate_failure_records_success(sandbox, monkeyp
 
     from core.manifest import ManifestDB
     m = ManifestDB(str(db))
-    recent = m.get_recent_runs(10)
-    last_run_row = m.last_run("cloud")
-    last_success = m.last_successful_run("cloud")
+    recent = m.get_recent_runs(10, fy="FY26-27")
+    last_run_row = m.last_run("cloud", fy="FY26-27")
+    last_success = m.last_successful_run("cloud", fy="FY26-27")
     m.close()
 
     status = recent[0]["status"] if recent else "<no row>"
@@ -190,8 +190,8 @@ def test_w1e_bug2_lan_post_phase_exception_records_complete(sandbox, monkeypatch
 
     from core.manifest import ManifestDB
     m = ManifestDB(str(db))
-    recent = m.get_recent_runs(10)
-    last_success = m.last_successful_run("lan")
+    recent = m.get_recent_runs(10, fy="FY26-27")
+    last_success = m.last_successful_run("lan", fy="FY26-27")
     m.close()
 
     status = recent[0]["status"] if recent else "<no row>"
@@ -300,7 +300,7 @@ def test_w1e_two_processes_concurrent_db_writes(sandbox):
         try:
             m = ManifestDB(db, busy_timeout_ms=8000)
             for i in range(25):
-                m.insert_run({"run_id": f"{tag}-{i}", "mode": "cloud",
+                m.insert_run({"fy": "FY26-27", "run_id": f"{tag}-{i}", "mode": "cloud",
                               "started_at": "2026-09-06T18:00:00+05:30", "status": "CLOUD_COMPLETE"})
             m.close()
         except Exception as e:
@@ -312,7 +312,7 @@ def test_w1e_two_processes_concurrent_db_writes(sandbox):
     t1.start(); t2.start(); t1.join(); t2.join()
 
     m = ManifestDB(db)
-    rows = len(m.get_recent_runs(100))
+    rows = len(m.get_recent_runs(100, fy="FY26-27"))
     m.close()
     L.record("LOCK.db_concurrency",
              "concurrent writers on manifest.db are serialised (DDL phase + inserts)",
@@ -331,7 +331,7 @@ def test_w1e_two_processes_concurrent_db_writes(sandbox):
         try:
             m = ManifestDB(db2, busy_timeout_ms=8000)
             for i in range(25):
-                m.insert_run({"run_id": f"{tag}-{i}", "mode": "cloud",
+                m.insert_run({"fy": "FY26-27", "run_id": f"{tag}-{i}", "mode": "cloud",
                               "started_at": "2026-09-06T18:00:00+05:30", "status": "CLOUD_COMPLETE"})
             m.close()
         except Exception as e:
@@ -341,7 +341,7 @@ def test_w1e_two_processes_concurrent_db_writes(sandbox):
     t2 = threading.Thread(target=_writer2, args=("B",))
     t1.start(); t2.start(); t1.join(); t2.join()
     m = ManifestDB(db2)
-    rows2 = len(m.get_recent_runs(100))
+    rows2 = len(m.get_recent_runs(100, fy="FY26-27"))
     m.close()
     L.record("LOCK.db_concurrency.inserts_only",
              "concurrent INSERT-only writers are serialised",

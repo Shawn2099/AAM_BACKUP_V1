@@ -54,12 +54,12 @@ def _cfg():
 
 def _fresh_runs(db):
     for rid, mode, st in (("c", "cloud", "CLOUD_COMPLETE"), ("l", "lan", "LAN_COMPLETE")):
-        db.insert_run({"run_id": rid, "mode": mode, "started_at": _ago(1), "ended_at": _ago(1),
+        db.insert_run({"fy": "FY26-27", "run_id": rid, "mode": mode, "started_at": _ago(1), "ended_at": _ago(1),
                        "status": st})
 
 
 def _record(db, leg="lan", status="PENDING_BACKUP", hours=2, detail="46 files wait"):
-    db.record_audit({"audit_id": f"{leg}-{status}", "mode": leg, "started_at": _ago(hours),
+    db.record_audit({"fy": "FY26-27", "audit_id": f"{leg}-{status}", "mode": leg, "started_at": _ago(hours),
                      "status": status, "detail": detail, "created_at": _ago(hours)})
 
 
@@ -71,12 +71,12 @@ def test_pending_backup_is_an_audit_status():
 
 def test_record_audit_accepts_pending_backup(db):
     _record(db)
-    assert db.latest_audit("lan")["status"] == "PENDING_BACKUP"
+    assert db.latest_audit("lan", fy="FY26-27")["status"] == "PENDING_BACKUP"
 
 
 def test_record_audit_still_rejects_unknown_status(db):
     with pytest.raises(ValueError):
-        db.record_audit({"audit_id": "x", "mode": "lan", "started_at": _ago(1), "status": "MAYBE"})
+        db.record_audit({"fy": "FY26-27", "audit_id": "x", "mode": "lan", "started_at": _ago(1), "status": "MAYBE"})
 
 
 # ── the flow: no email, no failure ─────────────────────────────────────────
@@ -144,7 +144,7 @@ def test_pending_backup_is_a_small_amber_note_not_red(db):
 def test_pending_note_clears_when_a_later_check_passes(db):
     _fresh_runs(db)
     _record(db, "lan", hours=3)
-    db.record_audit({"audit_id": "later", "mode": "lan", "started_at": _ago(1),
+    db.record_audit({"fy": "FY26-27", "audit_id": "later", "mode": "lan", "started_at": _ago(1),
                      "status": "VERIFIED", "created_at": _ago(1)})
     assert compute_attention(db, _cfg()) == []
 

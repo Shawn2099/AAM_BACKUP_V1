@@ -239,8 +239,8 @@ def test_w5b_crash_then_recovery(sandbox):
         ls.build_robocopy_command = orig
 
     m = ManifestDB(db_path)
-    runs = m.get_recent_runs(5)
-    rows = m.file_count("lan_status")
+    runs = m.get_recent_runs(5, fy="FY26-26")
+    rows = m.file_count("lan_status", fy="FY26-26")
     m.close()
     on_nas = len([p for p in dest.rglob("*.txt")])
 
@@ -299,7 +299,7 @@ def test_w5b_double_trigger(sandbox, monkeypatch):
     from core.manifest import ManifestDB
 
     m = ManifestDB(cfg.paths.database_path)
-    runs = m.get_recent_runs(5)
+    runs = m.get_recent_runs(5, fy="FY26-26")
     m.close()
     L.record("W5b.double_trigger",
              "two simultaneous LAN runs are serialised by the lock, not interleaved",

@@ -153,6 +153,7 @@ class TestCloudRecordTask:
         mock_db = MagicMock()
         mock_db_cls.from_config.return_value = mock_db
         config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
         verify_data = {
             "manifest": [{"Path": "a.txt", "Size": 100, "ModTime": 1.0}],
             "diff": {"removed": ["old.txt"]},
@@ -237,6 +238,7 @@ class TestLanRecordTask:
         mock_db = MagicMock()
         mock_db_cls.from_config.return_value = mock_db
         config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
         # snapshot_to_dict returns {path: (size, mtime)} tuples
         before = {"old.txt": (100, 1.0)}
         after = {"new.txt": (200, 2.0)}
@@ -282,6 +284,7 @@ class TestRecordRun:
         mock_db = MagicMock()
         mock_db_cls.from_config.return_value = mock_db
         config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
         _record_run(config, "run-1", "cloud", "2026-01-01T00:00:00Z",
                     "CLOUD_COMPLETE", 0, None)
         mock_db_cls.from_config.assert_called_once_with(config)
@@ -295,7 +298,9 @@ class TestRecordRun:
     def test_logs_critical_when_run_history_not_persisted(self, mock_record, mock_logger, mock_db_cls):
         mock_db = MagicMock()
         mock_db_cls.from_config.return_value = mock_db
-        _record_run(MagicMock(), "run-1", "cloud", "2026-01-01T00:00:00Z",
+        config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
+        _record_run(config, "run-1", "cloud", "2026-01-01T00:00:00Z",
                     "CLOUD_COMPLETE", 0, None)
         mock_logger.critical.assert_called_once()
         mock_db.close.assert_called_once()

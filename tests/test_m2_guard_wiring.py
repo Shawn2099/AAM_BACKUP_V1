@@ -83,7 +83,7 @@ def test_max_delete_allowance_matches_g3(dest, files, pct):
 
 def _row(db, run_id, status, started, guards=None, mode="lan"):
     em = json.dumps({"guards": guards}) if guards is not None else None
-    db.insert_run({"run_id": run_id, "mode": mode, "started_at": started,
+    db.insert_run({"fy": (guards or {}).get("fy", "FY26-27"), "run_id": run_id, "mode": mode, "started_at": started,
                    "ended_at": started, "status": status, "exit_code": 0,
                    "extended_metrics": em})
 

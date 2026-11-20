@@ -31,6 +31,7 @@ class TestGenerateReportHtml:
         populated_db.insert_run({
             "run_id": "r1",
             "mode": "cloud",
+            "fy": "FY26-27",
             "status": "CLOUD_COMPLETE",
             "started_at": _recent_iso(),
             "ended_at": _recent_iso(),
@@ -47,6 +48,7 @@ class TestGenerateReportHtml:
         populated_db.insert_run({
             "run_id": "r2",
             "mode": "lan",
+            "fy": "FY26-27",
             "status": "LAN_COMPLETE",
             "started_at": _recent_iso(),
             "ended_at": _recent_iso(),
