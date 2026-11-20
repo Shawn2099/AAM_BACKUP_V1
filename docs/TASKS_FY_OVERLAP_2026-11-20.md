@@ -40,7 +40,7 @@
   baseline shows its deprecation warning for httpx - it must be gone). `httpx` stays only for Prefect. Test first: the
   existing watchdog / launch health tests point at the httpx2 path. Done when: no project file imports `httpx`
   directly and the Starlette httpx deprecation warning no longer appears in the suite.
-- [ ] **OV-0.5 Audit lab** with a clean `PREFECT_HOME` (`tools\run_audit_lab.ps1`); fix upgrade-caused failures.
+- [x] **OV-0.5 Audit lab** with a clean `PREFECT_HOME` (`tools\run_audit_lab.ps1`); fix upgrade-caused failures.
   Done when: green except the known intentional red.
 - [ ] **OV-0.6 rclone 1.76.** Read the 1.75 / 1.76 changelogs (exit codes, `--use-json-log`, `check`, `--max-delete`);
   replace `deploy\bin\rclone.exe`; rerun the audit-lab cloud waves. Done when: green, changelog notes in the commit.
