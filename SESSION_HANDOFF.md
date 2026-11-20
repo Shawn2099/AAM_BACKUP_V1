@@ -1,6 +1,6 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-22 (see the 2026-10-22 block right below - it is newest and wins; older text follows). 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
+**Last updated:** 2026-11-21 (see the 2026-11-21 FY overlap block below - it is newest and wins; older text follows). 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
 UI + email audit and rebuild - see §4f; rclone exit codes +
 bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
 **Box not redeployed with §4d / §4e / §4f** (box is at 6adcfb2; owner decides). §4f adds schema
@@ -10,29 +10,42 @@ on deploy day (see §4f).
 
 ---
 
-## >>> 2026-11-20 - FY OVERLAP: BUILD IN PROGRESS (newest, overrides below) <<<
+## >>> 2026-11-21 - FY OVERLAP: BUILT, BOX DEPLOY AND OWNER ITEMS OPEN (newest, overrides below) <<<
 
-**WORK BRANCH: `fy-overlap` (pushed to origin; from mvp-hardening 968b6b4). WP0 + WP1 DONE (WP1 = commit 767cd98: schema v6, fy everywhere, OV-1.1..1.5 ticked; unit suite green). NEXT: WP2 starting at OV-2.1 (config keys), then OV-2.2 `core/fy_overlap.py`. Lessons: (a) record_notification rows have fy NULL until OV-4.1, so FY-less incident / told_about lookups use ALL_FYS; (b) test fakes of ManifestDB need `fy` kwargs; (c) real GCS may be used in the final box runs (test prefixes only). Tests were fixed by Sonnet agents in disjoint file groups.** **DEPLOY GATE: do NOT deploy `fy-overlap` to the box or merge it to main before WP3 is done (WP2 announces backups of the next FY that no pipeline performs yet). WP0, WP1, WP2 (+ OV-5.1, OV-10.2, OV-3.5 run-folder part) DONE and pushed (fy-overlap e071d7d, unit suite 3321 passed); NEXT: WP3 orchestration OV-3.1..3.6 in flow.py (high risk: Opus review before committing 3.1 + 3.4; design: slot held once per leg, folder loop new-first, shared budget, one NAS wake/shutdown, run id <flow run>-<leg>-<fy>).** **BUILD STATUS (owner gave the go 2026-11-20): WP0 DONE (OV-0.1..0.6 ticked, commits c393b0b..681e7d8). NEXT: OV-1.1 (schema v6; test file `tests/test_ov1_schema_v6.py` is drafted, untracked, fails on old code).** WP0 result: all minors upgraded (prefect 3.9.4, fastapi 0.150.0 because Prefect caps <0.151, certifi 2026.10.23), httpx2 in our code + TestClient, rclone 1.76.0 in deploy/bin; unit suite 3055 passed / 18 skipped; full audit lab 248 passed; rclone waves on 1.76 42 passed. Opus review: no blocker; carried-forward items are in the task list's "Found while building" (Prefect DB backup before box deploy; real GCS check on rclone 1.76 at OV-11.3/11.4).
+**Branch `fy-overlap` (from mvp-hardening 968b6b4). Built and committed: WP0-WP9 (upgrade + httpx2, schema v6, active set / activation / siblings,
+orchestration, alerts + approvals + closed FY, guards, overdue / watchdog, dashboard, audit, reports), OV-10.2 (readiness probes), OV-10.3 (validator),
+OV-11.1 (audit-lab scenario `audit_lab/test_w25_fy_overlap.py`), OV-11.5 (rehearsal `tools/fy_overlap_rehearsal.py`). Last commit 0c22da1. The
+task list `docs/TASKS_FY_OVERLAP_2026-11-20.md` is the truth (ticks); OV-11.2 (docs: ARCHITECTURE section 3.4 / 4 / 10 + this block) is this update.**
+**Not deployed: the trial box still runs 9461ac2 (2026-10-23). Do not merge to main before the box deploy and the owner's OK.**
 
+**OPEN (in order):**
+1. **OV-10.1** `upload_fy.py` / `restore.py` must refuse every active FY (tests R-20). Those files hold the OWNER'S uncommitted restore / upload work: coordinate, needs the owner's OK before touching them.
+2. **OV-11.3** trial box rights test: create / delete a test folder next to `E:\FY26-27` and in the NAS share root as the service account (`deploy/probe_service_account.py`, `04_check_readiness.ps1`), plus the cloud bucket check on rclone 1.76.0.
+3. **OV-11.4** trial-box deploy (see runbook below), then watch the next LAN and cloud runs. Optional before it: `python tools/fy_overlap_rehearsal.py` (dry run) and `--execute` (test years FY90-91 / FY91-92 only).
+4. **OV-12.1** GCS lifecycle: never ARCHIVE an active FY prefix (current + early), keep the noncurrent-version rules; review with the owner; apply with `gcloud storage buckets update --lifecycle-file`; verify with `describe`. `deploy/gcs_lifecycle.json` is the git version (the owner's staged variant was in an old session scratchpad, may be gone).
 
-New business rule: US clients use the NEXT FY folder from 1 January, Indian clients from 1 April, so from 1 Jan until
-the April switch BOTH folders are backed up (each FY folder is backed up for 15 months).
-- Plan (FINAL, rev 4): `docs/PLAN_FY_OVERLAP_2026-11-20.md`. Tasks (follow in order, tick per commit):
-  `docs/TASKS_FY_OVERLAP_2026-11-20.md`. Tooling audit (keep Prefect; certifi security fix; httpx2 for our own calls):
-  `docs/AUDIT_TOOLING_2026-11-20.md`.
-- **No coding until the owner says go.** First task when he does: OV-0.1 (baseline) then WP0 (upgrade all minors first).
-  The build prompt for a new session is `docs/PROMPT_FY_OVERLAP_BUILD.md` (model policy: Sonnet builds, Haiku chores,
-  Opus verifies).
-- Baseline 2026-11-20 on the current versions (HEAD 9368cf9 + the owner's uncommitted restore/upload work):
-  unit suite **3055 passed, 18 skipped**, 1 warning (Starlette: TestClient with httpx deprecated -> httpx2).
-- **GitHub repo `Shawn2099/AAM_BACKUP_V1` is PUBLIC** and this file's pushed history contains the temporary NAS /
-  service-account password from 2026-10-20: rotate it (NAS + box), consider making the repo private; scan for secrets
-  before every push.
-- The owner's uncommitted restore / upload work (core/restore.py, core/upload.py, restore.py, upload_fy.py, their tests,
-  docs/RESTORE_CLOUD.md, tools/server_health/README.md) is NOT ours - never commit it with our tasks.
-- `deploy/gcs_lifecycle.json` was reset to the git version on the owner's instruction (his staged variant: session
-  scratchpad copy `gcs_lifecycle.staged-2026-11-20.json`, may be gone); lifecycle is task OV-12.1.
-- Old FY plans moved to `docs/archive/`; `docs/AUDIT_MULTI_FY_2026-11-18.md` deleted (superseded).
+**Deploy runbook notes (OV-11.4):**
+- No backup running (Prefect slot `aam-backup` free, no `backup.lock`). Stop AamWatchdog, then AamBackupAgent (and AamPrefectServer for the DB copy).
+- **Back up the Prefect server DB first**: `<PREFECT_HOME>/prefect.db` + `-wal` / `-shm` with the services stopped. Prefect 3.7.2 -> 3.9.4 runs alembic migrations at server start; there is no way back without the copy. No script does it yet.
+- **Fresh manifest DB**: rename `manifest.db` + `-wal` / `-shm` (schema v6 refuses an older file, never migrates). Keep the renamed files. History starts empty.
+- **First-run approvals (I2)**: with a fresh DB there is no baseline for any (leg, FY), so the FIRST night of each leg becomes BLOCKED + an approval if any file was deleted since the last backup (plan 5.5 as written). Tell the office; approve on the dashboard.
+- **Mail subject label**: every per-leg mail subject is now `[Firm Backup] [FY26-27] FAILURE: ...`; fix any mail rule that matches `[Firm Backup] FAILURE`. Per-leg alert keys change series at deploy: at most one extra mail per OPEN problem, outside the old thread.
+- Deploy with the git bundle recipe (see the 2026-10-22 block), start AamBackupAgent then AamWatchdog, check `/health`, `/status` has `folders[]`. The first real cloud run on rclone 1.76.0 with the real GCS backend + DPAPI key path is NOT proven by the lab (local remotes only): watch it.
+- Before the deploy check the real `lan_destination`: a NAS path that IS the FY folder (`\\nas\FY26-27`, share root) now fails to load while LAN + overlap are on (OV-10.3).
+
+**Found while building, for the owner (full text at the bottom of the task list):**
+- WP0: Prefect DB backup before deploy (above); rclone 1.76 proven on local remotes only (above); transitive majors with Prefect 3.9.4 (apprise 1->2, cyclopts 4->5, redis 7->8, python-slugify 8->9, pywin32 311->312); httpx2 2.16.2 is only 4 days old (adds httpcore2, truststore, httpx2-jsfetch); 9 SyntaxWarnings in old tests; `test_launch_comprehensive` + `test_p2_sched_pause` fail when run as only those two files in that order (same on old code).
+- OV-2.3..2.5: (1) a link / junction replacing an early folder AFTER activation is not caught by pre-flight (`health.source_drive_fault` checks only exists / iterdir); (2) the clock-unproven activation alert reuses AAM-ROL-03, parent-missing / link deferrals have no fault code (a dedicated code + EMAIL_CONTENT_SPEC row would be cleaner); (3) old fault text AAM-ROL-06 no longer fits.
+- WP2 review: (2) deviation needing the owner's nod: the misnamed-folder alarm fires only for a name pointing NEWER than the configured year ('FY25-26 old', 'FY26-27 - Copy' ignored); (3) `core/audit_pending.py` keeps the plain percentage tripwire for pending deletes (9-file folder, 1 delete = 11 %): align with the small-folder rule; (4) `alerts.stale_repeat_hours` 24 vs a daily 06:00 check can suppress a sibling mail every other day; (5) per-key incidents for `overlap:*` keys (a RECOVERED of one `rollover_files` key restarts another's incident); (6) a config hand-edited to the next FY in March drops the old FY silently.
+- WP3 review open: N-2 the `nas_shutdown` attention item reads the configured FY's row (a manual early-FY LAN run does not show it); N-5 a late scheduled run whose second folder is MISSED gets the 'scheduled X h before' text.
+- WP4 review nit: the FY appears twice in some `overlap:*` subjects.
+- WP5-WP9 review, left for the owner: I2 first-night approvals after a fresh DB (above); OV-10.3 share-root path (above); N1 the audit can leave a NAS it woke switched on with no attention item; N3 small-folder allowance can exceed a tiny folder (D-11 accepted); N5 after a JUMP rollover the closed FY's scheduled count runs to the period end (inflated only); N6 switching overlap off mid-window hides a PENDING early-FY approval from the banner; N7 the `_active_fys` fallback mail text says "backed up" even when the audit called it; N8 the second folder's card can show idle between folders.
+
+**Facts for the next session:** notification rows written before OV-4.1 have fy NULL; test fakes of `ManifestDB` need `fy` kwargs; real GCS may be used in final box runs (test prefixes only). Recorded results: WP0 unit suite 3055 passed / 18 skipped, audit lab 248 passed on the upgraded versions; WP2 unit suite 3321 passed (later counts: commit messages). The owner's uncommitted restore / upload work (core/restore.py, core/upload.py, restore.py, upload_fy.py, their tests, docs/RESTORE_CLOUD.md, tools/server_health/README.md) is NOT ours: never commit it with our tasks.
+
+New business rule: US clients use the NEXT FY folder from 1 January, Indian clients from 1 April, so from 1 Jan until the April switch BOTH folders are backed up (each FY folder is backed up for 15 months). Architecture: `docs/ARCHITECTURE.md` section 3.4.
+- Plan (FINAL, rev 4): `docs/PLAN_FY_OVERLAP_2026-11-20.md`. Tasks: `docs/TASKS_FY_OVERLAP_2026-11-20.md`. Tooling audit: `docs/AUDIT_TOOLING_2026-11-20.md`. Old FY plans are in `docs/archive/`.
+- **GitHub repo `Shawn2099/AAM_BACKUP_V1` is PUBLIC** and its pushed history contains a temporary NAS / service-account password from 2026-10-20: the owner should rotate it (NAS + box) and consider making the repo private; scan for secrets before every push.
 
 ## >>> 2026-10-23 - FRESH-INSTALL WORK + OPEN ITEMS (newest of the newest) <<<
 

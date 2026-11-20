@@ -163,7 +163,7 @@
 
 - [x] **OV-11.1** Audit-lab scenario: 15-month fake clock (Dec → Jan activation → Apr switch → next Jan), both legs,
   the audit, real robocopy / rclone. Green.
-- [ ] **OV-11.2** `docs/ARCHITECTURE.md` (flow, gates, decision points) and `SESSION_HANDOFF.md` updated.
+- [x] **OV-11.2** `docs/ARCHITECTURE.md` (flow, gates, decision points) and `SESSION_HANDOFF.md` updated.
 - [ ] **OV-11.3** Trial box: folder-creation rights test (create / delete a test folder next to `E:\FY26-27` and in
   the NAS share root as the service account).
 - [ ] **OV-11.4** Trial-box deploy: no backup running; stop watchdog → agent; rename `manifest.db` + `-wal` / `-shm`;

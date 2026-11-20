@@ -68,7 +68,7 @@ All backup-type work (cloud, LAN, audit) takes ONE global slot: Prefect concurre
 
 ## 3. The nightly backup, step by step
 
-### 3.1 Entry: `flow.backup(config_path, mode)`
+### 3.1 Entry: `flow.backup(config_path, mode, fy=None)`
 
 ```
 backup(mode)
@@ -106,7 +106,16 @@ each FY folder is backed up for 15 months (its own 12 plus January-March before 
 | Siblings | `fy_overlap.sibling_findings`, `flow._alarm_siblings` (daily 06:00) | a misnamed FY-looking folder pointing at a newer year, or a canonical newer FY with real files that is not active -> ACTION REQUIRED; past years and `rollover.sibling_ignore` are ignored; unreadable folders never produce a false RESOLVED |
 | Small folders | `guards.max_delete_allowance`, `g2_source_shrink` | below `guards.small_folder_files` (100) the percentage limits are replaced by `guards.small_folder_max_deletes` (10); one function for G3 and the rclone `--max-delete` backstop; explicit 0 % and an empty destination stay blocked |
 | Database | `core/manifest.py` schema v6 | `fy` on `file_entries` (`UNIQUE(fy, relative_path)`), `run_history`, `integrity_audits`, `notifications`, `approvals`; table `overlap_activations`; every per-FY reader takes `fy` with no default (`ALL_FYS` = explicit "every FY"); an older database file is refused ("rename it, start fresh"), never migrated |
-| Approvals | `flow.backup` | until approvals are per FY (OV-4.3) an approved re-run only touches the configured FY |
+| Approvals | `core/approvals.evaluate_approval`, `ManifestDB` approvals, `flow.backup(fy=)` | an approval belongs to ONE (leg, FY): superseding is per (leg, FY), `evaluate_approval` needs `approval.fy == run fy` (the 500-vs-400-deletes case of another FY is refused), the dashboard re-run passes the approval's `fy` to the backup deployments only (`rollover_check_flow` has no `fy`). A re-run with an approval id but no `fy` touches only the configured FY |
+| First run of a leg in an FY | `guards.g3_mass_delete(first_run=...)` via `flow` (`first_run = not baseline`) | no successful baseline for (leg, FY) and planned deletes > 0 -> a DECISION (`*_BLOCKED` + approval): a filled `gs://bucket/FY27-28` or NAS folder is never trimmed unasked |
+| Closed FY at the switch | `flow._close_old_fy` -> `ManifestDB.close_fy` (called whenever the rollover's `config_switch` step is finished) | the closed FY's open approval requests become CLOSED ("FY closed"), its open incidents end silently (no RESOLVED mail); history stays; its approvals can no longer run (`backup(fy=)` needs an active FY). The final-backup G3 -> G6 two-approval path still works |
+| Alerts and incidents | `AlertEvent.fy`, `core/email_compose.compose`, `core/notify` | keys `backup:<fy>:<leg>:<status>`, `blocked:`, `missed:`, `recovered:`, `stale:`, `audit:<fy>:<mode>:...`, abandoned-run key carry the FY; per-leg subjects get `[FY27-28]`; incidents, cooldown and RECOVERED run per (mode, fy); `nas_shutdown:` and `watchdog:*` stay global |
+| Overdue / attention / watchdog | `core/overdue`, `core/attention.leg_timing`, `watchdog._stale_code_parts` | overdue per (leg, FY); the early FY's base is its `activated_at` (no red on 1 Jan before the first run); codes `stale:<fy>:<leg>`, `approval:<fy>:<leg>`, `last_run:<fy>:<leg>`; the watchdog suppresses per FY and an FY it cannot work out suppresses nothing; closed FYs never appear |
+| Integrity audit | `flow.integrity_audit_flow(mode, fy=None)` | loops the active set (new first) under ONE slot, ONE `budget.audit_max_hours`, ONE NAS wake / shutdown vote; rows, alerts and `_pending_context` per FY |
+| Reports | `core/report.py`, `core/report.fy_window` | weekly / monthly mail has a section per FY; scheduled counts run from `max(period start, activation)` to `min(period end, switch)` (the switch comes from the rollover journal when there is no activation row) |
+| Dashboard | `ui._folders`, `ui._active_fy_list`, `static/js/dashboard.js` | `/status` has `folders[]` (new FY first: `fy`, `role` current/early, `active_since`, per leg last run / success / timing / integrity / nights / `running` / open `approval`); the old top-level fields stay; one card per FY; the rollover card lists the active set. `POST /trigger/cloud|lan|verify/{mode}?fy=` takes only an active FY (409 otherwise) and is refused (409) while any backup, audit or rollover is running or about to start |
+| Validator | `models/config.py` (OV-10.3) | while LAN and overlap are on, a NAS FY folder that is the share root itself (`\\nas\FY26-27`) fails to load: the next FY's folder must be created BESIDE it |
+| Tools and lab | `tools/fy_overlap_rehearsal.py`, `audit_lab/test_w25_fy_overlap.py` | rehearsal: dry run by default, `--execute` runs one cloud + one LAN flow on a sandbox config with `fy_overlap.run_date` patched to 15 January of test years FY90-91 / FY91-92 (clock and production config untouched, test folders / prefixes removed, `--cleanup`). Lab WAVE 25: 15-month fake-clock scenario (Dec, 1 Jan activation, Jan-Mar two folders + Sunday audit, 1 Apr switch, Apr-Dec one folder, next 1 Jan) through the production flows with real robocopy / rclone |
 
 ### 3.2 Cloud pipeline: `flow._run_cloud_pipeline()`
 
@@ -214,6 +223,9 @@ with _backup_slot(config):
 | D9 | Shutdown NAS? | `flow._run_lan_pipeline` | status + `lan.shutdown_*` + `wol.enabled` | shutdown / skip |
 | D10 | Watchdog action | `watchdog.main` | API health, lock alive, rclone/robocopy running, SCM state, time in STOP_PENDING | wait / defer / start / ordered restart / kill stuck service (no lock only) |
 | D11 | Alert sent? | `core/report.send_failure_alert` (today) → `core/notify.notify` **[built, not wired yet]** | `notifications.send_on_failure`, SMTP config, cooldown | SENT/FAILED/SUPPRESSED |
+| D12 | Which FY folders are backed up now? | `core/fy_overlap.active_folders` via `flow._active_fys` (taken ONCE per flow run) | `rollover.overlap_enabled`, `early_start_month`, scheduled run date (IST), journal `config_switch` step, `overlap_activations` row | `[next FY, configured FY]` or `[configured FY]`; an unprovable set mails a WARNING and falls back to the configured FY |
+| D13 | One NAS shutdown for all folders | `flow._lan_shutdown_decision` | each LAN pipeline's vote, folders run, MISSED / cut off / cancel | shut down only when every folder ran and voted yes, else the NAS stays on |
+| D14 | Leg overdue for an FY? | `core/overdue` + `core/attention.leg_timing(fy, role)` | schedule, leg budget, grace, last success of (leg, FY), `activated_at` for the early FY | on_time / late / overdue / waiting |
 
 **M2 decision points.** G1–G4 are **wired** (2.2): tasks `lan-guards` / `cloud-guards` run
 after preflight, before any transfer, with no Prefect retries. A measurement that cannot be
@@ -250,6 +262,10 @@ with _backup_slot:
   lan:   wol_check_task → integrity.audit_lan() (rclone check local↔UNC, hash)
          → lan_shutdown_task (if configured) → db.record_audit()
   errors → send_failure_alert + raise ExceptionGroup
+FY overlap (OV-8.1): the block above runs once per active FY (new first) inside ONE slot hold with ONE
+audit budget; the LAN part wakes the NAS once and one shutdown vote covers all folders (D13); a row
+(`integrity_audits.fy`) and an alert (`audit:<fy>:<mode>:...`) per (leg, FY). `fy=` narrows a manual audit
+to one active FY. Known: a folder skipped or failed to wake can leave a woken NAS on without an attention item.
 ```
 
 ### 5.2 `rollover_check_flow` — daily 06:00
@@ -273,6 +289,8 @@ steps, in order (each idempotent):
   3 nas_folder      NAS woken / SMB ready as in the LAN leg, new NAS FY folder + mount marker
   4 config_switch   compare-and-set inside config_transaction: at from_fy → switch; already at
                     to_fy → done; anything else → refuse (ROL-04). Validate, restore on failure.
+                    Once finished, `flow._close_old_fy(from_fy)` closes the old FY's approvals and incidents (§3.4);
+                    it also runs when a crash left the step finished
   5 archive         old FY objects to ARCHIVE (gcloud, key as a file; §5.8). Failure = ROL-05,
                     retried every morning, ACTION_REQUIRED after rollover.archive_alert_after_days
   6 nas_shutdown    only if configured and the NAS step was reached
@@ -281,6 +299,9 @@ BLOCKING steps (1, 2, 4) stop the run on failure; the others do not (a NAS that 
 stop the switch - the cloud protects the new FY from day 1). A pending nas_folder is completed by
 the next LAN pipeline (`_complete_pending_rollover_nas_folder`, before the guards, only when the
 config already points at the new folder and the share root exists).
+With overlap on, the switch is PENDING from 1 April until `config_switch` is done and both folders are
+still backed up meanwhile (§3.4); manual triggers are refused during a rollover. The next FY's source and
+NAS folders usually exist already (activation), so steps 2 and 3 treat "exists (+ marker)" as done.
 Rows: ROLLOVER_RUNNING (swept as ABANDONED after a crash), ROLLOVER_COMPLETE, ROLLOVER_FAILED
 (never counted as a backup's "last success"). Dashboard: Settings > FY rollover step card.
 ```
@@ -299,6 +320,7 @@ report.build_report_model(...)         per-leg backup totals (backup modes only,
                                        ENABLED leg, open decisions, data copied per leg
 render_report_html / CSV / subject     render the model only
 ```
+With overlap, a report has one section per FY in the period (see §3.4, Reports).
 An empty period still reports ("action needed: no backup ran"). Scheduled report emails are
 recorded in `notifications` (mode `report`, excluded from incident threading and the banner), so
 a failed delivery is visible on the dashboard. Status meaning always comes from `core/statuses`.
@@ -306,10 +328,10 @@ a failed delivery is visible on the dashboard. Status meaning always comes from 
 ### 5.4 Dashboard — `ui.py` (thread inside the agent)
 ```
 GET  /            page (templates/dashboard.html + static/js/dashboard.js, polls /status every 2 s)
-GET  /status      last runs (status_label/category/description from core/statuses),
+GET  /status      last runs (status_label/category/description from core/statuses), `folders[]` per active FY (§3.4),
                   last success, integrity (latest_audit), manifest counts, Prefect run state
 GET  /health      unauthenticated (always "healthy" today — WP9)
-POST /trigger/cloud | /trigger/lan | /trigger/verify/{mode}   → prefect arun_deployment
+POST /trigger/cloud | /trigger/lan | /trigger/verify/{mode}[?fy=FY27-28]   → prefect arun_deployment (fy must be active)
 GET  /report/weekly|monthly          HTML download
 POST /trigger/report/*/email         send now
 auth: always on - dashboard password (`dashboard.login_password_hash`) → session cookie; Advanced password (`dashboard.admin_password_hash`) → second cookie; sessions carry the fingerprint of the hash they were opened with (a change or reset ends older sessions); no hash = 'not set up' page, nothing opens; rate limits in memory
@@ -330,6 +352,7 @@ every watchdog.check_interval_seconds: GET watchdog.prefect_health_url
                       → API healthy → start agent   (any step fails → CRITICAL email)
 sc.exe via core/services.py (run_capture; sc prints errors on STDOUT).
 All tunables: config `watchdog:`. Own log: logs/watchdog_app.log.
+Stale-leg mails parse the attention code `stale:<fy>:<leg>` and are suppressed per (leg, FY) (§3.4).
 Every CRITICAL → core.notify (ACTION_REQUIRED, mode watchdog) → red banner
 until a RECOVERED notification follows.
 ```
@@ -454,10 +477,13 @@ producer (flow, watchdog, rollover, reports, password change)
 | `config_file.py`, `config_edit.py`, `config_help.py` | the locked config writer; settings catalog / validation / history; plain-language help | `ui`, `fy_rollover`, installer |
 | `secrets.py`, `secret_setup.py`, `gcs_key.py` | DPAPI; mail password encryption + readiness check; Google key reader | model, installer, probes, `rclone_config` |
 | `netinfo.py`, `attention.py`, `night_strip.py`, `app_restart.py` | dashboard address; banner and `/health`; 30-night strips; "Apply changes" restart | `notify`, `ui` |
+| `fy_overlap.py` | FY overlap: `run_date`, `next_fy`, `in_window`, `switch_pending`, `active_folders`, `folder_view` / `folder_for` / `role_of`, `ensure_overlap_activated`, `ensure_overlap_nas_folder`, `sibling_findings` | `flow` (backup, audit, rollover check), `ui`, `report` |
+| `overdue.py` | overdue deadline per leg (schedule + budget + grace) | `attention`, watchdog |
 | `audit_pending.py`, `budget.py` | audit "newer files wait for the next backup"; run budgets and the schedule proof | `integrity`, `flow`, `models.config` |
 
 `models/config.py` — every setting, validated (pydantic, unknown keys rejected).
 `test_support/` — test-only: sandbox config, fake tool runner, real SMTP test server.
+`tools/fy_overlap_rehearsal.py` — box rehearsal of the overlap (not production code, §3.4). `audit_lab/test_w25_fy_overlap.py` — the 15-month overlap scenario.
 
 ---
 
@@ -466,7 +492,7 @@ producer (flow, watchdog, rollover, reports, password change)
 | Where | What | Writer | Reader |
 |---|---|---|---|
 | `manifest.db` › `run_history` | one row per leg run: status, exit, files/bytes, error (bounded), extended_metrics JSON (stage timings, artefacts_dir) | `flow._record_run` | ui, reports, `last_successful_run` |
-| `manifest.db` › `file_entries` | per-file state per leg | record tasks | metrics, dashboard counts |
+| `manifest.db` › `file_entries` | per-file state per leg and FY (`UNIQUE(fy, relative_path)`, schema v6) | record tasks | metrics, dashboard counts |
 | `manifest.db` › `integrity_audits` | weekly audit verdicts | audit flow | ui, reports |
 | `manifest.db` › `notifications` | every alert and report email outcome: fault code, thread, attachment rung | `core/notify` | dashboard, banner |
 | `manifest.db` › `approvals`, `config_changes` | approval requests and decisions; every settings change | `core/approvals`, `core/config_edit` | dashboard |
@@ -493,11 +519,11 @@ producer (flow, watchdog, rollover, reports, password change)
 | `notifications` | SMTP host/port/security/auth/timeout/retries, `recipients` (the ALERTS list) and `report_recipients` (the REPORTS list), enable flags | report, notify |
 | `alerts` | cooldown, body/attachment size | notify |
 | `dashboard` | the two password hashes, bind, port, `public_url` (empty = auto), session/rate-limit/refresh, "Apply changes" timings, history nights | ui, notify |
-| `rollover` | `archive_alert_after_days` | fy_rollover |
+| `rollover` | `archive_alert_after_days`, `overlap_enabled` (true), `early_start_month` (1, 1-3), `activation_alert_after_hours` (24), `sibling_ignore` | fy_rollover, fy_overlap |
 | `maintenance` | DB retention, log retention, SQLite busy/vacuum/sync, slot wait | manifest, flow |
 | `health` | clock skew limit/timeout, `ntp_server`, `w32tm_timeout_seconds`, `clock_unverified_policy`, min free source GB, rollover gcloud timeouts | health, fy_rollover |
 | `run_logs` | full-log folder, retention 90 d, compression, min free GB, service-log retention | run_artefacts, flow |
-| `guards` | `max_delete_files` 500, `max_delete_percent` 10, `max_source_shrink_percent` 20, `forbid_local_destination` true (+ `cloud.dry_run_timeout_seconds` 1800) | flow `lan-guards` / `cloud-guards` |
+| `guards` | `max_delete_files` 500, `max_delete_percent` 10, `max_source_shrink_percent` 20, `forbid_local_destination` true, `small_folder_files` 100, `small_folder_max_deletes` 10 (+ `cloud.dry_run_timeout_seconds` 1800) | flow `lan-guards` / `cloud-guards` |
 | *(M2)* `approvals`, more `lan` keys (WP4) | added with their consumers | approvals, lan_preflight |
 
 ---
@@ -533,6 +559,10 @@ work package named (M2/M3). Every row is a hard stop unless marked *(warn only)*
 | C4 | `backup.lock` not held by another **live** process (a dead/reused PID is taken over) | yes | — |
 | C6 | Watchdog (independent service), every `watchdog.stale_check_interval_seconds`: each enabled leg that is OVERDUE -> `stale:<leg>` ACTION_REQUIRED email (same `core.attention` evaluation as the banner; catches runs that never start). Overdue = now past (next scheduled run after the last success STARTED) + the leg's run budget + `dashboard.stale_grace_hours` (`core.overdue`), using the schedule the service registered (`db_meta.schedule_in_effect`, falls back to config). The mail is skipped while a failure/action mail about the latest owed run was SENT/SUPPRESSED, and repeats at most per `alerts.stale_repeat_hours` | yes (M5) | — |
 | C5 | Earlier runs whose process died (`*_RUNNING` row, owner `pid:create_time` gone): recorded `*_ABANDONED` + one FAILURE email - at agent start and at every pipeline start (`backup_repository.sweep_abandoned_runs`); an unreadable owner falls back to `maintenance.abandon_running_after_hours` | yes (M5) | — |
+
+| C7 | FY overlap (every backup flow run, before the legs): the next FY folder is activated when it is time (clock proven directly, parent exists, not a link); a failure is retried every run, never stops the configured FY's backup, and escalates to ACTION REQUIRED after `rollover.activation_alert_after_hours` | yes (OV-2.7) | — |
+| C8 | `fy=` (flow argument or `?fy=` of a manual trigger) names an active FY, else refused | yes (OV-3.2, OV-7.3) | — |
+| C9 | Every gate below is evaluated per FY folder (own source, prefix, NAS folder, baseline, approval); a second folder with no budget left is `<LEG>_MISSED` for its FY | yes (OV-3.x) | — |
 
 ### 10.2 Cloud leg — must pass to START the sync
 
@@ -621,5 +651,6 @@ own completed summary; content verification is the weekly audit (V3).
 | R4 | Archive the old FY in GCS (gcloud, key as a file, `ARCHIVE` class) | failure = ROL-05 WARNING, retried every morning, ACTION_REQUIRED after `rollover.archive_alert_after_days` | done |
 | R5 | New source FY folder + placeholder; NAS folder + mount marker; `config.yaml` switched by compare-and-set under the config lock (backup, validate, restore on failure) | each step journaled and resumable; a failure before the switch = ROL-04 ACTION_REQUIRED; a NAS that is off does not stop the switch (the next LAN pipeline completes the folder) | done |
 | R6 | Every step state is persisted (`rollover_journal`); a crash is swept as ABANDONED; the INFO email says "nothing to do" only when every step is finished | — | done |
-| R7 | The new local FY folder is created BEFORE the final backups (`rollover.create_source_folder_early`, default on), only for exactly the next FY on a proven clock; files saved there are not backed up until the switch, so a red card and a daily mail (AAM-ROL-06) say so, and one RESOLVED mail follows | step SOURCE_FOLDER first in `_rollover_resume`; `fy_rollover.unprotected_new_fy`; `flow._alarm_unprotected_new_fy` | done |
+| R7 | The new local FY folder is created BEFORE the final backups (`rollover.create_source_folder_early`, default on), only for exactly the next FY on a proven clock. With overlap on it is normally already active and backed up from 1 January; the old "new year not backed up" alarm (AAM-ROL-06 `unprotected_new_fy`) is gone, replaced by the sibling check (a misnamed or inactive newer FY folder -> AAM-ROL-07, §3.4). `flow._resolve_unprotected_new_fy` only closes such an alarm that was already open | step SOURCE_FOLDER first in `_rollover_resume`; `fy_overlap.sibling_findings` | done |
 | R8 | Settings never change the FY (409, `config_edit._refuse_fy_change`); both paths end in an FY folder or neither; a finished rollover is never re-run when the paths are put back (`rollover:reentered:<fy>`); the Advanced picker (`core/source_picker.py`) chooses only the PARENT folder, never creates folders | done | done |
+| R9 | FY overlap: from `rollover.early_start_month` until the switch both FY folders are backed up on every enabled leg (each FY 15 months); the switch is journaled, `config_switch` is the only step that counts as "switched", and the closed FY is closed (§3.4) | `fy_overlap.active_folders`, `flow._close_old_fy` | done (not yet on the trial box, OV-11.4) |
