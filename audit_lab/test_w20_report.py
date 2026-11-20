@@ -30,10 +30,10 @@ class FakeDB:
     def get_runs_since(self, days):
         return self._runs
 
-    def get_runs_between(self, start, end, mode=None):
+    def get_runs_between(self, start, end, mode=None, *, fy):
         return self._runs
 
-    def latest_audit(self, leg):
+    def latest_audit(self, leg, *, fy):
         v = self._audits.get(leg)
         if isinstance(v, Exception):
             raise v
