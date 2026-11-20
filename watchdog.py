@@ -61,7 +61,7 @@ the same path from config.yaml at startup via _resolve_paths(). It validates
 the PID is still alive before honouring the lock, so stale locks from a
 previous crash do not prevent restarts indefinitely.
 
-Zero new dependencies: httpx2 and loguru are already project requirements (httpx stays only for Prefect).
+Dependencies: httpx2 (D-16) and loguru are project requirements (httpx stays only for Prefect).
 """
 
 import contextlib

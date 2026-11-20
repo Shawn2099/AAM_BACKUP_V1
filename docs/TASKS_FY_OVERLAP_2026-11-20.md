@@ -183,4 +183,16 @@
 
 ## Found while building (raise with the owner before building)
 
-- (empty)
+- **WP0 Opus review (2026-11-20), no blocker. Carried forward:**
+  1. OV-11.4 (box deploy) must first back up the Prefect server DB (`<PREFECT_HOME>/prefect.db` + -wal/-shm, services stopped):
+     Prefect 3.7.2 -> 3.9.4 runs alembic migrations at server start and there is no way back without a copy (plan WP0 says
+     "Prefect server DB backed up first"; no script does it).
+  2. rclone 1.76.0 is proven in the lab only on `type = local` remotes (`audit_lab/labconf.py`). The real GCS backend and the
+     DPAPI key env path (`core/gcs_key.py`) are NOT proven on 1.76: run `04_check_readiness` / `deploy/probe_service_account.py`
+     (cloud bucket check) on the box with 1.76.0 at OV-11.3/11.4, and watch the first real cloud run. Also not covered by the
+     lab waves: `core/upload.py` / `core/restore.py` use `--exclude` and `--max-duration` (owner's tools).
+  3. Transitive majors that came with Prefect 3.9.4 (beyond OV-0.2's commit text): apprise 1->2, cyclopts 4->5, redis 7->8,
+     python-slugify 8->9, pywin32 311->312, ruamel-yaml-clib dropped. `prefect server start --host/--port` still works (checked).
+  4. httpx2 2.16.2 was published 2026-11-16 (4 days old) and adds httpcore2, truststore, httpx2-jsfetch: owner informed.
+  5. Pre-existing: 9 SyntaxWarnings (invalid escapes) in old tests; `test_launch_comprehensive` + `test_p2_sched_pause` fail when
+     run as only those two files in that order (same on old code).

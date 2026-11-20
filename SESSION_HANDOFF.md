@@ -10,7 +10,10 @@ on deploy day (see §4f).
 
 ---
 
-## >>> 2026-11-20 - FY OVERLAP: PLAN + TASKS FINAL, WAITING FOR THE OWNER'S GO (newest, overrides below) <<<
+## >>> 2026-11-20 - FY OVERLAP: BUILD IN PROGRESS (newest, overrides below) <<<
+
+**BUILD STATUS (owner gave the go 2026-11-20): WP0 DONE (OV-0.1..0.6 ticked, commits c393b0b..681e7d8). NEXT: OV-1.1 (schema v6; test file `tests/test_ov1_schema_v6.py` is drafted, untracked, fails on old code).** WP0 result: all minors upgraded (prefect 3.9.4, fastapi 0.150.0 because Prefect caps <0.151, certifi 2026.10.23), httpx2 in our code + TestClient, rclone 1.76.0 in deploy/bin; unit suite 3055 passed / 18 skipped; full audit lab 248 passed; rclone waves on 1.76 42 passed. Opus review: no blocker; carried-forward items are in the task list's "Found while building" (Prefect DB backup before box deploy; real GCS check on rclone 1.76 at OV-11.3/11.4).
+
 
 New business rule: US clients use the NEXT FY folder from 1 January, Indian clients from 1 April, so from 1 Jan until
 the April switch BOTH folders are backed up (each FY folder is backed up for 15 months).
