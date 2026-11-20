@@ -1,4 +1,4 @@
-"""FY-6 (plan docs/PLAN_FY_FOLDERS_2026-10-22.md): files saved in the NEW financial year's folder before the
+"""FY-6 (plan docs/archive/PLAN_FY_FOLDERS_2026-10-22.md): files saved in the NEW financial year's folder before the
 rollover switch are on one disk only (the backups still read the old folder). The daily check and the dashboard
 say so loudly; the placeholder file does not count; the alarm also fires on the days the rollover is blocked."""
 

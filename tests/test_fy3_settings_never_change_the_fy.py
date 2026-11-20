@@ -1,4 +1,4 @@
-"""FY-3 (plan docs/PLAN_FY_FOLDERS_2026-10-22.md): Settings can move the backups to another drive or parent
+"""FY-3 (plan docs/archive/PLAN_FY_FOLDERS_2026-10-22.md): Settings can move the backups to another drive or parent
 folder, but can NEVER change the financial year. Only the rollover does that (final backup of the old year,
 archive, journal). A hand switch in Settings was invisible to the rollover: no final backup, no archive, no alert."""
 

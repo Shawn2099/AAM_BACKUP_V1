@@ -1,4 +1,4 @@
-"""FY-7 (plan docs/PLAN_FY_FOLDERS_2026-10-22.md): the new local FY folder is created BEFORE the final backups
+"""FY-7 (plan docs/archive/PLAN_FY_FOLDERS_2026-10-22.md): the new local FY folder is created BEFORE the final backups
 (rollover.create_source_folder_early, default on), so the office can save into it on 1 April even when the
 final backup fails and the rollover waits for an approval. Only for the normal next year on a proven clock."""
 

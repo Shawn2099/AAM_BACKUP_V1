@@ -1,4 +1,4 @@
-"""FY-15 (plan docs/PLAN_FY_FIXES_2026-10-22.md, S2): the "files in the new year are not backed up" alert and its
+"""FY-15 (plan docs/archive/PLAN_FY_FIXES_2026-10-22.md, S2): the "files in the new year are not backed up" alert and its
 RESOLVED mail have their own mail group (mode `rollover_files`), so the RESOLVED does not end an unrelated open
 rollover incident (e.g. the archive warning), and it goes out the SAME day the switch is done."""
 

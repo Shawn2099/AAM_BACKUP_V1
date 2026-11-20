@@ -1,4 +1,4 @@
-"""FY-9 (plan docs/PLAN_FY_FIXES_2026-10-22.md): cloud-only, LAN-only and both all work.
+"""FY-9 (plan docs/archive/PLAN_FY_FIXES_2026-10-22.md): cloud-only, LAN-only and both all work.
 
 The SOURCE folder decides the financial year. The NAS path only counts while the NAS leg is on (then it must
 match); with the NAS off it is a placeholder that nothing reads and the rollover never rewrites."""

@@ -1,4 +1,4 @@
-"""FY-8 (plan docs/PLAN_FY_FOLDERS_2026-10-22.md): the Advanced source picker.
+"""FY-8 (plan docs/archive/PLAN_FY_FOLDERS_2026-10-22.md): the Advanced source picker.
 
 The owner picks a PARENT folder (a drive or a folder that holds the FY folders); the FY leaf is always the
 configured FY, never typed or chosen. The picker only lists and checks - it never creates a folder and it

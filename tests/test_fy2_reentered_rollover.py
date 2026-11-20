@@ -1,4 +1,4 @@
-"""FY-2 (plan docs/PLAN_FY_FOLDERS_2026-10-22.md): a FINISHED rollover must not be "completed" again.
+"""FY-2 (plan docs/archive/PLAN_FY_FOLDERS_2026-10-22.md): a FINISHED rollover must not be "completed" again.
 
 `rollover_open` returns the existing journal of a transition. When config.yaml is put back to the old FY
 (hand edit, restored backup) after the rollover finished, every step already counts as done, so the daily
