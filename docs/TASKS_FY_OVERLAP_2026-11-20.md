@@ -66,7 +66,7 @@
 
 ## WP2 - Active set, activation, sibling check (plan §3, §5.1, §5.2)
 
-- [ ] **OV-2.1 Config keys.** `rollover.overlap_enabled` (true), `rollover.early_start_month` (1, bounds 1-3),
+- [x] **OV-2.1 Config keys.** `rollover.overlap_enabled` (true), `rollover.early_start_month` (1, bounds 1-3),
   `rollover.activation_alert_after_hours` (24), `rollover.sibling_ignore` ([]); Advanced + risky in
   `config_edit` / `config_help`. Test: defaults, bounds.
 - [ ] **OV-2.2 `core/fy_overlap.py`.** `run_date` (IST, scheduled time), `next_fy`, `in_window`, `switch_pending`

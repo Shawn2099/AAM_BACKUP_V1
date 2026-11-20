@@ -818,12 +818,46 @@ class RolloverConfig(StrictModel):
                     "switch is done; the dashboard and an email say so.",
     )
 
+    overlap_enabled: bool = Field(
+        default=True,
+        description="Back up the NEXT financial year's folder as well from early_start_month until the "
+                    "April switch (US clients work in it from January). Off = only the configured year "
+                    "is backed up; the daily check then warns if the next year's folder holds files.",
+    )
+
+    early_start_month: int = Field(
+        default=1, ge=1, le=3,
+        description="Calendar month (1 = January ... 3 = March) from which the next financial year's "
+                    "folder is backed up together with the current one.",
+    )
+
+    activation_alert_after_hours: int = Field(
+        default=24, ge=1, le=168,
+        description="The next year's folder could not be set up for backup (clock not proven, parent "
+                    "folder missing, ...): after this many hours the information mail becomes an "
+                    "'action needed' mail.",
+    )
+
+    sibling_ignore: list[str] = Field(
+        default_factory=list,
+        description="Folder names next to the year folders that look like a year folder but are not "
+                    "(never backed up, never warned about). Plain folder names, one per entry.",
+    )
+
     archive_alert_after_days: int = Field(
         default=3, ge=1, le=365,
         description="The old FY's move to the cheaper ARCHIVE storage class is retried every "
                     "morning; after it has failed for this many days the warning email becomes "
                     "an 'action needed' email.",
     )
+
+    @field_validator("sibling_ignore")
+    @classmethod
+    def plain_folder_names(cls, v: list[str]) -> list[str]:
+        for name in v:
+            if not name.strip() or any(c in name for c in "\\/:"):
+                raise ValueError(f"Use plain folder names without / \\ or : (now: {name!r}).")
+        return v
 
     @field_validator("source_placeholder_name")
     @classmethod

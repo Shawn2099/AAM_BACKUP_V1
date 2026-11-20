@@ -292,6 +292,20 @@ HELP: dict[str, tuple[str, str]] = {
         "Create the new year's folder before the old year's final backup",
         "So the office can save into it on 1 April even if that backup fails. Files saved there are "
         "not backed up until the switch is done; the dashboard and an email say so."),
+    "rollover.overlap_enabled": (
+        "Also back up next year's folder from January",
+        "From the start month until the April switch both the current and the next financial year's "
+        "folder are backed up (cloud and office copy). Off: only the current year is backed up."),
+    "rollover.early_start_month": (
+        "First month the next year's folder is backed up", "1 = January ... 3 = March."),
+    "rollover.activation_alert_after_hours": (
+        "Warn if next year's folder is not set up for backup after",
+        "If it cannot be set up (the server clock is not proven, the parent folder is missing...) "
+        "the information mail becomes an 'action needed' mail after this time."),
+    "rollover.sibling_ignore": (
+        "Folders to ignore that look like a year folder",
+        "Names of folders next to the year folders that are not a financial year (never backed up, "
+        "never warned about)."),
     "rollover.archive_alert_after_days": (
         "Escalate a stuck archive move after",
         "Moving last year's online copy to cheaper storage is retried every morning."),

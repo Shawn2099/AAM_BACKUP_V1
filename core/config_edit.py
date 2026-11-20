@@ -51,6 +51,9 @@ _RISKY_KEYS = frozenset({
     "cloud.enabled", "cloud.bucket", "cloud.project_number", "cloud.location",
     "cloud.storage_class", "lan.enabled", "rollover.source_placeholder_name",
     "rollover.create_source_folder_early",
+    # FY overlap: which folders are backed up, and when (plan 5.7)
+    "rollover.overlap_enabled", "rollover.early_start_month",
+    "rollover.activation_alert_after_hours", "rollover.sibling_ignore",
     # data safety
     "lan.use_backup_mode", "health.clock_unverified_policy", "cloud.write_probe_enabled",
     # what counts as "unchanged": a wide window skips same-size edits
@@ -116,6 +119,7 @@ _WIDGETS = {
     "notifications.report_recipients": "email_list",
     "notifications.sender": "email",
     "audit.network_error_patterns": "text_list",
+    "rollover.sibling_ignore": "text_list",
     "schedule.timezone": "timezone",
     "paths.source_drive": "folder",      # Advanced: Choose folder... (plan FY-8)
 }
@@ -144,6 +148,7 @@ _UNITS = {
     "maintenance.sqlite_vacuum_freelist_threshold": "pages", "maintenance.config_backups_keep": "copies",
     "maintenance.config_replace_retries": "times", "maintenance.lock_release_retries": "times",
     "rollover.archive_alert_after_days": "days",
+    "rollover.early_start_month": "month (1 = January)",
     "guards.max_delete_files": "files", "audit.detail_max_paths": "paths",
     "cloud.bandwidth_limit": "MB/s", "cloud.buffer_size": "MB",
 }

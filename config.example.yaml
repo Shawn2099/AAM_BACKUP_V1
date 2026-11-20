@@ -533,6 +533,18 @@ rollover:
   # waits for your approval. Files saved there are NOT backed up until the switch is done (the
   # dashboard and an email say so). Only for the normal next year on a proven clock.
   create_source_folder_early: true
+  # FY overlap: from early_start_month until the April switch, ALSO back up the NEXT financial
+  # year's folder (US clients work in it from January), cloud and office copy. Off = only the
+  # current year; the daily check then warns if next year's folder holds files.
+  overlap_enabled: true
+  # Month from which the next year's folder is backed up: 1 = January ... 3 = March
+  early_start_month: 1
+  # If next year's folder cannot be set up for backup (clock not proven, parent folder missing)
+  # the information mail becomes "action needed" after this many hours. 1-168
+  activation_alert_after_hours: 24
+  # Folder names next to the year folders that look like a year folder but are not one (never
+  # backed up, never warned about). Plain names, no slashes.
+  sibling_ignore: []
   # The old year's online copy is moved to the cheaper ARCHIVE storage class after the
   # switch; if that fails it is retried every morning. After this many days of failing
   # the warning email becomes "action needed". 1–365
