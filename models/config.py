@@ -826,8 +826,10 @@ class RolloverConfig(StrictModel):
         description="Create the new financial year's source folder as soon as the rollover starts - "
                     "before the final backup of the old year - so the office can save into it on 1 April "
                     "even when that final backup fails and the switch waits for your approval. Only for "
-                    "the normal next year on a proven clock. Files saved there are NOT backed up until the "
-                    "switch is done; the dashboard and an email say so.",
+                    "the normal next year on a proven clock. From the start month (rollover.early_start_month) the "
+                    "next year's folder is backed up every night as well (rollover.overlap_enabled); before "
+                    "that, or with that switched off, files saved there are not backed up until the switch "
+                    "is done, and the dashboard and an email say so.",
     )
 
     overlap_enabled: bool = Field(

@@ -29,6 +29,8 @@ def _fake_request(query=""):
 def _patch_auth(monkeypatch):
     monkeypatch.setattr(ui, "_require_auth", lambda request: None)
     monkeypatch.setattr(ui, "_check_rate_limit", lambda key, max_attempts: True)
+    # WP7: a manual backup also checks for a running safety check; no Prefect in unit tests
+    monkeypatch.setattr(ui, "_is_verify_running", AsyncMock(return_value=False))
 
 
 def _fake_cfg(cloud_enabled=True, lan_enabled=True):

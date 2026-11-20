@@ -34,8 +34,8 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
-                  statuses)
+from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_overlap, fy_rollover,
+                  rollover_journal, statuses)
 from core.attention import RED, compute_attention, leg_timing
 from core.manifest import ALL_FYS, ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
@@ -545,8 +545,10 @@ async def status(request: Request):
     # H3: None (Prefect unreachable) degrades to running=False + run_state
     # "unknown". The boolean type is load-bearing — dashboard.js polls this
     # every 2 s and does truthiness on it.
-    cloud_fields = _run_state_fields(await _is_running("cloud"))
-    lan_fields = _run_state_fields(await _is_running("lan"))
+    cloud_state = await _is_running("cloud")
+    lan_state = await _is_running("lan")
+    cloud_fields = _run_state_fields(cloud_state)
+    lan_fields = _run_state_fields(lan_state)
     # the manual / weekly safety check (read-only audit); None (Prefect unreachable) shows as "not running"
     verify_running = (await _is_verify_running()) is True
 
@@ -588,26 +590,97 @@ async def status(request: Request):
             "cloud_files": db.file_count("cloud_status", fy=_configured_fy()),
         },
         "health": await _get_health(),
-        "recent_runs": recent_runs
+        "recent_runs": recent_runs,
+        "folders": _folders(db, cfg, {"cloud": cloud_state, "lan": lan_state}),
     })
 
 
-def _nights(db, mode: str, cfg) -> list[dict]:
+def _active_fy_list() -> list[str]:
+    """The FY folders backed up now, new FY first (plan 5.3 / 5.7): the same answer as flow._active_fys. Any
+    trouble working it out falls back to the configured FY alone - the safe answer."""
+    configured = _configured_fy()
+    try:
+        cfg = _cfg()
+        if getattr(cfg.rollover, "overlap_enabled", True) is False:
+            return [configured]
+        folders = list(fy_overlap.active_folders(cfg, get_db(), fy_overlap.run_date()))
+        return folders or [configured]
+    except Exception as e:  # noqa: BLE001 - the dashboard still renders / triggers for the configured FY
+        logger.warning(f"Active FY folders could not be worked out for the dashboard ({e}); using {configured}")
+        return [configured]
+
+
+def _folders(db, cfg, prefect_state: dict) -> list[dict]:
+    """One entry per active FY folder, new FY first (plan 5.7): its role, since when it is backed up and, per
+    leg, the last run / success, timing, integrity and open approval. `running` of a (leg, FY) comes from its
+    RUNNING run row, and only while the scheduler agrees that something runs (a row left behind by a crash is
+    cleaned up by the sweep, never shown as running forever)."""
+    configured = _configured_fy()
+    try:
+        pending = {(a.get("fy") or configured, a["leg"]): a["status"] for a in db.open_approvals()}
+    except Exception:  # noqa: BLE001 - the cards still render
+        pending = {}
+    out = []
+    for fy in _active_fy_list():
+        role = fy_overlap.CURRENT if fy == configured else fy_overlap.EARLY
+        try:
+            activation = db.get_activation(fy)
+        except Exception:  # noqa: BLE001
+            activation = None
+        legs = {}
+        for leg in ("cloud", "lan"):
+            payload = _leg_payload(db, cfg, leg, fy, role)
+            last = payload["last_run"]
+            row_running = bool(last) and last.get("status_category") == statuses.CATEGORY_RUNNING
+            scheduler = prefect_state.get(leg)
+            running = row_running and scheduler is not False
+            legs[leg] = {
+                "enabled": getattr(cfg, leg).enabled,
+                **payload,
+                "running": running,
+                "run_state": "running" if running else ("unknown" if scheduler is None else "idle"),
+                "approval": pending.get((fy, leg)),
+            }
+        out.append({
+            "fy": fy,
+            "role": role,
+            "active_since": activation.get("activated_at") if activation else None,
+            "active_since_formatted": format_ist(activation.get("activated_at")) if activation else None,
+            "cloud": legs["cloud"],
+            "lan": legs["lan"],
+        })
+    return out
+
+
+def _leg_payload(db, cfg, leg: str, fy: str, role: str) -> dict:
+    """The FY-dependent facts of one leg's card (folders[] entries)."""
+    last_run = _last_run_summary(db, leg, fy)
+    return {
+        "last_run": last_run,
+        "last_success": _get_last_success(db, leg, fy, role),
+        "timing": _leg_timing(db, cfg, leg, fy, role),
+        "last_run_formatted": format_ist(last_run["started_at"]) if last_run else "No data",
+        "integrity": _integrity_summary(db, leg, fy),
+        "nights": _nights(db, leg, cfg, fy),
+    }
+
+
+def _nights(db, mode: str, cfg, fy: str | None = None) -> list[dict]:
     """One mark per night for the dashboard strip (core/night_strip.py)."""
     try:
         days = cfg.dashboard.history_nights
         end = pendulum.now(IST).add(days=1).start_of("day")
-        return night_strip.build(db.get_runs_between(end.subtract(days=days), end, mode, fy=_configured_fy()),
+        return night_strip.build(db.get_runs_between(end.subtract(days=days), end, mode, fy=fy or _configured_fy()),
                                  days=days)
     except Exception as e:  # noqa: BLE001 - the strip is decoration; never break the status call
         logger.warning(f"Night strip could not be built for {mode}: {e}")
         return []
 
 
-def _leg_timing(db, cfg, leg: str) -> dict:
+def _leg_timing(db, cfg, leg: str, fy: str | None = None, role: str | None = None) -> dict:
     """on_time | late | overdue | waiting | catching_up for the leg's card (core.attention.leg_timing)."""
     try:
-        return leg_timing(db, cfg, leg)
+        return leg_timing(db, cfg, leg, fy=fy, role=role)
     except Exception as e:  # noqa: BLE001 - the card is decoration; the banner has the truth
         logger.warning(f"Leg timing could not be evaluated for {leg}: {e}")
         return {"state": "on_time", "due_at": None, "overdue_at": None}
@@ -645,6 +718,44 @@ async def health():
                          "warnings": warnings})
 
 
+def _requested_fy(request: Request) -> str | None:
+    """`?fy=` of a manual trigger: None when absent (the flow decides: every active FY), else a FY that is
+    in the active set - anything else is refused (plan 5.7), the flow would refuse it too."""
+    raw = (request.query_params.get("fy") or "").strip()
+    if not raw:
+        return None
+    active = _active_fy_list()
+    for fy in active:
+        if fy.lower() == raw.lower():
+            return fy
+    raise HTTPException(status_code=409, detail=messages.act(
+        "Pick one of the year folders shown on the dashboard",
+        f"{raw} is not backed up at the moment (active: {', '.join(active)})"))
+
+
+async def _refuse_if_busy(target: str) -> JSONResponse | None:
+    """Manual backups are refused while ANY backup or safety check runs: the next one would only queue
+    behind the one backup slot and end as a false SLOT_TIMEOUT alarm (plan 5.7). 503 when Prefect does not
+    answer (fail closed). `target` is the leg asked for, to word the same-leg case as before."""
+    for leg in ("cloud", "lan"):
+        running = await _is_running(leg)
+        if running is None:
+            raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
+        if running:
+            detail = (messages.leg_running(leg) if leg == target else messages.act(
+                "Wait for the running backup to finish, then try again",
+                "Only one backup or safety check can run at a time"))
+            return JSONResponse({"status": "already_running", "detail": detail}, status_code=400)
+    verifying = await _is_verify_running()
+    if verifying is None:
+        raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
+    if verifying:
+        return JSONResponse({"status": "already_running", "detail": messages.act(
+            "Wait for the running safety check to finish, then try again",
+            "A backup and a safety check cannot run at the same time")}, status_code=400)
+    return None
+
+
 @app.post("/trigger/cloud")
 async def trigger_cloud(request: Request):
     _require_auth(request)
@@ -653,16 +764,12 @@ async def trigger_cloud(request: Request):
         raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     if not _cfg().cloud.enabled:
         return JSONResponse({"status": "disabled", "detail": messages.leg_off("cloud")}, status_code=409)
-    cloud_running = await _is_running("cloud")
-    if cloud_running is None:
-        # H3: fail-CLOSED. The old code treated an unreachable API as
-        # "nothing running" and queued a duplicate backup.
-        raise HTTPException(
-            status_code=503,
-            detail=messages.SCHEDULER_NOT_ANSWERING,
-        )
-    if cloud_running:
-        return JSONResponse({"status": "already_running", "detail": messages.leg_running("cloud")}, status_code=400)
+    fy = _requested_fy(request)
+    # H3: fail-CLOSED. The old code treated an unreachable API as "nothing running" and queued a duplicate
+    # backup. WP7: any running backup or safety check refuses (it would only queue behind the one slot).
+    busy = await _refuse_if_busy("cloud")
+    if busy is not None:
+        return busy
     # G15: await the actual deployment run creation before answering. The
     # old code returned 200 via background_tasks BEFORE arun_deployment
     # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
@@ -671,6 +778,7 @@ async def trigger_cloud(request: Request):
     try:
         flow_run = await arun_deployment(
             name="aam-backup/backup-cloud",
+            **({"parameters": {"fy": fy}} if fy else {}),
             timeout=_trigger_timeout(request),
         )
     except Exception as e:
@@ -691,17 +799,14 @@ async def trigger_lan(request: Request):
         raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     if not _cfg().lan.enabled:
         return JSONResponse({"status": "disabled", "detail": messages.leg_off("lan")}, status_code=409)
-    lan_running = await _is_running("lan")
-    if lan_running is None:
-        raise HTTPException(
-            status_code=503,
-            detail=messages.SCHEDULER_NOT_ANSWERING,
-        )
-    if lan_running:
-        return JSONResponse({"status": "already_running", "detail": messages.leg_running("lan")}, status_code=400)
+    fy = _requested_fy(request)
+    busy = await _refuse_if_busy("lan")
+    if busy is not None:
+        return busy
     try:
         flow_run = await arun_deployment(
             name="aam-backup/backup-lan",
+            **({"parameters": {"fy": fy}} if fy else {}),
             timeout=_trigger_timeout(request),
         )
     except Exception as e:
@@ -1250,6 +1355,7 @@ async def rollover_status(request: Request):
     approval = next((a for a in get_db().open_approvals() if a["leg"] == "rollover"), None)
     return {
         "configured_fy": configured, "current_fy": current, **state,
+        "active_fys": _active_fy_cards(),
         "journal": None if journal is None else {
             "from_fy": journal["from_fy"], "to_fy": journal["to_fy"],
             "steps": rollover_journal.describe_steps(journal)},
@@ -1262,6 +1368,22 @@ async def rollover_status(request: Request):
         "approval_pending": approval is not None,
         "running": await _is_running("rollover"),
     }
+
+
+def _active_fy_cards() -> list[dict]:
+    """The FY folders being backed up now with their role and 'backed up since' (rollover card, plan 5.7)."""
+    configured = _configured_fy()
+    db = get_db()
+    out = []
+    for fy in _active_fy_list():
+        try:
+            activation = db.get_activation(fy)
+        except Exception:  # noqa: BLE001 - the card still renders
+            activation = None
+        since = activation.get("activated_at") if activation else None
+        out.append({"fy": fy, "role": fy_overlap.CURRENT if fy == configured else fy_overlap.EARLY,
+                    "active_since": since, "active_since_formatted": format_ist(since) if since else None})
+    return out
 
 
 @app.post("/api/rollover/run")
@@ -1332,7 +1454,7 @@ def settings_history(request: Request):
 # audit is already running.
 
 
-def _backup_first_question(cfg, mode: str) -> str | None:
+def _backup_first_question(cfg, mode: str, fy: str | None = None) -> str | None:
     """Why "Check now" should wait for a backup, or None. The check never backs up by itself: this
     only informs and the person chooses. Advisory, so any failure here lets the check start (the
     check classifies files that are not backed up yet, so it stays safe)."""
@@ -1344,7 +1466,7 @@ def _backup_first_question(cfg, mode: str) -> str | None:
         for leg in ("lan", "cloud"):
             if mode not in (leg, "all") or not getattr(cfg, leg).enabled:
                 continue
-            last = db.last_successful_run_or_earlier(leg, fy=_configured_fy())
+            last = db.last_successful_run_or_earlier(leg, fy=fy or _configured_fy())
             started = last.get("started_at") if isinstance(last, dict) else None
             name = "LAN" if leg == "lan" else "cloud"
             if not started:
@@ -1377,6 +1499,7 @@ async def trigger_verify(mode: str, request: Request):
         return JSONResponse({"status": "disabled", "detail": messages.leg_off("cloud", "checked")}, status_code=409)
     if mode == "all" and not (cfg.lan.enabled or cfg.cloud.enabled):
         return JSONResponse({"status": "disabled", "detail": messages.act("Switch on the LAN or the cloud backup in Settings, then try again", "Both are turned off, so there is nothing to check")}, status_code=409)
+    fy = _requested_fy(request)
     for leg in ("lan", "cloud"):
         running = await _is_running(leg)
         if running is None:
@@ -1395,13 +1518,13 @@ async def trigger_verify(mode: str, request: Request):
     if verifying:
         return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running safety check to finish", "Only one can run at a time")}, status_code=400)
     if request.query_params.get("anyway") != "1":
-        ask = _backup_first_question(cfg, mode)
+        ask = _backup_first_question(cfg, mode, fy)
         if ask:
             return JSONResponse({"status": "backup_first", "detail": ask}, status_code=409)
     try:
         flow_run = await arun_deployment(
             name="integrity-audit/integrity-audit",
-            parameters={"mode": mode},
+            parameters={"mode": mode, **({"fy": fy} if fy else {})},
             timeout=_trigger_timeout(request),
         )
     except Exception as e:
@@ -1558,22 +1681,27 @@ def _configured_fy() -> str:
     return fy_rollover.effective_fy_prefix(_cfg().paths.source_drive)
 
 
-def _get_last_success(db: ManifestDB, mode: str) -> str | None:
-    """Return ended_at timestamp of the last successful run for this mode."""
-    run = db.last_successful_run_or_earlier(mode, fy=_configured_fy())
+def _get_last_success(db: ManifestDB, mode: str, fy: str | None = None, role: str | None = None) -> str | None:
+    """Return ended_at timestamp of the last successful run for this mode (of `fy`, default the configured
+    one). The configured FY falls back to an earlier FY's success (right after the April switch); the early
+    FY has its own history only."""
+    if role == fy_overlap.EARLY:
+        run = db.last_successful_run(mode, fy=fy)
+    else:
+        run = db.last_successful_run_or_earlier(mode, fy=fy or _configured_fy())
     if run:
         return run.get("ended_at")
     return None
 
 
-def _integrity_summary(db: ManifestDB, mode: str) -> dict:
+def _integrity_summary(db: ManifestDB, mode: str, fy: str | None = None) -> dict:
     """Return the integrity-verification status for a mode.
 
     Backup result and integrity are separate facts: a COMPLETE backup with
     no audit yet reports NOT_VERIFIED (never implied VERIFIED).
     """
     try:
-        audit = db.latest_audit(mode, fy=_configured_fy())
+        audit = db.latest_audit(mode, fy=fy or _configured_fy())
     except Exception:
         audit = None
     if not isinstance(audit, dict):
@@ -1608,8 +1736,8 @@ def _status_fields(run: dict) -> dict:
     }
 
 
-def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
-    run = db.last_run(mode, fy=_configured_fy())
+def _last_run_summary(db: ManifestDB, mode: str, fy: str | None = None) -> dict | None:
+    run = db.last_run(mode, fy=fy or _configured_fy())
     if not run:
         return None
     err_msg = run.get("error_message") or ""

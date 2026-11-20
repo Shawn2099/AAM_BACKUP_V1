@@ -569,6 +569,9 @@ async function loadRollover() {
     rolloverState = d;
     document.getElementById('ro-configured').textContent = d.configured_fy || '(no FY folder)';
     document.getElementById('ro-current').textContent = d.current_fy;
+    document.getElementById('ro-active').textContent = (d.active_fys || []).map(function (f) {
+        return f.fy + (f.active_since_formatted ? ' (backed up since ' + f.active_since_formatted + ')' : '');
+    }).join(', ') || '-';
     const last = d.last_attempt;
     document.getElementById('ro-last').textContent = last
         ? last.label + ' - ' + last.when + (last.error ? ' - ' + last.error : '') : 'never';

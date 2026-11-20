@@ -141,6 +141,10 @@ code { font-family: var(--mono); font-size: .88em; background: var(--panel); pad
 .wire { fill: none; stroke: var(--c); stroke-width: 2.5; stroke-linecap: round; }
 .wire.tone-bad, .wire.tone-warn { stroke-dasharray: 2 9; }
 .dests { display: grid; gap: 1.6rem; }
+.fy-card { margin-bottom: 2.2rem; }
+.fy-card h3 { font-size: 1.25rem; font-weight: 650; margin: 0 0 .2rem; }
+.fy-card h3 small { font-size: .85rem; font-weight: 500; color: var(--ink-2); margin-left: .5rem; }
+.fy-card .fy-since { color: var(--ink-2); font-size: .95rem; margin: 0 0 .9rem; }
 .dest {
     background: var(--panel); border: 1px solid var(--hair); border-radius: 18px; padding: 1.1rem 1.3rem; display: grid; gap: .55rem;
     box-shadow: 0 0 0 6px var(--shell), 0 0 0 7px var(--hair), 0 30px 50px -34px var(--lift), inset 0 1px 0 rgba(255,255,255,.5);

@@ -299,8 +299,10 @@ HELP: dict[str, tuple[str, str]] = {
     "rollover.source_placeholder_name": ("Note file placed in a new year folder", ""),
     "rollover.create_source_folder_early": (
         "Create the new year's folder before the old year's final backup",
-        "So the office can save into it on 1 April even if that backup fails. Files saved there are "
-        "not backed up until the switch is done; the dashboard and an email say so."),
+        "So the office can save into it on 1 April even if that backup fails. From the start month "
+        "the next year's folder is backed up every night as well (see 'Also back up next year's "
+        "folder from January'); before that, or with that switched off, files saved there are not "
+        "backed up until the switch is done, and the dashboard and an email say so."),
     "rollover.overlap_enabled": (
         "Also back up next year's folder from January",
         "From the start month until the April switch both the current and the next financial year's "

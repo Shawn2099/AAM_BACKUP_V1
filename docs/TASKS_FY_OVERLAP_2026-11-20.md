@@ -134,11 +134,11 @@
 
 ## WP7 - Dashboard and settings (plan §5.7)
 
-- [ ] **OV-7.1 `/status` `folders[]`** (old top-level fields kept). Test: one FY = today's payload + `folders[1]`.
-- [ ] **OV-7.2 Cards** in `static/js/dashboard.js`: one per FY, role label, "backed up since".
-- [ ] **OV-7.3 Per-FY triggers** `?fy=` on cloud / lan / verify; FY must be active; refused while any backup or audit
+- [x] **OV-7.1 `/status` `folders[]`** (old top-level fields kept). Test: one FY = today's payload + `folders[1]`.
+- [x] **OV-7.2 Cards** in `static/js/dashboard.js`: one per FY, role label, "backed up since".
+- [x] **OV-7.3 Per-FY triggers** `?fy=` on cloud / lan / verify; FY must be active; refused while any backup or audit
   run is active; "running" per (leg, FY) from the RUNNING row. Tests.
-- [ ] **OV-7.4 Rollover card** shows the active set; Settings keys from OV-2.1 / OV-5.1; texts that say "NOT backed
+- [x] **OV-7.4 Rollover card** shows the active set; Settings keys from OV-2.1 / OV-5.1; texts that say "NOT backed
   up until the switch" reworded (R-13).
 
 ## WP8 - Integrity audit (plan §5.8)

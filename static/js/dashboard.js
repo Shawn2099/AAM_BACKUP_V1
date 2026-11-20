@@ -308,6 +308,7 @@ async function updateStatus() {
         if (data.health && !data.health.error) { document.getElementById('health-info').innerText = 'Source: ' + data.health.source_free_gb + ' GB free | FY: ' + data.fy_prefix; }
         renderLegVisuals(data);
         renderHistory(data.recent_runs);
+        renderFolders(data);
     } catch (err) {
         setServerUnreachable(true, 'no answer');
         var now = Date.now(); if (now - _lastStatusErr > 30000) { console.error('Failed to update status dynamically:', err); _lastStatusErr = now; }
@@ -402,6 +403,100 @@ function updateVerifyUi(data) {
         var safety = document.getElementById('safety-' + mode);
         if (safety) safety.textContent = 'Safety check: running now...';
     });
+}
+
+// ── One card per financial year (Jan-Mar: next year and current year both) ───────────────
+// The server (ui.py /status -> folders[]) decides which years are backed up, what each one's role is and
+// whether it is running; this only draws it. With a single year the classic cards above stay as they are.
+var _FY_ROLE = { early: 'Next year - backed up early', current: 'Current year' };
+var _fySig = '';
+function fyAnyBusy(data) {
+    var busy = !!(data.verify_running || (data.cloud && data.cloud.running) || (data.lan && data.lan.running));
+    (data.folders || []).forEach(function(f) {
+        ['cloud', 'lan'].forEach(function(l) { if (f[l] && f[l].running) busy = true; });
+    });
+    return busy;
+}
+function fyLegCard(f, leg, busy) {
+    var d = f[leg];
+    var name = leg === 'cloud' ? 'Online copy (cloud)' : 'Office copy (NAS)';
+    var fy = escHtml(f.fy);
+    if (!d || d.enabled === false) {
+        return '<article class="dest tone-idle"><h2><span>' + name + '</span> <span class="pill tone-idle">Disabled</span></h2>'
+            + '<p class="lead">This copy is switched off in the settings.</p></article>';
+    }
+    var cls = d.running ? 'running' : (d.run_state === 'unknown' ? 'unknown' : (d.last_run ? safeCategory(d.last_run.status_category) : 'unknown'));
+    var tone = toneOf(cls);
+    var badge = d.running ? 'Running' : (d.run_state === 'unknown' ? 'Unknown' : (d.last_run ? d.last_run.status_label : 'No backup yet'));
+    var lead = d.running ? 'Copying files now.' : (d.last_run ? d.last_run.status_description : 'No backup has run yet. The first one starts at the scheduled time.');
+    var timing = (d.timing && d.timing.state) || '';
+    var success = d.last_success ? (timing === 'overdue' ? 'Overdue - ' : (timing === 'late' ? 'Late - ' : '')) + 'Last success: ' + formatFullDate(d.last_success) : '! No successful backup yet';
+    var title = busy ? 'Another backup or safety check is running. Try again when it has finished.' : '';
+    return '<article class="dest tone-' + tone + '"><h2><span>' + name + '</span> <span class="pill tone-' + tone + '">' + escHtml(badge) + '</span></h2>'
+        + '<p class="lead">' + escHtml(lead) + '</p>'
+        + '<div class="facts"><p>Last backup: ' + escHtml(d.last_run ? d.last_run_formatted : 'none yet') + '</p><p>' + escHtml(success) + '</p></div>'
+        + '<p class="safety">' + escHtml(safetyText(d.integrity)) + '</p>'
+        + '<footer><button class="btn-secondary small verify-btn" data-fy="' + fy + '" data-verify="' + leg + '"' + (busy ? ' disabled' : '') + ' title="' + escHtml(title) + '">Check now</button>'
+        + '<button class="btn-trigger btn-' + leg + '" data-fy="' + fy + '" data-backup="' + leg + '"' + (busy ? ' disabled' : '') + ' title="' + escHtml(title) + '">'
+        + (d.running ? 'Running...' : 'Back up now') + '</button></footer></article>';
+}
+function renderFolders(data) {
+    var folders = data.folders || [];
+    var box = document.getElementById('fy-cards');
+    var classic = document.getElementById('route-section');
+    if (!box) return;
+    var multi = folders.length > 1;
+    box.hidden = !multi;
+    if (classic) classic.hidden = multi;
+    if (!multi) { _fySig = ''; return; }
+    var busy = fyAnyBusy(data);
+    var html = folders.map(function(f) {
+        var since = f.active_since_formatted ? 'Backed up since ' + f.active_since_formatted : '';
+        return '<div class="fy-card"><h3>' + escHtml(f.fy) + ' <small>' + escHtml(_FY_ROLE[f.role] || f.role) + '</small></h3>'
+            + (since ? '<p class="fy-since">' + escHtml(since) + '</p>' : '')
+            + '<div class="dests">' + fyLegCard(f, 'lan', busy) + fyLegCard(f, 'cloud', busy) + '</div></div>';
+    }).join('');
+    if (html === _fySig) return;            // nothing changed: keep focus and hover
+    _fySig = html;
+    document.getElementById('fy-card-list').innerHTML = html;
+}
+document.addEventListener('click', function(ev) {
+    var b = ev.target.closest ? ev.target.closest('#fy-card-list button') : null;
+    if (!b || b.disabled) return;
+    if (b.dataset.backup) triggerFyBackup(b.dataset.backup, b.dataset.fy, b);
+    else if (b.dataset.verify) triggerFyVerify(b.dataset.verify, b.dataset.fy, b);
+});
+async function triggerFyBackup(leg, fy, btn) {
+    var what = leg === 'cloud' ? 'the online backup' : 'the office NAS backup';
+    if (!confirm('Start ' + what + ' of ' + fy + ' now?')) return;
+    btn.disabled = true; btn.innerText = 'Starting...';
+    try {
+        var response = await fetch('/trigger/' + leg + '?fy=' + encodeURIComponent(fy), { method: 'POST' });
+        var data = await response.json();
+        showToast(data.detail || (response.ok ? 'Leave this page open to follow it. The backup started.' : 'Try again, and ask support if it keeps failing. The backup did not start.'), response.ok ? 'success' : 'error');
+    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
+    _fySig = '';
+    await updateStatus();
+}
+async function triggerFyVerify(leg, fy, btn) {
+    var msg = 'Run the safety check on the ' + (leg === 'cloud' ? 'online' : 'office') + ' copy of ' + fy + ' now?\n\nIt compares every file with your original and can take several hours. '
+        + 'Nothing is changed. Backups wait until it has finished.';
+    if (!confirm(msg)) return;
+    btn.disabled = true; btn.innerText = 'Starting...';
+    var url = '/trigger/verify/' + leg + '?fy=' + encodeURIComponent(fy);
+    try {
+        var response = await fetch(url, { method: 'POST' });
+        var data = await response.json();
+        if (response.status === 409 && data.status === 'backup_first') {
+            if (!confirm(data.detail + '\n\nPress OK to check anyway (files not backed up yet are shown as waiting, not as faults). '
+                + 'Press Cancel, then use the backup button of this copy.')) { _fySig = ''; await updateStatus(); return; }
+            response = await fetch(url + '&anyway=1', { method: 'POST' });
+            data = await response.json();
+        }
+        showToast(data.detail || (response.ok ? 'The result appears on each copy when it finishes. The safety check started.' : 'Try again later. The safety check did not start.'), response.ok ? 'success' : 'error');
+    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
+    _fySig = '';
+    await updateStatus();
 }
 
 // ── Recent backups: a timeline, one plain line per run ───────────────────
