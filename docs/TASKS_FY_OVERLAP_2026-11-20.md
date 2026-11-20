@@ -35,9 +35,11 @@
   jumps except those listed, certifi fixed.
 - [ ] **OV-0.3 Sync + suite.** `uv sync`; full unit suite; fix every failure caused by the upgrade (behaviour, not by
   loosening tests). Done when: suite = baseline or better.
-- [ ] **OV-0.4 httpx2 for our own calls.** Add `httpx2`; `launch.py` and `watchdog.py` health checks use it; our tests
-  that patch `httpx.get` follow. `httpx` stays (Prefect, TestClient). Test first: the existing watchdog / launch
-  health tests point at the httpx2 path. Done when: no project file outside tests imports `httpx` directly.
+- [ ] **OV-0.4 httpx2 for our own calls + TestClient.** Add `httpx2`; `launch.py` and `watchdog.py` health checks
+  use it; our tests that patch `httpx.get` / build `httpx.Client` follow; Starlette's TestClient picks up httpx2 (the
+  baseline shows its deprecation warning for httpx - it must be gone). `httpx` stays only for Prefect. Test first: the
+  existing watchdog / launch health tests point at the httpx2 path. Done when: no project file imports `httpx`
+  directly and the Starlette httpx deprecation warning no longer appears in the suite.
 - [ ] **OV-0.5 Audit lab** with a clean `PREFECT_HOME` (`tools\run_audit_lab.ps1`); fix upgrade-caused failures.
   Done when: green except the known intentional red.
 - [ ] **OV-0.6 rclone 1.76.** Read the 1.75 / 1.76 changelogs (exit codes, `--use-json-log`, `check`, `--max-delete`);

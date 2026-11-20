@@ -18,6 +18,13 @@ the April switch BOTH folders are backed up (each FY folder is backed up for 15 
   `docs/TASKS_FY_OVERLAP_2026-11-20.md`. Tooling audit (keep Prefect; certifi security fix; httpx2 for our own calls):
   `docs/AUDIT_TOOLING_2026-11-20.md`.
 - **No coding until the owner says go.** First task when he does: OV-0.1 (baseline) then WP0 (upgrade all minors first).
+  The build prompt for a new session is `docs/PROMPT_FY_OVERLAP_BUILD.md` (model policy: Sonnet builds, Haiku chores,
+  Opus verifies).
+- Baseline 2026-11-20 on the current versions (HEAD 9368cf9 + the owner's uncommitted restore/upload work):
+  unit suite **3055 passed, 18 skipped**, 1 warning (Starlette: TestClient with httpx deprecated -> httpx2).
+- **GitHub repo `Shawn2099/AAM_BACKUP_V1` is PUBLIC** and this file's pushed history contains the temporary NAS /
+  service-account password from 2026-10-20: rotate it (NAS + box), consider making the repo private; scan for secrets
+  before every push.
 - The owner's uncommitted restore / upload work (core/restore.py, core/upload.py, restore.py, upload_fy.py, their tests,
   docs/RESTORE_CLOUD.md, tools/server_health/README.md) is NOT ours - never commit it with our tasks.
 - `deploy/gcs_lifecycle.json` was reset to the git version on the owner's instruction (his staged variant: session

@@ -44,7 +44,7 @@ and emails must show both.
 | D-13 | GCS lifecycle is aligned with the overlap at the end (WP12): an active FY prefix is never ARCHIVEd. Until then the git version of `deploy/gcs_lifecycle.json` is used. | owner A-6 |
 | D-14 | Prefect stays the orchestrator for this work (`docs/AUDIT_TOOLING_2026-11-20.md`). | rev 4 |
 | D-15 | **Dependencies are upgraded FIRST (WP0)**: every minor / patch (incl. Prefect 3.9.x, FastAPI, Starlette, pydantic, uvicorn, loguru, pendulum, certifi security fix, rclone 1.76); majors excluded (wakeonlan 4, cron-descriptor 2, SQLAlchemy 2.1, websockets 17, httpx 1.0 dev). | owner 2026-11-20 |
-| D-16 | **httpx2** is added and used by OUR code (launch.py, watchdog.py health checks, our tests where they call HTTP themselves); `httpx` stays installed because Prefect and Starlette's TestClient need it. | owner 2026-11-20 |
+| D-16 | **httpx2** is added and used by OUR code (launch.py, watchdog.py health checks, our tests where they call HTTP themselves) **and by Starlette's TestClient** (Starlette 1.8 already warns "Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead" - seen in the 2026-11-20 baseline). `httpx` stays installed only because Prefect needs it. | owner 2026-11-20 |
 | D-17 | Trial box and this PC: full control for this work (folder-creation test, service restarts, DB rename, deploy). | owner 2026-11-20 |
 
 ## 3. Definitions (used everywhere below)
