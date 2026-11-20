@@ -143,7 +143,7 @@
 
 ## WP8 - Integrity audit (plan §5.8)
 
-- [ ] **OV-8.1** Loop the active set, new first, one NAS wake / shutdown, shared `audit_max_hours`, `fy` on rows and
+- [x] **OV-8.1** Loop the active set, new first, one NAS wake / shutdown, shared `audit_max_hours`, `fy` on rows and
   alerts, `_pending_context` per FY. Tests (R-9).
 
 ## WP9 - Reports (plan §5.9)

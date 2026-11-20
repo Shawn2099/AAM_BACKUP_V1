@@ -156,7 +156,9 @@ class TestBug02And03AuditOrchestration:
 
         cfg = _make_mock_config()
         with prefect_test_harness():
-            with patch("flow.load_config", return_value=cfg):
+            with patch("flow.load_config", return_value=cfg), \
+                    patch("flow._active_fys", return_value=["FY26-27"]), \
+                    patch("flow.fy_overlap.folder_view", side_effect=lambda c, f: c):   # one FY folder (mock config)
                 integrity_audit_flow(mode="all")
 
         # 1. Enclosed in _backup_slot

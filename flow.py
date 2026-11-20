@@ -2995,15 +2995,19 @@ def _audit_alert_kind(outcomes: list[str]) -> str:
 
 
 @flow(name="integrity-audit", log_prints=True)
-def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
+def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: str | None = None):
     """Read-only weekly integrity audit: source↔backup content verification.
 
     This flow NEVER modifies source or destination and NEVER rewrites
     historical backup rows. It records one `integrity_audits` manifest row
-    per enabled leg (VERIFIED | VERIFICATION_FAILED) and alerts + fails on
+    per enabled leg and FY folder (VERIFIED | VERIFICATION_FAILED) and alerts + fails on
     divergence. Absence of an audit row means NOT_VERIFIED.
 
     Modes: cloud | lan | all (both sequentially, cloud first).
+
+    FY folders (plan 5.8): every active FY folder is audited, new FY first, under ONE backup slot,
+    ONE `audit_max_hours` budget and ONE NAS wake / shutdown. `fy` narrows it to one folder (it must
+    be in the active set, else the run is refused).
     """
     from core.integrity import audit_cloud, audit_lan, new_audit_id
 
@@ -3020,25 +3024,44 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         logger.debug(f"configure_prefect_bridge skipped: {e}")
 
     logger.info(f"AAM integrity audit starting - mode={mode}, firm={config.firm_name}")
-    # WP14: the audit's run budget counts from here, including the slot wait
-    budget = RunBudget("audit", config.budget.audit_max_hours * 3600, time.monotonic())
-    db = ManifestDB.from_config(config)
     legs = [leg for leg in ("cloud", "lan")
             if mode in (leg, "all") and getattr(config, leg).enabled]
-    recorded: set[str] = set()
+    # the FY folders of this audit, worked out ONCE (plan 5.8); `fy` narrows it to one folder
+    folders = _active_fys(config) if legs else []
+    if fy is not None and folders:
+        if fy not in folders:
+            raise ValueError(f"FY {fy} is not being backed up right now (active: {', '.join(folders)}); "
+                             "refusing to run it.")
+        folders = [fy]
+    views = {f: fy_overlap.folder_view(config, f) for f in folders}
+    multi = len(folders) > 1
+    # WP14: the audit's run budget counts from here, including the slot wait; ALL folders share it
+    budget = RunBudget("audit", config.budget.audit_max_hours * 3600, time.monotonic())
+    db = ManifestDB.from_config(config)
+    recorded: set[tuple[str, str]] = set()     # (leg, fy) that left a row
     excs = []
-    outcomes: list[str] = []   # "<leg>=<status>" of each non-VERIFIED leg: part of the alert key
+    excs_by_fy: dict[str, list] = {f: [] for f in folders}
+    outcomes_by_fy: dict[str, list[str]] = {f: [] for f in folders}   # "<leg>=<status>" of each non-VERIFIED leg: part of the alert key
+    nas_votes: list[bool] = []     # one entry per LAN folder that woke the NAS and was audited
 
-    def _record(leg: str, audit_id: str, started_at: str, result: dict) -> None:
+    def _record(leg: str, folder: str, audit_id: str, started_at: str, result: dict) -> None:
         # A VERIFIED verdict is durable only once persisted: a failed DB
         # write must fail the audit loudly (alert + FAILED flow), never
         # silently drop a passing result or leave NOT_VERIFIED behind a
         # COMPLETED run.
         name = "Cloud" if leg == "cloud" else "LAN"
-        recorded.add(leg)
+        if multi:
+            name = f"{name} {folder}"
+        outcomes = outcomes_by_fy[folder]
+
+        def _fail(e: BaseException) -> None:
+            excs.append(e)
+            excs_by_fy[folder].append(e)
+
+        recorded.add((leg, folder))
         try:
             db.record_audit({
-                "audit_id": audit_id, "mode": leg, "fy": _effective_fy_prefix(config),
+                "audit_id": audit_id, "mode": leg, "fy": folder,
                 "scope": result["scope"],
                 "started_at": started_at, "ended_at": now_iso(),
                 "status": result["status"],
@@ -3048,97 +3071,112 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 "detail": result["detail"], "created_at": now_iso(),
             })
         except Exception as e:
-            excs.append(RuntimeError(f"{name} audit persistence failed: {e}"))
+            _fail(RuntimeError(f"{name} audit persistence failed: {e}"))
             outcomes.append(f"{leg}=NOT_RECORDED")
         if result["status"] not in (statuses.AuditStatus.VERIFIED, statuses.AuditStatus.PENDING_BACKUP):
-            excs.append(RuntimeError(_audit_outcome_text(name, result)))
+            _fail(RuntimeError(_audit_outcome_text(name, result)))
             outcomes.append(f"{leg}={result['status']}")
 
-    def _audit_cloud_leg(audit_id: str) -> dict:
+    def _audit_cloud_leg(audit_id: str, view) -> dict:
         try:
-            cloud_timeout = int(budget.cap(config.cloud.verify_timeout_seconds))
+            cloud_timeout = int(budget.cap(view.cloud.verify_timeout_seconds))
         except BudgetExceeded as e:
             return _audit_budget_incomplete(e)
-        audit_artefacts = _open_run_artefacts(config, audit_id)
+        audit_artefacts = _open_run_artefacts(view, audit_id)
         try:
             with temp_rclone_config(
-                config.paths.gcs_key_path,
-                config.cloud.location,
-                config.cloud.project_number,
-                config.cloud.storage_class,
+                view.paths.gcs_key_path,
+                view.cloud.location,
+                view.cloud.project_number,
+                view.cloud.storage_class,
             ) as rclone_cfg:
                 return audit_cloud(
-                    config.paths.source_drive, config.cloud.bucket,
-                    _effective_fy_prefix(config), rclone_cfg,
+                    view.paths.source_drive, view.cloud.bucket,
+                    _effective_fy_prefix(view), rclone_cfg,
                     timeout=cloud_timeout, artefacts=audit_artefacts,
-                    pending=_pending_context(config, db, "cloud"),
-                    **_audit_settings(config),
+                    pending=_pending_context(view, db, "cloud"),
+                    **_audit_settings(view),
                 )
         finally:
-            _finalize_run_artefacts(config, audit_artefacts)
+            _finalize_run_artefacts(view, audit_artefacts)
 
-    def _audit_lan_leg(audit_id: str) -> dict:
+    def _audit_lan_leg(audit_id: str, view, last_lan_folder: bool = True) -> dict:
         try:
-            lan_timeout = int(budget.cap(config.lan.subprocess_timeout_seconds,
-                                         config.budget.lan_post_reserve_minutes * 60))
+            lan_timeout = int(budget.cap(view.lan.subprocess_timeout_seconds,
+                                         view.budget.lan_post_reserve_minutes * 60))
         except BudgetExceeded as e:
             return _audit_budget_incomplete(e)   # NAS not woken: nothing to do
         wol_check_task(config)
-        audit_artefacts = _open_run_artefacts(config, audit_id)
+        nas_votes.append(True)    # woken and audited: today's rule would shut the NAS down after this folder
+        audit_artefacts = _open_run_artefacts(view, audit_id)
         try:
             return audit_lan(
-                config.paths.source_drive, config.paths.lan_destination,
+                view.paths.source_drive, view.paths.lan_destination,
                 timeout=lan_timeout, artefacts=audit_artefacts,
-                pending=_pending_context(config, db, "lan"), **_audit_settings(config),
+                pending=_pending_context(view, db, "lan"), **_audit_settings(view),
             )
         finally:
+            # ONE shutdown per flow run (plan 5.8): after the LAST LAN folder, and only when every
+            # LAN folder was woken and audited (a skipped / not-woken folder leaves the NAS on).
             # Only after a successful wake; a failed shutdown never replaces the verdict.
-            if config.lan.shutdown_after_backup and config.wol.enabled:
+            if (last_lan_folder and len(nas_votes) == len(folders) and all(nas_votes)
+                    and config.lan.shutdown_after_backup and config.wol.enabled):
                 try:
                     lan_shutdown_task(config, str(audit_artefacts.dir)
                                       if audit_artefacts else None)
                 except Exception as e:  # noqa: BLE001
                     logger.error(f"NAS shutdown after the LAN audit failed: {e}")
-            _finalize_run_artefacts(config, audit_artefacts)
+            _finalize_run_artefacts(view, audit_artefacts)
 
     try:
         try:
             with _backup_slot(config):
-                for leg, run_leg in (("cloud", _audit_cloud_leg), ("lan", _audit_lan_leg)):
+                for leg in ("cloud", "lan"):
                     if leg not in legs:
                         continue
-                    audit_id, started_at = new_audit_id(leg, "full"), now_iso()
-                    try:
-                        result = run_leg(audit_id)
-                    except Exception as e:  # noqa: BLE001 - recorded + alerted, never silent
-                        logger.error(f"Integrity audit ({leg}) could not run: {e}")
-                        result = {"status": "AUDIT_INCOMPLETE", "scope": "full",
-                                  "files_checked": None, "bytes_checked": None,
-                                  "mismatches": 0,
-                                  "detail": f"could not run - {type(e).__name__}: {e}"}
-                    _record(leg, audit_id, started_at, result)
+                    for i, folder in enumerate(folders):
+                        view = views[folder]
+                        audit_id, started_at = new_audit_id(leg, "full", folder), now_iso()
+                        try:
+                            if leg == "cloud":
+                                result = _audit_cloud_leg(audit_id, view)
+                            else:
+                                result = _audit_lan_leg(audit_id, view, i == len(folders) - 1)
+                        except Exception as e:  # noqa: BLE001 - recorded + alerted, never silent
+                            logger.error(f"Integrity audit ({leg}, {folder}) could not run: {e}")
+                            result = {"status": "AUDIT_INCOMPLETE", "scope": "full",
+                                      "files_checked": None, "bytes_checked": None,
+                                      "mismatches": 0,
+                                      "detail": f"could not run - {type(e).__name__}: {e}"}
+                        _record(leg, folder, audit_id, started_at, result)
         except Exception as e:  # noqa: BLE001 - backup slot / lock not obtained
             logger.error(f"Integrity audit could not run: {e}")
             for leg in legs:
-                if leg not in recorded:
-                    _record(leg, new_audit_id(leg, "full"), now_iso(), {
-                        "status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
-                        "bytes_checked": None, "mismatches": 0,
-                        "detail": f"could not run - backup slot not obtained: {e}"})
+                for folder in folders:
+                    if (leg, folder) not in recorded:
+                        _record(leg, folder, new_audit_id(leg, "full", folder), now_iso(), {
+                            "status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
+                            "bytes_checked": None, "mismatches": 0,
+                            "detail": f"could not run - backup slot not obtained: {e}"})
 
         if excs:
-            error_summary = '; '.join(str(e) for e in excs)
-            logger.error(f"Integrity audit failed: {error_summary}")
-            # The key carries each leg's outcome: a "could not run" alert must
-            # never put a real mismatch inside its cooldown (code review 2026-10-16).
-            audit_fy = _alert_fy(config)      # the FY the audit ran for: its incident and subject are per FY
-            notify(config, AlertEvent(
-                key=f"audit:{_fy_seg(audit_fy)}{mode}:{','.join(sorted(outcomes))}", fy=audit_fy,
-                kind=_audit_alert_kind(outcomes), mode="audit",
-                fault_code=("AAM-AUD-02" if _audit_alert_kind(outcomes) == "WARNING"
-                            else "AAM-AUD-01"),
-                title="Integrity audit did not verify", message=error_summary,
-                status="NOT_VERIFIED"))
+            # one alert per FY (new FY first): its key, incident and subject are per FY
+            for folder in folders:
+                if not excs_by_fy[folder]:
+                    continue
+                outcomes = outcomes_by_fy[folder]
+                error_summary = '; '.join(str(e) for e in excs_by_fy[folder])
+                logger.error(f"Integrity audit failed ({folder}): {error_summary}")
+                # The key carries each leg's outcome: a "could not run" alert must
+                # never put a real mismatch inside its cooldown (code review 2026-10-16).
+                audit_fy = _alert_fy(views[folder])
+                notify(config, AlertEvent(
+                    key=f"audit:{_fy_seg(audit_fy)}{mode}:{','.join(sorted(outcomes))}", fy=audit_fy,
+                    kind=_audit_alert_kind(outcomes), mode="audit",
+                    fault_code=("AAM-AUD-02" if _audit_alert_kind(outcomes) == "WARNING"
+                                else "AAM-AUD-01"),
+                    title="Integrity audit did not verify", message=error_summary,
+                    status="NOT_VERIFIED"))
             raise ExceptionGroup("Integrity audit did not verify", excs)
         logger.info("AAM integrity audit finished - no enabled leg has a real difference "
                     "(newer files may wait for the next backup)")

@@ -506,6 +506,7 @@ def audit_cloud(
     )
 
 
-def new_audit_id(mode: str, scope: str) -> str:
-    """Traceable audit execution id: links the manifest row to the run."""
-    return f"{uuid.uuid4()}-{mode}-{scope}"
+def new_audit_id(mode: str, scope: str, fy: str | None = None) -> str:
+    """Traceable audit execution id: links the manifest row to the run. With an FY (plan 5.8) it is
+    `<uuid>-<mode>-<fy>-<scope>`, which the run-folder naming already parses."""
+    return f"{uuid.uuid4()}-{mode}-{fy}-{scope}" if fy else f"{uuid.uuid4()}-{mode}-{scope}"

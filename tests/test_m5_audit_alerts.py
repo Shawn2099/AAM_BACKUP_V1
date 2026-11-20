@@ -41,6 +41,7 @@ def _setup(monkeypatch, cloud=True, lan=True):
     cfg.lan.shutdown_after_backup = True
     cfg.wol.enabled = True
     monkeypatch.setattr(flow, "load_config", lambda p: cfg)
+    monkeypatch.setattr(flow, "_active_fys", lambda c: ["FY26-27"])   # one FY folder (mock config)
     monkeypatch.setattr(flow, "configure_logging", lambda *a, **k: None)
     monkeypatch.setattr(flow.ManifestDB, "from_config", lambda c: db)
     monkeypatch.setattr(flow, "_backup_slot", MagicMock())
