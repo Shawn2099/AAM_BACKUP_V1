@@ -20,7 +20,7 @@ def test_a_failed_latest_run_is_red_even_while_the_last_success_is_recent(db, st
     _run(db, "bad", "cloud", status, 1)
     _run(db, "l", "lan", "LAN_COMPLETE", 1)
     items = compute_attention(db, _cfg())
-    assert _codes(items, RED) == {"last_run:cloud"}
+    assert _codes(items, RED) == {"last_run:FY26-27:cloud"}
     assert "did not succeed" in items[0]["message"].lower()
 
 
@@ -29,7 +29,7 @@ def test_a_missed_night_is_amber_not_red(db):
     _run(db, "m", "lan", "LAN_MISSED", 1)
     _run(db, "c", "cloud", "CLOUD_COMPLETE", 1)
     items = compute_attention(db, _cfg())
-    assert _codes(items, AMBER) == {"last_run:lan"} and not _codes(items, RED)
+    assert _codes(items, AMBER) == {"last_run:FY26-27:lan"} and not _codes(items, RED)
 
 
 @pytest.mark.parametrize("status", ["CLOUD_PARTIAL", "CLOUD_RUNNING", "CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"])

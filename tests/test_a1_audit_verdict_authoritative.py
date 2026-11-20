@@ -37,7 +37,7 @@ def _cfg():
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
         dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
-        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"), firm_name="T",
+        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27", lan_destination="\\\\nas\\share\\FY26-27"), rollover=attention_cfg.ROLLOVER, firm_name="T",
         notifications=SimpleNamespace(send_on_failure=True),
         schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET)
 
@@ -86,7 +86,7 @@ def test_scope_filter_applies_to_both_lookups(db):
 def test_banner_stays_red_with_the_newer_check_mentioned(db):
     _fresh_runs(db)
     _seed(db, [F, I])
-    items = [i for i in compute_attention(db, _cfg()) if i["code"] == "audit:lan"]
+    items = [i for i in compute_attention(db, _cfg()) if i["code"] == "audit:FY26-27:lan"]
     assert len(items) == 1 and items[0]["level"] == RED
     assert "do not match" in items[0]["message"] and "could not run" in items[0]["message"]
 

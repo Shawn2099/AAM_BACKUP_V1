@@ -106,7 +106,7 @@ def _success(db, started, status="LAN_COMPLETE", run_id=None, **extra):
 
 
 def _stale(db, cfg, now):
-    return [i for i in compute_attention(db, cfg, now=now) if i["code"] == "stale:lan"]
+    return [i for i in compute_attention(db, cfg, now=now) if i["code"] == "stale:FY26-27:lan"]
 
 
 def test_daily_schedule_matches_the_old_26_hours(tmp_path, db):
@@ -209,11 +209,11 @@ def test_a_fresh_install_is_amber_until_the_first_scheduled_run_is_due(tmp_path,
     cfg = _cfg(tmp_path)
     db.set_meta_created_at(at(2026, 10, 22, 10, 0).isoformat())
     items = compute_attention(db, cfg, now=at(2026, 10, 22, 12))
-    assert not [i for i in items if i["code"] == "stale:lan"]
-    waiting = [i for i in items if i["code"] == "first_run:lan"]
+    assert not [i for i in items if i["code"] == "stale:FY26-27:lan"]
+    waiting = [i for i in items if i["code"] == "first_run:FY26-27:lan"]
     assert waiting and waiting[0]["level"] == AMBER
     items = compute_attention(db, cfg, now=at(2026, 10, 23, 3, 1))     # 21:00 + 4 + 2 h passed
-    assert [i for i in items if i["code"] == "stale:lan" and i["level"] == RED]
+    assert [i for i in items if i["code"] == "stale:FY26-27:lan" and i["level"] == RED]
 
 
 def test_a_database_without_the_marker_uses_the_oldest_run(tmp_path, db):
@@ -223,14 +223,14 @@ def test_a_database_without_the_marker_uses_the_oldest_run(tmp_path, db):
     db.insert_run({"run_id": "f1", "mode": "lan", "fy": "FY26-27", "started_at": at(2026, 10, 22, 21, 0).isoformat(),
                    "ended_at": at(2026, 10, 22, 21, 1).isoformat(), "status": "LAN_FAILED"})
     assert db.first_known_at() == at(2026, 10, 22, 21, 0).isoformat()
-    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 24, 3, 1)) if i["code"] == "stale:lan"]
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 24, 3, 1)) if i["code"] == "stale:FY26-27:lan"]
 
 
 def test_a_database_with_nothing_at_all_is_amber_not_red(tmp_path, db):
     cfg = _cfg(tmp_path)
     items = compute_attention(db, cfg, now=at(2026, 10, 22, 12))
-    assert [i for i in items if i["code"] == "first_run:lan"]
-    assert not [i for i in items if i["code"] == "stale:lan"]
+    assert [i for i in items if i["code"] == "first_run:FY26-27:lan"]
+    assert not [i for i in items if i["code"] == "stale:FY26-27:lan"]
 
 
 def test_a_leg_switched_on_later_waits_for_its_own_first_run(tmp_path, db):
@@ -240,7 +240,7 @@ def test_a_leg_switched_on_later_waits_for_its_own_first_run(tmp_path, db):
                              "key": "lan.enabled", "old_value": "False", "new_value": "True",
                              "risky": 0, "backup_file": ""})
     items = compute_attention(db, cfg, now=at(2026, 10, 23, 12))
-    assert [i for i in items if i["code"] == "first_run:lan"] and not [i for i in items if i["code"] == "stale:lan"]
+    assert [i for i in items if i["code"] == "first_run:FY26-27:lan"] and not [i for i in items if i["code"] == "stale:FY26-27:lan"]
 
 
 def test_the_marker_is_written_only_for_a_database_that_did_not_exist(tmp_path):
@@ -269,8 +269,8 @@ def test_overdue_but_progressing_partial_uploads_are_amber_and_not_stale(tmp_pat
     _success(db, at(2026, 10, 15, 21, 0))
     _partial(db, at(2026, 10, 23, 21, 0))
     items = compute_attention(db, cfg, now=at(2026, 10, 24, 12))
-    assert not [i for i in items if i["code"] == "stale:lan"]
-    catching = [i for i in items if i["code"] == "catching_up:lan"]
+    assert not [i for i in items if i["code"] == "stale:FY26-27:lan"]
+    catching = [i for i in items if i["code"] == "catching_up:FY26-27:lan"]
     assert catching and catching[0]["level"] == AMBER
 
 
@@ -279,7 +279,7 @@ def test_a_partial_without_progress_stays_red(tmp_path, db, bytes_copied, stoppe
     cfg = _cfg(tmp_path)
     _success(db, at(2026, 10, 15, 21, 0))
     _partial(db, at(2026, 10, 23, 21, 0), bytes_copied, stopped)
-    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 24, 12)) if i["code"] == "stale:lan"]
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 24, 12)) if i["code"] == "stale:FY26-27:lan"]
 
 
 # ── nothing else is affected ─────────────────────────────────────────────────
@@ -443,7 +443,7 @@ def test_an_unreadable_schedule_is_red_not_silence(tmp_path, db, monkeypatch):
     from core import attention
     monkeypatch.setattr(attention, "_schedule_in_effect", lambda d, c: None)
     items = compute_attention(db, _cfg(tmp_path), now=at(2026, 10, 22, 12))
-    red = [i for i in items if i["code"] == "stale:lan" and i["level"] == RED]
+    red = [i for i in items if i["code"] == "stale:FY26-27:lan" and i["level"] == RED]
     assert red and "schedule cannot be read" in red[0]["message"]
 
 
@@ -455,5 +455,5 @@ def test_catching_up_ends_after_the_configured_number_of_days(tmp_path, db):
     days = cfg.dashboard.catching_up_max_days
     assert days == 14
     # 3 days after the first partial: still catching up; 20 days after: red
-    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 5, 12)) if i["code"] == "catching_up:lan"]
-    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 22, 12)) if i["code"] == "stale:lan"]
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 5, 12)) if i["code"] == "catching_up:FY26-27:lan"]
+    assert [i for i in compute_attention(db, cfg, now=at(2026, 10, 22, 12)) if i["code"] == "stale:FY26-27:lan"]

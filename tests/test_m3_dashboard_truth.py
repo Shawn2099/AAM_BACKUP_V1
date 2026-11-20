@@ -28,7 +28,7 @@ def _cfg(cloud=True, lan=True):
         dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   **ui_login.DASHBOARD,
                                   public_url="http://backup-server:8080"),
-        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
+        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27", lan_destination="\\\\nas\\share\\FY26-27"), rollover=attention_cfg.ROLLOVER,
         firm_name="T",
         notifications=SimpleNamespace(send_on_failure=True),
         schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET,
@@ -65,7 +65,7 @@ def test_stale_and_never_succeeded_legs_are_red(db):
     _run(db, "c", "cloud", "CLOUD_COMPLETE", 11 * 24)          # the 11-day outage
     _run(db, "l1", "lan", "LAN_FAILED", 1)                     # never succeeded; D2: the failure itself is red too
     items = compute_attention(db, _cfg())
-    assert _codes(items, RED) == {"stale:cloud", "stale:lan", "last_run:lan"}
+    assert _codes(items, RED) == {"stale:FY26-27:cloud", "stale:FY26-27:lan", "last_run:FY26-27:lan"}
     msgs = " ".join(i["message"] for i in items)
     assert "264 h" in msgs and "never completed successfully" in msgs.lower()
 
@@ -90,14 +90,14 @@ def test_open_approval_audit_and_undelivered_alerts(db):
                             "subject": "s", "status": "FAILED", "error": "535 auth",
                             "created_at": _ago(3)})
     items = compute_attention(db, _cfg())
-    assert {"approval:lan", "audit:cloud", "alerts_undelivered"} <= _codes(items, RED)
-    assert "audit:lan" in _codes(items, AMBER)
+    assert {"approval:FY26-27:lan", "audit:FY26-27:cloud", "alerts_undelivered"} <= _codes(items, RED)
+    assert "audit:FY26-27:lan" in _codes(items, AMBER)
 
 
 def test_degraded_run_logs_are_amber(db):
     _run(db, "c", "cloud", "CLOUD_COMPLETE", 1, em='{"artefacts_degraded": true}')
     _run(db, "l", "lan", "LAN_COMPLETE", 1)
-    assert _codes(compute_attention(db, _cfg()), AMBER) == {"run_logs:cloud"}
+    assert _codes(compute_attention(db, _cfg()), AMBER) == {"run_logs:FY26-27:cloud"}
 
 
 def test_dashboard_config_keys():
@@ -148,7 +148,7 @@ def test_health_that_cannot_be_evaluated_is_not_healthy(client, monkeypatch):
 def test_status_carries_the_attention_banner_and_the_backups_fy(client, db):
     _old_installation_without_a_success(db)
     data = client.get("/status").json()
-    assert {i["code"] for i in data["attention"]} >= {"stale:cloud", "stale:lan"}
+    assert {i["code"] for i in data["attention"]} >= {"stale:FY26-27:cloud", "stale:FY26-27:lan"}
     assert data["fy_prefix"] == "FY26-27"        # the configured FY the backups use
 
 

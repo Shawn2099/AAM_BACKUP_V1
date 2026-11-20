@@ -84,7 +84,7 @@ def test_the_banner_stays_red_even_when_the_mail_is_skipped(tmp_path, sent):
     wd._check_stale_legs(cfg)
     db = _db(cfg)
     try:
-        assert any(i["code"] == "stale:lan" and i["level"] == "red" for i in compute_attention(db, cfg))
+        assert any(i["code"] == "stale:FY26-27:lan" and i["level"] == "red" for i in compute_attention(db, cfg))
     finally:
         db.close()
 

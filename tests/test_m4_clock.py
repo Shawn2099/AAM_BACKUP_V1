@@ -223,7 +223,7 @@ def _att_cfg():
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
         dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
-        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
+        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27", lan_destination="\\\\nas\\share\\FY26-27"), rollover=attention_cfg.ROLLOVER,
         notifications=SimpleNamespace(send_on_failure=True),
         schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET)
 

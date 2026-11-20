@@ -127,9 +127,9 @@
 
 ## WP6 - Overdue, attention, watchdog (plan §5.6)
 
-- [ ] **OV-6.1 Overdue per (leg, FY)**; early FY's base = `activated_at`. Test: no red / mail on 1 Jan before the
+- [x] **OV-6.1 Overdue per (leg, FY)**; early FY's base = `activated_at`. Test: no red / mail on 1 Jan before the
   first run (R-5).
-- [ ] **OV-6.2 Attention + watchdog codes** `stale:<fy>:<leg>`, `approval:<fy>:<leg>`, `last_run:<fy>:<leg>`;
+- [x] **OV-6.2 Attention + watchdog codes** `stale:<fy>:<leg>`, `approval:<fy>:<leg>`, `last_run:<fy>:<leg>`;
   watchdog parser and suppression per FY; closed FYs never appear. Tests (R-5, R-8).
 
 ## WP7 - Dashboard and settings (plan §5.7)

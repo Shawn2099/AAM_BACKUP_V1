@@ -295,7 +295,7 @@ def test_overdue_is_raised_exactly_when_the_last_success_is_older_than_the_limit
                 codes = {i["code"] for i in compute_attention(db, cfg)}
             finally:
                 db.close()
-            seen.append((when, "stale:cloud" in codes))
+            seen.append((when, "stale:FY26-27:cloud" in codes))
 
         cal.run(_at(2026, 6, 1), _at(2026, 6, 3, 23), after_each=check)
         assert not any(stale for w, stale in seen if w > _at(2026, 6, 1, 23))
@@ -317,7 +317,7 @@ def test_overdue_is_raised_exactly_when_the_last_success_is_older_than_the_limit
             for offset, expected in ((-60, False), (60, True)):
                 with pendulum.travel_to(deadline.add(seconds=offset), freeze=True):
                     codes = {i["code"] for i in compute_attention(db, cfg)}
-                assert ("stale:cloud" in codes) is expected, offset
+                assert ("stale:FY26-27:cloud" in codes) is expected, offset
         finally:
             db.close()
 

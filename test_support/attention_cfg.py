@@ -9,3 +9,5 @@ from types import SimpleNamespace
 SCHEDULE = SimpleNamespace(cloud_cron="* * * * *", lan_cron="* * * * *", timezone="Asia/Kolkata")
 BUDGET = SimpleNamespace(cloud_max_hours=24, lan_max_hours=24)
 GRACE_HOURS = 2
+# the pieces fy_overlap.active_folders reads: overlap off = exactly one active FY (the configured one)
+ROLLOVER = SimpleNamespace(overlap_enabled=False, early_start_month=1)

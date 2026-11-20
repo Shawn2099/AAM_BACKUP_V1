@@ -380,8 +380,8 @@ def _send_recovered_if_needed() -> None:
 
 
 def _stale_code_parts(code: str, cfg) -> tuple[str | None, str]:
-    """(fy, leg) of an attention code `stale:<fy>:<leg>`; for the older `stale:<leg>` the configured FY
-    (None when it cannot be worked out). The attention codes themselves change in OV-6.2."""
+    """(fy, leg) of an attention code `stale:<fy>:<leg>`; for an older-style `stale:<leg>` the configured FY
+    (None when it cannot be worked out)."""
     parts = code.split(":")[1:]
     if len(parts) >= 2:
         return parts[0], parts[-1]
@@ -404,7 +404,6 @@ def _check_stale_legs(cfg=None) -> list[str]:
     alerts.stale_repeat_hours. Returns the stale legs; never raises."""
     try:
         from core import notify as nt
-        from core.manifest import ALL_FYS
         from core.attention import compute_attention
         from core.manifest import ManifestDB
         from models.config import CONFIG_PATH, load_config
@@ -416,9 +415,9 @@ def _check_stale_legs(cfg=None) -> list[str]:
             for item in stale:
                 fy, leg = _stale_code_parts(item["code"], cfg)
                 logger.error(f"Stale backup: {item['message']}")
-                # the failure mail of the same FY (alerts carry `fy` since OV-4.1); an FY-less code (the
-                # attention items until OV-6.2) falls back to the configured FY, an unknown FY to all
-                if item.get("due_at") and db.told_about_leg_since(leg, item["due_at"], fy=fy or ALL_FYS):
+                # one mail per (leg, FY), suppressed only by a failure / action mail of the SAME FY (alerts
+                # carry `fy` since OV-4.1). An FY that cannot be worked out suppresses nothing: fail closed.
+                if fy and item.get("due_at") and db.told_about_leg_since(leg, item["due_at"], fy=fy):
                     logger.info(f"Stale {leg} backup: the missed run was already reported by email")
                     continue
                 nt.notify(cfg, nt.AlertEvent(
@@ -432,7 +431,7 @@ def _check_stale_legs(cfg=None) -> list[str]:
                     cooldown_hours=cfg.alerts.stale_repeat_hours), db=db)
         finally:
             db.close()
-        return [_stale_code_parts(i["code"], cfg)[1] for i in stale]
+        return list(dict.fromkeys(_stale_code_parts(i["code"], cfg)[1] for i in stale))
     except Exception as e:  # noqa: BLE001 - the watchdog loop must keep running
         logger.warning(f"Stale-backup check skipped: {e}")
         return []

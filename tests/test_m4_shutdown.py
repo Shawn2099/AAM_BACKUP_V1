@@ -32,7 +32,7 @@ from test_support.fake_tools import fake_run_tool
 
 def _att_cfg():
     return SimpleNamespace(
-        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"),
+        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27", lan_destination="\\\\nas\\share\\FY26-27"), rollover=attention_cfg.ROLLOVER,
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
         dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),

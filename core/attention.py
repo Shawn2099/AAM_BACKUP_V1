@@ -62,17 +62,42 @@ def _fy(config) -> str:
     return fy_rollover.effective_fy_prefix(config.paths.source_drive)
 
 
+def _metrics(run: dict | None) -> dict:
+    """The extended metrics of a run row as a dict ({} when absent or unreadable)."""
+    if not run or not run.get("extended_metrics"):
+        return {}
+    try:
+        data = json.loads(run["extended_metrics"])
+    except (ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _started_ts(run: dict) -> float:
+    try:
+        return pendulum.parse(run.get("started_at") or run.get("ended_at")).timestamp()
+    except Exception:  # noqa: BLE001 - an unreadable time sorts first
+        return float("-inf")
+
+
 def _later(a: str | None, b: str | None) -> str | None:
     both = [t for t in (a, b) if t]
     return max(both, key=lambda t: pendulum.parse(t).timestamp()) if both else None
 
 
-def _progressing_partial(db, config, leg: str, last: dict | None, now) -> bool:
+def _who(leg: str, fy: str, multi: bool) -> str:
+    """'cloud backup' (one active FY, wording as before) or 'FY27-28 cloud backup' (several)."""
+    phrase = _PHRASE.get(leg, leg)
+    return f"{fy} {phrase}" if multi else phrase
+
+
+def _progressing_partial(db, config, leg: str, last: dict | None, now, fy: str | None = None) -> bool:
     """The latest run is a budget-stopped PARTIAL that copied something: a large upload spread over
     several nights (first full upload, big change) - slow, not stuck. Only for
     `dashboard.catching_up_max_days` after the first partial run following the last success: an
     upload that never finishes is a problem, not "catching up" forever."""
-    run = db.last_run(leg, fy=_fy(config))
+    fy = fy or _fy(config)
+    run = db.last_run(leg, fy=fy)
     if not run or run.get("status") not in statuses.PARTIAL_STATUSES:
         return False
     if not (run.get("bytes_copied") or 0) > 0:
@@ -89,24 +114,39 @@ def _progressing_partial(db, config, leg: str, last: dict | None, now) -> bool:
     max_days = getattr(config.dashboard, "catching_up_max_days",
                        model_default(DashboardConfig, "catching_up_max_days"))
     since = (last.get("started_at") or last.get("ended_at")) if last else None
-    first = db.first_partial_after(leg, since, fy=_fy(config))
+    first = db.first_partial_after(leg, since, fy=fy)
     if not first:
         return True
     return (now.timestamp() - pendulum.parse(first).timestamp()) <= max_days * 86400
 
 
-def _leg_clock(db, config, leg: str, sched: dict):
-    """(last success or None, next scheduled run, overdue-at) for one leg - the one place that applies
-    the rule  overdue-at = next scheduled run after the last success started + run budget + grace.
-    The two times are None when no starting point is known or the time cannot be read."""
+def _leg_clock(db, config, leg: str, sched: dict, fy: str | None = None, role: str | None = None):
+    """(last success or None, next scheduled run, overdue-at) for one leg of one FY - the one place that
+    applies the rule  overdue-at = next scheduled run after the last success started + run budget + grace.
+    The two times are None when no starting point is known or the time cannot be read.
+
+    The CURRENT (configured) FY keeps the older rules: a success of any FY counts when this FY has none
+    (the April switch must not read as never backed up), and with no success at all the clock starts when
+    the system or the leg came into being. The EARLY FY has its own history only and, with no success yet,
+    starts when it was activated (plan 5.6): nothing is owed before that."""
+    from core import fy_overlap
+
+    fy = fy or _fy(config)
+    role = role or fy_overlap.CURRENT
     grace = config.dashboard.stale_grace_hours
     budget_h = getattr(config.budget, f"{leg}_max_hours")
     cron, tz = sched[f"{leg}_cron"], sched["timezone"]
-    last = db.last_successful_run_or_earlier(leg, fy=_fy(config))
+    if role == fy_overlap.CURRENT:
+        last = db.last_successful_run_or_earlier(leg, fy=fy)
+    else:
+        last = db.last_successful_run(leg, fy=fy)
     if last is not None:
         base = last.get("started_at") or last.get("ended_at")
-    else:       # never succeeded: count from when the system (or this leg) came into being
+    elif role == fy_overlap.CURRENT:   # never succeeded: count from when the system (or this leg) came into being
         base = _later(db.first_known_at(), db.last_config_change_at(f"{leg}.enabled"))
+    else:       # the early FY: from its activation (an FY without an activation row is not active: no clock)
+        activation = db.get_activation(fy)
+        base = activation.get("activated_at") if activation else None
     # a schedule that changed after that moment starts its own clock: the old plan's run history says
     # nothing about when the NEW plan's first run is due (daily -> weekly must not look a week late)
     base = _later(base, sched.get(f"{leg}_since"))
@@ -117,8 +157,9 @@ def _leg_clock(db, config, leg: str, sched: dict):
             overdue.deadline(cron, tz, parsed, budget_h, grace))
 
 
-def leg_timing(db, config, leg: str, now=None) -> dict:
-    """Where one enabled leg stands against its schedule, for the dashboard card:
+def leg_timing(db, config, leg: str, now=None, fy: str | None = None, role: str | None = None) -> dict:
+    """Where one enabled leg of one FY (default: the configured one) stands against its schedule, for
+    the dashboard card:
     state  on_time | late (its run should have finished, grace left) | overdue | waiting (nothing has
            run yet, nothing is late) | catching_up (a large upload is progressing over several nights)
     due_at / overdue_at  ISO times (None when unknown). Same rule as the banner (`_overdue_item`)."""
@@ -127,7 +168,7 @@ def leg_timing(db, config, leg: str, now=None) -> dict:
     if not sched:
         return {"state": "on_time", "due_at": None, "overdue_at": None}
     try:
-        last, due, limit = _leg_clock(db, config, leg, sched)
+        last, due, limit = _leg_clock(db, config, leg, sched, fy, role)
     except Exception as e:  # noqa: BLE001 - the card must still render
         logger.warning(f"Timing of the {leg} leg could not be read ({e})")
         return {"state": "on_time", "due_at": None, "overdue_at": None}
@@ -139,37 +180,40 @@ def leg_timing(db, config, leg: str, now=None) -> dict:
         budget_h = getattr(config.budget, f"{leg}_max_hours")
         finished_by = due.timestamp() + float(budget_h) * 3600       # real elapsed time, DST-proof
         return {"state": "late" if now.timestamp() > finished_by else "on_time", **out}
-    if _progressing_partial(db, config, leg, last, now):
+    if _progressing_partial(db, config, leg, last, now, fy):
         return {"state": "catching_up", **out}
     return {"state": "overdue", **out}
 
 
-def _overdue_item(db, config, leg: str, sched: dict, now) -> dict | None:
-    """The banner / watchdog item for one enabled leg, or None while it is on time.
+def _overdue_item(db, config, leg: str, sched: dict, now, fy: str | None = None,
+                  role: str | None = None, multi: bool = False) -> dict | None:
+    """The banner / watchdog item for one enabled leg of one FY, or None while it is on time.
 
     Overdue = now is past  (next scheduled run after the last success started) + (the leg's run
-    budget) + dashboard.stale_grace_hours  - see core.overdue. Codes: `stale:<leg>` (red, the only
-    one the watchdog emails), `first_run:<leg>` (amber, nothing has run yet but nothing is late),
-    `catching_up:<leg>` (amber, a big upload is progressing over several nights)."""
-    phrase = _PHRASE.get(leg, leg)
+    budget) + dashboard.stale_grace_hours  - see core.overdue. Codes: `stale:<fy>:<leg>` (red, the only
+    one the watchdog emails), `first_run:<fy>:<leg>` (amber, nothing has run yet but nothing is late),
+    `catching_up:<fy>:<leg>` (amber, a big upload is progressing over several nights). The message names
+    the FY only when several FYs are active (`multi`)."""
+    fy = fy or _fy(config)
+    phrase = _who(leg, fy, multi)
     grace = config.dashboard.stale_grace_hours
     budget_h = getattr(config.budget, f"{leg}_max_hours")
     try:
-        last, due, limit = _leg_clock(db, config, leg, sched)
+        last, due, limit = _leg_clock(db, config, leg, sched, fy, role)
     except Exception as e:  # noqa: BLE001 - an unreadable time must never hide an overdue leg
-        logger.warning(f"Overdue check for the {leg} leg could not read its schedule/time ({e})")
-        return _item(RED, f"stale:{leg}",
+        logger.warning(f"Overdue check for the {leg} leg ({fy}) could not read its schedule/time ({e})")
+        return _item(RED, f"stale:{fy}:{leg}",
                      act(f"Check why the {phrase} has not succeeded",
                          "The last success could not be placed on the schedule"))
     if limit is None or now <= limit:
         if last is None:
             when = f" (due {format_ist(due.isoformat())})" if due else ""
-            return _item(AMBER, f"first_run:{leg}",
+            return _item(AMBER, f"first_run:{fy}:{leg}",
                          act("Nothing to do yet",
                              f"No {phrase} has finished yet; the first scheduled run is still ahead{when}"))
         return None
-    if _progressing_partial(db, config, leg, last, now):
-        return _item(AMBER, f"catching_up:{leg}",
+    if _progressing_partial(db, config, leg, last, now, fy):
+        return _item(AMBER, f"catching_up:{fy}:{leg}",
                      act("Nothing to do - leave it running",
                          f"The {phrase} is copying a large amount over several nights and is "
                          "making progress"))
@@ -177,12 +221,12 @@ def _overdue_item(db, config, leg: str, sched: dict, now) -> dict | None:
     # the CURRENT state (an older mail says nothing about a scheduler that has stopped since)
     owed = overdue.latest_owed(sched[f"{leg}_cron"], sched["timezone"], now, budget_h).isoformat()
     if last is None:
-        return {**_item(RED, f"stale:{leg}",
+        return {**_item(RED, f"stale:{fy}:{leg}",
                         act(f"Run the {phrase} now from its card, or check why it has not run",
                             "It has never completed successfully")),
                 "due_at": owed}
     age = _hours_since(last.get("ended_at") or last.get("started_at"), now)
-    return {**_item(RED, f"stale:{leg}",
+    return {**_item(RED, f"stale:{fy}:{leg}",
                  act(f"Check why the {phrase} has not succeeded",
                      f"The last success was {age:.0f} h ago; the next scheduled run was due "
                      f"{format_ist(due.isoformat())} and it was not finished by "
@@ -197,77 +241,100 @@ def compute_attention(db, config, now=None) -> list[dict]:
     items: list[dict] = []
     sched = _schedule_in_effect(db, config)
 
+    from core import fy_overlap
+
+    current = _fy(config)
+    try:        # plan 5.6: every active FY folder has its own clock (new FY first)
+        folders = list(fy_overlap.active_folders(config, db, fy_overlap.run_date(now)))
+        if not folders:
+            raise ValueError("the active set is empty")
+    except Exception as e:  # noqa: BLE001 - the dashboard still renders; say that the second year is unknown
+        logger.warning(f"Could not work out which year folders are backed up: {e}")
+        folders = [current]
+        items.append(_item(AMBER, "overlap:active_set",
+                           act("Ask support to check the folder settings",
+                               "Could not work out which year folders are backed up, so only "
+                               f"{current} is checked")))
+    multi = len(folders) > 1
+    roles = {fy: (fy_overlap.CURRENT if fy == current else fy_overlap.EARLY) for fy in folders}
+
     for leg in ("cloud", "lan"):
         if not getattr(config, leg).enabled:
             continue
-        name = _LEG_NAME[leg]
-        if sched:
-            item = _overdue_item(db, config, leg, sched, now)
-        else:       # cannot even tell when it should run: say so (red + the watchdog mails it)
-            item = _item(RED, f"stale:{leg}",
-                         act(f"Ask support to check the schedule settings",
-                             f"The {_PHRASE.get(leg, leg)} schedule cannot be read, so it cannot be "
-                             "checked whether the backup is on time"))
-        if item:
-            items.append(item)
+        runs: list[dict] = []
+        for fy in folders:
+            who = _who(leg, fy, multi)
+            if sched:
+                item = _overdue_item(db, config, leg, sched, now, fy, roles[fy], multi)
+            else:       # cannot even tell when it should run: say so (red + the watchdog mails it)
+                item = _item(RED, f"stale:{fy}:{leg}",
+                             act("Ask support to check the schedule settings",
+                                 f"The {who} schedule cannot be read, so it cannot be "
+                                 "checked whether the backup is on time"))
+            if item:
+                items.append(item)
 
-        run = db.last_run(leg, fy=_fy(config))
-        if run and statuses.category(run.get("status")) == statuses.CATEGORY_FAILED:
-            # D2: a failed night is not "healthy" until the leg is overdue (next scheduled run + run budget + grace).
-            # A missed night (server off or busy) is a warning; PARTIAL / RUNNING are not alarms.
-            level = AMBER if run.get("status") in statuses.MISSED_STATUSES else RED
-            when = format_ist(run.get("ended_at") or run.get("started_at"))
-            items.append(_item(level, f"last_run:{leg}",
-                               act(f"Open the {_PHRASE.get(leg, leg)} card on the dashboard and fix the cause",
-                                   f"The last {_PHRASE.get(leg, leg)} did not succeed "
-                                   f"({statuses.label(run.get('status'))}, {when})")))
-        if run and run.get("extended_metrics"):
-            try:
-                metrics = json.loads(run["extended_metrics"])
-                metrics = metrics if isinstance(metrics, dict) else {}
-            except ValueError:
-                metrics = {}
-            if metrics.get("artefacts_degraded"):
-                items.append(_item(AMBER, f"run_logs:{leg}",
+            run = db.last_run(leg, fy=fy)
+            if run:
+                runs.append(run)
+            if run and statuses.category(run.get("status")) == statuses.CATEGORY_FAILED:
+                # D2: a failed night is not "healthy" until the leg is overdue (next scheduled run + run budget + grace).
+                # A missed night (server off or busy) is a warning; PARTIAL / RUNNING are not alarms.
+                level = AMBER if run.get("status") in statuses.MISSED_STATUSES else RED
+                when = format_ist(run.get("ended_at") or run.get("started_at"))
+                items.append(_item(level, f"last_run:{fy}:{leg}",
+                                   act(f"Open the {who} card on the dashboard and fix the cause",
+                                       f"The last {who} did not succeed "
+                                       f"({statuses.label(run.get('status'))}, {when})")))
+            if _metrics(run).get("artefacts_degraded"):
+                items.append(_item(AMBER, f"run_logs:{fy}:{leg}",
                                    act("Free up disk space on the server",
-                                       f"The {_PHRASE.get(leg, leg)} could not store all of its detailed logs")))
-            clock = metrics.get("clock")
-            if isinstance(clock, dict) and clock.get("state") == "UNVERIFIED":
-                items.append(_item(AMBER, "clock",
-                                   act("Check the server's date, time and internet access",
-                                       "The clock could not be verified on the last cloud backup "
-                                       f"({clock.get('reason') or 'no time source answered'})")))
-            shutdown = metrics.get("nas_shutdown")
-            if isinstance(shutdown, dict) and shutdown.get("outcome") != "VERIFIED":
-                items.append(_item(AMBER, "nas_shutdown",
-                                   act("Check that the NAS has switched off",
-                                       "It was not confirmed off after the last LAN backup "
-                                       f"({shutdown.get('detail') or shutdown.get('outcome')})")))
+                                       f"The {who} could not store all of its detailed logs")))
 
-        audit = db.latest_audit(leg, fy=_fy(config))
-        if audit and audit.get("status") == "VERIFICATION_FAILED":
-            newer = audit.get("newer_incomplete_at")   # A1: a later check that could not run
-            newer_note = f" The newer check on {format_ist(newer)} could not run." if newer else ""
-            items.append(_item(RED, f"audit:{leg}",
-                               act(f"Open the {_PHRASE.get(leg, leg)} details, fix the cause, then press Check now",
-                                   "The safety check found files that do not match "
-                                   f"({audit.get('detail') or 'see the audit detail'})." + newer_note)))
-        elif audit and audit.get("status") == "PENDING_BACKUP":
-            items.append(_item(AMBER, f"audit:{leg}",
-                               act("Nothing to do",
-                                   f"Newer files will be copied by the next {_PHRASE.get(leg, leg)}",
-                                   audit.get("detail") or "")))
-        elif audit and audit.get("status") == "AUDIT_INCOMPLETE":
-            items.append(_item(AMBER, f"audit:{leg}",
-                               act("Run the safety check again later with Check now",
-                                   f"The safety check of the {_PHRASE.get(leg, leg)} could not run "
-                                   f"({audit.get('detail') or 'see the logs'})")))
+            audit = db.latest_audit(leg, fy=fy)
+            if audit and audit.get("status") == "VERIFICATION_FAILED":
+                newer = audit.get("newer_incomplete_at")   # A1: a later check that could not run
+                newer_note = f" The newer check on {format_ist(newer)} could not run." if newer else ""
+                items.append(_item(RED, f"audit:{fy}:{leg}",
+                                   act(f"Open the {who} details, fix the cause, then press Check now",
+                                       "The safety check found files that do not match "
+                                       f"({audit.get('detail') or 'see the audit detail'})." + newer_note)))
+            elif audit and audit.get("status") == "PENDING_BACKUP":
+                items.append(_item(AMBER, f"audit:{fy}:{leg}",
+                                   act("Nothing to do",
+                                       f"Newer files will be copied by the next {who}",
+                                       audit.get("detail") or "")))
+            elif audit and audit.get("status") == "AUDIT_INCOMPLETE":
+                items.append(_item(AMBER, f"audit:{fy}:{leg}",
+                                   act("Run the safety check again later with Check now",
+                                       f"The safety check of the {who} could not run "
+                                       f"({audit.get('detail') or 'see the logs'})")))
+
+        # clock and NAS shutdown belong to the server, not to a folder: they come from the leg's most
+        # recent run of any active FY (an older FY's run says nothing about the last night)
+        metrics = _metrics(max(runs, key=_started_ts)) if runs else {}
+        clock = metrics.get("clock")
+        if isinstance(clock, dict) and clock.get("state") == "UNVERIFIED":
+            items.append(_item(AMBER, "clock",
+                               act("Check the server's date, time and internet access",
+                                   "The clock could not be verified on the last cloud backup "
+                                   f"({clock.get('reason') or 'no time source answered'})")))
+        shutdown = metrics.get("nas_shutdown")
+        if isinstance(shutdown, dict) and shutdown.get("outcome") != "VERIFIED":
+            items.append(_item(AMBER, "nas_shutdown",
+                               act("Check that the NAS has switched off",
+                                   "It was not confirmed off after the last LAN backup "
+                                   f"({shutdown.get('detail') or shutdown.get('outcome')})")))
+
 
     for req in db.open_approvals():
-        name = _LEG_NAME.get(req["leg"], req["leg"])
+        fy = req.get("fy") or _fy(config)       # a request without an FY (older row) is the configured FY's
+        if fy not in folders:                   # a closed / not-active FY is history, not an alarm
+            continue
         what = "waits for your decision" if req["status"] == "PENDING" else "is approved but not run yet"
-        items.append(_item(RED, f"approval:{req['leg']}",
-                           act("Review the decision below", f"The {_PHRASE.get(req['leg'], req['leg'])} is blocked: {what}")))
+        items.append(_item(RED, f"approval:{fy}:{req['leg']}",
+                           act("Review the decision below",
+                               f"The {_who(req['leg'], fy, multi)} is blocked: {what}")))
 
     window = config.dashboard.alert_failure_window_days
     # WP13: a watchdog CRITICAL stays red until its RECOVERED notice follows
@@ -322,8 +389,6 @@ def compute_attention(db, config, now=None) -> list[dict]:
         items.append(_item(AMBER, "alerts_list_empty",
                            act("Add an address under \"Who gets problem alerts\" in Settings",
                                "The alerts list is empty, so problem alerts go to the reports list")))
-
-    from core import fy_overlap
 
     try:                       # plan 5.2: folders next to the year folders that are not backed up
         run_date = fy_overlap.run_date()

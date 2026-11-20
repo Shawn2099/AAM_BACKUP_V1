@@ -47,7 +47,7 @@ def _cfg():
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
         dashboard=SimpleNamespace(stale_grace_hours=attention_cfg.GRACE_HOURS, alert_failure_window_days=7,
                                   public_url="http://backup-server:8080"),
-        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27"), firm_name="T",
+        paths=SimpleNamespace(source_drive="E:\\DATA\\FY26-27", lan_destination="\\\\nas\\share\\FY26-27"), rollover=attention_cfg.ROLLOVER, firm_name="T",
         notifications=SimpleNamespace(send_on_failure=True),
         schedule=attention_cfg.SCHEDULE, budget=attention_cfg.BUDGET)
 
@@ -134,7 +134,7 @@ def test_pending_backup_is_a_small_amber_note_not_red(db):
     _fresh_runs(db)
     _record(db, "lan")
     items = compute_attention(db, _cfg())
-    mine = [i for i in items if i["code"] == "audit:lan"]
+    mine = [i for i in items if i["code"] == "audit:FY26-27:lan"]
     assert [i["level"] for i in mine] == [AMBER]
     assert RED not in {i["level"] for i in items}
     assert looks_action_first(mine[0]["message"])
@@ -180,6 +180,6 @@ def test_dashboard_js_words_pending_backup_in_both_renderers():
 def test_failed_check_banner_says_what_to_do_then_press_check_now(db):
     _fresh_runs(db)
     _record(db, "lan", status="VERIFICATION_FAILED", detail="content-changed=1")
-    [item] = [i for i in compute_attention(db, _cfg()) if i["code"] == "audit:lan"]
+    [item] = [i for i in compute_attention(db, _cfg()) if i["code"] == "audit:FY26-27:lan"]
     assert item["level"] == RED and looks_action_first(item["message"])
     assert item["message"].startswith("Open the LAN backup details") and "Check now" in item["message"]
