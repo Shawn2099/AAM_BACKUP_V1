@@ -31,8 +31,8 @@ def test_sweep_covers_every_run_mode_with_its_own_key_and_wording(tmp_path):
     assert sorted(r["status"] for r in rows) == ["CLOUD_ABANDONED", "LAN_ABANDONED",
                                                  "ROLLOVER_ABANDONED"]
     events = {c.args[1].key: c.args[1] for c in notify.call_args_list}
-    assert set(events) == {"backup:cloud:CLOUD_ABANDONED", "backup:lan:LAN_ABANDONED",
+    assert set(events) == {"backup:FY26-27:cloud:CLOUD_ABANDONED", "backup:FY26-27:lan:LAN_ABANDONED",
                            "rollover:abandoned"}
     assert events["rollover:abandoned"].fault_code == "AAM-ROL-04"
-    assert "rollover" not in events["backup:cloud:CLOUD_ABANDONED"].title.lower()
-    assert "copies what is missing" in events["backup:lan:LAN_ABANDONED"].message
+    assert "rollover" not in events["backup:FY26-27:cloud:CLOUD_ABANDONED"].title.lower()
+    assert "copies what is missing" in events["backup:FY26-27:lan:LAN_ABANDONED"].message

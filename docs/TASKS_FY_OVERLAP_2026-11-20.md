@@ -106,10 +106,10 @@
 
 ## WP4 - Alerts, approvals, closed FY (plan §5.4)
 
-- [ ] **OV-4.1 AlertEvent.fy + keys.** `backup:<fy>:<leg>:<status>`, `blocked:`, `missed:`, `recovered:`, `stale:`,
+- [x] **OV-4.1 AlertEvent.fy + keys.** `backup:<fy>:<leg>:<status>`, `blocked:`, `missed:`, `recovered:`, `stale:`,
   `audit:`, abandoned-run key with FY; `[FY27-28]` in `email_compose.compose` and the notify fallback subject;
   `nas_shutdown:` / `watchdog:*` stay global. Tests: subjects, keys (R-2).
-- [ ] **OV-4.2 Incidents per FY.** Closure, RECOVERED, cooldown, threading per (mode, fy). Test: FY27-28 success never
+- [x] **OV-4.2 Incidents per FY.** Closure, RECOVERED, cooldown, threading per (mode, fy). Test: FY27-28 success never
   closes / recovers an FY26-27 incident (R-2).
 - [ ] **OV-4.3 Approvals per FY.** Supersede per (leg, fy); `evaluate_approval` requires `approval.fy == run fy`;
   the approved re-run passes `fy`; closed-FY approvals unusable. Tests: the R-1 scenario (500 vs 400 deletes) is

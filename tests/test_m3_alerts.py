@@ -63,7 +63,7 @@ def test_cloud_verify_failure_sends_exactly_one_alert_through_notify():
         with pytest.raises(RuntimeError):
             flow._run_cloud_pipeline(_cfg(), "run-v", now_iso())
         [event] = _failures(m["notify"])
-        assert event.key == "backup:cloud:CLOUD_VERIFY_FAILED"
+        assert event.key == "backup:FY26-27:cloud:CLOUD_VERIFY_FAILED"
         assert event.status == "CLOUD_VERIFY_FAILED" and "missing-from-cloud=1" in event.message
 
 
@@ -73,7 +73,7 @@ def test_cloud_suspect_sends_exactly_one_alert():
         with pytest.raises(RuntimeError):
             flow._run_cloud_pipeline(_cfg(), "run-s", now_iso())
         [event] = _failures(m["notify"])
-        assert event.key == "backup:cloud:CLOUD_FAILED"
+        assert event.key == "backup:FY26-27:cloud:CLOUD_FAILED"
 
 
 def test_cloud_partial_sends_exactly_one_alert():

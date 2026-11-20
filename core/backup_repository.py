@@ -151,10 +151,12 @@ def sweep_abandoned_runs(config, db: ManifestDB) -> list[dict]:
                 status=row["status"], occurred_at=row["started_at"],
                 fault_code="AAM-ROL-04", run_id=row["run_id"]), db=db)
             continue
+        row_fy = row.get("fy") or None      # the FY of the swept run, not the configured one (OV-4.1)
         notify(config, AlertEvent(
-            key=f"backup:{leg}:{row['status']}", kind="FAILURE", mode=leg,
+            key=f"backup:{row_fy + ':' if row_fy else ''}{leg}:{row['status']}",
+            kind="FAILURE", mode=leg,
             title=f"{leg.upper()} backup abandoned",
             message=f"{row['error_message']} The next scheduled run copies what is missing.",
             status=row["status"], occurred_at=row["started_at"],
-            fault_code="AAM-SYS-02", run_id=row["run_id"]), db=db)
+            fault_code="AAM-SYS-02", run_id=row["run_id"], fy=row_fy), db=db)
     return rows

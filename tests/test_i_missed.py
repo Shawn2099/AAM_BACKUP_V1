@@ -105,7 +105,7 @@ def test_no_budget_left_records_missed_and_one_warning_without_taking_the_slot(
     assert "scheduled" in row["error_message"].lower()
     [(_, event), _kw] = notify.call_args_list[0]
     assert notify.call_count == 1
-    assert event.key == f"missed:{leg}" and event.kind == "WARNING"
+    assert event.key == f"missed:FY26-27:{leg}" and event.kind == "WARNING"
     assert event.fault_code == "AAM-SYS-07" and event.status == f"{leg.upper()}_MISSED"
 
 

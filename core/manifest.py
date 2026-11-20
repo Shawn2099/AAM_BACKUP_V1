@@ -1150,29 +1150,44 @@ class ManifestDB:
                     "ORDER BY id DESC LIMIT 1", (event_key,)).fetchone()
             return dict(row) if row else None
 
-    def sent_in_mode_after(self, mode: str, after_id: int, *, recovered: bool, fy: str) -> bool:
+    @staticmethod
+    def _key_filter(keys: tuple[str, ...] | None) -> tuple[str, tuple]:
+        """SQL ` AND event_key IN (...)` for incidents that are per KEY (sibling alarms); nothing for None."""
+        if not keys:
+            return "", ()
+        return f" AND event_key IN ({', '.join('?' for _ in keys)})", tuple(keys)
+
+    def sent_in_mode_after(self, mode: str, after_id: int, *, recovered: bool, fy: str,
+                           keys: tuple[str, ...] | None = None) -> bool:
         """Was a RECOVERED (recovered=True) or a problem email (False) of this
-        mode (and FY) SENT after notification `after_id`? Ends / starts an incident."""
+        mode (and FY) SENT after notification `after_id`? Ends / starts an incident.
+        `keys` narrows it to those event keys (per-key incidents, N-9)."""
         op = "=" if recovered else "!="
         clause, fy_args = self._fy_filter(fy)
+        kclause, key_args = self._key_filter(keys)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
                 f"SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
-                f"AND kind {op} 'RECOVERED'{clause} LIMIT 1", (mode, after_id, *fy_args)).fetchone()
+                f"AND kind {op} 'RECOVERED'{clause}{kclause} LIMIT 1",
+                (mode, after_id, *fy_args, *key_args)).fetchone()
         return row is not None
 
-    def last_open_incident(self, mode: str, *, fy: str) -> dict | None:
+    def last_open_incident(self, mode: str, *, fy: str,
+                           keys: tuple[str, ...] | None = None) -> dict | None:
         """Newest SENT problem email of this mode (and FY) with no RECOVERED after it. A
-        RECOVERED mail of one FY never closes the incident of another."""
+        RECOVERED mail of one FY never closes the incident of another. `keys` narrows both the
+        problem and the RECOVERED mails to those event keys (per-key incidents, N-9)."""
         clause, fy_args = self._fy_filter(fy)
+        kclause, key_args = self._key_filter(keys)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                f"SELECT * FROM notifications WHERE mode = ? AND status = 'SENT'{clause} "
+                f"SELECT * FROM notifications WHERE mode = ? AND status = 'SENT'{clause}{kclause} "
                 "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
-                f"WHERE mode = ? AND status = 'SENT' AND kind = 'RECOVERED'{clause}), 0) "
-                "ORDER BY id DESC LIMIT 1", (mode, *fy_args, mode, *fy_args)).fetchone()
+                f"WHERE mode = ? AND status = 'SENT' AND kind = 'RECOVERED'{clause}{kclause}), 0) "
+                "ORDER BY id DESC LIMIT 1",
+                (mode, *fy_args, *key_args, mode, *fy_args, *key_args)).fetchone()
         return dict(row) if row else None
 
     def notification_by_message_id(self, message_id: str) -> dict | None:

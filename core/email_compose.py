@@ -178,12 +178,14 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
     facts = _facts(config)
     facts["leg_name"] = LEG_NAME.get(event.mode, "backup")
     label = LEG_LABEL.get(event.mode, event.mode.upper())
+    # an alert of one financial year says which: "[Firm Backup] [FY27-28] FAILURE: ..." (OV-4.1)
+    prefix = f"[{firm} Backup]" + (f" [{event.fy}]" if getattr(event, "fy", None) else "")
 
     if event.kind == "RECOVERED":
         fault = None
         severity = "RESOLVED"
         was = faults.get(event.resolved_code) if event.resolved_code else None
-        subject = f"[{firm} Backup] RESOLVED: {label} is working again" + (
+        subject = f"{prefix} RESOLVED: {label} is working again" + (
             f" (was {was.code})" if was else "")
         headline = f"{label} is working again."
         what = (f"The problem reported earlier ({was.title}) is fixed." if was
@@ -192,14 +194,14 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
     elif event.kind != "INFO" and (event.fault_code is not None or event.status):
         fault = faults.get(effective_code(event))
         severity = fault.severity
-        subject = f"[{firm} Backup] {severity}: {label} - {fault.title} ({fault.code})"
+        subject = f"{prefix} {severity}: {label} - {fault.title} ({fault.code})"
         headline = f"{label}: {fault.title}"
         what = fault.what.format(**facts)
         steps = tuple(s.format(**facts) for s in fault.steps)
     else:
         fault = None
         severity = SEVERITY.get(event.kind, "INFO")
-        subject = f"[{firm} Backup] {severity}: {event.title}"
+        subject = f"{prefix} {severity}: {event.title}"
         headline = event.title
         what = event.message or ""
         steps = ()

@@ -80,7 +80,7 @@ def test_stale_leg_is_emailed_for_real_once_per_cooldown(tmp_path):
     assert "40 h ago" in body and "http://backup-server:8080" in body
     db = ManifestDB.from_config(cfg)
     try:
-        row = db.last_notification("stale:lan")
+        row = db.last_notification("stale:FY26-27:lan")
     finally:
         db.close()
     assert row["status"] == nt.SUPPRESSED and row["kind"] == "ACTION_REQUIRED"
@@ -113,7 +113,7 @@ def test_never_succeeded_leg_is_stale_too(tmp_path, monkeypatch):
     finally:
         db.close()
     assert wd._check_stale_legs(cfg) == ["cloud", "lan"]
-    assert [e.key for e in sent] == ["stale:cloud", "stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:cloud", "stale:FY26-27:lan"]
     assert all(e.kind == "ACTION_REQUIRED" for e in sent)
 
 

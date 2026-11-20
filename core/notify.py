@@ -542,7 +542,8 @@ def _fallback_alert(config, event: AlertEvent, error: Exception) -> DeliveryResu
         last = _FALLBACK_SENT.get(event.key)
         if last is not None and cooldown_h > 0 and time.monotonic() - last < cooldown_h * 3600:
             return DeliveryResult(SUPPRESSED, f"same short notice already sent (cooldown {cooldown_h}h)")
-        subject = f"[{config.firm_name} Backup] {event.kind}: {event.title}"
+        fy_label = f"[{event.fy}] " if event.fy else ""
+        subject = f"[{config.firm_name} Backup] {fy_label}{event.kind}: {event.title}"
         lines = [event.title, event.message or "",
                  "This is a short notice: the full alert could not be prepared "
                  f"({type(error).__name__}). The details are in the backup program's logs on the server."]
@@ -642,6 +643,15 @@ def _is_after(a_iso: str, b_iso: str) -> bool:
     return pendulum.parse(a_iso).timestamp() > pendulum.parse(b_iso).timestamp()
 
 
+def _incident_keys(event: AlertEvent) -> tuple[str, ...] | None:
+    """N-9: the sibling alarms (mode `rollover_files`, keys `overlap:*`) are one incident PER KEY, not per
+    mode: only the problem key and its own `recovered:<key>` belong to an incident. None = per mode."""
+    if event.mode != "rollover_files":
+        return None
+    problem = event.key.removeprefix("recovered:")
+    return problem, f"recovered:{problem}"
+
+
 def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | None]:
     """(the earlier SENT email of this same, unchanged incident or None,
     Message-ID of the incident's first email to reply to or None).
@@ -651,14 +661,15 @@ def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | No
     the problem itself ended (`_incident_closed`), even if no RESOLVED mail was sent."""
     prior = db.last_notification(event.key, status=SENT)
     fy = event.fy or ALL_FYS
+    keys = _incident_keys(event)
     if event.kind == "RECOVERED":
         same = prior if prior and not db.sent_in_mode_after(
-            event.mode, prior["id"], recovered=False, fy=fy) else None
-        open_problem = db.last_open_incident(event.mode, fy=fy) or {}
+            event.mode, prior["id"], recovered=False, fy=fy, keys=keys) else None
+        open_problem = db.last_open_incident(event.mode, fy=fy, keys=keys) or {}
         root = open_problem.get("thread_id") or open_problem.get("message_id")
         return same, root
     unchanged = (prior is not None and prior.get("fault_code") == event.fault_code
-                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True, fy=fy)
+                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True, fy=fy, keys=keys)
                  and not (config is not None and _incident_closed(event, db, config, prior)))
     same = prior if unchanged else None
     root = (same.get("thread_id") or same.get("message_id")) if same else None

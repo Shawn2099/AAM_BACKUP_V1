@@ -341,14 +341,31 @@ def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
         code = fault_code or faults.classify_run(leg, status, sync_result=sync_result)
     except Exception:  # noqa: BLE001 - the alert must still go out
         code = faults.UNKNOWN
+    fy = _alert_fy(config)
     notify(config, AlertEvent(
-        key=f"backup:{leg}:{status}", kind="FAILURE", mode=leg,
+        key=f"backup:{_fy_seg(fy)}{leg}:{status}", kind="FAILURE", mode=leg,
         title=f"{leg.upper()} backup {statuses.label(status).lower()}",
         message=message, status=status,
         exit_code=exit_code if type(exit_code) is int else None,
         occurred_at=occurred_at, fault_code=code, run_id=run_id,
-        artefacts_dir=artefacts_dir,
+        artefacts_dir=artefacts_dir, fy=fy,
     ))
+
+
+def _alert_fy(config) -> str | None:
+    """The FY of the pipeline whose config this is: it scopes the key, the incident and the subject of a
+    per-leg alert (OV-4.1). Never raises: if it cannot be read the alert still goes out, FY-less."""
+    try:
+        return _effective_fy_prefix(config) or None
+    except Exception as e:  # noqa: BLE001 - the alert must still go out
+        logger.warning(f"Alert FY unknown ({e}); the alert is sent without an FY")
+        return None
+
+
+def _fy_seg(fy: str | None) -> str:
+    """The `<fy>:` segment of a per-leg alert key (OV-4.1) - empty without an FY. Used inside f-strings
+    that keep a literal prefix (`backup:`...), which tests/test_alert_class.py scans for."""
+    return f"{fy}:" if fy else ""
 
 
 def _nas_alert_note(shutdown_on_fail: bool, loop_decides: bool, config) -> str:
@@ -388,13 +405,14 @@ def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
         return
     if previous and statuses.category(previous) in (
             statuses.CATEGORY_FAILED, statuses.CATEGORY_PARTIAL, statuses.CATEGORY_BLOCKED):
+        fy = _alert_fy(config)
         notify(config, AlertEvent(
-            key=f"recovered:{leg}", kind="RECOVERED", mode=leg,
+            key=f"recovered:{_fy_seg(fy)}{leg}", kind="RECOVERED", mode=leg,
             title=f"{leg.upper()} backup recovered",
             message=f"The {leg.upper()} backup completed successfully again "
                     f"(previous run: {statuses.label(previous)}).",
             status="RECOVERED", run_id=run_id,
-            resolved_code=previous_code or faults.classify_run(leg, previous)))
+            resolved_code=previous_code or faults.classify_run(leg, previous), fy=fy))
 
 
 def _exception_kind(exc: BaseException) -> str:
@@ -493,11 +511,11 @@ def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget:
     logger.warning(error)
     _record_run(config, run_id, leg, started_at, status, -1, error,
                 monotonic_start=monotonic_start)
+    fy = _alert_fy(config)
     notify(config, AlertEvent(
-        key=f"missed:{leg}", kind="WARNING", mode=leg,
+        key=f"missed:{_fy_seg(fy)}{leg}", kind="WARNING", mode=leg,
         title=f"{leg.upper()} backup night missed", message=error, status=status,
-        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id,
-        fy=_effective_fy_prefix(config)))
+        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id, fy=fy))
     raise PartialRun(f"{leg.upper()} run ended {status} - {error}")
 
 
@@ -1157,8 +1175,10 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
                else "Nothing was copied or deleted.")
     message += (f"\n\n{changed} Open the dashboard to review the "
                 "numbers and either approve this backup once or dismiss it.")
+    # a leg's block belongs to its FY (the approval's FY); the rollover's own block is not per leg
+    alert_fy = (guard_record.get("fy") or _alert_fy(config)) if leg in ("cloud", "lan") else None
     notify(config, AlertEvent(
-        key=f"blocked:{leg}", kind="ACTION_REQUIRED", mode=leg,
+        key=f"blocked:{_fy_seg(alert_fy)}{leg}", kind="ACTION_REQUIRED", mode=leg, fy=alert_fy,
         title=f"{leg.upper()} backup blocked - approval needed",
         message=message, status=f"{leg.upper()}_BLOCKED",
         fault_code=faults.blocked_guard_code(guard_record) or faults.UNKNOWN, run_id=run_id,

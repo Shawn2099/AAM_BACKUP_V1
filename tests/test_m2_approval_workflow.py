@@ -178,7 +178,7 @@ def test_blocked_run_opens_request_and_sends_attention_email(
     assert [x["guard"] for x in kw["guards"]] == ["G3_MASS_DELETE"]   # blocked only
     assert kw["phrase"] == "APPROVE"
     event = notify.call_args.args[1]
-    assert event.kind == "ACTION_REQUIRED" and event.key == "blocked:lan"
+    assert event.kind == "ACTION_REQUIRED" and event.key == "blocked:FY26-27:lan"
     assert "600 of 1,000" in event.message and event.status == "LAN_BLOCKED"
 
 

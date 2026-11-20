@@ -126,7 +126,7 @@ def test_sweep_sends_one_failure_alert_per_abandoned_run(tmp_path):
     assert [r["run_id"] for r in rows] == ["r1"]
     (cfg, event), kwargs = notify.call_args
     assert notify.call_count == 1
-    assert event.kind == "FAILURE" and event.key == "backup:cloud:CLOUD_ABANDONED"
+    assert event.kind == "FAILURE" and event.key == "backup:FY26-27:cloud:CLOUD_ABANDONED"
     assert event.status == "CLOUD_ABANDONED" and "did not finish" in event.message
 
 
@@ -206,7 +206,7 @@ def test_mail_server_down_never_stops_the_backup_and_the_failed_alert_is_recorde
     db = ManifestDB.from_config(cfg)
     try:
         rows = _rows(db)
-        alert = db.last_notification("backup:lan:LAN_ABANDONED")
+        alert = db.last_notification("backup:FY26-27:lan:LAN_ABANDONED")
     finally:
         db.close()
     assert rows["crashed"]["status"] == "LAN_ABANDONED"

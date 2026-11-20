@@ -42,13 +42,14 @@ def _lan_overdue(cfg):
         db.close()
 
 
-def _note(cfg, *, status, kind="FAILURE", key="backup:lan:LAN_FAILED", mode="lan", hours_ago=1,
-          audience=None):
+def _note(cfg, *, status, kind="FAILURE", key="backup:FY26-27:lan:LAN_FAILED", mode="lan", hours_ago=1,
+          audience=None, fy="FY26-27"):
     db = _db(cfg)
     try:
         db.record_notification({
             "event_key": key, "kind": kind, "mode": mode, "subject": "s", "status": status,
-            "created_at": pendulum.now(IST).subtract(hours=hours_ago).isoformat(), "audience": audience})
+            "created_at": pendulum.now(IST).subtract(hours=hours_ago).isoformat(), "audience": audience,
+            "fy": fy})
     finally:
         db.close()
 
@@ -64,7 +65,7 @@ def test_an_overdue_leg_with_no_earlier_mail_is_emailed(tmp_path, sent):
     cfg = _cfg(tmp_path)
     _lan_overdue(cfg)
     assert wd._check_stale_legs(cfg) == ["lan"]
-    assert [e.key for e in sent] == ["stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:lan"]
 
 
 @pytest.mark.parametrize("status", ["SENT", "SUPPRESSED"])
@@ -94,7 +95,7 @@ def test_an_undelivered_or_silenced_mail_does_not_count(tmp_path, sent, status):
     _lan_overdue(cfg)
     _note(cfg, status=status)
     assert wd._check_stale_legs(cfg) == ["lan"]
-    assert [e.key for e in sent] == ["stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:lan"]
 
 
 def test_a_mail_from_before_the_missed_run_does_not_count(tmp_path, sent):
@@ -102,23 +103,23 @@ def test_a_mail_from_before_the_missed_run_does_not_count(tmp_path, sent):
     _lan_overdue(cfg)
     _note(cfg, status="SENT", hours_ago=30)                      # yesterday's failure, long before 01:00
     assert wd._check_stale_legs(cfg) == ["lan"]
-    assert [e.key for e in sent] == ["stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:lan"]
 
 
 def test_the_stale_mail_itself_never_counts(tmp_path, sent):
     cfg = _cfg(tmp_path)
     _lan_overdue(cfg)
-    _note(cfg, status="SENT", kind="ACTION_REQUIRED", key="stale:lan")
+    _note(cfg, status="SENT", kind="ACTION_REQUIRED", key="stale:FY26-27:lan")
     wd._check_stale_legs(cfg)
-    assert [e.key for e in sent] == ["stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:lan"]
 
 
 def test_a_mail_about_the_other_leg_does_not_count(tmp_path, sent):
     cfg = _cfg(tmp_path)
     _lan_overdue(cfg)
-    _note(cfg, status="SENT", mode="cloud", key="backup:cloud:CLOUD_FAILED")
+    _note(cfg, status="SENT", mode="cloud", key="backup:FY26-27:cloud:CLOUD_FAILED")
     wd._check_stale_legs(cfg)
-    assert [e.key for e in sent] == ["stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:lan"]
 
 
 def test_a_dead_scheduler_is_reported_after_the_next_missed_run(tmp_path, sent):
@@ -127,7 +128,7 @@ def test_a_dead_scheduler_is_reported_after_the_next_missed_run(tmp_path, sent):
     _lan_overdue(cfg)
     _note(cfg, status="SENT", hours_ago=44)
     assert wd._check_stale_legs(cfg) == ["lan"]
-    assert [e.key for e in sent] == ["stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:lan"]
 
 
 # ── C2: how often it repeats ─────────────────────────────────────────────────
@@ -195,7 +196,7 @@ def test_a_mail_about_an_older_missed_run_does_not_silence_a_scheduler_that_stop
     _lan_overdue(cfg)
     _note(cfg, status="SENT", hours_ago=30)            # 09:00 on the 21st, after that night's 01:00 run
     assert wd._check_stale_legs(cfg) == ["lan"]
-    assert [e.key for e in sent] == ["stale:lan"]
+    assert [e.key for e in sent] == ["stale:FY26-27:lan"]
 
 
 def test_latest_firing_is_the_most_recent_owed_run():

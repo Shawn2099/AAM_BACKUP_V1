@@ -379,6 +379,21 @@ def _send_recovered_if_needed() -> None:
     _attention_raised = False
 
 
+def _stale_code_parts(code: str, cfg) -> tuple[str | None, str]:
+    """(fy, leg) of an attention code `stale:<fy>:<leg>`; for the older `stale:<leg>` the configured FY
+    (None when it cannot be worked out). The attention codes themselves change in OV-6.2."""
+    parts = code.split(":")[1:]
+    if len(parts) >= 2:
+        return parts[0], parts[-1]
+    leg = parts[0]
+    try:
+        from core import fy_rollover
+        return fy_rollover.effective_fy_prefix(cfg.paths.source_drive) or None, leg
+    except Exception as e:  # noqa: BLE001 - an unknown FY is looked up across all of them
+        logger.warning(f"Configured FY unknown for the {code} alert ({e})")
+        return None, leg
+
+
 def _check_stale_legs(cfg=None) -> list[str]:
     """Email every enabled leg that is overdue (plan §2 rule 11): no successful backup by its next
     scheduled run + run budget + dashboard.stale_grace_hours - the same evaluation as the dashboard
@@ -399,15 +414,16 @@ def _check_stale_legs(cfg=None) -> list[str]:
         try:
             stale = [i for i in compute_attention(db, cfg) if i["code"].startswith("stale:")]
             for item in stale:
-                leg = item["code"].split(":", 1)[1]
+                fy, leg = _stale_code_parts(item["code"], cfg)
                 logger.error(f"Stale backup: {item['message']}")
-                # ALL_FYS until OV-4.1 stamps `fy` on the alerts: today every mail row has fy NULL,
-                # so a per-FY lookup would never find the failure mail and would send a duplicate
-                if item.get("due_at") and db.told_about_leg_since(leg, item["due_at"], fy=ALL_FYS):
+                # the failure mail of the same FY (alerts carry `fy` since OV-4.1); an FY-less code (the
+                # attention items until OV-6.2) falls back to the configured FY, an unknown FY to all
+                if item.get("due_at") and db.told_about_leg_since(leg, item["due_at"], fy=fy or ALL_FYS):
                     logger.info(f"Stale {leg} backup: the missed run was already reported by email")
                     continue
                 nt.notify(cfg, nt.AlertEvent(
-                    key=f"stale:{leg}", kind="ACTION_REQUIRED", mode=leg,
+                    key=f"stale:{fy + ':' if fy else ''}{leg}", kind="ACTION_REQUIRED", mode=leg,
+                    fy=fy,
                     title=f"{leg.upper()} backup overdue",
                     message=(f"{item['message']} Scheduled backups are not completing - "
                              "either each run fails (see its own alert) or the runs are not "
@@ -416,7 +432,7 @@ def _check_stale_legs(cfg=None) -> list[str]:
                     cooldown_hours=cfg.alerts.stale_repeat_hours), db=db)
         finally:
             db.close()
-        return [i["code"].split(":", 1)[1] for i in stale]
+        return [_stale_code_parts(i["code"], cfg)[1] for i in stale]
     except Exception as e:  # noqa: BLE001 - the watchdog loop must keep running
         logger.warning(f"Stale-backup check skipped: {e}")
         return []
