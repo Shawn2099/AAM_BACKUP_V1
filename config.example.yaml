@@ -500,6 +500,12 @@ guards:
   max_delete_percent: 10
   # Block if the source has this % fewer files than at the last successful backup (0–100)
   max_source_shrink_percent: 20
+  # Small folders (a new year's folder that has just been started): below this many files the
+  # percentage limits above are replaced by small_folder_max_deletes (0 = off, 0-10000000)
+  small_folder_files: 100
+  # In a small folder, block when a backup would delete - or the folder shrank by - more than
+  # this many files (never more than max_delete_files; 0-100000)
+  small_folder_max_deletes: 10
   # Block a LAN destination that points back at this server (true/false)
   forbid_local_destination: true
 

@@ -14,6 +14,7 @@ durable activation row, otherwise [configured FY].
 
 from __future__ import annotations
 
+import calendar
 import contextlib
 import os
 import re
@@ -26,11 +27,16 @@ from loguru import logger
 
 from core import rollover_journal as rj
 from core.fy_rollover import (
+    FORWARD,
+    JUMP,
     _child_path,
     _parent_path,
+    classify_rollover,
     configured_fy,
     effective_fy_prefix,
     folder_entry_names,
+    new_fy_file_count,
+    new_fy_has_files,
     write_placeholder_if_empty,
 )
 from core.guards import MOUNT_MARKER
@@ -42,6 +48,13 @@ EARLY = "early"
 
 _CANONICAL_FY = re.compile(r"^FY(\d{2})-(\d{2})$")
 _LAST_MONTH_OF_FY = 3        # March: the calendar month in which a financial year ends (April start)
+# "FY 27-28", "FY2027-28", "FY_27_28": looks like a year folder (plan 5.2). Case-insensitive, anywhere in the name.
+_FY_LOOKING = re.compile(r"FY[\s_-]*\d{2,4}\s*[-_ ]\s*\d{2,4}", re.IGNORECASE)
+
+SIBLING_MISNAMED = "misnamed"
+SIBLING_UNPROTECTED = "unprotected"
+SIBLING_KEY_PREFIX = "overlap:sibling:"          # + folder name (misnamed)
+UNPROTECTED_KEY_PREFIX = "overlap:unprotected:"  # + canonical FY (unprotected)
 
 
 def run_date(scheduled: datetime | None = None) -> pendulum.Date:
@@ -307,6 +320,127 @@ def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
         if own_db and db is not None:
             with contextlib.suppress(Exception):
                 db.close()
+
+
+# ---- sibling check (OV-2.6, plan 5.2; replaces the ROL-06 "unprotected" alarm) ---------------
+
+def sibling_findings(config: AppConfig, active: list[str], db=None, *, count: bool = True) -> list[dict]:
+    """Folders next to the year folders that are NOT backed up although the office probably thinks they are.
+    Pure read of the direct children of parent(paths.source_drive); never writes, never follows links.
+
+    kind 'misnamed': the name looks like a year folder (`FY 27-28`, `FY2027-28`, `FY_27_28`) but is not the
+    canonical `FYnn-nn` (any case). kind 'unprotected': a canonical folder of a NEWER FY than the configured one,
+    not in `active`, holding real files (placeholder and system files do not count). Past FYs, the configured FY,
+    the active FYs and `rollover.sibling_ignore` are never reported.
+
+    Returns [{'kind', 'name', 'fy' (canonical FY of an unprotected one, else None), 'files'}], sorted by name.
+    `count=False` (dashboard refresh) stops at the first file: `files` is then None. `db` is accepted for the
+    callers' symmetry and is not used."""
+    configured = _configured(config)
+    parent = Path(_parent_path(config.paths.source_drive))
+    if configured is None or not parent.is_dir():
+        return []
+    ignore = {n.lower() for n in config.rollover.sibling_ignore}
+    active_up = {a.upper() for a in active}
+    placeholder = config.rollover.source_placeholder_name
+    found: list[dict] = []
+    try:
+        entries = sorted(os.scandir(parent), key=lambda e: e.name.lower())
+    except OSError as e:
+        logger.warning(f"Sibling check: cannot list {parent}: {e}")
+        return []
+    for entry in entries:
+        name = entry.name
+        try:
+            if name.lower() in ignore or not entry.is_dir():
+                continue
+        except OSError:
+            continue
+        if _CANONICAL_FY.match(name.upper()):
+            fy = name.upper()
+            if fy in active_up or fy == configured.upper():
+                continue
+            if classify_rollover(configured, fy) not in (FORWARD, JUMP):
+                continue                                   # a past FY: ignored (plan 5.2)
+            if count:
+                files = new_fy_file_count(config.paths.source_drive, name, placeholder)
+                if not files:
+                    continue                               # missing / link / only the placeholder
+            elif new_fy_has_files(config.paths.source_drive, name, placeholder):
+                files = None
+            else:
+                continue
+            found.append({"kind": SIBLING_UNPROTECTED, "name": name, "fy": fy, "files": files})
+        elif _FY_LOOKING.search(name):
+            found.append({"kind": SIBLING_MISNAMED, "name": name, "fy": None, "files": None})
+    return found
+
+
+def parent_readable(config: AppConfig) -> bool:
+    """Can the folder holding the year folders be listed? When not, 'no findings' proves nothing."""
+    return Path(_parent_path(config.paths.source_drive)).is_dir()
+
+
+def sibling_key(finding: dict) -> str:
+    """The alert / attention key of a finding (also the incident key in the notifications table)."""
+    if finding["kind"] == SIBLING_MISNAMED:
+        return f"{SIBLING_KEY_PREFIX}{finding['name']}"
+    return f"{UNPROTECTED_KEY_PREFIX}{finding['fy']}"
+
+
+def suggested_name(name: str) -> str:
+    """'FY 27-28' / 'FY2027-28' / 'FY_27_28' -> 'FY27-28' (the last two digits of both years)."""
+    m = _FY_LOOKING.search(name)
+    nums = re.findall(r"\d+", m.group(0)) if m else []
+    if len(nums) < 2:
+        return "FYnn-nn"
+    return f"FY{nums[0][-2:]}-{nums[1][-2:]}"
+
+
+def _unprotected_reason(config: AppConfig, run_date: _date, db) -> str:
+    if not config.rollover.overlap_enabled:
+        return "backing up next year's folder in advance is switched off in the settings"
+    try:
+        timely = in_window(config, run_date) or (db is not None and switch_pending(config, db, run_date))
+    except Exception:  # noqa: BLE001 - the wording must never break the alarm
+        timely = False
+    if timely:
+        return ("it has not been set up for backup yet (the server could not do that so far; "
+                "it is tried again at every backup run)")
+    month = calendar.month_name[config.rollover.early_start_month]
+    return f"next year's folder is only backed up from {month} on"
+
+
+def sibling_text(finding: dict, config: AppConfig, run_date: _date, db=None) -> tuple[str, str]:
+    """(title, message) in plain words, shared by the daily mail and the dashboard item."""
+    if finding["kind"] == SIBLING_MISNAMED:
+        name, good = finding["name"], suggested_name(finding["name"])
+        return (f'The folder "{name}" is not backed up',
+                f'The folder "{name}" looks like a new financial-year folder but is not named {good}, so it is '
+                f"NOT backed up. Rename it to {good}.")
+    fy, configured = finding["fy"], _configured(config) or "this year's folder"
+    saved = f"{finding['files']} file(s) were" if finding.get("files") else "Files were"
+    return (f"Files in {fy} are not backed up yet",
+            f"{saved} saved in {fy}, but they are NOT backed up yet: {_unprotected_reason(config, run_date, db)}. "
+            f"Until then keep working in {configured} instead. Do not move files out of {configured} "
+            "meanwhile: the next backup would remove them from the backup copies too.")
+
+
+def open_sibling_alerts(db) -> list[tuple[str, int]]:
+    """(event key, id of its newest SENT mail) of every sibling alarm mail that was delivered and not yet
+    followed by a delivered RESOLVED mail of the same key. Read-only."""
+    with db._lock:
+        rows = db._get_conn().execute(
+            "SELECT event_key, MAX(id) AS last_id FROM notifications WHERE status = 'SENT' "
+            "AND (event_key LIKE ? OR event_key LIKE ?) GROUP BY event_key",
+            (f"{SIBLING_KEY_PREFIX}%", f"{UNPROTECTED_KEY_PREFIX}%")).fetchall()
+    open_ones = []
+    for row in rows:
+        key, last_id = row[0], row[1]
+        resolved = db.last_notification(f"recovered:{key}", status="SENT")
+        if resolved is None or resolved["id"] < last_id:
+            open_ones.append((key, last_id))
+    return open_ones
 
 
 # ---- NAS folder (OV-2.5) --------------------------------------------------------------------

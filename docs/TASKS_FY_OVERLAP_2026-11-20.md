@@ -82,10 +82,10 @@
 - [x] **OV-2.5 NAS folder rule.** `ensure_overlap_nas_folder`: missing → create (no parents) + marker; marker present →
   OK; empty → marker; non-empty without marker → untouched (G5 asks). Rollover `nas_folder` / `source_folder` steps treat
   "exists (+ marker)" as done. Tests (R-21).
-- [ ] **OV-2.6 Sibling check** in `rollover_check_flow` replaces ROL-06 (`unprotected_new_fy` removed with its alarm /
+- [x] **OV-2.6 Sibling check** in `rollover_check_flow` replaces ROL-06 (`unprotected_new_fy` removed with its alarm /
   attention item / mail): misnamed FY-looking folder → ACTION REQUIRED; canonical newer FY not active with real files →
   ACTION REQUIRED; past FYs and `sibling_ignore` ignored. Tests: December use, overlap off, `FY 27-28`, `FY2027-28`, past FY.
-- [ ] **OV-2.7 Hook-up.** `ensure_overlap_activated` at the start of every backup flow run and of
+- [x] **OV-2.7 Hook-up.** `ensure_overlap_activated` at the start of every backup flow run and of
   `rollover_check_flow`. Test: whichever flow runs first activates; the other is a no-op.
 
 ## WP3 - Orchestration (plan §5.3)
@@ -119,7 +119,7 @@
 
 ## WP5 - Guards (plan §5.5)
 
-- [ ] **OV-5.1 Small folders.** Keys `guards.small_folder_files` (100), `guards.small_folder_max_deletes` (10); rule
+- [x] **OV-5.1 Small folders.** Keys `guards.small_folder_files` (100), `guards.small_folder_max_deletes` (10); rule
   inside `max_delete_allowance` (G3, rclone backstop agrees) and the G2 check. Tests: 9 files + 1 rename passes;
   99 files + 11 deletes blocks; 100-file boundary; `--max-delete` matches (R-14, A-1).
 - [ ] **OV-5.2 First-run deletes.** No baseline for (leg, FY) and planned deletes > 0 → DECISION. Tests: filled

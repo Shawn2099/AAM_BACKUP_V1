@@ -739,6 +739,17 @@ class GuardsConfig(StrictModel):
         description="G2: block when the source has this percent fewer files than "
                     "at the last successful backup of the same FY.",
     )
+    small_folder_files: int = Field(
+        default=100, ge=0, le=10_000_000,
+        description="G2/G3: a folder with fewer files than this is a small folder (a new year's folder "
+                    "that has just been started): the percentage limits are replaced by "
+                    "small_folder_max_deletes. 0 = off (percentages always apply).",
+    )
+    small_folder_max_deletes: int = Field(
+        default=10, ge=0, le=100_000,
+        description="G2/G3: in a small folder, block when a backup would delete (or the folder shrank "
+                    "by) more than this many files. Never more than max_delete_files.",
+    )
     forbid_local_destination: bool = Field(
         default=True,
         description="G4: block a LAN destination that resolves to this machine "

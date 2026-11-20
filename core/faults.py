@@ -260,10 +260,17 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
        "Fix the backup problem first (see its own email); the switch then runs "
        "automatically."),
     _f("AAM-ROL-06", "Files in the new year are not backed up yet", ACTION, (YOU, SUPPORT),
-       "Files were saved in the new financial year's folder, but the backups still use the "
-       "old year's folder until the switch is done. Those new files exist on the server only.",
-       "Open the dashboard and approve the switch, or fix the problem it shows.",
-       "Do not move files out of the old year's folder until the switch is done."),
+       "Files were saved in next year's folder, but that folder is not being backed up yet "
+       "(for example it was used before January, or backing up next year's folder in advance "
+       "is switched off). Those files exist on the server only.",
+       "Keep working in this year's folder until the email says the new folder is backed up, "
+       "or ask support.",
+       "Do not move files out of this year's folder meanwhile."),
+    _f("AAM-ROL-07", "A year folder has the wrong name and is not backed up", ACTION, (YOU, SUPPORT),
+       "A folder next to the year folders looks like a financial-year folder but is not named "
+       "like one (for example \"FY 27-28\" instead of \"FY27-28\"), so it is not backed up.",
+       "Rename the folder to the exact form, for example FY27-28.",
+       "If it is not a year folder, tell support so the warning can be switched off for it."),
 
     # ── weekly safety check ───────────────────────────────────────────────
     _f("AAM-AUD-01", "Safety check found differences", ACTION, (SUPPORT,),

@@ -150,6 +150,7 @@ _UNITS = {
     "rollover.archive_alert_after_days": "days",
     "rollover.early_start_month": "month (1 = January)",
     "guards.max_delete_files": "files", "audit.detail_max_paths": "paths",
+    "guards.small_folder_files": "files", "guards.small_folder_max_deletes": "files",
     "cloud.bandwidth_limit": "MB/s", "cloud.buffer_size": "MB",
 }
 # rclone size strings ("10M", "500k") edited as a number with a fixed unit

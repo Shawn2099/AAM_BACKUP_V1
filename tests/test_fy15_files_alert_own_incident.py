@@ -2,6 +2,7 @@
 RESOLVED mail have their own mail group (mode `rollover_files`), so the RESOLVED does not end an unrelated open
 rollover incident (e.g. the archive warning), and it goes out the SAME day the switch is done."""
 
+import datetime as dt
 from unittest.mock import patch
 
 import pytest
@@ -15,7 +16,8 @@ from test_support.smtp_server import smtp_server
 from tests.test_a6_rollover_journal_flow import FROM, TO, _events
 from tests.test_m2_rollover import _Rig
 
-KEY_PROBLEM, KEY_OK = f"rollover:unprotected:{TO}", f"recovered:rollover:{TO}"
+KEY_PROBLEM, KEY_OK = f"overlap:unprotected:{TO}", f"recovered:overlap:unprotected:{TO}"
+DAY = dt.date(2026, 12, 15)
 
 
 def _cfg(tmp_path, port=25, source=None, **alerts):
@@ -56,9 +58,8 @@ def test_the_alarm_and_its_resolved_mail_use_their_own_mode(tmp_path, db):
     (tmp_path / "src" / TO).mkdir(parents=True)
     (tmp_path / "src" / TO / "a.xlsx").write_text("x", encoding="utf-8")
     sent = []
-    with patch("core.fy_rollover.get_fy_prefix", return_value=TO), \
-            patch("flow.notify", side_effect=lambda c, e, **kw: sent.append(e)):
-        flow._alarm_unprotected_new_fy(_cfg(tmp_path), db)
+    with patch("flow.notify", side_effect=lambda c, e, **kw: sent.append(e)):
+        flow._alarm_siblings(_cfg(tmp_path), db, DAY)
     assert [e.mode for e in sent] == ["rollover_files"]
 
 
@@ -79,7 +80,10 @@ def test_the_subject_names_the_switch_not_the_internal_mode(tmp_path, db):
 
 
 def test_the_incident_closes_once_the_switch_is_done_even_with_resolved_mails_switched_off(tmp_path, db):
-    with smtp_server() as srv:
+    (tmp_path / "src" / FROM).mkdir(parents=True)
+    (tmp_path / "src" / TO).mkdir(parents=True)
+    (tmp_path / "src" / TO / "a.xlsx").write_text("x", encoding="utf-8")
+    with smtp_server() as srv, patch("core.fy_overlap.run_date", return_value=DAY):
         cfg = _cfg(tmp_path, srv.server_address[1], send_resolved=False)
         assert nt.notify(cfg, _files_alert(), db=db).status == nt.SENT
         # the config now points at the new year: the problem ended, so a later alarm is a NEW first mail

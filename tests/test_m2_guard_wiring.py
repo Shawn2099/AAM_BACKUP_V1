@@ -70,10 +70,10 @@ def test_enforce_raises_guard_blocked_with_every_block_reason():
 @given(dest=st.integers(0, 10**7), files=st.integers(0, 10**5),
        pct=st.sampled_from([0, 0.5, 1, 2.5, 5, 10, 12.5, 20, 33.3, 50, 100]))
 def test_max_delete_allowance_matches_g3(dest, files, pct):
-    allowed = g.max_delete_allowance(dest, files, pct)
+    allowed = g.max_delete_allowance(dest, files, pct, small_folder_files=0)
     assert 0 <= allowed <= min(files, dest)
     # The backstop never allows more than G3 would pass ...
-    assert g.g3_mass_delete(allowed, dest, files, pct).passed
+    assert g.g3_mass_delete(allowed, dest, files, pct, small_folder_files=0).passed
     # ... and is not stricter than G3 (exact arithmetic on the configured %).
     if allowed < min(files, dest):
         assert allowed + 1 > files or Fraction(allowed + 1) * 100 > Fraction(dest) * Fraction(pct)

@@ -323,17 +323,21 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            act("Add an address under \"Who gets problem alerts\" in Settings",
                                "The alerts list is empty, so problem alerts go to the reports list")))
 
-    from core import fy_rollover
+    from core import fy_overlap
 
-    try:                       # plan FY-6: files saved in the next year's folder before the switch
-        found = fy_rollover.unprotected_new_fy(config, db, count=False)
+    try:                       # plan 5.2: folders next to the year folders that are not backed up
+        run_date = fy_overlap.run_date()
+        siblings = fy_overlap.sibling_findings(
+            config, fy_overlap.active_folders(config, db, run_date), db, count=False)
     except Exception as e:  # noqa: BLE001 - the dashboard still renders
-        logger.warning(f"Could not check the new financial year's folder: {e}")
-        found = None
-    if found:
-        items.append(_item(RED, f"rollover:unprotected:{found['to_fy']}",
-                           act("Open the FY rollover card and finish the switch (or approve it)",
-                               fy_rollover.unprotected_message(found))))
+        logger.warning(f"Could not check the folders next to the year folders: {e}")
+        siblings, run_date = [], None
+    for found in siblings:
+        _title, message = fy_overlap.sibling_text(found, config, run_date, db)
+        todo = (f"Rename the folder to {fy_overlap.suggested_name(found['name'])}"
+                if found["kind"] == fy_overlap.SIBLING_MISNAMED
+                else "Keep working in this year's folder until the new one is backed up (or ask support)")
+        items.append(_item(RED, fy_overlap.sibling_key(found), act(todo, message)))
 
     from core import alert_class
 

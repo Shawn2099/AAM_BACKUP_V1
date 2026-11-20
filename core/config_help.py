@@ -284,6 +284,14 @@ HELP: dict[str, tuple[str, str]] = {
         "0 = never delete."),
     "guards.max_source_shrink_percent": ("Stop if the data folder suddenly shrinks by more than",
                                          "Protects against an empty or wrong drive being mirrored."),
+    "guards.small_folder_files": (
+        "A folder with fewer files than this counts as a small (new) folder",
+        "A new year's folder starts with a handful of files, where one renamed file is a large "
+        "percentage. Below this size the percentage limits are replaced by the number below. "
+        "0 = always use the percentages."),
+    "guards.small_folder_max_deletes": (
+        "In a small folder, stop if more than this many files would be removed",
+        "Replaces the percentage limits for a small folder (never more than the file limit above)."),
     "guards.forbid_local_destination": ("Never back up onto this same server", ""),
     "approvals.expiry_hours": ("An approval is valid for", ""),
     "approvals.tolerance_percent": ("Allowed change after approval", ""),

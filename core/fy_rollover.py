@@ -259,45 +259,6 @@ def new_fy_has_files(source_drive: str, to_fy: str, placeholder_name: str | None
         return False
 
 
-def unprotected_new_fy(config, db, count: bool = True) -> dict | None:
-    """{from_fy, to_fy, files} when files were saved in the NEXT FY's folder before the switch, else None.
-    `count=False` (the dashboard) only asks whether a file exists: `files` is then None.
-
-    Read-only and clock-light: it needs no proof of the clock because it changes nothing. Only the normal
-    case (exactly the next FY) counts; a clock that is behind, a jump of more than one FY and a folder that
-    only holds the placeholder do not. Ends by itself when the config points at the new FY. Plan FY-6."""
-    source, lan = config.paths.source_drive, config.paths.lan_destination
-    configured = configured_fy(source, lan)
-    if configured is None:
-        return None
-    journal = db.rollover_incomplete()
-    if journal is not None and journal["from_fy"] == configured:
-        to_fy = journal["to_fy"]
-    else:
-        current = get_fy_prefix()
-        if classify_rollover(configured, current) != FORWARD:
-            return None
-        to_fy = current
-    placeholder = config.rollover.source_placeholder_name
-    if count:
-        files = new_fy_file_count(source, to_fy, placeholder)
-        if not files:
-            return None
-    else:
-        if not new_fy_has_files(source, to_fy, placeholder):
-            return None
-        files = None
-    return {"from_fy": configured, "to_fy": to_fy, "files": files}
-
-
-def unprotected_message(found: dict) -> str:
-    saved = f"{found['files']} file(s) were" if found.get("files") else "Files were"
-    return (f"{saved} saved in the {found['to_fy']} folder, but the backups still "
-            f"use {found['from_fy']} until the yearly switch is done, so those files are NOT backed up. "
-            f"Do not move files out of {found['from_fy']} meanwhile: the next backup would remove them "
-            "from the backup copies too.")
-
-
 def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str,
                           placeholder_name: str | None = None) -> dict[str, Path]:
     """LEGACY (no production caller since the rollover became a step journal: use create_source_folder / create_nas_folder).

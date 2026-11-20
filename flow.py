@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import alert_class, approvals, faults, fy_rollover, guards, permissions, report, statuses
+from core import alert_class, approvals, faults, fy_overlap, fy_rollover, guards, permissions, report, statuses
 from core.rclone_errors import find_transport_failure
 from core.backup_repository import (
     record_run_history,
@@ -641,7 +641,9 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     results = [
         guards.g1_source_has_files(first_file, source),
         guards.g2_source_shrink(source_files, baseline.get("source_file_count"),
-                                limits.max_source_shrink_percent),
+                                limits.max_source_shrink_percent,
+                                small_folder_files=limits.small_folder_files,
+                                small_folder_max_deletes=limits.small_folder_max_deletes),
         # Not a host path: the "is this machine" check does not apply.
         guards.g4_destination_identity(destination, baseline.get("destination"),
                                        None, set(), forbid_local=False),
@@ -670,7 +672,9 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         results.append(guards.g3_mass_delete(
             dry["planned_deletes"], destination_files,
             limits.max_delete_files, limits.max_delete_percent,
-            already_deleted=already_deleted))
+            already_deleted=already_deleted,
+            small_folder_files=limits.small_folder_files,
+            small_folder_max_deletes=limits.small_folder_max_deletes))
 
     approved, approval_record = _apply_approval(config, "cloud", approval_id, run_id, results)
     if "G3_MASS_DELETE" in approved:
@@ -680,7 +684,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     else:
         max_delete = guards.remaining_delete_allowance(
             destination_files, already_deleted,
-            limits.max_delete_files, limits.max_delete_percent)
+            limits.max_delete_files, limits.max_delete_percent,
+            limits.small_folder_files, limits.small_folder_max_deletes)
     return guards.enforce(
         "cloud", results, approved_guards=approved, fy=fy_prefix,
         source_file_count=source_files, destination=destination,
@@ -1176,14 +1181,18 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
         guards.g1_source_has_files(
             guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES), source),
         guards.g2_source_shrink(counts["total"], baseline.get("source_file_count"),
-                                limits.max_source_shrink_percent),
+                                limits.max_source_shrink_percent,
+                                small_folder_files=limits.small_folder_files,
+                                small_folder_max_deletes=limits.small_folder_max_deletes),
         guards.g4_destination_identity(
             dest, baseline.get("destination"),
             guards.resolve_host(guards.unc_host(dest)), guards.local_addresses(),
             limits.forbid_local_destination),
         guards.g3_mass_delete(planned_deletes, destination_files,
                               limits.max_delete_files, limits.max_delete_percent,
-                              already_deleted=already_deleted),
+                              already_deleted=already_deleted,
+                              small_folder_files=limits.small_folder_files,
+                              small_folder_max_deletes=limits.small_folder_max_deletes),
         guards.g5_canary(dry_run.get("canary_present"), destination_files > 0, dest),
     ]
     approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)
@@ -2227,6 +2236,16 @@ def _enabled_legs(config) -> tuple[str, ...]:
     return tuple(leg for leg in ("cloud", "lan") if getattr(config, leg).enabled)
 
 
+def _activate_overlap(config, db=None) -> None:
+    """OV-2.7: start backing up next year's folder when it is time (plan 5.1). Called at the start of
+    EVERY backup flow run and of the daily rollover check: whichever comes first activates, the other
+    finds the activation row and does nothing. Idempotent, needs no slot, never raises."""
+    try:
+        fy_overlap.ensure_overlap_activated(config, fy_overlap.run_date(_scheduled_time()), db)
+    except Exception as e:  # noqa: BLE001 - never stops a backup or the rollover check
+        logger.error(f"FY overlap activation check failed: {e}")
+
+
 def _scheduled_time():
     """Plan C (G-9): when this flow run was SCHEDULED to start, so a report sent late (the agent was
     down) still covers the right calendar period. A manual run or no flow context: now."""
@@ -2375,7 +2394,8 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
     config = load_config(config_path)
     db = ManifestDB.from_config(config)
     try:
-        _alarm_unprotected_new_fy(config, db)     # first: the blocked days below raise before the end
+        _activate_overlap(config, db)         # before the sibling check, so a folder it adopts is not reported
+        _alarm_siblings(config, db, fy_overlap.run_date(_scheduled_time()))   # first: the blocked days below raise
         return _rollover_resume(config, config_path, approval_id, db)
     finally:
         db.close()
@@ -2389,32 +2409,66 @@ def _resolve_unprotected_new_fy(config, db, new_fy: str | None = None) -> None:
     configured = new_fy or fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
     if configured is None:
         return
-    problem = db.last_notification(f"rollover:unprotected:{configured}", status="SENT")
-    if problem is None or db.last_notification(f"recovered:rollover:{configured}", status="SENT"):
-        return
+    key = f"{fy_overlap.UNPROTECTED_KEY_PREFIX}{configured}"
+    if any(open_key == key for open_key, _ in fy_overlap.open_sibling_alerts(db)):
+        _send_sibling_resolved(config, db, key)
+
+
+def _send_sibling_resolved(config, db, key: str, protected: bool = True) -> None:
+    """The ONE RESOLVED mail of a sibling alarm (key `overlap:unprotected:<fy>` or `overlap:sibling:<name>`).
+    `protected`: the folder is backed up now (active / configured); otherwise it is gone / renamed / empty."""
+    if key.startswith(fy_overlap.UNPROTECTED_KEY_PREFIX):
+        fy = key[len(fy_overlap.UNPROTECTED_KEY_PREFIX):]
+        title = f"Files in {fy} are backed up now" if protected else f"Files in {fy} no longer need a backup"
+        message = (f"{fy} is part of the backups now: the files saved in its folder are backed up." if protected
+                   else f"The {fy} folder no longer holds files that were waiting for a backup.")
+        code = "AAM-ROL-06"
+    else:
+        name = key[len(fy_overlap.SIBLING_KEY_PREFIX):]
+        title = f'The folder "{name}" is no longer a problem'
+        message = f'The folder "{name}" is no longer there (it was renamed or removed), so the warning is over.'
+        fy, code = None, "AAM-ROL-07"
     notify(config, AlertEvent(
-        key=f"recovered:rollover:{configured}", kind="RECOVERED", mode="rollover_files",
-        title=f"Files in {configured} are backed up now",
-        message=f"The switch to {configured} is done: the files saved in its folder are part of the "
-                "backups now.",
-        status="RECOVERED", resolved_code="AAM-ROL-06"))
+        key=f"recovered:{key}", kind="RECOVERED", mode="rollover_files", title=title, message=message,
+        status="RECOVERED", resolved_code=code, fy=fy), db=db)
 
 
-def _alarm_unprotected_new_fy(config, db) -> None:
-    """Plan FY-6: files in the next FY's folder are not backed up until the switch. Read-only, so it also
-    runs while the rollover is blocked (G6 / unproven clock); a failure here never stops the rollover."""
+def _alarm_siblings(config, db, run_date) -> None:
+    """Plan 5.2: a folder next to the year folders that is not backed up (misnamed, or next year's folder
+    holding files while it is not active) is mailed once a day until fixed, then ONE RESOLVED mail. Read-only,
+    so it also runs while the rollover is blocked (G6 / unproven clock); a failure here never stops the rollover."""
     try:
-        found = fy_rollover.unprotected_new_fy(config, db)
-        if not found:
-            _resolve_unprotected_new_fy(config, db)
-            return
-        notify(config, AlertEvent(
-            key=f"rollover:unprotected:{found['to_fy']}", kind="ACTION_REQUIRED", mode="rollover_files",
-            title=f"Files in {found['to_fy']} are not backed up yet",
-            message=fy_rollover.unprotected_message(found), occurred_at=now_iso(),
-            fault_code="AAM-ROL-06", cooldown_hours=config.alerts.stale_repeat_hours))
+        active = fy_overlap.active_folders(config, db, run_date)
+        findings = fy_overlap.sibling_findings(config, active, db)
+    except Exception as e:  # noqa: BLE001 - an unproven check sends nothing (never a false RESOLVED)
+        logger.warning(f"Check for folders that are not backed up failed: {e}")
+        return
+    for finding in findings:
+        try:
+            title, message = fy_overlap.sibling_text(finding, config, run_date, db)
+            unprotected = finding["kind"] == fy_overlap.SIBLING_UNPROTECTED
+            notify(config, AlertEvent(
+                key=f"overlap:{fy_overlap.sibling_key(finding).removeprefix('overlap:')}",
+                kind="ACTION_REQUIRED", mode="rollover_files",
+                title=title, message=message, occurred_at=now_iso(),
+                fault_code="AAM-ROL-06" if unprotected else "AAM-ROL-07",
+                cooldown_hours=config.alerts.stale_repeat_hours, fy=finding["fy"]), db=db)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not send the alarm for {finding.get('name')}: {e}")
+    if not fy_overlap.parent_readable(config):
+        return                  # a drive / share that is down proves nothing: never a false RESOLVED
+    try:
+        still = {fy_overlap.sibling_key(f) for f in findings}
+        covered = {a.upper() for a in active}
+        configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+        for key, _ in fy_overlap.open_sibling_alerts(db):
+            if key not in still:
+                fy = key[len(fy_overlap.UNPROTECTED_KEY_PREFIX):].upper() \
+                    if key.startswith(fy_overlap.UNPROTECTED_KEY_PREFIX) else None
+                _send_sibling_resolved(config, db, key,
+                                       protected=fy is None or fy in covered or fy == (configured or "").upper())
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"Check for unprotected files in the new financial year failed: {e}")
+        logger.warning(f"Could not send the 'folder is fine now' notice: {e}")
 
 
 def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):
@@ -3009,6 +3063,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
         logger.debug(f"configure_prefect_bridge skipped: {e} - Prefect UI may not show loguru logs")
 
     logger.info(f"AAM Backup starting - mode={mode}, firm={config.firm_name}")
+    _activate_overlap(config)
 
     # Disabled-leg guard: an explicit single-leg request for a disabled leg
     # must fail loudly (Prefect FAILED, no run_history row, no success

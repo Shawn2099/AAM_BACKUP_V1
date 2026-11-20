@@ -29,7 +29,7 @@ def test_the_reported_disagreement_is_gone():
     (0.7, 1000, 7), (14.1, 1000, 141), (33.3, 1000, 333), (10, 5, 0), (10, 100, 10), (2.5, 80, 2), (0, 1000, 0),
 ])
 def test_allowance_is_the_decimal_the_owner_typed(percent, dest, allowed):
-    assert guards.max_delete_allowance(dest, LIMITS, percent) == allowed
+    assert guards.max_delete_allowance(dest, LIMITS, percent, small_folder_files=0) == allowed
 
 
 def test_the_file_count_limit_still_applies():
@@ -48,9 +48,10 @@ def test_g3_passes_exactly_when_planned_is_within_the_allowance(dest, tenths, ma
     percent = tenths / 10                       # what the Settings page stores: one decimal
     # independent exact computation (decimal arithmetic, not the production code)
     exact = min(max_files, floor(Decimal(dest + earlier) * Decimal(str(percent)) / 100))
-    allowance = guards.max_delete_allowance(dest + earlier, max_files, percent)
+    allowance = guards.max_delete_allowance(dest + earlier, max_files, percent, small_folder_files=0)
     assert allowance == max(0, exact)
-    verdict = guards.g3_mass_delete(planned, dest, max_files, percent, already_deleted=earlier)
+    verdict = guards.g3_mass_delete(planned, dest, max_files, percent, already_deleted=earlier,
+                                    small_folder_files=0)
     assert verdict.passed is (planned + earlier <= allowance)
 
 

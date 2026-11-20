@@ -65,7 +65,7 @@ def test_g2_cases():
        lim=st.floats(0, 100, allow_nan=False))
 @settings(max_examples=300, deadline=None)
 def test_g2_property_blocks_exactly_when_drop_exceeds_limit(cur, base, lim):
-    r = g.g2_source_shrink(cur, base, lim)
+    r = g.g2_source_shrink(cur, base, lim, small_folder_files=0)
     drop_pct = 100.0 * max(base - cur, 0) / base
     assert r.passed == (drop_pct <= lim)
 
@@ -90,7 +90,7 @@ def test_g3_property_never_passes_over_either_limit(dels, dest, max_files, max_p
     from fractions import Fraction
     from math import floor
 
-    r = g.g3_mass_delete(dels, dest, max_files, max_pct)
+    r = g.g3_mass_delete(dels, dest, max_files, max_pct, small_folder_files=0)
     allowed = max(0, min(max_files, floor(Fraction(dest) * Fraction(str(max_pct)) / 100)))
     assert r.passed is (dels <= allowed)
 

@@ -23,6 +23,8 @@ from fractions import Fraction
 
 from loguru import logger
 
+from models.config import GuardsConfig, model_default
+
 PASS = "PASS"
 BLOCK = "BLOCK"
 
@@ -88,7 +90,10 @@ def g1_source_has_files(first_file: str | None, source: str) -> GuardResult:
 # ── G2: source must not have shrunk drastically ────────────────────────────
 
 def g2_source_shrink(current_files: int | None, baseline_files: int | None,
-                     max_shrink_percent: float) -> GuardResult:
+                     max_shrink_percent: float, *,
+                     small_folder_files: int = model_default(GuardsConfig, "small_folder_files"),
+                     small_folder_max_deletes: int = model_default(GuardsConfig, "small_folder_max_deletes"),
+                     ) -> GuardResult:
     name = "G2_SOURCE_SHRINK"
     if current_files is None:
         return _block(name, "Source file count could not be measured - cannot prove "
@@ -102,6 +107,21 @@ def g2_source_shrink(current_files: int | None, baseline_files: int | None,
     metrics = dict(current_files=current_files, baseline_files=baseline_files,
                    drop_files=max(drop, 0), drop_percent=round(pct, 2),
                    limit_percent=max_shrink_percent)
+    if baseline_files < small_folder_files and max_shrink_percent > 0:
+        # (an explicit 0 % = "any shrink blocks" is kept as the owner set it)
+        # a small (new) folder: a few files more or less is a large percentage, so the limit is a
+        # number of files instead (plan D-11); the percentage rule applies from small_folder_files on
+        metrics["limit_files"] = small_folder_max_deletes
+        if drop > small_folder_max_deletes:
+            return _block(
+                name,
+                f"Source has {current_files:,} files but had {baseline_files:,} at the last "
+                f"successful backup ({drop:,} fewer; limit {small_folder_max_deletes:,} files for a "
+                "small folder). Files may have been deleted or the wrong folder is mounted.",
+                "AAM-SRC-04", **metrics,
+            )
+        return _pass(name, f"source file count change within the small-folder limit "
+                           f"({max(drop, 0):,} fewer)", **metrics)
     if pct > max_shrink_percent:
         return _block(
             name,
@@ -117,7 +137,10 @@ def g2_source_shrink(current_files: int | None, baseline_files: int | None,
 
 def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                    max_delete_files: int, max_delete_percent: float,
-                   already_deleted: int = 0) -> GuardResult:
+                   already_deleted: int = 0, *,
+                   small_folder_files: int = model_default(GuardsConfig, "small_folder_files"),
+                   small_folder_max_deletes: int = model_default(GuardsConfig, "small_folder_max_deletes"),
+                   ) -> GuardResult:
     """already_deleted (XR-1/XR-2): files an earlier attempt of THIS run
     deleted. The limits apply to the whole run, so they are added to the
     planned deletions and to the destination size the run started from."""
@@ -138,7 +161,8 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                "this run)" if already_deleted else "")
     # B1: the verdict is the SAME allowance the cloud --max-delete backstop uses (one function), so
     # G3 can never pass what the backstop then stops. `pct` is for the message only.
-    if planned_deletes > max_delete_allowance(destination_files, max_delete_files, max_delete_percent):
+    if planned_deletes > max_delete_allowance(destination_files, max_delete_files, max_delete_percent,
+                                              small_folder_files, small_folder_max_deletes):
         return _block(
             name,
             f"This backup would delete {planned_deletes:,} of {destination_files:,} "
@@ -307,7 +331,11 @@ def enforce(leg: str, results: list[GuardResult],
 
 
 def max_delete_allowance(destination_files: int, max_delete_files: int,
-                         max_delete_percent: float) -> int:
+                         max_delete_percent: float,
+                         small_folder_files: int = model_default(GuardsConfig, "small_folder_files"),
+                         small_folder_max_deletes: int = model_default(GuardsConfig,
+                                                                       "small_folder_max_deletes"),
+                         ) -> int:
     """Most deletions G3 passes for this destination size - the ONE rule (B1).
 
     G3 passes exactly when `planned <= max_delete_allowance(...)`, and rclone's own
@@ -315,13 +343,25 @@ def max_delete_allowance(destination_files: int, max_delete_files: int,
     dry-run and the sync cannot exceed the G3 limits and the two can never disagree.
     The percent is the decimal the owner typed: `Fraction(str(...))`, never `Fraction(float)`,
     whose binary value (0.3 is stored as 0.29999999999999998...) is one deletion too strict.
+
+    Small folders (plan D-11): below `small_folder_files` files the percentage is replaced by
+    `small_folder_max_deletes` (still capped by max_delete_files) - 10 % of 9 files is 0, which
+    would block a single renamed file in a new year's folder. At small_folder_files the percentage
+    rule takes over again (10 % of 100 is the same 10: no jump).
     """
+    if 0 < destination_files < small_folder_files and max_delete_percent > 0:
+        # (an explicit 0 % = "never delete" is kept as the owner set it; an EMPTY destination with
+        # planned deletions is a wrong measurement and stays blocked)
+        return max(0, min(max_delete_files, small_folder_max_deletes))
     by_percent = math.floor(Fraction(destination_files) * Fraction(str(max_delete_percent)) / 100)
     return max(0, min(max_delete_files, by_percent))
 
 
 def remaining_delete_allowance(destination_files: int, already_deleted: int,
-                               max_delete_files: int, max_delete_percent: float) -> int:
+                               max_delete_files: int, max_delete_percent: float,
+                               small_folder_files: int = model_default(GuardsConfig, "small_folder_files"),
+                               small_folder_max_deletes: int = model_default(
+                                   GuardsConfig, "small_folder_max_deletes")) -> int:
     """XR-1: the --max-delete for a retry - what is left of the run's allowance.
 
     `destination_files` is the size now; the allowance is computed on the
@@ -329,7 +369,8 @@ def remaining_delete_allowance(destination_files: int, already_deleted: int,
     attempts together never delete more than G3 passes once.
     """
     allowance = max_delete_allowance(destination_files + already_deleted,
-                                     max_delete_files, max_delete_percent)
+                                     max_delete_files, max_delete_percent,
+                                     small_folder_files, small_folder_max_deletes)
     return max(0, allowance - already_deleted)
 
 

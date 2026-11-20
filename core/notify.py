@@ -607,11 +607,25 @@ def _incident_closed(event: AlertEvent, db, config, prior: dict) -> bool:
             healthy = db.watchdog_healthy_at()
             return bool(healthy) and _is_after(healthy, since)
         if mode == "rollover_files":
-            # "files in <to_fy> are not backed up": over once the config points at <to_fy>, even when the
-            # RESOLVED mail is switched off (the key ends with the new year)
-            from core import fy_rollover
-            return fy_rollover.configured_fy(
-                config.paths.source_drive, config.paths.lan_destination) == event.key.rsplit(":", 1)[-1]
+            # sibling alarms (plan 5.2), over even when the RESOLVED mail is switched off:
+            #   overlap:unprotected:<fy>  once <fy> is active or the configured FY, or its files are gone;
+            #   overlap:sibling:<name>    once no such misnamed folder is left (renamed / removed).
+            # An unreadable parent folder proves nothing: the incident stays open.
+            from core import fy_overlap, fy_rollover
+            configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+            tail = event.key.rsplit(":", 1)[-1]
+            if event.key.startswith(fy_overlap.UNPROTECTED_KEY_PREFIX):
+                active = fy_overlap.active_folders(config, db, fy_overlap.run_date())
+                if tail.upper() == (configured or "").upper() or tail.upper() in {a.upper() for a in active}:
+                    return True
+            elif event.key.startswith(fy_overlap.SIBLING_KEY_PREFIX):
+                active = fy_overlap.active_folders(config, db, fy_overlap.run_date())
+            else:                      # an older key: over once the config points at the year it names
+                return configured == tail
+            if not fy_overlap.parent_readable(config):
+                return False
+            return event.key not in {fy_overlap.sibling_key(f) for f in
+                                     fy_overlap.sibling_findings(config, active, db, count=False)}
         latest = db.last_notification(event.key) or prior
         quiet = timedelta(days=config.alerts.incident_quiet_days)
         return pendulum.now("UTC") - pendulum.parse(latest["created_at"]) > quiet
