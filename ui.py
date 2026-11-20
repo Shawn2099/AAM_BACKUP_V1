@@ -1581,7 +1581,7 @@ def trigger_weekly_email(request: Request):
     from core.report_period import ReportPeriod
     legs = _enabled_legs(cfg)
     rp = ReportPeriod.last_days(7)        # the dashboard sends the last 7 days up to now
-    html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly", legs=legs,
+    html_body = generate_report_html(db, cfg.firm_name, 7, "Weekly", legs=legs, config=cfg,
                                      report_period=rp, schedule=cfg.schedule,
                                      alerts_off=alert_class.switched_off(cfg))
     try:
@@ -1621,7 +1621,7 @@ def trigger_monthly_email(request: Request):
     from core.report_period import ReportPeriod
     legs = _enabled_legs(cfg)
     rp = ReportPeriod.last_days(30)        # the dashboard sends the last 30 days up to now
-    html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly", legs=legs,
+    html_body = generate_report_html(db, cfg.firm_name, 30, "Monthly", legs=legs, config=cfg,
                                      report_period=rp, schedule=cfg.schedule,
                                      alerts_off=alert_class.switched_off(cfg))
     try:
@@ -1659,7 +1659,7 @@ def _serve_report(days: int, period: str) -> Response:
     db = get_db()
     from core.report import generate_report_html
     from core.report_period import ReportPeriod
-    html_body = generate_report_html(db, cfg.firm_name, days, period, legs=_enabled_legs(cfg),
+    html_body = generate_report_html(db, cfg.firm_name, days, period, legs=_enabled_legs(cfg), config=cfg,
                                      report_period=ReportPeriod.last_days(days),
                                      schedule=cfg.schedule,
                                      alerts_off=alert_class.switched_off(cfg))

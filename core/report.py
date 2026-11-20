@@ -198,7 +198,7 @@ def _fault(run: dict) -> tuple[str | None, str]:
     return None, statuses.label(run.get("status"))
 
 
-def leg_summaries(db, runs: list[dict], legs) -> list[dict]:
+def leg_summaries(db, runs: list[dict], legs, fy: str = ALL_FYS) -> list[dict]:
     """Per leg: runs OK, last good copy, problems (fault code, resolved?)."""
     out = []
     for leg in legs:
@@ -216,7 +216,7 @@ def leg_summaries(db, runs: list[dict], legs) -> list[dict]:
                              "resolved": any(t > _when(r) for t in ok_times),
                              "_at": _when(r)})
         try:
-            last = db.last_successful_run(leg, fy=ALL_FYS)
+            last = db.last_successful_run(leg, fy=fy)
         except Exception:  # noqa: BLE001 - a partial DB (tests) has no history query
             last = None
         # P3: a failure is resolved by ANY later good run, also one after the period ends
@@ -241,23 +241,28 @@ def _open_decisions(db) -> int:
         return 0
 
 
+def _name(s: dict) -> str:
+    """A leg's name in a line; with several FY sections it says which FY (OV-9.1)."""
+    return f"{s['label']} ({s['fy']})" if s.get("show_fy") and s.get("fy") else s["label"]
+
+
 def report_headline(db, summaries: list[dict]) -> tuple[str, bool]:
     """(one line for the subject and the top, whether a person must act). A leg with no run is a
     missing backup only if a run was SCHEDULED in the period (`scheduled` > 0, or unknown)."""
     for s in summaries:
         if s["total"] == 0 and s.get("scheduled", 1) > 0:
-            return f"action needed: {s['label']} - no backup ran", True
+            return f"action needed: {_name(s)} - no backup ran", True
     for s in summaries:
         open_problems = [p for p in s["problems"] if not p["resolved"]]
         if open_problems:
-            return f"action needed: {s['label']} - {open_problems[-1]['title']}", True
+            return f"action needed: {_name(s)} - {open_problems[-1]['title']}", True
     for s in summaries:
         try:
-            audit = db.latest_audit(s["leg"], fy=ALL_FYS)
+            audit = db.latest_audit(s["leg"], fy=s.get("fy") or ALL_FYS)
         except Exception:  # noqa: BLE001
             audit = None
         if isinstance(audit, dict) and audit.get("status") == "VERIFICATION_FAILED":
-            return f"action needed: {s['label']} - safety check found differences", True
+            return f"action needed: {_name(s)} - safety check found differences", True
     if _open_decisions(db):
         return "action needed: a backup is waiting for your decision", True
     fixed = sum(len(s["problems"]) for s in summaries)
@@ -268,9 +273,9 @@ def report_headline(db, summaries: list[dict]) -> tuple[str, bool]:
     return "all backups OK", False
 
 
-def _audit_row(db, leg: str) -> dict:
+def _audit_row(db, leg: str, fy: str = ALL_FYS) -> dict:
     try:
-        audit = db.latest_audit(leg, fy=ALL_FYS)
+        audit = db.latest_audit(leg, fy=fy)
     except Exception:  # noqa: BLE001 - a partial DB (tests) has no audit query
         audit = None
     if not isinstance(audit, dict) or not audit:
@@ -290,38 +295,79 @@ def _audit_row(db, leg: str) -> dict:
             "detail": detail}
 
 
-def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod) -> None:
+def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod, window=None) -> None:
     """Set `scheduled` on each leg summary: how many runs the schedule planned in the period (so an
     empty period of a weekly plan is not reported as a missing backup). No schedule = unknown, which
-    keeps the old behaviour (an empty period is action needed)."""
+    keeps the old behaviour (an empty period is action needed). `window` = (start, end) of one FY
+    inside the period (OV-9.1); an empty window plans nothing."""
     from core import overdue
 
+    start, end = window if window is not None else (rp.start, rp.end)
     for s in summaries:
         try:
-            s["scheduled"] = overdue.firings_between(
-                getattr(schedule, f"{s['leg']}_cron"), schedule.timezone, rp.start, rp.end)
+            s["scheduled"] = (0 if end <= start else overdue.firings_between(
+                getattr(schedule, f"{s['leg']}_cron"), schedule.timezone, start, end))
         except Exception:  # noqa: BLE001 - unreadable schedule: leave it unknown, never hide a gap
             s.pop("scheduled", None)
 
 
-def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, schedule=None,
-                       alerts_off=None) -> dict:
-    """Everything a report says, computed ONCE (plan C3). Every renderer (email, download, CSV,
-    subject) reads this and nothing else, so they cannot disagree.
+def _parse_ist(value):
+    try:
+        return pendulum.parse(str(value), tz=IST)
+    except Exception:  # noqa: BLE001 - an unreadable time is "unknown", never a crash
+        return None
 
-    runs      backup runs (cloud / lan) that STARTED in the period; rollover and audit rows are
-              not backups and are left out (P4)
-    per_leg   files / bytes copied per leg, never added together across legs (P4)
-    summaries per leg: runs OK, last good copy, problems; "resolved" looks at the whole history (P3)
-    audits    latest independent audit of each ENABLED leg only (P5)"""
-    runs = [r for r in db.get_runs_between(report_period.start, report_period.end, fy=ALL_FYS)
-            if r.get("mode") in BACKUP_LEGS]
-    legs = tuple(legs) if legs is not None else BACKUP_LEGS
-    summaries = leg_summaries(db, runs, legs)
-    if schedule is not None:
-        _scheduled_counts(schedule, summaries, report_period)
-    headline, act = report_headline(db, summaries)
 
+def fy_window(db, fy: str, rp: ReportPeriod) -> tuple:
+    """(start, end) of the part of the period in which `fy` was backed up on schedule (OV-9.1, R-10):
+    from max(period start, its activation) to min(period end, the switch that ended it). The configured
+    FY has no activation row; an FY that was never switched away from has no switch time."""
+    start, end = rp.start, rp.end
+    try:
+        act = db.get_activation(fy)
+    except Exception:  # noqa: BLE001 - a partial DB (tests) has no activations
+        act = None
+    at = _parse_ist(act.get("activated_at")) if act else None
+    if at is not None and at > start:
+        start = at
+    try:
+        from core import fy_overlap, rollover_journal as rj
+
+        journal = db.rollover_get(fy, fy_overlap.next_fy(fy))
+        switched = (journal["steps"][rj.CONFIG_SWITCH].get("finished_at")
+                    if journal and rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]) else None)
+    except Exception:  # noqa: BLE001
+        switched = None
+    sw = _parse_ist(switched) if switched else None
+    if sw is not None and sw < end:
+        end = sw
+    return start, end
+
+
+def fy_sections(db, runs: list[dict], rp: ReportPeriod, config=None) -> list[tuple]:
+    """[(fy, window)] newest FY first: the FYs with runs in the period plus the active set (plan 5.9).
+    A FY with no run and an empty window (it had not started yet) is left out. No FY information at all
+    gives one section for the whole period (the report of a single-FY install is unchanged)."""
+    fys = {r["fy"] for r in runs if r.get("fy")}
+    if config is not None:
+        try:
+            from core import fy_overlap
+
+            fys.update(fy_overlap.active_folders(config, db, fy_overlap.run_date(None)))
+        except Exception as e:  # noqa: BLE001 - the report still goes out, from the runs alone
+            logger.warning(f"Active FYs unknown for the report ({e}); sections come from the runs")
+    if not fys:
+        return [(None, (rp.start, rp.end))]
+    out = []
+    for fy in sorted(fys, reverse=True):          # FYyy-zz sorts by start year: new first
+        window = fy_window(db, fy, rp)
+        if window[1] <= window[0] and not any(r.get("fy") == fy for r in runs):
+            continue
+        out.append((fy, window))
+    return out or [(None, (rp.start, rp.end))]
+
+
+def _totals(runs: list[dict]) -> dict:
     cats = [statuses.category(r.get("status")) for r in runs]
     total = len(runs)
     successes = cats.count(statuses.CATEGORY_SUCCESS)
@@ -330,18 +376,56 @@ def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, s
     skipped = cats.count(statuses.CATEGORY_SKIPPED)
     blocked = cats.count(statuses.CATEGORY_BLOCKED)
     running = cats.count(statuses.CATEGORY_RUNNING)
-    totals = {"total": total, "successes": successes, "no_changes": no_changes,
-              "partials": partials, "skipped": skipped, "blocked": blocked, "running": running,
-              # everything not positively classified counts as a failure (fail loud)
-              "failures": total - successes - no_changes - partials - skipped - blocked - running,
-              "success_rate": ((successes + no_changes) / total * 100) if total else 0}
-    per_leg = {leg: {"files": sum(r.get("files_copied") or 0 for r in runs if r.get("mode") == leg),
-                     "bytes": sum(r.get("bytes_copied") or 0 for r in runs if r.get("mode") == leg)}
-               for leg in legs}
+    return {"total": total, "successes": successes, "no_changes": no_changes,
+            "partials": partials, "skipped": skipped, "blocked": blocked, "running": running,
+            # everything not positively classified counts as a failure (fail loud)
+            "failures": total - successes - no_changes - partials - skipped - blocked - running,
+            "success_rate": ((successes + no_changes) / total * 100) if total else 0}
+
+
+def _per_leg(runs: list[dict], legs) -> dict:
+    return {leg: {"files": sum(r.get("files_copied") or 0 for r in runs if r.get("mode") == leg),
+                  "bytes": sum(r.get("bytes_copied") or 0 for r in runs if r.get("mode") == leg)}
+            for leg in legs}
+
+
+def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, schedule=None,
+                       alerts_off=None, config=None) -> dict:
+    """Everything a report says, computed ONCE (plan C3). Every renderer (email, download, CSV,
+    subject) reads this and nothing else, so they cannot disagree.
+
+    runs      backup runs (cloud / lan) that STARTED in the period; rollover and audit rows are
+              not backups and are left out (P4)
+    per_leg   files / bytes copied per leg, never added together across legs (P4)
+    summaries per leg: runs OK, last good copy, problems; "resolved" looks at the whole history (P3)
+    audits    latest independent audit of each ENABLED leg only (P5)
+    sections  one per FY, new first (OV-9.1): that FY's runs, totals, per-leg data, summaries, audits.
+              The top-level keys are the whole period (CSV, subject); with one FY they equal its section."""
+    runs = [r for r in db.get_runs_between(report_period.start, report_period.end, fy=ALL_FYS)
+            if r.get("mode") in BACKUP_LEGS]
+    legs = tuple(legs) if legs is not None else BACKUP_LEGS
+    plan = fy_sections(db, runs, report_period, config)
+    multi = len(plan) > 1
+    sections = []
+    for fy, window in plan:
+        sruns = [r for r in runs if (r.get("fy") == fy or fy is None)] if multi or fy else runs
+        summaries = leg_summaries(db, sruns, legs, fy=fy or ALL_FYS)
+        if schedule is not None:
+            _scheduled_counts(schedule, summaries, report_period, window if fy else None)
+        for s in summaries:
+            s["fy"], s["show_fy"] = fy, multi
+        audits = [_audit_row(db, leg, fy or ALL_FYS) for leg in legs]
+        for a in audits:
+            a["fy"], a["show_fy"] = fy, multi
+        sections.append({"fy": fy, "window": window, "runs": sruns, "totals": _totals(sruns),
+                         "per_leg": _per_leg(sruns, legs), "summaries": summaries, "audits": audits})
+    summaries = [s for sec in sections for s in sec["summaries"]]
+    headline, act = report_headline(db, summaries)
     return {"alerts_off": list(alerts_off or []),
-            "period": report_period, "legs": legs, "runs": runs, "totals": totals,
-            "per_leg": per_leg, "summaries": summaries, "headline": headline, "act": act,
-            "audits": [_audit_row(db, leg) for leg in legs],
+            "period": report_period, "legs": legs, "runs": runs, "totals": _totals(runs),
+            "per_leg": _per_leg(runs, legs), "summaries": summaries, "headline": headline,
+            "act": act, "sections": sections,
+            "audits": [a for sec in sections for a in sec["audits"]],
             "open_decisions": _open_decisions(db)}
 
 
@@ -353,7 +437,12 @@ _TH = ("text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3
 def _summary_html(model: dict) -> str:
     cell = "padding:6px 12px;border:1px solid #e5e7eb;vertical-align:top"
     rows = ""
+    last_fy = object()
     for s in model["summaries"]:
+        if s.get("show_fy") and s.get("fy") != last_fy:
+            last_fy = s.get("fy")
+            rows += (f"<tr><th colspan='3' style='{cell};text-align:left;background:#e5e7eb'>"
+                     f"{html.escape(str(last_fy))}</th></tr>")
         if s["total"] == 0 and s.get("scheduled", 1) == 0:
             detail = "No backup was scheduled in this period."
         elif s["total"] == 0:
@@ -394,6 +483,30 @@ def _stat_row(label: str, value, bold: bool = False) -> str:
             f"</td><td style=\"{_TD}{weight}\">{value}</td></tr>\n")
 
 
+def _stats_html(t: dict, per_leg: dict, summaries: list[dict], rp) -> str:
+    if t["total"] == 0 and summaries and all(s.get("scheduled", 1) == 0 for s in summaries):
+        return (f"<p style=\"{_TD}\">No backup was scheduled in this period "
+                f"({html.escape(rp.label)}).</p>")
+    if t["total"] == 0:
+        return f"<p style=\"{_TD}\">No backups in {html.escape(rp.label)}.</p>"
+    data = "".join(
+        _stat_row(f"Files copied ({LEG_LABEL.get(leg, leg.upper())})", f"{v['files']:,}")
+        + _stat_row(f"Data transferred ({LEG_LABEL.get(leg, leg.upper())})",
+                    f"{v['bytes']:,} ({humanize.naturalsize(v['bytes'], binary=True)})")
+        for leg, v in per_leg.items())
+    return ("<table style=\"width:100%;border-collapse:collapse;margin:0 0 24px 0\">\n"
+            + _stat_row("Total Backups", t["total"])
+            + _stat_row("Successful Backups", t["successes"])
+            + _stat_row("No Changes (Up-to-date)", t["no_changes"])
+            + _stat_row("Partial Backups", t["partials"])
+            + _stat_row("Skipped Runs", t["skipped"])
+            + _stat_row("Blocked (approval needed)", t["blocked"])
+            + _stat_row("In Progress", t["running"])
+            + _stat_row("Failed Backups", t["failures"])
+            + _stat_row("Success Rate", f"{t['success_rate']:.1f}%", bold=True)
+            + data + "</table>")
+
+
 def render_report_html(model: dict, firm_name: str, is_email: bool = False, name: str = "") -> str:
     """HTML of a report (the email body and the dashboard download), from the model only."""
     rp, t = model["period"], model["totals"]
@@ -419,33 +532,17 @@ def render_report_html(model: dict, firm_name: str, is_email: bool = False, name
                  f"<td>{r.get('files_copied') or 0}</td><td>{html.escape(dur)}</td>"
                  f"<td>{err_display}</td></tr>")
 
-    if t["total"] == 0 and model["summaries"] and all(
-            s.get("scheduled", 1) == 0 for s in model["summaries"]):
-        stats = (f"<p style=\"{_TD}\">No backup was scheduled in this period "
-                 f"({html.escape(rp.label)}).</p>")
-    elif t["total"] == 0:
-        stats = (f"<p style=\"{_TD}\">No backups in {html.escape(rp.label)}.</p>")
+    secs = model.get("sections") or []
+    if len(secs) > 1:                               # one block per FY, new first (OV-9.1)
+        stats = "".join(
+            f"<h4 style=\"color:#374151;margin:8px 0\">{html.escape(str(sec['fy']))}</h4>"
+            + _stats_html(sec["totals"], sec["per_leg"], sec["summaries"], rp) for sec in secs)
     else:
-        data = "".join(
-            _stat_row(f"Files copied ({LEG_LABEL.get(leg, leg.upper())})", f"{v['files']:,}")
-            + _stat_row(f"Data transferred ({LEG_LABEL.get(leg, leg.upper())})",
-                        f"{v['bytes']:,} ({humanize.naturalsize(v['bytes'], binary=True)})")
-            for leg, v in model["per_leg"].items())
-        stats = ("<table style=\"width:100%;border-collapse:collapse;margin:0 0 24px 0\">\n"
-                 + _stat_row("Total Backups", t["total"])
-                 + _stat_row("Successful Backups", t["successes"])
-                 + _stat_row("No Changes (Up-to-date)", t["no_changes"])
-                 + _stat_row("Partial Backups", t["partials"])
-                 + _stat_row("Skipped Runs", t["skipped"])
-                 + _stat_row("Blocked (approval needed)", t["blocked"])
-                 + _stat_row("In Progress", t["running"])
-                 + _stat_row("Failed Backups", t["failures"])
-                 + _stat_row("Success Rate", f"{t['success_rate']:.1f}%", bold=True)
-                 + data + "</table>")
+        stats = _stats_html(t, model["per_leg"], model["summaries"], rp)
 
     integrity_rows = "".join(
         f"<tr><td style=\"{_TD};background:#f9fafb;width:180px\">{a['leg'].upper()} Integrity"
-        f"</td><td style=\"{_TD}\">{html.escape(a['status'])} (checked: "
+        f"{html.escape(' (' + str(a['fy']) + ')') if a.get('show_fy') else ''}</td><td style=\"{_TD}\">{html.escape(a['status'])} (checked: "
         f"{html.escape(str(a['checked']))})<br><span style=\"color:#6b7280;font-size:0.85rem\">"
         f"{html.escape(a['detail'])}</span></td></tr>" for a in model["audits"])
 
@@ -499,13 +596,15 @@ def generate_report_html(
     report_period: ReportPeriod | None = None,
     schedule=None,
     alerts_off=None,
+    config=None,
 ) -> str:
     """HTML report for a period (plan C). An empty period still gives a report that says so
     (P1). `legs` = the enabled legs; default: the legs that appear in the runs. `schedule` (the
     config's schedule section) lets an empty period say "no backup was scheduled" instead of
     "no backup ran" when none was due."""
     rp = resolve_period(days, period, now, report_period)
-    return render_report_html(build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off),
+    return render_report_html(build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off,
+                                               config=config),
                               firm_name, is_email, name=period)
 
 
@@ -520,6 +619,7 @@ def send_summary_report(
     report_period: ReportPeriod | None = None,
     schedule=None,
     alerts_off=None,
+    app_config=None,
 ) -> bool:
     """Send aggregated summary report via email with CSV attachment.
 
@@ -527,19 +627,20 @@ def send_summary_report(
     subject, body, attachments = build_summary_email(db, firm_name, days, period,
                                                      body_html=body_html, legs=legs,
                                                      report_period=report_period,
-                                                     schedule=schedule, alerts_off=alerts_off)
+                                                     schedule=schedule, alerts_off=alerts_off,
+                                                     config=app_config)
     return _send_email_with_attachments(config, subject, body, attachments,
                                         audience=AUDIENCE_REPORTS)
 
 
 def build_summary_email(db: ManifestDB, firm_name: str, days: int, period: str,
                         body_html: str = None, legs=None, now=None,
-                        report_period: ReportPeriod | None = None, schedule=None, alerts_off=None
-                        ) -> tuple[str, str, list[dict]]:
+                        report_period: ReportPeriod | None = None, schedule=None, alerts_off=None,
+                        config=None) -> tuple[str, str, list[dict]]:
     """(subject, html body, [CSV attachment]) for a summary report. A period with no runs is
     still reported ("action needed: ... no backup ran", P1). The subject says the outcome."""
     rp = resolve_period(days, period, now, report_period)
-    model = build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off)
+    model = build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off, config=config)
     body = body_html or render_report_html(model, firm_name, is_email=True, name=period)
     safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', firm_name)
     attachments = [{"filename": f"{safe_firm}_{period}_Report.csv",
@@ -561,10 +662,11 @@ def send_weekly_report(
     report_period: ReportPeriod | None = None,
     schedule=None,
     alerts_off=None,
+    app_config=None,
 ) -> bool:
     return send_summary_report(db, config, firm_name, 7, "Weekly", body_html=body_html,
                                legs=legs, report_period=report_period, schedule=schedule,
-                               alerts_off=alerts_off)
+                               alerts_off=alerts_off, app_config=app_config)
 
 
 def send_monthly_report(
@@ -576,8 +678,9 @@ def send_monthly_report(
     report_period: ReportPeriod | None = None,
     schedule=None,
     alerts_off=None,
+    app_config=None,
 ) -> bool:
     return send_summary_report(db, config, firm_name, 30, "Monthly", body_html=body_html,
                                legs=legs, report_period=report_period, schedule=schedule,
-                               alerts_off=alerts_off)
+                               alerts_off=alerts_off, app_config=app_config)
 

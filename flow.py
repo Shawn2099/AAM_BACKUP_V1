@@ -2378,7 +2378,8 @@ def _send_summary_report(config, days: int, period: str) -> None:
                                            legs=_enabled_legs(config),
                                            report_period=report_period,
                                            schedule=config.schedule,
-                                           alerts_off=alert_class.switched_off(config))
+                                           alerts_off=alert_class.switched_off(config),
+                                           config=config)
         subject, body, attachments = email
         rungs, labels = attachment_ladder(attachments or [])
         result = send_email(config.notifications, subject, body, audience=AUDIENCE_REPORTS,

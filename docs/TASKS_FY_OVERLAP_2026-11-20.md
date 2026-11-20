@@ -148,7 +148,7 @@
 
 ## WP9 - Reports (plan §5.9)
 
-- [ ] **OV-9.1** Sections per FY; scheduled counts from `max(period start, activation)` to `min(period end, switch)`.
+- [x] **OV-9.1** Sections per FY; scheduled counts from `max(period start, activation)` to `min(period end, switch)`.
   Tests: first January weekly, December monthly sent 1 Jan, March monthly, 30 Mar-5 Apr weekly (R-10).
 
 ## WP10 - Tools, readiness, validator (plan §5.10)
