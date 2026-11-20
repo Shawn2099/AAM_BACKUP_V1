@@ -48,6 +48,7 @@ class TestBackupModeRouting:
         mock_config = MagicMock()
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = True
+        mock_config.paths.source_drive = "E:/DATA/FY26-27"
         mock_cfg.return_value = mock_config
         for mode in ("cloud", "lan", "all"):
             backup.fn("config.yaml", mode)
@@ -79,6 +80,7 @@ class TestBackupModeRouting:
         mock_config = MagicMock()
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = False
+        mock_config.paths.source_drive = "E:/DATA/FY26-27"
         mock_cfg.return_value = mock_config
         backup.fn("config.yaml", "CLOUD")
         mock_cloud.assert_called_once()
@@ -392,6 +394,8 @@ class TestFailureAlertPath:
         mock_config = MagicMock()
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = True
+        mock_config.paths.source_drive = "E:/DATA/FY26-27"
+        mock_config.rollover.overlap_enabled = False
         mock_cfg.return_value = mock_config
 
         with pytest.raises(ExceptionGroup, match="Backup completed with errors") as ei:

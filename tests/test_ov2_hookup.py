@@ -51,6 +51,7 @@ def test_every_backup_flow_run_starts_with_the_activation(mock_act, mock_cloud, 
     mock_lan.side_effect = lambda *a, **k: calls.append("lan")
     cfg = MagicMock()
     cfg.cloud.enabled = cfg.lan.enabled = True
+    cfg.paths.source_drive = "E:/DATA/FY26-27"
     mock_cfg.return_value = cfg
     flow.backup.fn("config.yaml", "all")
     assert calls == ["activate", "cloud", "lan"]

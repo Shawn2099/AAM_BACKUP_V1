@@ -90,19 +90,19 @@
 
 ## WP3 - Orchestration (plan §5.3)
 
-- [ ] **OV-3.1 Slot held once per leg.** `_backup_slot` around the whole folder loop; pipelines get `slot_held=True`
+- [x] **OV-3.1 Slot held once per leg.** `_backup_slot` around the whole folder loop; pipelines get `slot_held=True`
   (no nested acquire). Test: no other flow can take the slot between two folders; no deadlock (R-3).
-- [ ] **OV-3.2 Folder loop.** `backup(..., fy=None)`: active set once per flow run, new FY first, `fy` must be active
+- [x] **OV-3.2 Folder loop.** `backup(..., fy=None)`: active set once per flow run, new FY first, `fy` must be active
   (else refused), `mode="all"` = cloud loop then LAN loop; one folder's failure never stops the other; the flow still
   raises when any folder failed. Tests (R-16).
-- [ ] **OV-3.3 Shared budget + MISSED.** Both folders of a leg share the leg budget; the second folder with no budget
+- [x] **OV-3.3 Shared budget + MISSED.** Both folders of a leg share the leg budget; the second folder with no budget
   left is `<LEG>_MISSED` for its FY (fix the `late_s = 0` shortcut). Tests (R-18).
-- [ ] **OV-3.4 One NAS power cycle.** First LAN pipeline wakes; all pipelines `allow_shutdown=False`; loop-level
+- [x] **OV-3.4 One NAS power cycle.** First LAN pipeline wakes; all pipelines `allow_shutdown=False`; loop-level
   `finally` makes one shutdown decision with today's rules over all folders. Tests: wake / shutdown counted for
   success, folder 2 MISSED, crash before folder 2, slot timeout (R-4).
-- [ ] **OV-3.5 Ids, logs, artifacts.** Run id `<flow run>-<leg>-<fy>`; `run_artefacts` folder
+- [x] **OV-3.5 Ids, logs, artifacts.** Run id `<flow run>-<leg>-<fy>`; `run_artefacts` folder
   `<date>_<HHmm>_<leg>_<fy>_<short id>` + parser; Prefect artifact keys per FY. Tests (R-7).
-- [ ] **OV-3.6 Early NAS folder in the LAN loop** (after wake, before the first pipeline) via OV-2.5.
+- [x] **OV-3.6 Early NAS folder in the LAN loop** (after wake, before the first pipeline) via OV-2.5.
 
 ## WP4 - Alerts, approvals, closed FY (plan §5.4)
 
@@ -204,8 +204,9 @@
      fault code. A dedicated AAM-ROL-07 + a row in docs/EMAIL_CONTENT_SPEC.md would be cleaner.
   3. Old fault text AAM-ROL-06 ("Files in the new year are not backed up yet") no longer fits once OV-2.6 removes that alarm.
 - **WP2 Opus review (2026-11-20), no blocker; I-1..I-4 + most nits are being fixed in a follow-up commit. For the owner / later WPs:**
-  1. **DEPLOY GATE (I-5): do NOT deploy `fy-overlap` to the box or merge to main before WP3 is done.** From WP2 the backup flows activate
-     the next FY and mail "FY27-28 is now backed up as well", but no pipeline backs up the early FY until OV-3.2.
+  1. **DEPLOY GATE (I-5, updated after the WP3 review): do NOT deploy `fy-overlap` to the box or merge to main before OV-4.3 (approvals per FY) is done.** WP3 makes
+     two-folder runs real; until approvals are per FY an approved re-run is restricted to the configured FY (flow.backup), so an approval of
+     the early FY cannot be used yet.
   2. I-4 deviation from the plan letter (needs the owner's nod): the "misnamed FY folder" alarm (plan 5.2) only fires when the
      name points at a year NEWER than the configured one; 'FY 2023-24 Archive', 'FY25-26 old', 'FY26-27 - Copy' are ignored
      (otherwise one daily mail per archive folder with the false advice to rename it), and a name that already exists is never suggested.
@@ -215,3 +216,8 @@
   5. N-9 (OV-4.2): the incident machinery is per mode; a RECOVERED of one `rollover_files` key restarts the incident of another and
      threads RESOLVED into another sibling's conversation. Per-key incidents for `overlap:*` keys belong in OV-4.2.
   6. Out of scope edge: a config hand-edited to the next FY in March drops the old FY silently (the sibling check sees a past FY).
+- **WP3 Opus review (2026-11-20), no blocker; fixed in the commit:** truthful NAS text in LAN alerts when the leg loop decides the shutdown (I-1);
+  the first folder's RUNNING row is written before the slot wait (I-2); an approval run only touches the configured FY (I-3, until OV-4.3);
+  no NAS decision while a cancel is in flight; shutdown-result merge failure logged; a WARNING mail when the active set cannot be worked out.
+  Open for later: N-2 the `nas_shutdown` attention item reads the configured FY's row, so a manual early-FY LAN run does not show it (OV-6.2);
+  N-5 a late scheduled run whose second folder is MISSED gets the 'scheduled X h before' text (status correct).

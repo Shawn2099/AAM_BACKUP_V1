@@ -194,6 +194,8 @@ def test_generic_failure_alert_skips_guard_blocks(tmp_path):
     cfg = MagicMock()
     cfg.cloud.enabled = False
     cfg.lan.enabled = True
+    cfg.paths.source_drive = "E:/DATA/FY26-27"
+    cfg.rollover.overlap_enabled = False
     with patch("flow.load_config", return_value=cfg), \
          patch("flow.configure_logging"), patch("flow.configure_prefect_bridge"), \
          patch("flow.cleanup_orphaned_robocopy_logs"), \
@@ -283,6 +285,7 @@ def test_backup_flow_hands_approval_id_to_the_pipelines():
     cfg = MagicMock()
     cfg.cloud.enabled = True
     cfg.lan.enabled = True
+    cfg.paths.source_drive = "E:/DATA/FY26-27"
     with patch("flow.load_config", return_value=cfg), \
          patch("flow.configure_logging"), patch("flow.configure_prefect_bridge"), \
          patch("flow.cleanup_orphaned_robocopy_logs"), patch("flow.ManifestDB"), \

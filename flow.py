@@ -127,16 +127,23 @@ def _failure_telemetry(stage_seconds: dict, phase: str, verified: bool = False) 
         return None
 
 
-def _stable_run_id(mode: str) -> str:
-    """Generate a run_id stable across Prefect task retries."""
+def _flow_run_prefix() -> str:
+    """The id of this Prefect flow run (stable across task retries), or a fresh uuid outside a flow run."""
     try:
         from prefect.context import FlowRunContext
         ctx = FlowRunContext.get()
         if ctx:
-            return f"{ctx.flow_run.id}-{mode}"
+            return str(ctx.flow_run.id)
     except Exception:
         pass
-    return f"{uuid.uuid4()}-{mode}"
+    return str(uuid.uuid4())
+
+
+def _stable_run_id(mode: str, fy: str | None = None) -> str:
+    """run_id stable across Prefect task retries: `<flow run>-<leg>` or, for one FY folder of a leg
+    (plan 5.3), `<flow run>-<leg>-<fy>`."""
+    base = f"{_flow_run_prefix()}-{mode}"
+    return f"{base}-{fy}" if fy else base
 
 
 def _open_run_artefacts(config, run_id: str, started_at: str | None = None) -> RunArtefacts | None:
@@ -344,6 +351,20 @@ def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
     ))
 
 
+def _nas_alert_note(shutdown_on_fail: bool, loop_decides: bool, config) -> str:
+    """What a LAN failure / partial alert says about the NAS. When the FY leg loop decides the shutdown
+    (several folders in one run) this pipeline cannot know the outcome in advance, so the text only
+    states the rule - never a promise or a denial that may turn out false."""
+    if loop_decides:
+        if getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True:
+            return ("The NAS is switched off after the last folder of this run only if every folder's "
+                    "backup allows it; it stays on otherwise and the next scheduled run will re-sync.")
+        return "The NAS was NOT shut down; the next scheduled run will re-sync."
+    if shutdown_on_fail:
+        return "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
+    return "The NAS was NOT shut down; the next scheduled run will re-sync."
+
+
 def _failure_alert_text(leg: str, status: str, error: str | None, nas_note: str = "") -> str:
     name = "Cloud" if leg == "cloud" else "LAN"
     if status.endswith("_SUSPECT"):
@@ -450,25 +471,33 @@ def _scheduled_lateness_seconds() -> float:
 
 
 def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget: RunBudget,
-                         reserve_s: float, late_s: float, monotonic_start: float | None) -> None:
+                         reserve_s: float, late_s: float, monotonic_start: float | None,
+                         shared_budget: bool = False) -> None:
     """Plan I2: a run that starts with no budget left (less than the time its last steps need)
     would run into office hours. Record <LEG>_MISSED and send ONE warning per leg (the stable
     key `missed:<leg>` keeps several missed nights at boot from sending one email each), then
     raise PartialRun so Prefect never shows this run as completed. Takes no backup slot."""
-    if late_s <= 0 or budget.remaining() > reserve_s:
+    if (late_s <= 0 and not shared_budget) or budget.remaining() > reserve_s:
         return
     status = f"{leg.upper()}_MISSED"
     late_h = late_s / 3600
-    error = (f"The {leg.upper()} backup was scheduled for {late_h:.1f} h before it could start "
-             f"(the server was off or busy), so its {budget.describe()} run budget was already "
-             "used up. Nothing was changed; the next scheduled run continues.")
+    if late_s > 0:
+        error = (f"The {leg.upper()} backup was scheduled for {late_h:.1f} h before it could start "
+                 f"(the server was off or busy), so its {budget.describe()} run budget was already "
+                 "used up. Nothing was changed; the next scheduled run continues.")
+    else:
+        # the second folder of one leg run: both folders share the leg's budget (plan 5.3)
+        error = (f"The {leg.upper()} backup of {_effective_fy_prefix(config)} could not start: the "
+                 f"{budget.describe()} run budget of this {leg.upper()} backup was used up by the "
+                 "folder before it. Nothing was changed for this folder; the next scheduled run continues.")
     logger.warning(error)
     _record_run(config, run_id, leg, started_at, status, -1, error,
                 monotonic_start=monotonic_start)
     notify(config, AlertEvent(
         key=f"missed:{leg}", kind="WARNING", mode=leg,
         title=f"{leg.upper()} backup night missed", message=error, status=status,
-        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id))
+        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id,
+        fy=_effective_fy_prefix(config)))
     raise PartialRun(f"{leg.upper()} run ended {status} - {error}")
 
 
@@ -494,11 +523,18 @@ def _slot_stuck(config, exc: BaseException) -> bool:
 
 @contextmanager
 def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
-                   monotonic_start: float | None = None):
+                   monotonic_start: float | None = None, slot_held: bool = False):
     """RUNNING row, then the backup slot. If the slot (or the watchdog lock)
     cannot be obtained, the row becomes *_SLOT_TIMEOUT ("could not start")
-    and the error is re-raised - previously no row was written at all."""
+    and the error is re-raised - previously no row was written at all.
+
+    slot_held=True: the leg loop (`_run_leg_folders`) already holds the slot and the backup.lock for
+    every folder of this leg - taking the limit-1 slot again here would deadlock - so only the RUNNING
+    row of THIS folder is written (the card shows 'running' only for the folder that really is)."""
     _record_running(config, leg, run_id, started_at)
+    if slot_held:
+        yield
+        return
     with ExitStack() as stack:
         try:
             stack.enter_context(_backup_slot(config))
@@ -1360,9 +1396,15 @@ def _summary_counts(files_copied: int | None, bytes_copied: int | None) -> tuple
     return files, f"{bytes_copied / (1024 * 1024):.2f} MB` (`{bytes_copied}` bytes)"
 
 
+def _artifact_key(base: str, fy: str | None) -> str:
+    """Prefect artifact keys allow lower-case letters, digits and dashes: `cloud-backup-summary-fy27-28`."""
+    return f"{base}-{fy.lower()}" if fy else base
+
+
 @task(name="cloud-publish-artifact")
 def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
-                                files_copied: int | None, bytes_copied: int | None):
+                                files_copied: int | None, bytes_copied: int | None,
+                                fy: str | None = None):
     """Publish a beautiful Markdown summary of the Cloud Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
@@ -1388,7 +1430,7 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
         )
         create_markdown_artifact(
             markdown=markdown_content,
-            key="cloud-backup-summary"
+            key=_artifact_key("cloud-backup-summary", fy)
         )
         logger.info("Published Cloud Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
@@ -1397,7 +1439,7 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
 
 @task(name="lan-publish-artifact")
 def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int | None,
-                              bytes_copied: int | None, total_files: int):
+                              bytes_copied: int | None, total_files: int, fy: str | None = None):
     """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
@@ -1424,7 +1466,7 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int |
         )
         create_markdown_artifact(
             markdown=markdown_content,
-            key="lan-backup-summary"
+            key=_artifact_key("lan-backup-summary", fy)
         )
         logger.info("Published LAN Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
@@ -1548,7 +1590,9 @@ def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> st
 
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                         budget_hours: float | None = None,
-                        approval_id: str | None = None, late_seconds: float = 0.0):
+                        approval_id: str | None = None, late_seconds: float = 0.0,
+                        slot_held: bool = False, shared_budget: bool = False,
+                        budget_monotonic_start: float | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked.
 
     late_seconds: how long after its scheduled time the run started (plan I2); the budget
@@ -1558,11 +1602,12 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
     budget = RunBudget(
         "cloud",
         (budget_hours if budget_hours is not None else config.budget.cloud_max_hours) * 3600,
-        (monotonic_start if monotonic_start is not None else time.monotonic()) - late_seconds)
+        (budget_monotonic_start if budget_monotonic_start is not None else
+         (monotonic_start if monotonic_start is not None else time.monotonic())) - late_seconds)
     _missed_if_no_budget(config, "cloud", run_id, started_at, budget,
                          config.budget.cloud_verify_reserve_minutes * 60, late_seconds,
-                         monotonic_start)
-    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start):
+                         monotonic_start, shared_budget=shared_budget)
+    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start, slot_held=slot_held):
         fy_prefix = _effective_fy_prefix(config)
 
         # Apply config-driven retries to tasks that benefit from retrying
@@ -1771,7 +1816,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 "metrics_consistent": metrics_consistent,
             })
             try:
-                cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
+                cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied,
+                                            fy=_effective_fy_prefix(config))
             except Exception as e:
                 # The Prefect summary is cosmetic; the run row is the record.
                 logger.warning(f"Cloud run summary not published to Prefect: {e}")
@@ -1915,22 +1961,29 @@ def _complete_pending_rollover_nas_folder(config) -> None:
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                        budget_hours: float | None = None,
                       approval_id: str | None = None, allow_shutdown: bool = True,
-                      late_seconds: float = 0.0):
+                      late_seconds: float = 0.0, slot_held: bool = False, shared_budget: bool = False,
+                      budget_monotonic_start: float | None = None,
+                      shutdown_votes: list | None = None, early_nas_folder: bool = False):
     """Execute LAN backup tasks sequentially. Each task is independently tracked.
 
     allow_shutdown=False (the final backup of an FY rollover, plan A4): the NAS is NOT powered
     off at any call site - the new NAS FY folder is created after this run.
-    late_seconds: see _run_cloud_pipeline (plan I2)."""
+    late_seconds: see _run_cloud_pipeline (plan I2).
+    shutdown_votes (the FY leg loop, plan 5.3): a list; instead of powering the NAS off itself this
+    pipeline appends (own_rule_says_shut_down, artefacts_dir) - the loop makes ONE shutdown decision
+    over all folders. early_nas_folder: this is the early FY folder - create / check its NAS folder
+    (after the NAS is awake, before the guards look for the mount marker)."""
     # WP14: the run budget counts from the job's start (I2: its scheduled start), including
     # the slot wait
     budget = RunBudget(
         "lan",
         (budget_hours if budget_hours is not None else config.budget.lan_max_hours) * 3600,
-        (monotonic_start if monotonic_start is not None else time.monotonic()) - late_seconds)
+        (budget_monotonic_start if budget_monotonic_start is not None else
+         (monotonic_start if monotonic_start is not None else time.monotonic())) - late_seconds)
     _missed_if_no_budget(config, "lan", run_id, started_at, budget,
                          config.budget.lan_post_reserve_minutes * 60, late_seconds,
-                         monotonic_start)
-    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start):
+                         monotonic_start, shared_budget=shared_budget)
+    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start, slot_held=slot_held):
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = lan_preflight_task.with_options(
@@ -1961,10 +2014,20 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         alert_sent = False   # WP8: exactly one alert per failed run
         deferred_alert = None   # A2: an interrupted run records itself first, alerts second
         nas_shutdown = None  # WP10: verified shutdown result, if one was attempted
+        voted: list[bool] = []
+
+        def _vote(own_rule_shuts_down: bool) -> None:
+            """The FY leg loop decides the shutdown: this folder only says what today's rule says."""
+            if shutdown_votes is not None and not voted:
+                voted.append(True)
+                shutdown_votes.append((bool(own_rule_shuts_down), artefacts_dir))
 
         try:
             health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
+            if early_nas_folder:
+                nas_folder = fy_overlap.ensure_overlap_nas_folder(config, _effective_fy_prefix(config))
+                logger.info(f"Early FY NAS folder: {nas_folder['state']} ({nas_folder['reason']})")
             # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
             # completed now that the NAS is awake - before G5 looks for the mount marker
             _complete_pending_rollover_nas_folder(config)
@@ -2042,7 +2105,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     "metrics_consistent": metrics_consistent,
                 })
                 try:
-                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
+                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict),
+                                              fy=_effective_fy_prefix(config))
                 except Exception as e:
                     # The Prefect summary is cosmetic; the run row is the record.
                     logger.warning(f"LAN run summary not published to Prefect: {e}")
@@ -2064,14 +2128,14 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             if status == "LAN_COMPLETE":
                 if allow_shutdown:
                     nas_shutdown = lan_shutdown_task(config, artefacts_dir)
+                else:
+                    _vote(True)
             elif status == "LAN_PARTIAL":
                 shutdown_on_fail = (allow_shutdown and getattr(
                     config.lan, "shutdown_on_all_retries_exhausted", False) is True)
-                nas_msg = (
-                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
-                    if shutdown_on_fail
-                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
-                )
+                if not allow_shutdown:
+                    _vote(getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+                nas_msg = _nas_alert_note(shutdown_on_fail, shutdown_votes is not None, config)
                 logger.error(
                     f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
                     f"some files were not copied. {nas_msg}"
@@ -2095,6 +2159,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             else:
                 logger.info(f"LAN shutdown skipped - status is {status}")
+                _vote(False)
             # Terminal-state policy (single authoritative decision point):
             # a non-success status must never return normally (which the
             # engine would record as Prefect COMPLETED).
@@ -2118,13 +2183,12 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             # An interrupted run (service stop, cancel) never powers the NAS off.
             shutdown_on_fail = (allow_shutdown and isinstance(e, Exception) and getattr(
                 config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+            if not allow_shutdown:
+                _vote(isinstance(e, Exception) and not isinstance(e, PartialRun) and getattr(
+                    config.lan, "shutdown_on_all_retries_exhausted", False) is True)
             if not alert_sent and not isinstance(e, guards.GuardBlocked):
                 # The one alert of this run, sent BEFORE any NAS shutdown below.
-                nas_msg = (
-                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
-                    if shutdown_on_fail
-                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
-                )
+                nas_msg = _nas_alert_note(shutdown_on_fail, shutdown_votes is not None, config)
                 alert = ((config, "lan", status, _failure_alert_text("lan", status, error_msg, nas_msg),
                           sync_result.get("exit_code"), started_at),
                          dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
@@ -3042,9 +3106,133 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
 # Main backup flow — entry point for all modes
 # ═══════════════════════════════════════════════════════════════
 
+def _active_fys(config) -> list[str]:
+    """The FY folders to back up in this flow run, new FY first (plan 5.3). Any trouble working it out
+    falls back to the configured FY alone - the safe, always-correct answer."""
+    configured = _effective_fy_prefix(config)
+    if getattr(config.rollover, "overlap_enabled", True) is False:
+        return [configured]          # overlap switched off: the configured FY alone, no DB needed
+    db = None
+    try:
+        db = ManifestDB.from_config(config)
+        return fy_overlap.active_folders(config, db, fy_overlap.run_date(_scheduled_time()))
+    except Exception as e:  # noqa: BLE001 - never stops the configured folder's backup
+        logger.error(f"Active FY folders could not be worked out ({e}); backing up {configured} only")
+        try:
+            notify(config, AlertEvent(
+                key="overlap:active_set", kind="WARNING", mode="rollover",
+                title="Next year's folder was skipped tonight",
+                message=(f"The backup could not work out which year folders to copy ({e}), so tonight only "
+                         f"{configured} was backed up. The next backup tries again."),
+                fault_code=None))
+        except Exception:  # noqa: BLE001 - the warning is a courtesy, never an error
+            pass
+        return [configured]
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _slot_timeout_for_folders(leg: str, runs: list, started_at: str, monotonic_start: float,
+                              error: BaseException) -> None:
+    """The leg loop could not get the backup slot: every folder of this leg run is recorded
+    <LEG>_SLOT_TIMEOUT for ITS FY, each with its own alert (the card of each FY shows it)."""
+    for fy, view, run_id in runs:
+        status = f"{leg.upper()}_SLOT_TIMEOUT"
+        stuck = _slot_stuck(view, error)
+        detail = f"{error}{STUCK_SLOT_NOTE}" if stuck else str(error)
+        logger.error(f"{leg} run {run_id} ({fy}) could not start: {detail}")
+        try:
+            _record_run(view, run_id, leg, started_at, status, -1,
+                        f"Backup could not start: {detail}", monotonic_start=monotonic_start)
+        except Exception as rec_err:  # noqa: BLE001
+            logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
+        _send_run_alert(view, leg, status, f"The {leg.upper()} backup of {fy} could not start: {detail}",
+                        None, started_at, run_id=run_id, fault_code="AAM-SYS-08" if stuck else None)
+
+
+def _lan_shutdown_decision(config, votes: list, folders: int) -> dict | None:
+    """ONE NAS shutdown decision per LAN flow run (plan 5.3). Today's rule per folder (shut down only
+    after a COMPLETE mirror, or after a failure when shutdown_on_all_retries_exhausted is set), applied
+    to ALL folders: the NAS is powered off only when every folder voted yes. A folder that never voted
+    (MISSED, skipped, cut off) means the NAS stays on - never power off with work unfinished."""
+    if folders == 0:
+        return None
+    if len(votes) < folders or not all(v for v, _dir in votes):
+        logger.info(f"NAS stays on: {len(votes)} of {folders} folder(s) voted, "
+                    f"{sum(1 for v, _d in votes if v)} for shutdown")
+        return None
+    return lan_shutdown_task(config, votes[-1][1])
+
+
+def _run_leg_folders(config, leg: str, folders: list[str], *,
+                     approval_id: str | None, budget_hours: float | None,
+                     late_seconds: float) -> list[BaseException]:
+    """One leg of a flow run for every FY folder in `folders` (new FY first, plan 5.3).
+
+    * The backup slot and the watchdog backup.lock are taken ONCE around the whole loop: nothing can
+      run between two folders, and the pipelines get slot_held=True (no nested acquire).
+    * Both folders share the leg's budget (same monotonic start, same lateness); a folder that finds
+      none left is recorded <LEG>_MISSED for its FY.
+    * One folder's failure never stops the next; the exceptions are returned for the flow to raise.
+    * LAN: the first pipeline wakes the NAS, every pipeline runs with allow_shutdown=False and votes,
+      and ONE shutdown decision is made at the end (also after a folder crashed or was skipped)."""
+    excs: list[BaseException] = []
+    pipeline = _run_cloud_pipeline if leg == "cloud" else _run_lan_pipeline
+    configured = _effective_fy_prefix(config)
+    runs = [(fy, fy_overlap.folder_view(config, fy), _stable_run_id(leg, fy)) for fy in folders]
+    started_at = now_iso()
+    monotonic_start = time.monotonic()
+    votes: list = []
+    interrupted = False
+    # WP5: a run that never gets the slot, or dies while waiting for it, must still leave a row: the
+    # first folder's RUNNING row is written before the wait (each pipeline re-stamps its own at its start)
+    if runs:
+        _record_running(runs[0][1], leg, runs[0][2], started_at)
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_backup_slot(config))
+        except Exception as e:  # noqa: BLE001
+            _slot_timeout_for_folders(leg, runs, started_at, monotonic_start, e)
+            return [e]
+        try:
+            for i, (fy, view, run_id) in enumerate(runs):
+                logger.info(f"Starting {leg} backup pipeline for {fy}")
+                kwargs = dict(approval_id=approval_id, budget_hours=budget_hours,
+                              late_seconds=late_seconds, slot_held=True, shared_budget=i > 0,
+                              budget_monotonic_start=monotonic_start)
+                if leg == "lan":
+                    kwargs.update(allow_shutdown=False, shutdown_votes=votes,
+                                  early_nas_folder=(fy != configured))
+                try:
+                    pipeline(view, run_id, now_iso(), time.monotonic(), **kwargs)
+                except Exception as e:  # noqa: BLE001 - the next folder still runs
+                    excs.append(e)
+        except BaseException:        # a cancel / service stop: no NAS decision while terminating
+            interrupted = True
+            raise
+        finally:
+            if leg == "lan" and not interrupted:
+                try:
+                    result = _lan_shutdown_decision(config, votes, len(runs))
+                    if result is not None:
+                        db = ManifestDB.from_config(config)
+                        try:
+                            if not db.merge_run_metrics(runs[-1][2], {"nas_shutdown": result}):
+                                logger.warning(f"NAS shutdown result not stored: no run row {runs[-1][2]}")
+                        finally:
+                            db.close()
+                except Exception as e:  # noqa: BLE001 - recorded, never raised
+                    logger.error(f"NAS shutdown decision failed: {e}")
+    return excs
+
+
 @flow(name="aam-backup", log_prints=True)
 def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str | None = None,
-           budget_hours: float | None = None):
+           budget_hours: float | None = None, fy: str | None = None):
     """AAM Backup Automation — nightly backup orchestrator.
 
     Each pipeline step is a separate Prefect task — visible in the Prefect UI
@@ -3061,6 +3249,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     budget_hours: manual runs only (e.g. the first full upload over a
     weekend): replaces budget.<leg>_max_hours for this run. Scheduled runs
     never pass it, so the schedule check (WP14) stays valid.
+
+    fy: one FY folder only (manual per-FY runs and approved re-runs, plan 5.3): it must be in the
+    active set, else the run is refused. Without it every active folder is backed up, new FY first.
     """
     if budget_hours is not None and not 0 < budget_hours <= 168:
         raise ValueError(f"budget_hours must be between 0 and 168, got {budget_hours}")
@@ -3108,27 +3299,35 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     # plan I2: only the FIRST leg of this flow run is late; a second leg starts when it starts
     late_s = 0.0 if budget_hours is not None else _scheduled_lateness_seconds()
 
+    # the FY folders of this run, worked out ONCE (plan 5.3); `fy` narrows it to one folder
+    runs_cloud = mode in ("cloud", "all") and config.cloud.enabled
+    runs_lan = mode in ("lan", "all") and config.lan.enabled
+    folders = _active_fys(config) if (runs_cloud or runs_lan) else []
+    if approval_id is not None and fy is None and folders:
+        # an approval belongs to ONE blocked folder; until approvals are per FY (OV-4.3) an approved
+        # re-run only touches the configured FY, never the early one
+        folders = [_effective_fy_prefix(config)]
+    if fy is not None and folders:
+        if fy not in folders:
+            raise ValueError(f"FY {fy} is not being backed up right now (active: {', '.join(folders)}); "
+                             "refusing to run it.")
+        folders = [fy]
+
     try:
         # ── Cloud ──
-        if mode in ("cloud", "all") and config.cloud.enabled:
-            logger.info("Starting cloud backup pipeline")
-            try:
-                _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic(),
-                                    approval_id=approval_id, budget_hours=budget_hours,
-                                    late_seconds=late_s)
-            except Exception as e:
-                excs.append(e)
+        if runs_cloud:
+            logger.info(f"Starting cloud backup for {', '.join(folders)}")
+            excs.extend(_run_leg_folders(config, "cloud", folders,
+                                         approval_id=approval_id, budget_hours=budget_hours,
+                                         late_seconds=late_s))
             late_s = 0.0
 
         # ── LAN ──
-        if mode in ("lan", "all") and config.lan.enabled:
-            logger.info("Starting LAN backup pipeline")
-            try:
-                _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic(),
-                                  approval_id=approval_id, budget_hours=budget_hours,
-                                  late_seconds=late_s)
-            except Exception as e:
-                excs.append(e)
+        if runs_lan:
+            logger.info(f"Starting LAN backup for {', '.join(folders)}")
+            excs.extend(_run_leg_folders(config, "lan", folders,
+                                         approval_id=approval_id, budget_hours=budget_hours,
+                                         late_seconds=late_s))
 
         # ── Summary ──
         if excs:

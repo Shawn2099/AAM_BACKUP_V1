@@ -748,6 +748,28 @@ class ManifestDB:
             rows = self._get_conn().execute(sql + " ORDER BY started_at DESC", args).fetchall()
             return [dict(r) for r in rows]
 
+    def merge_run_metrics(self, run_id: str, fields: dict) -> bool:
+        """Add `fields` to the extended_metrics JSON of an already recorded run (never drops the
+        existing keys). Used for what is known only after the run row was written - the one NAS
+        shutdown of an FY leg loop. False when there is no such run."""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT extended_metrics FROM run_history WHERE run_id = ?",
+                               (run_id,)).fetchone()
+            if row is None:
+                return False
+            try:
+                metrics = json.loads(row[0]) if row[0] else {}
+            except ValueError:
+                metrics = {"unparsed_metrics": row[0]}
+            if not isinstance(metrics, dict):
+                metrics = {"unparsed_metrics": row[0]}
+            metrics.update(fields)
+            with conn:
+                conn.execute("UPDATE run_history SET extended_metrics = ? WHERE run_id = ?",
+                             (json.dumps(metrics, default=str), run_id))
+            return True
+
     def last_run(self, mode: str | None = None, *, fy: str) -> dict | None:
         clause, fy_args = self._fy_filter(fy)
         sql = "SELECT * FROM run_history WHERE 1 = 1" + clause

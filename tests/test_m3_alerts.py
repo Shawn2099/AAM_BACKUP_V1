@@ -137,6 +137,8 @@ def test_backup_flow_adds_no_second_alert():
     cfg = MagicMock()
     cfg.cloud.enabled = False
     cfg.lan.enabled = True
+    cfg.paths.source_drive = "E:/DATA/FY26-27"
+    cfg.rollover.overlap_enabled = False
     with patch("flow.load_config", return_value=cfg), patch("flow.configure_logging"), \
          patch("flow.configure_prefect_bridge"), patch("flow.cleanup_orphaned_robocopy_logs"), \
          patch("flow._run_lan_pipeline", side_effect=RuntimeError("lan broke")), \
