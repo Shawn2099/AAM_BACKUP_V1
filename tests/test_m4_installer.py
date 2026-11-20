@@ -53,6 +53,9 @@ def probe(monkeypatch):
     from core import permissions
     monkeypatch.setattr(permissions, "probe_destination_write", lambda dest, run_id: None)
     monkeypatch.setattr(permissions, "check_backup_privilege", lambda artefacts, timeout_s: None)
+    # the new-year folder probes (OV-10.2) have their own tests (test_ov10_readiness_probes.py); here
+    # the fake NAS share \nas\share does not exist, so creating a folder next to it cannot work
+    monkeypatch.setattr(mod, "probe_create_sibling_folder", lambda fy_folder, what: "ok")
     return mod
 
 

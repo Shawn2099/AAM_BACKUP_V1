@@ -13,7 +13,8 @@ in a WORKGROUP, which has no usable credentials on the NAS - 21 nights of
 Usage:  .venv\\Scripts\\python.exe deploy\\probe_service_account.py <config.yaml> <result file>
 Writes one line per check ("OK|FAIL|SKIP <check>: <detail>") to the result
 file and exits 0 only when nothing failed. Never changes anything except
-creating and deleting its own probe files.
+creating and deleting its own probe files and probe folders (FY overlap:
+a test folder next to the source folder and next to the NAS folder).
 """
 
 from __future__ import annotations
@@ -25,6 +26,44 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
+
+
+def probe_create_sibling_folder(fy_folder: str, what: str) -> str:
+    """Prove the account can create (and remove) a folder NEXT TO `fy_folder`.
+
+    FY overlap (plan D-12, 5.10) creates the next year's folder beside the
+    configured one, so the right to create folders in the parent is needed.
+    Creates a uniquely named empty test folder with mkdir(exist_ok=False)
+    (never parents=True: a missing parent is an error, not something to build)
+    and always removes it again. Touches nothing inside the FY folder.
+    """
+    folder = Path(fy_folder)
+    parent = folder.parent
+    if parent == folder:
+        raise RuntimeError(
+            f"{what} {fy_folder} is a drive or share root, so there is no folder next to it "
+            f"in which the new-year folder could be created")
+    test = parent / f"_aam_probe_{uuid.uuid4().hex[:12]}"
+    created = False
+    try:
+        try:
+            test.mkdir(exist_ok=False)
+            created = True
+        except OSError as e:
+            raise RuntimeError(
+                f"cannot create a folder in {parent} ({e}). Give the backup account the right "
+                f"to create folders in {parent}") from e
+        return f"can create and remove a folder in {parent} (new-year folder)"
+    finally:
+        if created:
+            try:
+                test.rmdir()
+            except OSError as e:
+                # reported on top of the result by the caller's check(); never silent
+                raise RuntimeError(
+                    f"created the test folder {test} in {parent} but cannot remove it ({e}). "
+                    f"Delete it by hand and give the backup account the right to delete "
+                    f"folders in {parent}") from e
 
 
 def run_checks(config_path: str) -> list[tuple[str, str, str]]:
@@ -72,7 +111,12 @@ def run_checks(config_path: str) -> list[tuple[str, str, str]]:
 
     check("source read", lambda: f"read {permissions.probe_source_read(config.paths.source_drive)}")
 
+    check("new-year folder (source)", lambda: probe_create_sibling_folder(
+        config.paths.source_drive, "the source folder"))
+
     if config.lan.enabled:
+        check("new-year folder (NAS)", lambda: probe_create_sibling_folder(
+            config.paths.lan_destination, "the NAS folder"))
         check("NAS write", lambda: (
             permissions.probe_destination_write(config.paths.lan_destination,
                                                 f"readiness-{uuid.uuid4().hex[:8]}"),
@@ -87,6 +131,7 @@ def run_checks(config_path: str) -> list[tuple[str, str, str]]:
         else:
             results.append(("SKIP", "backup privilege", "lan.use_backup_mode is false"))
     else:
+        results.append(("SKIP", "new-year folder (NAS)", "lan.enabled is false"))
         results.append(("SKIP", "NAS write", "lan.enabled is false"))
 
     if config.cloud.enabled:

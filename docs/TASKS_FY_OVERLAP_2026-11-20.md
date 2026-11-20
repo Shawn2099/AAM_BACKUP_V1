@@ -155,7 +155,7 @@
 
 - [ ] **OV-10.1** `upload_fy.py` / `restore.py` refuse every active FY. Tests (R-20). (Built on top of the owner's
   restore / upload work - coordinate before touching those files.)
-- [ ] **OV-10.2** Readiness probes: create + delete a test folder in `parent(source_drive)` and the NAS share root as
+- [x] **OV-10.2** Readiness probes: create + delete a test folder in `parent(source_drive)` and the NAS share root as
   the service account (`deploy/probe_service_account.py`, `04_check_readiness.ps1`). Tests (R-17).
 - [ ] **OV-10.3** Validator: NAS FY folder directly at a share root refused while LAN + overlap are on. Test (R-25).
 
