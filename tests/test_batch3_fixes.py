@@ -203,7 +203,7 @@ class TestCanaryMessage:
 def _base_config(**path_overrides):
     paths = dict(
         source_drive="D:\\\\FY25-26",
-        lan_destination="\\\\\\\\nas\\\\FY25-26",
+        lan_destination="\\\\\\\\nas\\\\share\\\\FY25-26",     # OV-10.3: not directly at a share root
         gcs_key_path="keys/gcs.json",
         database_path="db/m.db",
         log_directory="logs",

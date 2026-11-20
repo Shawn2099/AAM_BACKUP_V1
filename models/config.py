@@ -1301,6 +1301,18 @@ class AppConfig(StrictModel):
                 "year's data with the new year's. Fix the NAS folder under Settings > Advanced (or ask support)."
             )
 
+        # OV-10.3 (plan 5.10, R-25): while the NAS leg and the overlap are on, the next year's folder is created
+        # BESIDE the configured one. A NAS FY folder that is the share itself (\\nas\FY26-27) has no share root
+        # to create it in: fail closed now instead of at the first activation.
+        if self.lan.enabled and self.rollover.overlap_enabled and lan_fy:
+            unc_parts = [p for p in self.paths.lan_destination.replace("\\", "/").split("/") if p.strip()]
+            if len(unc_parts) <= 2:
+                raise ValueError(
+                    f"The NAS folder {self.paths.lan_destination!r} is the share root itself. Put the financial-year "
+                    f"folder inside a share (for example \\\\server\\backup\\{lan_fy}) so next year's folder can be "
+                    "created beside it, or switch off the early backup of the next year "
+                    "(rollover.overlap_enabled). Fix it under Settings > Advanced (or ask support).")
+
         return self
 
     @classmethod
