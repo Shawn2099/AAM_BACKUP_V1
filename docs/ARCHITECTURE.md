@@ -77,12 +77,36 @@ backup(mode)
  ├─ configure_prefect_bridge()         core/logging.py    → loguru lines also in Prefect UI
  ├─ disabled-leg guard                 mode=cloud/lan but leg disabled → ValueError (FAILED)
  ├─ cleanup_orphaned_robocopy_logs()   core/lan_sync.py   (legacy %TEMP% logs, 24h)
- ├─ if cloud enabled: _run_cloud_pipeline()   ── §3.2   (exceptions collected)
- ├─ if lan   enabled: _run_lan_pipeline()     ── §3.3   (runs even if cloud failed)
+ ├─ _activate_overlap()                core/fy_overlap.py (starts backing up next year's folder when it is time, §3.4)
+ ├─ folders = _active_fys()            [next FY, configured FY] in the overlap window, else [configured FY]
+ ├─ if cloud enabled: _run_leg_folders("cloud")  ── slot held ONCE, per folder _run_cloud_pipeline  §3.2, §3.4
+ ├─ if lan   enabled: _run_leg_folders("lan")    ── slot held ONCE, per folder _run_lan_pipeline    §3.3, §3.4
+ │                                                  (runs even if cloud failed; ONE NAS shutdown decision)
  ├─ any errors? → send_failure_alert() (skipped for PartialRun: already alerted)
  │               → raise ExceptionGroup  ⇒ Prefect state FAILED
  └─ no errors  → ManifestDB.purge_old_runs(maintenance.db_retention_days)  ⇒ COMPLETED
 ```
+
+### 3.4 FY overlap: two year folders for three months (plan `docs/PLAN_FY_OVERLAP_2026-11-20.md`)
+
+US clients work in the NEXT financial-year folder from 1 January, Indian clients from 1 April, so from
+`rollover.early_start_month` (default January) until the April switch BOTH folders are backed up:
+each FY folder is backed up for 15 months (its own 12 plus January-March before it).
+
+| Piece | Where | Rule |
+|---|---|---|
+| Active set | `core/fy_overlap.active_folders` | `[next FY, configured FY]` (new first = run order) when overlap is on AND (in window OR switch pending) AND the next FY has an activation row; else `[configured FY]`. "Switch pending" = calendar FY is the next FY and the rollover journal's `config_switch` step is not done (follow-up steps do not count) |
+| Run date | `fy_overlap.run_date` | the IST date of the SCHEDULED time (a late run keeps its own day), taken once per flow run |
+| Activation | `fy_overlap.ensure_overlap_activated` (called by `flow._activate_overlap` at the start of EVERY backup flow run and of `rollover_check_flow`) | direct clock proof (`check_clock` = OK), parent folder exists, not a link / junction; an existing canonical folder is ADOPTED (placeholder only into a folder with no real file, same rule as guard G1), else created without `parents=True`; durable row in `overlap_activations`; INFO mail `overlap:start:<fy>`; failures and an unproven clock are retried every run and escalate once to ACTION REQUIRED after `rollover.activation_alert_after_hours` |
+| Missing folder later | existing health check (`AAM-SRC-01`) | a missing / unreadable early folder fails that FY's legs; it is NEVER recreated. (A link replacing it later is not caught yet - see task list) |
+| NAS folder | `fy_overlap.ensure_overlap_nas_folder`, called in the LAN pipeline of the early FY after the NAS is awake | missing -> create (no parents) + mount marker; marker -> ok; empty -> marker; non-empty without marker -> untouched (guard G5 asks, AAM-NAS-10) |
+| Folder view | `fy_overlap.folder_view` | `config` copy whose `source_drive` / `lan_destination` point at that FY; the pipelines read every path from it, so the cloud prefix `gs://bucket/<fy>`, guard baselines and log folders follow |
+| Leg loop | `flow._run_leg_folders` | one slot + `backup.lock` hold per leg around all folders (pipelines get `slot_held=True`); both folders share the leg budget (second folder with none left = `<LEG>_MISSED` for its FY); one folder's failure never stops the next; run ids `<flow run>-<leg>-<fy>`; run-log folders `<date>_<HHmm>_<leg>_<fy>_<short id>`; Prefect artifact keys per FY |
+| NAS power | `_run_lan_pipeline(shutdown_votes=...)` + `flow._lan_shutdown_decision` | pipelines never shut the NAS down in a loop: each votes what today's rule says; ONE shutdown at the end only when every folder ran and voted yes (MISSED, cut off, cancel = stays on) |
+| Siblings | `fy_overlap.sibling_findings`, `flow._alarm_siblings` (daily 06:00) | a misnamed FY-looking folder pointing at a newer year, or a canonical newer FY with real files that is not active -> ACTION REQUIRED; past years and `rollover.sibling_ignore` are ignored; unreadable folders never produce a false RESOLVED |
+| Small folders | `guards.max_delete_allowance`, `g2_source_shrink` | below `guards.small_folder_files` (100) the percentage limits are replaced by `guards.small_folder_max_deletes` (10); one function for G3 and the rclone `--max-delete` backstop; explicit 0 % and an empty destination stay blocked |
+| Database | `core/manifest.py` schema v6 | `fy` on `file_entries` (`UNIQUE(fy, relative_path)`), `run_history`, `integrity_audits`, `notifications`, `approvals`; table `overlap_activations`; every per-FY reader takes `fy` with no default (`ALL_FYS` = explicit "every FY"); an older database file is refused ("rename it, start fresh"), never migrated |
+| Approvals | `flow.backup` | until approvals are per FY (OV-4.3) an approved re-run only touches the configured FY |
 
 ### 3.2 Cloud pipeline: `flow._run_cloud_pipeline()`
 
@@ -447,7 +471,8 @@ producer (flow, watchdog, rollover, reports, password change)
 | `manifest.db` › `notifications` | every alert and report email outcome: fault code, thread, attachment rung | `core/notify` | dashboard, banner |
 | `manifest.db` › `approvals`, `config_changes` | approval requests and decisions; every settings change | `core/approvals`, `core/config_edit` | dashboard |
 | `manifest.db` › `rollover_journal`, `rollover_journal_steps` | the FY rollover steps and their state | `core/fy_rollover`, `flow` | the daily resumer, dashboard step card |
-| `run_logs\<day>\<date>_<HHmm>_<leg>_<short id>\` | FULL rclone/robocopy logs + `manifest.json`, gzip > `run_logs.compress_after_kb` | tool_runner / run_artefacts | operator, dashboard link |
+| `manifest.db` › `overlap_activations` | when each next FY folder started to be backed up early (never purged) | `core/fy_overlap` | active set, reports |
+| `run_logs\<day>\<date>_<HHmm>_<leg>[_<fy>]_<short id>\` | FULL rclone/robocopy logs + `manifest.json`, gzip > `run_logs.compress_after_kb` | tool_runner / run_artefacts | operator, dashboard link |
 | `logs\backup_YYYY-MM-DD.log` | app log (loguru) | all flows | operator |
 | `logs\*_svc*.log` | NSSM stdout/stderr per service | NSSM | operator |
 | `backup.lock` | `PID:create_time` of the running backup | `_backup_slot` | watchdog, launch |
