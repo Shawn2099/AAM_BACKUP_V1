@@ -2,7 +2,7 @@
 
 Layout::
 
-    <run_logs_dir>/<YYYY-MM-DD>/<YYYY-MM-DD>_<HHmm>_<leg>_<short id>/
+    <run_logs_dir>/<YYYY-MM-DD>/<YYYY-MM-DD>_<HHmm>_<leg>[_<FYnn-nn>]_<short id>/
         manifest.json                          every artefact + tool, argv, exit, timing
         <YYYY-MM-DD>_<HHmm>_<leg>_rclone-sync.log     full rclone JSON log (--log-file)
         <YYYY-MM-DD>_<HHmm>_<leg>_robocopy.log        full robocopy /UNILOG (UTF-16)
@@ -36,8 +36,13 @@ from core.time_utils import IST, now_iso
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _DOT_RUNS = re.compile(r"\.{2,}")
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_RUN_DIR = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+)_[A-Za-z0-9]+$")
+_RUN_DIR = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+(?:_FY\d{2}-\d{2})?)_[A-Za-z0-9]+$")
 _LEGS = ("cloud", "lan", "audit", "rollover")
+# New ids carry the FY (`<uuid>-cloud-FY27-28`, audit `<uuid>-cloud-FY27-28-full`); old ones do not.
+_FY_PART = r"(?:-(FY\d{2}-\d{2}))?"
+_RUN_ID_TAIL = re.compile(rf"-(cloud|lan|rollover|audit){_FY_PART}$", re.IGNORECASE)
+_AUDIT_ID_TAIL = re.compile(rf"-(cloud|lan){_FY_PART}-(full|quick)$", re.IGNORECASE)
 MANIFEST_NAME = "manifest.json"
 
 
@@ -47,13 +52,24 @@ def _safe(name: str) -> str:
 
 
 def _leg_of(run_id: str) -> str | None:
-    """cloud | lan | rollover from a run id `<uuid>-<mode>`; audit-cloud | audit-lan from an audit
-    id `<uuid>-<mode>-<scope>`; None for anything else (plain folder)."""
-    parts = run_id.rsplit("-", 2)
-    if len(parts) == 3 and parts[1] in ("cloud", "lan") and parts[2] in ("full", "quick"):
-        return f"audit-{parts[1]}"
-    last = run_id.rsplit("-", 1)[-1]
-    return last if last in _LEGS else None
+    """cloud | lan | rollover from a run id `<uuid>-<mode>[-<fy>]`; audit-cloud | audit-lan from an
+    audit id `<uuid>-<mode>[-<fy>]-<scope>`; None for anything else (plain folder)."""
+    run_id = str(run_id)
+    m = _AUDIT_ID_TAIL.search(run_id)
+    if m:
+        return f"audit-{m.group(1).lower()}"
+    m = _RUN_ID_TAIL.search(run_id)
+    return m.group(1).lower() if m else None
+
+
+def _fy_of(run_id: str) -> str | None:
+    """The canonical FYnn-nn carried by a new-form run or audit id, upper-cased; None when absent."""
+    run_id = str(run_id)
+    m = _AUDIT_ID_TAIL.search(run_id) or _RUN_ID_TAIL.search(run_id)
+    if not m:
+        return None
+    fy = m.group(2)
+    return fy.upper() if fy else None
 
 
 class RunArtefacts:
@@ -69,7 +85,9 @@ class RunArtefacts:
         self.root = Path(root)
         self.run_id = run_id
         if leg and day != "adhoc":
-            self._prefix = f"{started.format('YYYY-MM-DD_HHmm')}_{leg}"
+            fy = _fy_of(str(run_id))
+            self._prefix = (f"{started.format('YYYY-MM-DD_HHmm')}_{leg}"
+                            + (f"_{fy}" if fy else ""))
             self.dir = self.root / day / f"{self._prefix}_{_safe(str(run_id)[:8])}"
         else:
             self._prefix = None
