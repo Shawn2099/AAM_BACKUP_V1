@@ -203,3 +203,15 @@
   2. The clock-unproven activation alert reuses fault code AAM-ROL-03 ("switch waits"); parent-missing / link deferrals have no
      fault code. A dedicated AAM-ROL-07 + a row in docs/EMAIL_CONTENT_SPEC.md would be cleaner.
   3. Old fault text AAM-ROL-06 ("Files in the new year are not backed up yet") no longer fits once OV-2.6 removes that alarm.
+- **WP2 Opus review (2026-11-20), no blocker; I-1..I-4 + most nits are being fixed in a follow-up commit. For the owner / later WPs:**
+  1. **DEPLOY GATE (I-5): do NOT deploy `fy-overlap` to the box or merge to main before WP3 is done.** From WP2 the backup flows activate
+     the next FY and mail "FY27-28 is now backed up as well", but no pipeline backs up the early FY until OV-3.2.
+  2. I-4 deviation from the plan letter (needs the owner's nod): the "misnamed FY folder" alarm (plan 5.2) only fires when the
+     name points at a year NEWER than the configured one; 'FY 2023-24 Archive', 'FY25-26 old', 'FY26-27 - Copy' are ignored
+     (otherwise one daily mail per archive folder with the false advice to rename it), and a name that already exists is never suggested.
+  3. N-3 (WP8): `core/audit_pending.py:160` keeps the plain percentage tripwire for pending deletes; a 9-file early folder with
+     1 pending delete is 11 % > 10 % -> the audit reports differences while G3 passes the same delete. Align with the small-folder rule in OV-8.1.
+  4. N-8: `alerts.stale_repeat_hours` = 24 against a daily 06:00 check can suppress a sibling mail every other day (same as the old ROL-06).
+  5. N-9 (OV-4.2): the incident machinery is per mode; a RECOVERED of one `rollover_files` key restarts the incident of another and
+     threads RESOLVED into another sibling's conversation. Per-key incidents for `overlap:*` keys belong in OV-4.2.
+  6. Out of scope edge: a config hand-edited to the next FY in March drops the old FY silently (the sibling check sees a past FY).
