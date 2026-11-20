@@ -1,7 +1,7 @@
 # Tasks - FY overlap (follow this list; tick each task in the commit that finishes it)
 
 **Plan:** `docs/PLAN_FY_OVERLAP_2026-11-20.md` (rev 4, FINAL). Section numbers below (§) refer to the plan.
-**Status:** FINAL, waiting for the owner's go. **No coding before the owner says so.**
+**Status:** FINAL. Owner gave the go 2026-11-20; build in progress.
 
 ## Rules for every task
 
@@ -26,8 +26,8 @@
 
 ## WP0 - Dependency upgrade + httpx2 (plan D-15, D-16)
 
-- [ ] **OV-0.1 Baseline.** Full unit suite on the current versions; save the pass/fail list in
-  `agent_runs/ov0_baseline_<stamp>.txt`. Done when: the known failures (if any) are written down.
+- [x] **OV-0.1 Baseline.** Full unit suite on the current versions; save the pass/fail list in
+  `agent_runs/ov0_baseline_<stamp>.txt`. Done when: the known failures (if any) are written down. Result: 3055 passed, 18 skipped (SMB share tests), 0 failures, 1 warning (Starlette httpx).
 - [ ] **OV-0.2 Pins.** `pyproject.toml`: raise every minor / patch pin to the latest (prefect 3.9.x, pydantic 2.14.x,
   fastapi, uvicorn, loguru 0.8, pendulum 3.3, humanize, python-multipart, filelock, tenacity; dev: hypothesis, pytest,
   ruff, time-machine); keep wakeonlan 3.3.0, cron-descriptor 1.4.5; add constraints `sqlalchemy<2.1`,
