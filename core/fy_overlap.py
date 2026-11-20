@@ -14,11 +14,15 @@ durable activation row, otherwise [configured FY].
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 from datetime import date as _date
 from datetime import datetime
+from pathlib import Path
 
 import pendulum
+from loguru import logger
 
 from core import rollover_journal as rj
 from core.fy_rollover import (
@@ -26,8 +30,11 @@ from core.fy_rollover import (
     _parent_path,
     configured_fy,
     effective_fy_prefix,
+    folder_entry_names,
+    write_placeholder_if_empty,
 )
-from core.time_utils import IST, get_fy_prefix
+from core.guards import MOUNT_MARKER
+from core.time_utils import IST, format_ist, get_fy_prefix
 from models.config import AppConfig
 
 CURRENT = "current"
@@ -131,3 +138,207 @@ def folder_view(config: AppConfig, fy: str) -> AppConfig:
 def role_of(config: AppConfig, fy: str) -> str:
     """'current' for the configured FY, 'early' for the one backed up ahead of the switch."""
     return CURRENT if fy == _configured(config) else EARLY
+
+
+# ---- activation (OV-2.3) --------------------------------------------------------------------
+
+NOT_NEEDED = "not_needed"
+ALREADY_ACTIVE = "already_active"
+ACTIVATED = "activated"
+DEFERRED = "deferred"
+
+_META_FIRST_DEFERRED = "overlap_first_deferred:{fy}"
+_META_ALERT_SENT = "overlap_alert_sent:{fy}"
+_SECONDS_PER_HOUR = 3600
+
+
+def _result(state: str, fy: str | None, reason: str) -> dict:
+    logger.info(f"FY overlap activation: {state} ({fy or '-'}): {reason}")
+    return {"state": state, "fy": fy, "reason": reason}
+
+
+def _is_link(path: Path) -> bool:
+    """Symlink or Windows junction (a reparse point the office or an installer made)."""
+    return os.path.islink(path) or os.path.isjunction(path)
+
+
+def _default_clock_check(config: AppConfig):
+    from core.health import check_clock
+    from core.run_artefacts import RunArtefacts
+
+    return check_clock(
+        max_skew_seconds=config.health.max_clock_skew_seconds,
+        connection_timeout=config.health.clock_check_timeout_seconds,
+        ntp_server=config.health.ntp_server,
+        w32tm_timeout_s=config.health.w32tm_timeout_seconds,
+        artefacts=RunArtefacts.ephemeral("overlap-clock"),
+    )
+
+
+def _find_canonical(parent: Path, fy: str) -> Path | None:
+    """The child of `parent` named `fy` ignoring case (its real spelling), else None."""
+    wanted = fy.upper()
+    for entry in parent.iterdir():
+        if entry.name.upper() == wanted:
+            return entry
+    return None
+
+
+def _defer(db, config, fy: str, reason: str, notify_fn, fault_code: str | None = None) -> dict:
+    """Not activated now: remember when this started and, after activation_alert_after_hours, tell
+    the owner ONCE. Nothing in the folders was touched."""
+    now = pendulum.now(IST)
+    key = _META_FIRST_DEFERRED.format(fy=fy)
+    first_raw = db._meta(key)
+    first = None
+    try:
+        first = pendulum.parse(first_raw) if first_raw else None
+    except Exception:  # noqa: BLE001 - an unreadable marker is replaced
+        first = None
+    if first is None:
+        first = now
+        db._set_meta(key, now.isoformat())
+    hours = config.rollover.activation_alert_after_hours
+    if (now - first).total_seconds() > hours * _SECONDS_PER_HOUR and not db._meta(_META_ALERT_SENT.format(fy=fy)):
+        _send_deferred_alert(db, config, fy, reason, notify_fn, fault_code)
+    return _result(DEFERRED, fy, reason)
+
+
+def _call_notify(config, db, event, notify_fn):
+    """Send through `notify_fn` (default core.notify.notify); a failing mail never raises."""
+    try:
+        if notify_fn is None:
+            from core.notify import notify as notify_fn
+        return notify_fn(config, event, db)
+    except Exception as e:  # noqa: BLE001 - mail trouble must not undo or block anything
+        logger.error(f"FY overlap mail {event.key} failed: {e}")
+        return None
+
+
+def _send_deferred_alert(db, config, fy: str, reason: str, notify_fn, fault_code: str | None) -> None:
+    from core.notify import AlertEvent
+
+    configured = _configured(config)
+    event = AlertEvent(
+        key=f"overlap:activation:{fy}", kind="ACTION_REQUIRED", mode="rollover",
+        title=f"{fy} is not being backed up yet",
+        message=(f"Next year's folder ({fy}) is not being backed up because {reason}. "
+                 f"{configured} is still backed up every night as usual, so nothing is lost. "
+                 f"The backup tries again at every run and starts on its own once the problem is gone."),
+        fault_code=fault_code, fy=fy)
+    res = _call_notify(config, db, event, notify_fn)
+    if getattr(res, "status", None) != "FAILED":     # a failed mail is tried again at the next run
+        db._set_meta(_META_ALERT_SENT.format(fy=fy), pendulum.now(IST).isoformat())
+
+
+def _send_start_mail(db, config, fy: str, configured: str, folder: Path, created: bool, when_iso: str,
+                     notify_fn) -> None:
+    from core.notify import AUDIENCE_REPORTS, AlertEvent
+
+    how = "was created for it" if created else "was already there and is used as it is"
+    event = AlertEvent(
+        key=f"overlap:start:{fy}", kind="INFO", mode="rollover",
+        title=f"{fy} is now backed up as well",
+        message=(f"Since {format_ist(when_iso)} the nightly backups copy both folders: {configured} "
+                 f"(this year) and {fy} (next year, {folder}). The {fy} folder {how}. "
+                 f"You can start saving next year's files in {fy} now; the backup never moves or "
+                 f"changes your files. On 1 April the backups switch to {fy} by themselves."),
+        audience=AUDIENCE_REPORTS, fy=fy)
+    _call_notify(config, db, event, notify_fn)
+
+
+def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
+                             clock_check=None, notify_fn=None) -> dict:
+    """Start backing up next year's folder when it is time (plan 5.1). Idempotent, needs no backup slot,
+    never raises. Returns {'state': not_needed | already_active | activated | deferred, 'fy', 'reason'}.
+
+    clock_check() -> object with .state/.reason (default: health.check_clock from config.health.*);
+    notify_fn(config, event, db) (default: core.notify.notify). Every call re-checks a deferred activation.
+    """
+    from core.health import CLOCK_OK
+    from core.manifest import ManifestDB
+
+    own_db = db is None
+    fy = None
+    try:
+        if db is None:
+            db = ManifestDB.from_config(config)
+        configured = _configured(config)
+        if configured is None or not (in_window(config, run_date) or switch_pending(config, db, run_date)):
+            return _result(NOT_NEEDED, None, "overlap is off or it is not the time for it")
+        fy = next_fy(configured)
+        if db.get_activation(fy) is not None:
+            return _result(ALREADY_ACTIVE, fy, "already activated")
+
+        clock = (clock_check or (lambda: _default_clock_check(config)))()
+        if clock.state != CLOCK_OK:
+            return _defer(db, config, fy,
+                          f"the server's clock could not be proven correct ({clock.state}: {clock.reason})",
+                          notify_fn, fault_code="AAM-ROL-03")
+
+        parent = Path(_parent_path(config.paths.source_drive))
+        if not parent.is_dir():
+            return _defer(db, config, fy, f"the folder {parent} that should hold it cannot be reached", notify_fn)
+        existing = _find_canonical(parent, fy)
+        folder = existing if existing is not None else Path(folder_for(config, fy))
+        if existing is not None and _is_link(existing):
+            return _defer(db, config, fy,
+                          f"{existing} is a shortcut (link), not a real folder, and the backup refuses to use it",
+                          notify_fn)
+        if existing is not None and not existing.is_dir():
+            return _defer(db, config, fy, f"{existing} exists but is not a folder", notify_fn)
+
+        created = existing is None
+        if created:
+            folder.mkdir(exist_ok=False)          # never parents=True: a wrong drive is not invented
+        write_placeholder_if_empty(folder, fy, config.rollover.source_placeholder_name)
+
+        when = pendulum.now(IST).isoformat()
+        first = db.record_activation(fy, activated_at=when, source_path=str(folder),
+                                     created_by_app=created, clock_state=clock.state)
+        if not first:
+            return _result(ALREADY_ACTIVE, fy, "activated by another run at the same moment")
+        _send_start_mail(db, config, fy, configured, folder, created, when, notify_fn)
+        return _result(ACTIVATED, fy, f"{'created' if created else 'adopted'} {folder}")
+    except Exception as e:  # noqa: BLE001 - activation must never break a backup flow
+        logger.exception("FY overlap activation failed")
+        return _result(DEFERRED, fy, f"activation could not be carried out ({type(e).__name__}: {e})")
+    finally:
+        if own_db and db is not None:
+            with contextlib.suppress(Exception):
+                db.close()
+
+
+# ---- NAS folder (OV-2.5) --------------------------------------------------------------------
+
+def ensure_overlap_nas_folder(config: AppConfig, fy: str) -> dict:
+    """The NAS folder of `fy` for the LAN flow (NAS awake, before the first pipeline). Never raises.
+    state: created | ok | marked | needs_confirmation | unreachable. Nothing is ever created above the
+    share root; a non-empty folder without the marker is left for guard G5 to ask about."""
+    nas = None
+    try:
+        if not config.lan.enabled:
+            return {"state": "unreachable", "fy": fy, "path": None, "reason": "the NAS leg is switched off"}
+        nas = Path(folder_view(config, fy).paths.lan_destination)
+        if not nas.parent.is_dir():
+            return {"state": "unreachable", "fy": fy, "path": str(nas),
+                    "reason": f"the share {nas.parent} cannot be reached"}
+        if not nas.exists():
+            nas.mkdir(exist_ok=False)             # never parents=True
+            (nas / MOUNT_MARKER).touch()
+            return {"state": "created", "fy": fy, "path": str(nas), "reason": "folder and marker created"}
+        if not nas.is_dir():
+            return {"state": "needs_confirmation", "fy": fy, "path": str(nas),
+                    "reason": "exists but is not a folder"}
+        names = [n.lower() for n in folder_entry_names(nas)]
+        if MOUNT_MARKER.lower() in names:
+            return {"state": "ok", "fy": fy, "path": str(nas), "reason": "marker present"}
+        if not names:
+            (nas / MOUNT_MARKER).touch()
+            return {"state": "marked", "fy": fy, "path": str(nas), "reason": "empty folder, marker written"}
+        return {"state": "needs_confirmation", "fy": fy, "path": str(nas),
+                "reason": "folder holds files but has no marker: left untouched (guard G5 asks)"}
+    except Exception as e:  # noqa: BLE001 - the pipeline's own checks report the real problem
+        logger.warning(f"FY overlap NAS folder check for {fy} failed: {e}")
+        return {"state": "unreachable", "fy": fy, "path": str(nas) if nas else None,
+                "reason": f"{type(e).__name__}: {e}"}

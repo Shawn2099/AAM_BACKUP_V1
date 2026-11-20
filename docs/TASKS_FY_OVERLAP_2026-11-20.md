@@ -73,13 +73,13 @@
   (journal `config_switch` step, not follow-ups), `active_folders` (new first, needs an activation row), `folder_view`,
   `folder_for`. Tests: every month; 1 Jan / 31 Mar / 1 Apr; pending 5 days; after switch; overlap off; clock behind;
   JUMP; century wrap; drive-root / nested / UNC; cloud-only placeholder untouched (R-12, R-25).
-- [ ] **OV-2.3 Activation.** `ensure_overlap_activated(config, run_date)`: direct `check_clock` = OK, parent exists,
+- [x] **OV-2.3 Activation.** `ensure_overlap_activated(config, run_date)`: direct `check_clock` = OK, parent exists,
   not a link; adopt a canonical folder (no placeholder into a non-empty one) or create without `parents=True` +
   placeholder; durable row; INFO mail `overlap:start:<fy>`; ACTION REQUIRED after `activation_alert_after_hours`.
   Tests: created vs adopted; unproven clock retried + alert after 24 h; parent missing; junction refused (R-15, R-22, R-24).
-- [ ] **OV-2.4 Missing after activation.** A missing / unreadable early folder fails that FY's legs through the existing
+- [x] **OV-2.4 Missing after activation.** A missing / unreadable early folder fails that FY's legs through the existing
   health check, never recreated. Test (R-15).
-- [ ] **OV-2.5 NAS folder rule.** `ensure_overlap_nas_folder`: missing → create (no parents) + marker; marker present →
+- [x] **OV-2.5 NAS folder rule.** `ensure_overlap_nas_folder`: missing → create (no parents) + marker; marker present →
   OK; empty → marker; non-empty without marker → untouched (G5 asks). Rollover `nas_folder` / `source_folder` steps treat
   "exists (+ marker)" as done. Tests (R-21).
 - [ ] **OV-2.6 Sibling check** in `rollover_check_flow` replaces ROL-06 (`unprotected_new_fy` removed with its alarm /
@@ -196,3 +196,10 @@
   4. httpx2 2.16.2 was published 2026-11-16 (4 days old) and adds httpcore2, truststore, httpx2-jsfetch: owner informed.
   5. Pre-existing: 9 SyntaxWarnings (invalid escapes) in old tests; `test_launch_comprehensive` + `test_p2_sched_pause` fail when
      run as only those two files in that order (same on old code).
+- **OV-2.3..2.5 findings (2026-11-20), to decide with the owner:**
+  1. A link / junction at an early folder is refused only AT ACTIVATION. After activation `health.source_drive_fault` only checks
+     exists()/iterdir(), so a folder later replaced by a junction would not fail that FY's legs (plan 5.1 says it should).
+     Needs a small link check in pre-flight for early FYs; not built (it would also change behaviour for the configured FY).
+  2. The clock-unproven activation alert reuses fault code AAM-ROL-03 ("switch waits"); parent-missing / link deferrals have no
+     fault code. A dedicated AAM-ROL-07 + a row in docs/EMAIL_CONTENT_SPEC.md would be cleaner.
+  3. Old fault text AAM-ROL-06 ("Files in the new year are not backed up yet") no longer fits once OV-2.6 removes that alarm.

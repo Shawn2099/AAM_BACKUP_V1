@@ -362,15 +362,34 @@ def create_source_folder(source_root: str, new_fy: str,
     new_source = Path(_child_path(source_root, new_fy))
     new_source.mkdir(parents=True, exist_ok=True)
     logger.info(f"FY rollover: source folder {new_source} ready")
-    if placeholder_name:
-        placeholder = new_source / placeholder_name
-        try:
-            with open(placeholder, "x", encoding="utf-8") as f:
-                f.write(_PLACEHOLDER_TEXT.format(fy=new_fy))
-            logger.info(f"FY rollover: wrote placeholder {placeholder}")
-        except FileExistsError:
-            logger.info(f"FY rollover: placeholder {placeholder} already exists - kept")
+    write_placeholder_if_empty(new_source, new_fy, placeholder_name)
     return new_source
+
+
+def folder_entry_names(folder: Path, ignore_name: str | None = None) -> list[str]:
+    """Names inside `folder`, leaving out `ignore_name` (compared case-insensitively)."""
+    ignore = ignore_name.lower() if ignore_name else None
+    return [e.name for e in folder.iterdir() if e.name.lower() != ignore]
+
+
+def write_placeholder_if_empty(folder: Path, fy: str, placeholder_name: str | None) -> bool:
+    """Write the placeholder note into `folder` - never overwritten, and never into a folder that
+    already holds anything else (an adopted folder with the office's own files stays untouched).
+    Returns True when the file was written."""
+    if not placeholder_name:
+        return False
+    placeholder = folder / placeholder_name
+    if folder_entry_names(folder, placeholder_name):
+        logger.info(f"FY rollover: {folder} already holds files - placeholder not written")
+        return False
+    try:
+        with open(placeholder, "x", encoding="utf-8") as f:
+            f.write(_PLACEHOLDER_TEXT.format(fy=fy))
+    except FileExistsError:
+        logger.info(f"FY rollover: placeholder {placeholder} already exists - kept")
+        return False
+    logger.info(f"FY rollover: wrote placeholder {placeholder}")
+    return True
 
 
 def create_nas_folder(lan_root: str, new_fy: str) -> Path:
@@ -379,13 +398,22 @@ def create_nas_folder(lan_root: str, new_fy: str) -> Path:
     Raises OSError when the share root is not reachable: the folder is only ever created
     inside an existing share (never invented on a wrong or offline path, F-9), and the
     caller records the failure instead of swallowing it.
+
+    An existing, non-empty folder WITHOUT the marker is left untouched (the step is done; guard G5
+    asks the owner whether it really is the backup target).
     """
     root = Path(lan_root)
     if not root.is_dir():
         raise OSError(f"NAS share {lan_root} is not reachable - the new folder was not created")
     new_lan = Path(_child_path(lan_root, new_fy))
     new_lan.mkdir(exist_ok=True)
-    (new_lan / MOUNT_MARKER).touch(exist_ok=True)
+    names = [n.lower() for n in folder_entry_names(new_lan)]
+    if MOUNT_MARKER.lower() not in names:
+        if names:
+            logger.warning(f"FY rollover: NAS folder {new_lan} already holds files and has no marker - "
+                           "left untouched (guard G5 decides)")
+            return new_lan
+        (new_lan / MOUNT_MARKER).touch(exist_ok=True)
     logger.info(f"FY rollover: NAS folder {new_lan} ready")
     return new_lan
 
