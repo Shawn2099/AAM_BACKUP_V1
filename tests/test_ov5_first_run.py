@@ -74,3 +74,11 @@ def test_lan_first_run_into_a_filled_nas_folder_is_a_decision(tmp_path):
     assert "first backup of this folder" in str(ei.value)
     _run_lan_guards(_lan_cfg(tmp_path), _counts(990, 3), 1000,
                     baseline={"fy": "FY26-27", "source_file_count": 993})    # not a first run: passes
+
+
+def test_a_retry_after_an_earlier_attempt_deleted_files_is_not_a_first_run_block():
+    """Review N2: attempt 1 of an approved first run deleted files; attempt 2 must not be BLOCKED again
+    because already_deleted inflates planned_deletes."""
+    r = g3(0, 100, True, already_deleted=3)
+    assert r.passed
+    assert not r.metrics.get("first_run")

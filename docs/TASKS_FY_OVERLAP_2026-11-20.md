@@ -229,3 +229,9 @@
   (b) every per-leg alert key changes series at deploy (backup:/blocked:/missed:/recovered:/stale:): at most one extra mail per OPEN problem right after
   deploy, outside the old thread; nothing is lost or suppressed. Nits left: the FY appears twice in some `overlap:*` subjects; an old FY's incident
   with overlap OFF stays open after the April switch (close_fy closes it only for the FY the switch moved past - it does).
+- WP5-WP9 Opus review (fixed: B1 report after the switch with no activation row, I1 overdue fallback to a newer FY, I3 manual triggers during a rollover, N2 retry in a first run, N4 century-wrap order). **Left for the owner:**
+  (I2) after the fresh-DB deploy there is no baseline anywhere, so the FIRST night of each leg for the configured FY becomes BLOCKED + approval if any file was deleted since the last backup (plan 5.5 as written); tell the office, and approve on the dashboard;
+  (OV-10.3) a config whose NAS path is a share that is itself the FY folder (`\nas\FY26-27`) now fails to load while LAN and overlap are on - check the real `lan_destination` first;
+  (N1) the audit can leave a NAS it woke switched on (a folder skipped or failed to wake) with no attention item; (N3) small-folder allowance can exceed a tiny folder (D-11 accepted);
+  (N5) after a JUMP rollover the closed FY's scheduled count runs to the period end (inflated only); (N6) switching overlap off mid-window hides a PENDING early-FY approval from the banner;
+  (N7) the `_active_fys` fallback mail text says "backed up" even when the audit called it; (N8) the second folder's card can show idle between folders.

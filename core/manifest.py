@@ -806,9 +806,37 @@ class ManifestDB:
         """The last successful run of `fy`, else the last one of ANY FY. For "when did this leg
         last work" displays and the overdue base: right after the April switch the new FY has no
         history yet, and that must not read as "never backed up" (the old FY's success still
-        counts, as it did before the catalog was kept per FY)."""
-        return (self.last_successful_run(mode, fy=fy)
-                or self.last_successful_run(mode, fy=ALL_FYS))
+        counts, as it did before the catalog was kept per FY). Only FYs strictly EARLIER than `fy` count
+        (start years compared modulo 100 so FY99-00 -> FY00-01 works): a newer FY's success must never
+        stand in for this FY's failures."""
+        own = self.last_successful_run(mode, fy=fy)
+        if own or fy == ALL_FYS:
+            return own
+        import re
+
+        def start_year(name) -> int | None:
+            m = re.search(r"(\d{4}|\d{2})\D+\d{2,4}", str(name or ""))
+            if not m:
+                return None
+            n = int(m.group(1))
+            return n % 100
+
+        mine = start_year(fy)
+        if mine is None:
+            return None
+        from core.statuses import SUCCESS_STATUSES
+
+        success = sorted(SUCCESS_STATUSES)
+        placeholders = ",".join("?" for _ in success)
+        with self._lock:
+            rows = self._get_conn().execute(
+                f"SELECT * FROM run_history WHERE mode = ? AND status IN ({placeholders}) "
+                "ORDER BY started_at DESC", (mode, *success)).fetchall()
+        for row in rows:
+            other = start_year(row["fy"])
+            if other is not None and 1 <= (mine - other) % 100 <= 50:
+                return dict(row)
+        return None
 
     def previous_run_status(self, mode: str, run_id: str, *, fy: str) -> str | None:
         """Status of the latest run of this leg (in this FY) other than `run_id`."""

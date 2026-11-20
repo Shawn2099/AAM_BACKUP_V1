@@ -33,6 +33,7 @@ def rig(monkeypatch, tmp_path):
     monkeypatch.setattr(ui, "get_db", lambda: db)
     monkeypatch.setattr(ui, "_check_rate_limit", lambda key, max_attempts: True)
     monkeypatch.setattr(ui, "_is_running", AsyncMock(return_value=False))
+    monkeypatch.setattr(ui, "_is_verify_running", AsyncMock(return_value=False))
     calls = []
 
     async def fake_arun_deployment(name, parameters=None, timeout=None):

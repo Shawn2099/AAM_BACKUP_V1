@@ -252,3 +252,21 @@ def test_a_stale_code_without_a_known_fy_is_not_suppressed(tmp_path):
             patch("core.notify.notify", side_effect=lambda c, e, db=None: sent.append(e)):
         assert wd._check_stale_legs(cfg) == ["lan"]
     assert [e.key for e in sent] == ["stale:lan"]
+
+
+def test_stale_item_not_hidden_by_a_newer_fys_success(cfg, db):
+    """Review I1: FY26-27 fails every night while FY27-28 succeeds -> FY26-27 is stale (a newer FY's
+    success must not stand in for it)."""
+    _activate(db)
+    for day in range(1, 11):
+        _ok(db, B, at(2027, 1, day, 21, 0, 30))
+        _run(db, A, "LAN_FAILED", at(2027, 1, day, 21, 30, 0))
+    items = compute_attention(db, cfg, now=at(2027, 1, 11, 12, 0))
+    assert "stale:FY26-27:lan" in _codes(items)
+    assert db.last_successful_run_or_earlier("lan", fy=A) is None
+
+
+def test_last_success_fallback_works_across_the_century_wrap(db):
+    _run(db, "FY99-00", "LAN_COMPLETE", started=at(2000, 3, 1, 21), leg="lan", run_id="old")
+    _run(db, "FY01-02", "LAN_COMPLETE", started=at(2001, 6, 1, 21), leg="lan", run_id="newer")
+    assert db.last_successful_run_or_earlier("lan", fy="FY00-01")["run_id"] == "old"

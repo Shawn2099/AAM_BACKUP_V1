@@ -205,3 +205,43 @@ def test_build_summary_email_threads_config(db, tmp_path):
                                                         report_period=rp, schedule=cfg.schedule, config=cfg)
     assert "FY27-28" in body and "FY26-27" in body
     assert att[0]["content"]
+
+
+# ── review follow-ups (Opus review of WP9) ───────────────────────────────────────────────────
+
+def _after_switch_no_activation(db, tmp_path, prev, new, overlap_off=True):
+    cfg = _cfg(tmp_path, fy=new)                                             # config switched at 06:05
+    sw = f"20{new[2:4]}-04-01T06:05:00+05:30"
+    db.rollover_open(prev, new, sw)
+    db.rollover_step_done(prev, new, rj.CONFIG_SWITCH, sw)
+    return cfg
+
+
+def test_b1_monthly_on_1_april_after_the_switch_without_activation_is_not_a_missing_backup(db, tmp_path):
+    cfg = _after_switch_no_activation(db, tmp_path, A, B)
+    _nightly(db, A, at(2027, 3, 1), at(2027, 3, 31))
+    m = _model(db, cfg, ReportPeriod.previous_month(at(2027, 4, 1, 8, 30)), at(2027, 4, 1))
+    assert m["act"] is False, m["headline"]
+    assert "no backup ran" not in m["headline"].lower()
+    for sec in m["sections"]:
+        for s in sec["summaries"]:
+            assert s.get("scheduled") != 0 or sec["fy"] != B                  # B planned nothing in March
+
+
+def test_b1_weekly_on_monday_1_april_after_the_switch_without_activation(db, tmp_path):
+    a, b = "FY23-24", "FY24-25"
+    cfg = _after_switch_no_activation(db, tmp_path, a, b)
+    _nightly(db, a, at(2024, 3, 25), at(2024, 3, 31))
+    rp = ReportPeriod.previous_week(at(2024, 4, 1, 8, 30))
+    m = _model(db, cfg, rp, at(2024, 4, 1))
+    assert m["act"] is False, m["headline"]
+    assert "no backup ran" not in m["headline"].lower()
+
+
+def test_n4_sections_sort_new_first_across_the_century_wrap(db, tmp_path):
+    cfg = _cfg(tmp_path, fy="FY00-01")
+    for fy, d in (("FY99-00", at(2000, 3, 30)), ("FY00-01", at(2000, 4, 2))):
+        _run(db, fy, d)
+    rp = ReportPeriod(start=at(2000, 3, 25), end=at(2000, 4, 5), label="x", kind="week")
+    plan = report.fy_sections(db, db.get_runs_between(rp.start, rp.end, fy="*"), rp, None)
+    assert [fy for fy, _ in plan] == ["FY00-01", "FY99-00"]

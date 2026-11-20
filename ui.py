@@ -733,27 +733,37 @@ def _requested_fy(request: Request) -> str | None:
         f"{raw} is not backed up at the moment (active: {', '.join(active)})"))
 
 
-async def _refuse_if_busy(target: str) -> JSONResponse | None:
-    """Manual backups are refused while ANY backup or safety check runs: the next one would only queue
-    behind the one backup slot and end as a false SLOT_TIMEOUT alarm (plan 5.7). 503 when Prefect does not
-    answer (fail closed). `target` is the leg asked for, to word the same-leg case as before."""
-    for leg in ("cloud", "lan"):
+async def _busy_detail(target: str) -> str | None:
+    """Why a manual run of `target` must wait, or None when nothing runs. Any backup, the FY rollover
+    (tag `rollover`, it moves the config and the backup slot) or a safety check counts: the next run would
+    only queue behind the one backup slot and end as a false SLOT_TIMEOUT alarm (plan 5.7). 503 when
+    Prefect does not answer (fail closed). `target` is the leg asked for, to word the same-leg case."""
+    for leg in ("cloud", "lan", "rollover"):
         running = await _is_running(leg)
         if running is None:
             raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
         if running:
-            detail = (messages.leg_running(leg) if leg == target else messages.act(
-                "Wait for the running backup to finish, then try again",
-                "Only one backup or safety check can run at a time"))
-            return JSONResponse({"status": "already_running", "detail": detail}, status_code=400)
+            if leg == target:
+                return messages.leg_running(leg)
+            if leg == "rollover":
+                return messages.act("Wait for the running FY rollover check to finish, then try again",
+                                    "The rollover is running and changes the backup folders")
+            return messages.act("Wait for the running backup to finish, then try again",
+                                "Only one backup or safety check can run at a time")
     verifying = await _is_verify_running()
     if verifying is None:
         raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
     if verifying:
-        return JSONResponse({"status": "already_running", "detail": messages.act(
-            "Wait for the running safety check to finish, then try again",
-            "A backup and a safety check cannot run at the same time")}, status_code=400)
+        return messages.act("Wait for the running safety check to finish, then try again",
+                            "A backup and a safety check cannot run at the same time")
     return None
+
+
+async def _refuse_if_busy(target: str) -> JSONResponse | None:
+    detail = await _busy_detail(target)
+    if detail is None:
+        return None
+    return JSONResponse({"status": "already_running", "detail": detail}, status_code=400)
 
 
 @app.post("/trigger/cloud")
@@ -872,11 +882,9 @@ async def _ensure_leg_idle(leg: str) -> None:
     if _APPROVAL_TARGETS[leg][2] and not getattr(_cfg(), leg).enabled:
         raise HTTPException(status_code=409,
                             detail=messages.leg_off(leg, "changed"))
-    running = await _is_running(leg)
-    if running is None:
-        raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
-    if running:
-        raise HTTPException(status_code=409, detail=messages.leg_running(leg))
+    detail = await _busy_detail(leg)                 # any backup / rollover / safety check, not just this leg
+    if detail is not None:
+        raise HTTPException(status_code=409, detail=detail)
 
 
 async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
@@ -1500,7 +1508,7 @@ async def trigger_verify(mode: str, request: Request):
     if mode == "all" and not (cfg.lan.enabled or cfg.cloud.enabled):
         return JSONResponse({"status": "disabled", "detail": messages.act("Switch on the LAN or the cloud backup in Settings, then try again", "Both are turned off, so there is nothing to check")}, status_code=409)
     fy = _requested_fy(request)
-    for leg in ("lan", "cloud"):
+    for leg in ("lan", "cloud", "rollover"):
         running = await _is_running(leg)
         if running is None:
             raise HTTPException(
@@ -1508,7 +1516,8 @@ async def trigger_verify(mode: str, request: Request):
                 detail=messages.SCHEDULER_NOT_ANSWERING,
             )
         if running:
-            return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running backup to finish, then check again", "The safety check and a backup cannot run at the same time")}, status_code=400)
+            what = "FY rollover check" if leg == "rollover" else "backup"
+            return JSONResponse({"status": "already_running", "detail": messages.act(f"Wait for the running {what} to finish, then check again", f"The safety check and the {what} cannot run at the same time")}, status_code=400)
     verifying = await _is_verify_running()
     if verifying is None:
         raise HTTPException(

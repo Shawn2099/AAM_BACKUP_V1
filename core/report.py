@@ -318,6 +318,17 @@ def _parse_ist(value):
         return None
 
 
+def _prev_fy(fy: str) -> str | None:
+    """The FY whose next_fy() is `fy` (FY27-28 -> FY26-27), wrap-safe; None for a name that is not canonical."""
+    import re
+
+    m = re.fullmatch(r"FY(\d{2})-(\d{2})", str(fy))
+    if not m:
+        return None
+    a = (int(m.group(1)) - 1) % 100
+    return f"FY{a:02d}-{int(m.group(1)):02d}"
+
+
 def fy_window(db, fy: str, rp: ReportPeriod) -> tuple:
     """(start, end) of the part of the period in which `fy` was backed up on schedule (OV-9.1, R-10):
     from max(period start, its activation) to min(period end, the switch that ended it). The configured
@@ -328,6 +339,18 @@ def fy_window(db, fy: str, rp: ReportPeriod) -> tuple:
     except Exception:  # noqa: BLE001 - a partial DB (tests) has no activations
         act = None
     at = _parse_ist(act.get("activated_at")) if act else None
+    if at is None:
+        # no activation row (overlap off, or it never ran): the FY became the configured one at the
+        # CONFIG_SWITCH of the journal prev_fy -> fy; nothing was planned for it before that (review B1)
+        try:
+            from core import rollover_journal as rj
+
+            prev = _prev_fy(fy)
+            j = db.rollover_get(prev, fy) if prev else None
+            step = j["steps"][rj.CONFIG_SWITCH] if j else None
+            at = _parse_ist(step.get("finished_at")) if step and rj.is_finished(step) else None
+        except Exception:  # noqa: BLE001 - no journal: the window stays the whole period
+            at = None
     if at is not None and at > start:
         start = at
     try:
@@ -359,7 +382,14 @@ def fy_sections(db, runs: list[dict], rp: ReportPeriod, config=None) -> list[tup
     if not fys:
         return [(None, (rp.start, rp.end))]
     out = []
-    for fy in sorted(fys, reverse=True):          # FYyy-zz sorts by start year: new first
+    def _start(name):
+        import re
+        m = re.search(r"\d{2}", str(name))
+        return int(m.group(0)) if m else 0
+
+    ref = _start(next(iter(sorted(fys))))
+    # new first; start years compared modulo 100 so FY00-01 is newer than FY99-00 (review N4)
+    for fy in sorted(fys, key=lambda f: ((_start(f) - ref + 50) % 100, f), reverse=True):
         window = fy_window(db, fy, rp)
         if window[1] <= window[0] and not any(r.get("fy") == fy for r in runs):
             continue

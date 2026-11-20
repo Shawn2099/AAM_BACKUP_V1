@@ -160,7 +160,9 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                    limit_percent=max_delete_percent, **extra)
     earlier = (f" ({already_deleted:,} of them already deleted by an earlier attempt of "
                "this run)" if already_deleted else "")
-    if first_run and planned_deletes > 0:
+    # a retry whose earlier attempt already deleted files was let through this decision at attempt 1: the
+    # first-run block applies to the first attempt only (review N2)
+    if first_run and not already_deleted and planned_deletes > 0:
         # plan 5.5 (OV-5.2): the first backup of this leg in this FY has nothing to compare with, and the
         # destination already holds files that a mirror would remove - e.g. a cloud prefix or NAS folder
         # somebody filled earlier. Never trimmed unasked: a person confirms it is the right destination.
