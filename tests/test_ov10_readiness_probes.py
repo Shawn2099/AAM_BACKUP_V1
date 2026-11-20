@@ -163,3 +163,28 @@ class TestCreateFolderProbe:
         assert code == 1
         assert status[NAS_CHECK][0] == "FAIL" and status[SRC_CHECK][0] == "OK"
         assert not (tmp_path / "gone").exists()
+
+
+class TestNewYearProbesOnlyWhenOverlapCanHappen:
+    """N-12: the new-year folder probes report SKIP (with the reason) unless the overlap is on AND the
+    configured FY can be derived from paths.source_drive."""
+
+    def test_skip_when_overlap_is_switched_off(self, probe, tmp_path):
+        cfg = _config(tmp_path)
+        cfg.write_text(cfg.read_text(encoding="utf-8") + "rollover:\n  overlap_enabled: false\n",
+                       encoding="utf-8")
+        code, status = _run(probe, tmp_path, cfg)
+        assert code == 0
+        for name in (SRC_CHECK, NAS_CHECK):
+            assert status[name][0] == "SKIP" and "overlap_enabled is false" in status[name][1]
+        assert _no_probe_folders(tmp_path)
+
+    def test_skip_when_the_configured_fy_cannot_be_derived(self, probe, tmp_path, monkeypatch):
+        # (config validation already refuses a non-FY source folder; the probe must still not trust that)
+        from core import fy_rollover
+        monkeypatch.setattr(fy_rollover, "configured_fy", lambda *a, **k: None)
+        _code, status = _run(probe, tmp_path, _config(tmp_path))
+        for name in (SRC_CHECK, NAS_CHECK):
+            st, line = status[name]
+            assert st == "SKIP" and "not named like FY26-27" in line
+        assert _no_probe_folders(tmp_path)

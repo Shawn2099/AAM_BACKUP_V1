@@ -747,8 +747,9 @@ class GuardsConfig(StrictModel):
     )
     small_folder_max_deletes: int = Field(
         default=10, ge=0, le=100_000,
-        description="G2/G3: in a small folder, block when a backup would delete (or the folder shrank "
-                    "by) more than this many files. Never more than max_delete_files.",
+        description="G3: in a small folder, block when a backup would delete more than this many files "
+                    "(never more than max_delete_files). G2: the limit on how many files a small folder "
+                    "may shrink by (max_delete_files does not apply to G2).",
     )
     forbid_local_destination: bool = Field(
         default=True,
@@ -844,9 +845,9 @@ class RolloverConfig(StrictModel):
 
     activation_alert_after_hours: int = Field(
         default=24, ge=1, le=168,
-        description="The next year's folder could not be set up for backup (clock not proven, parent "
-                    "folder missing, ...): after this many hours the information mail becomes an "
-                    "'action needed' mail.",
+        description="If next year's folder cannot be set up for backup (clock not proven, parent folder "
+                    "missing, no right to create folders, ...), you get an action-needed email after this "
+                    "many hours.",
     )
 
     sibling_ignore: list[str] = Field(

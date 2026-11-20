@@ -624,8 +624,12 @@ def _incident_closed(event: AlertEvent, db, config, prior: dict) -> bool:
                 return configured == tail
             if not fy_overlap.parent_readable(config):
                 return False
-            return event.key not in {fy_overlap.sibling_key(f) for f in
-                                     fy_overlap.sibling_findings(config, active, db, count=False)}
+            try:
+                now_found = fy_overlap.sibling_findings(config, active, db, count=False)
+            except fy_overlap.SiblingReadError as e:      # could not look: the incident stays open
+                logger.warning(f"Could not read the folders to close the {event.key} incident ({e}); treated as open")
+                return False
+            return event.key not in {fy_overlap.sibling_key(f) for f in now_found}
         latest = db.last_notification(event.key) or prior
         quiet = timedelta(days=config.alerts.incident_quiet_days)
         return pendulum.now("UTC") - pendulum.parse(latest["created_at"]) > quiet

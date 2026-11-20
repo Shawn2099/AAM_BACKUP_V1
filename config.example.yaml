@@ -503,8 +503,8 @@ guards:
   # Small folders (a new year's folder that has just been started): below this many files the
   # percentage limits above are replaced by small_folder_max_deletes (0 = off, 0-10000000)
   small_folder_files: 100
-  # In a small folder, block when a backup would delete - or the folder shrank by - more than
-  # this many files (never more than max_delete_files; 0-100000)
+  # In a small folder, block when a backup would delete more than this many files (G3, never more
+  # than max_delete_files) or the folder shrank by more than this many files (G2); 0-100000
   small_folder_max_deletes: 10
   # Block a LAN destination that points back at this server (true/false)
   forbid_local_destination: true
@@ -545,8 +545,8 @@ rollover:
   overlap_enabled: true
   # Month from which the next year's folder is backed up: 1 = January ... 3 = March
   early_start_month: 1
-  # If next year's folder cannot be set up for backup (clock not proven, parent folder missing)
-  # the information mail becomes "action needed" after this many hours. 1-168
+  # If next year's folder cannot be set up for backup (clock not proven, parent folder missing,
+  # no right to create folders), you get an action-needed email after this many hours. 1-168
   activation_alert_after_hours: 24
   # Folder names next to the year folders that look like a year folder but are not one (never
   # backed up, never warned about). Plain names, no slashes.

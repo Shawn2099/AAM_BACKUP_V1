@@ -161,13 +161,17 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                "this run)" if already_deleted else "")
     # B1: the verdict is the SAME allowance the cloud --max-delete backstop uses (one function), so
     # G3 can never pass what the backstop then stops. `pct` is for the message only.
-    if planned_deletes > max_delete_allowance(destination_files, max_delete_files, max_delete_percent,
-                                              small_folder_files, small_folder_max_deletes):
+    allowance = max_delete_allowance(destination_files, max_delete_files, max_delete_percent,
+                                     small_folder_files, small_folder_max_deletes)
+    if planned_deletes > allowance:
+        if 0 < destination_files < small_folder_files and max_delete_percent > 0:
+            limit_text = f"limit {allowance:,} files for a small folder"      # the allowance that applied
+        else:
+            limit_text = f"limits {max_delete_files:,} files / {max_delete_percent}%"
         return _block(
             name,
             f"This backup would delete {planned_deletes:,} of {destination_files:,} "
-            f"backup files{earlier} ({pct:.1f}%; limits {max_delete_files:,} files / "
-            f"{max_delete_percent}%).",
+            f"backup files{earlier} ({pct:.1f}%; {limit_text}).",
             "AAM-DEL-01", **metrics,
         )
     return _pass(name, f"{planned_deletes:,} planned deletion(s) within limits{earlier}",

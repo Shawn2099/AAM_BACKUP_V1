@@ -18,6 +18,7 @@ import calendar
 import contextlib
 import os
 import re
+import shutil
 from datetime import date as _date
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,7 @@ from core.fy_rollover import (
     folder_entry_names,
     new_fy_file_count,
     new_fy_has_files,
+    new_fy_root_exists,
     write_placeholder_if_empty,
 )
 from core.guards import MOUNT_MARKER
@@ -50,6 +52,12 @@ _CANONICAL_FY = re.compile(r"^FY(\d{2})-(\d{2})$")
 _LAST_MONTH_OF_FY = 3        # March: the calendar month in which a financial year ends (April start)
 # "FY 27-28", "FY2027-28", "FY_27_28": looks like a year folder (plan 5.2). Case-insensitive, anywhere in the name.
 _FY_LOOKING = re.compile(r"FY[\s_-]*\d{2,4}\s*[-_ ]\s*\d{2,4}", re.IGNORECASE)
+
+
+class SiblingReadError(Exception):
+    """The folders next to the year folders could not be read (parent listing, an entry, or the files of a
+    candidate folder). 'No findings' would prove nothing then: callers send no mail and no RESOLVED."""
+
 
 SIBLING_MISNAMED = "misnamed"
 SIBLING_UNPROTECTED = "unprotected"
@@ -162,6 +170,7 @@ DEFERRED = "deferred"
 
 _META_FIRST_DEFERRED = "overlap_first_deferred:{fy}"
 _META_ALERT_SENT = "overlap_alert_sent:{fy}"
+_META_CREATED_PENDING = "overlap_created_pending:{fy}"   # folder this app just created, activation not yet recorded
 _SECONDS_PER_HOUR = 3600
 
 
@@ -179,13 +188,17 @@ def _default_clock_check(config: AppConfig):
     from core.health import check_clock
     from core.run_artefacts import RunArtefacts
 
-    return check_clock(
-        max_skew_seconds=config.health.max_clock_skew_seconds,
-        connection_timeout=config.health.clock_check_timeout_seconds,
-        ntp_server=config.health.ntp_server,
-        w32tm_timeout_s=config.health.w32tm_timeout_seconds,
-        artefacts=RunArtefacts.ephemeral("overlap-clock"),
-    )
+    artefacts = RunArtefacts.ephemeral("overlap-clock")
+    try:
+        return check_clock(
+            max_skew_seconds=config.health.max_clock_skew_seconds,
+            connection_timeout=config.health.clock_check_timeout_seconds,
+            ntp_server=config.health.ntp_server,
+            w32tm_timeout_s=config.health.w32tm_timeout_seconds,
+            artefacts=artefacts,
+        )
+    finally:
+        shutil.rmtree(artefacts.root, ignore_errors=True)    # the throwaway store is never kept
 
 
 def _find_canonical(parent: Path, fy: str) -> Path | None:
@@ -240,7 +253,8 @@ def _send_deferred_alert(db, config, fy: str, reason: str, notify_fn, fault_code
                  f"The backup tries again at every run and starts on its own once the problem is gone."),
         fault_code=fault_code, fy=fy)
     res = _call_notify(config, db, event, notify_fn)
-    if getattr(res, "status", None) != "FAILED":     # a failed mail is tried again at the next run
+    # SENT and SUPPRESSED (cooldown) count as told; DISABLED / FAILED / no result are tried again at the next run
+    if getattr(res, "status", None) in ("SENT", "SUPPRESSED"):
         db._set_meta(_META_ALERT_SENT.format(fy=fy), pendulum.now(IST).isoformat())
 
 
@@ -273,6 +287,7 @@ def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
 
     own_db = db is None
     fy = None
+    hint = None
     try:
         if db is None:
             db = ManifestDB.from_config(config)
@@ -302,20 +317,41 @@ def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
             return _defer(db, config, fy, f"{existing} exists but is not a folder", notify_fn)
 
         created = existing is None
+        pending_key = _META_CREATED_PENDING.format(fy=fy)
         if created:
+            hint = (f"the folder {folder} could not be created: {{err}}; "
+                    f"give the backup account the right to create folders in {parent}")
             folder.mkdir(exist_ok=False)          # never parents=True: a wrong drive is not invented
+            with contextlib.suppress(Exception):
+                db._set_meta(pending_key, str(folder))   # a later failure must not turn it into an "adopted" folder
+        else:
+            pending = db._meta(pending_key)
+            if pending and os.path.normcase(os.path.normpath(pending)) == os.path.normcase(os.path.normpath(str(folder))):
+                created = True                    # this app made it on an earlier run that did not finish
+        hint = (f"the new folder {folder} could not be set up: {{err}}; "
+                f"give the backup account the right to create and write files in {folder}")
         write_placeholder_if_empty(folder, fy, config.rollover.source_placeholder_name)
 
+        hint = None                               # what follows is the database, not the folder
         when = pendulum.now(IST).isoformat()
         first = db.record_activation(fy, activated_at=when, source_path=str(folder),
                                      created_by_app=created, clock_state=clock.state)
+        with contextlib.suppress(Exception):
+            db._set_meta(pending_key, "")
         if not first:
             return _result(ALREADY_ACTIVE, fy, "activated by another run at the same moment")
         _send_start_mail(db, config, fy, configured, folder, created, when, notify_fn)
         return _result(ACTIVATED, fy, f"{'created' if created else 'adopted'} {folder}")
     except Exception as e:  # noqa: BLE001 - activation must never break a backup flow
         logger.exception("FY overlap activation failed")
-        return _result(DEFERRED, fy, f"activation could not be carried out ({type(e).__name__}: {e})")
+        err = f"{type(e).__name__}: {e}"
+        reason = hint.replace("{err}", err) if hint else f"activation could not be carried out ({err})"
+        if fy is not None and db is not None:
+            try:                                  # a failure that repeats is escalated like any other deferral
+                return _defer(db, config, fy, reason, notify_fn)
+            except Exception:  # noqa: BLE001 - an error inside _defer itself never raises
+                logger.exception("FY overlap activation: could not record the deferral")
+        return _result(DEFERRED, fy, reason)
     finally:
         if own_db and db is not None:
             with contextlib.suppress(Exception):
@@ -324,18 +360,38 @@ def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
 
 # ---- sibling check (OV-2.6, plan 5.2; replaces the ROL-06 "unprotected" alarm) ---------------
 
+def _start_year_is_newer(name: str, configured: str) -> bool:
+    """Does the year pair read from a FY-looking `name` start AFTER the configured FY (so it could be next year
+    or later)? 2-digit years are 20xx, compared modulo 100 so FY99-00 -> FY00-01 works (up to 50 years ahead);
+    4-digit years are compared as they are. A pair that cannot be read counts as newer (better one alarm too many)."""
+    m = _FY_LOOKING.search(name)
+    nums = re.findall(r"\d+", m.group(0)) if m else []
+    cfg = _CANONICAL_FY.match(configured.upper())
+    if len(nums) < 2 or cfg is None or len(nums[0]) not in (2, 4):
+        return True
+    cfg_start = int(cfg.group(1))
+    if len(nums[0]) == 4:
+        return int(nums[0]) > 2000 + cfg_start
+    return 1 <= (int(nums[0]) - cfg_start) % 100 <= 50
+
+
 def sibling_findings(config: AppConfig, active: list[str], db=None, *, count: bool = True) -> list[dict]:
     """Folders next to the year folders that are NOT backed up although the office probably thinks they are.
     Pure read of the direct children of parent(paths.source_drive); never writes, never follows links.
 
     kind 'misnamed': the name looks like a year folder (`FY 27-28`, `FY2027-28`, `FY_27_28`) but is not the
-    canonical `FYnn-nn` (any case). kind 'unprotected': a canonical folder of a NEWER FY than the configured one,
+    canonical `FYnn-nn` (any case) AND its years start after the configured FY (a name pointing at the
+    configured year or the past, like an archive, is ignored), and the name it would be renamed to is not
+    already a folder. kind 'unprotected': a canonical folder of a NEWER FY than the configured one,
     not in `active`, holding real files (placeholder and system files do not count). Past FYs, the configured FY,
     the active FYs and `rollover.sibling_ignore` are never reported.
 
     Returns [{'kind', 'name', 'fy' (canonical FY of an unprotected one, else None), 'files'}], sorted by name.
     `count=False` (dashboard refresh) stops at the first file: `files` is then None. `db` is accepted for the
-    callers' symmetry and is not used."""
+    callers' symmetry and is not used.
+
+    Raises SiblingReadError when the parent cannot be listed, an entry cannot be classified, or the files of a
+    candidate folder cannot be read: a silent 'nothing found' would end the alarm with a false RESOLVED."""
     configured = _configured(config)
     parent = Path(_parent_path(config.paths.source_drive))
     if configured is None or not parent.is_dir():
@@ -348,32 +404,51 @@ def sibling_findings(config: AppConfig, active: list[str], db=None, *, count: bo
         entries = sorted(os.scandir(parent), key=lambda e: e.name.lower())
     except OSError as e:
         logger.warning(f"Sibling check: cannot list {parent}: {e}")
-        return []
+        raise SiblingReadError(f"cannot list {parent}: {e}") from e
+    names_up = {e.name.upper() for e in entries}
     for entry in entries:
         name = entry.name
-        try:
-            if name.lower() in ignore or not entry.is_dir():
-                continue
-        except OSError:
+        if name.lower() in ignore:
             continue
+        try:
+            if not entry.is_dir():
+                continue
+        except OSError as e:
+            raise SiblingReadError(f"cannot tell whether {name} is a folder: {e}") from e
         if _CANONICAL_FY.match(name.upper()):
             fy = name.upper()
             if fy in active_up or fy == configured.upper():
                 continue
             if classify_rollover(configured, fy) not in (FORWARD, JUMP):
                 continue                                   # a past FY: ignored (plan 5.2)
+            if not new_fy_root_exists(config.paths.source_drive, name):
+                continue                                   # a link (or gone): not a folder of files
             if count:
                 files = new_fy_file_count(config.paths.source_drive, name, placeholder)
+                if files is None:
+                    raise SiblingReadError(f"cannot read the files of {name}")
                 if not files:
-                    continue                               # missing / link / only the placeholder
-            elif new_fy_has_files(config.paths.source_drive, name, placeholder):
-                files = None
+                    continue                               # only the placeholder / system files
             else:
-                continue
+                has_files = new_fy_has_files(config.paths.source_drive, name, placeholder)
+                if has_files is None:
+                    raise SiblingReadError(f"cannot read the files of {name}")
+                if not has_files:
+                    continue
+                files = None
             found.append({"kind": SIBLING_UNPROTECTED, "name": name, "fy": fy, "files": files})
         elif _FY_LOOKING.search(name):
+            if not _start_year_is_newer(name, configured):
+                continue                                   # the configured year or the past: an archive, not a new year
+            if suggested_name(name).upper() in names_up:
+                continue                                   # the right name is taken: nothing to rename it to
             found.append({"kind": SIBLING_MISNAMED, "name": name, "fy": None, "files": None})
     return found
+
+
+def parent_path(config: AppConfig) -> Path:
+    """The folder that holds the year folders."""
+    return Path(_parent_path(config.paths.source_drive))
 
 
 def parent_readable(config: AppConfig) -> bool:

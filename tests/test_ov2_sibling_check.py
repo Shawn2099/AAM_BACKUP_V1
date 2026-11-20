@@ -111,11 +111,11 @@ def test_a_past_year_and_the_configured_year_are_ignored(tmp_path, cfg):
 
 
 def test_sibling_ignore_is_respected_case_insensitively(tmp_path):
-    cfg = _cfg(tmp_path, sibling_ignore=["fy 2020-21", "fy27-28"])
-    _folder(tmp_path, "FY 2020-21")                # ignored (case-insensitive)
-    _folder(tmp_path, "FY 20 21")                  # another name: still reported
+    cfg = _cfg(tmp_path, sibling_ignore=["fy 2030-31", "fy27-28"])
+    _folder(tmp_path, "FY 2030-31")                # ignored (case-insensitive)
+    _folder(tmp_path, "FY 30 31")                  # another name: still reported
     _folder(tmp_path, TO, "a.xlsx")                # ignored (case-insensitive)
-    assert [f["name"] for f in fy_overlap.sibling_findings(cfg, [FROM])] == ["FY 20 21"]
+    assert [f["name"] for f in fy_overlap.sibling_findings(cfg, [FROM])] == ["FY 30 31"]
 
 
 def test_empty_and_placeholder_only_and_system_file_folders_are_not_reported(tmp_path, cfg):

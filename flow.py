@@ -2426,7 +2426,18 @@ def _send_sibling_resolved(config, db, key: str, protected: bool = True) -> None
     else:
         name = key[len(fy_overlap.SIBLING_KEY_PREFIX):]
         title = f'The folder "{name}" is no longer a problem'
-        message = f'The folder "{name}" is no longer there (it was renamed or removed), so the warning is over.'
+        try:                        # an unreadable parent proves nothing: no RESOLVED mail
+            gone = name.upper() not in {e.name.upper() for e in os.scandir(fy_overlap.parent_path(config))}
+        except OSError as e:
+            logger.warning(f"No 'folder is fine now' notice for {name}: the parent folder cannot be read ({e})")
+            return
+        listed_as_ignored = name.lower() in {n.lower() for n in config.rollover.sibling_ignore}
+        if gone:
+            message = f'The folder "{name}" is no longer there (it was renamed or removed), so the warning is over.'
+        elif listed_as_ignored:
+            message = f'The folder "{name}" is no longer reported (it is on the list of folders to ignore), so the warning is over.'
+        else:
+            message = f'The folder "{name}" is no longer reported, so the warning is over.'
         fy, code = None, "AAM-ROL-07"
     notify(config, AlertEvent(
         key=f"recovered:{key}", kind="RECOVERED", mode="rollover_files", title=title, message=message,
@@ -2440,6 +2451,9 @@ def _alarm_siblings(config, db, run_date) -> None:
     try:
         active = fy_overlap.active_folders(config, db, run_date)
         findings = fy_overlap.sibling_findings(config, active, db)
+    except fy_overlap.SiblingReadError as e:   # nothing could be proven: no alarm, and never a false RESOLVED
+        logger.warning(f"Check for folders that are not backed up could not read the folders: {e}")
+        return
     except Exception as e:  # noqa: BLE001 - an unproven check sends nothing (never a false RESOLVED)
         logger.warning(f"Check for folders that are not backed up failed: {e}")
         return

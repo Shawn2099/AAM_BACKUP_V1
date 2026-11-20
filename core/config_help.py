@@ -291,7 +291,8 @@ HELP: dict[str, tuple[str, str]] = {
         "0 = always use the percentages."),
     "guards.small_folder_max_deletes": (
         "In a small folder, stop if more than this many files would be removed",
-        "Replaces the percentage limits for a small folder (never more than the file limit above)."),
+        "G3: replaces the percentage limits for a small folder (never more than the file limit above). "
+        "G2: how many files the folder may shrink by."),
     "guards.forbid_local_destination": ("Never back up onto this same server", ""),
     "approvals.expiry_hours": ("An approval is valid for", ""),
     "approvals.tolerance_percent": ("Allowed change after approval", ""),
@@ -308,8 +309,8 @@ HELP: dict[str, tuple[str, str]] = {
         "First month the next year's folder is backed up", "1 = January ... 3 = March."),
     "rollover.activation_alert_after_hours": (
         "Warn if next year's folder is not set up for backup after",
-        "If it cannot be set up (the server clock is not proven, the parent folder is missing...) "
-        "the information mail becomes an 'action needed' mail after this time."),
+        "If next year's folder cannot be set up for backup (the server clock is not proven, the parent "
+        "folder is missing, no right to create folders...), you get an action-needed email after this many hours."),
     "rollover.sibling_ignore": (
         "Folders to ignore that look like a year folder",
         "Names of folders next to the year folders that are not a financial year (never backed up, "

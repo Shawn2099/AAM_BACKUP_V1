@@ -111,12 +111,29 @@ def run_checks(config_path: str) -> list[tuple[str, str, str]]:
 
     check("source read", lambda: f"read {permissions.probe_source_read(config.paths.source_drive)}")
 
-    check("new-year folder (source)", lambda: probe_create_sibling_folder(
-        config.paths.source_drive, "the source folder"))
+    # The new-year folder probes only make sense when the overlap can happen: it is on AND the configured FY
+    # can be read from the source folder's name (FYnn-nn). Otherwise they would fail for no reason.
+    from core import fy_rollover
+    if not config.rollover.overlap_enabled:
+        no_overlap = "rollover.overlap_enabled is false"
+    elif fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination) is None:
+        no_overlap = (f"the source folder {config.paths.source_drive} is not named like FY26-27, "
+                      "so there is no next-year folder")
+    else:
+        no_overlap = None
+
+    if no_overlap:
+        results.append(("SKIP", "new-year folder (source)", no_overlap))
+    else:
+        check("new-year folder (source)", lambda: probe_create_sibling_folder(
+            config.paths.source_drive, "the source folder"))
 
     if config.lan.enabled:
-        check("new-year folder (NAS)", lambda: probe_create_sibling_folder(
-            config.paths.lan_destination, "the NAS folder"))
+        if no_overlap:
+            results.append(("SKIP", "new-year folder (NAS)", no_overlap))
+        else:
+            check("new-year folder (NAS)", lambda: probe_create_sibling_folder(
+                config.paths.lan_destination, "the NAS folder"))
         check("NAS write", lambda: (
             permissions.probe_destination_write(config.paths.lan_destination,
                                                 f"readiness-{uuid.uuid4().hex[:8]}"),

@@ -26,7 +26,7 @@ from core.config_file import (  # noqa: F401 - backup_config_file is part of thi
     load_round_trip,
     write_atomic,
 )
-from core.guards import MOUNT_MARKER
+from core.guards import MOUNT_MARKER, first_regular_file
 from core.run_artefacts import RunArtefacts
 from core.time_utils import get_fy_prefix
 from core.tool_runner import run_tool
@@ -208,7 +208,9 @@ def detect_rollover(source_drive: str, lan_destination: str) -> bool:
 
 
 def new_fy_file_count(source_drive: str, to_fy: str, placeholder_name: str | None) -> int | None:
-    """Real files in the new FY folder next to the configured source, or None when it does not exist.
+    """Real files in the new FY folder next to the configured source, or None when it does not exist
+    (missing / a link) OR cannot be read (the folder itself cannot be scanned, or a sub-folder could not be
+    read and no file was seen: 'zero' would then prove nothing). Use `new_fy_root_exists` to tell them apart.
 
     The placeholder and the entries G1 never counts (desktop.ini, Thumbs.db, ...) are not files of the
     office. Never follows links (robocopy /XJ would not either). Plan FY-6."""
@@ -216,7 +218,7 @@ def new_fy_file_count(source_drive: str, to_fy: str, placeholder_name: str | Non
     if root is None:
         return None
     ignore = _ignore_names(placeholder_name)
-    count, stack = 0, [root]
+    count, stack, unreadable = 0, [root], False
     while stack:               # scandir, not os.walk: os.walk follows junctions on Windows
         try:
             with os.scandir(stack.pop()) as it:
@@ -227,8 +229,16 @@ def new_fy_file_count(source_drive: str, to_fy: str, placeholder_name: str | Non
                     elif entry.is_file(follow_symlinks=False) and entry.name.lower() not in ignore:
                         count += 1
         except OSError:
-            continue           # an unreadable sub-folder does not hide the rest
+            unreadable = True  # an unreadable sub-folder does not hide the rest
+            continue
+    if unreadable and count == 0:
+        return None            # nothing seen and something not readable: unknown, not "empty"
     return count
+
+
+def new_fy_root_exists(source_drive: str, to_fy: str) -> bool:
+    """Is the new FY folder next to the configured source a real folder (not missing, not a link)?"""
+    return _new_fy_root(source_drive, to_fy) is not None
 
 
 def _new_fy_root(source_drive: str, to_fy: str) -> str | None:
@@ -245,9 +255,10 @@ def _ignore_names(placeholder_name: str | None) -> frozenset[str]:
     return frozenset(SOURCE_IGNORE_NAMES | ({placeholder_name.lower()} if placeholder_name else set()))
 
 
-def new_fy_has_files(source_drive: str, to_fy: str, placeholder_name: str | None) -> bool:
+def new_fy_has_files(source_drive: str, to_fy: str, placeholder_name: str | None) -> bool | None:
     """Is there at least one real file in the new FY folder? Stops at the first one and skips junctions, so
-    the dashboard can ask on every refresh without walking a big tree. Plan FY-14."""
+    the dashboard can ask on every refresh without walking a big tree. Plan FY-14.
+    False when the folder does not exist; None when it exists but cannot be read (unknown)."""
     from core.guards import first_regular_file
 
     root = _new_fy_root(source_drive, to_fy)
@@ -256,7 +267,7 @@ def new_fy_has_files(source_drive: str, to_fy: str, placeholder_name: str | None
     try:
         return first_regular_file(root, _ignore_names(placeholder_name)) is not None
     except OSError:
-        return False
+        return None
 
 
 def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str,
@@ -335,12 +346,14 @@ def folder_entry_names(folder: Path, ignore_name: str | None = None) -> list[str
 
 def write_placeholder_if_empty(folder: Path, fy: str, placeholder_name: str | None) -> bool:
     """Write the placeholder note into `folder` - never overwritten, and never into a folder that
-    already holds anything else (an adopted folder with the office's own files stays untouched).
+    already holds a real file by guard G1's rule (an adopted folder with the office's own files stays untouched).
     Returns True when the file was written."""
     if not placeholder_name:
         return False
     placeholder = folder / placeholder_name
-    if folder_entry_names(folder, placeholder_name):
+    # The SAME rule as guard G1 (plan 5.1): "nothing real here" = G1 would find no regular file. A folder with only
+    # empty sub-folders, desktop.ini, Thumbs.db or the marker still needs the placeholder, or G1 blocks every night.
+    if first_regular_file(str(folder), _ignore_names(placeholder_name)) is not None:
         logger.info(f"FY rollover: {folder} already holds files - placeholder not written")
         return False
     try:
