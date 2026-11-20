@@ -10,6 +10,20 @@ on deploy day (see §4f).
 
 ---
 
+## >>> 2026-11-20 - FY OVERLAP: PLAN + TASKS FINAL, WAITING FOR THE OWNER'S GO (newest, overrides below) <<<
+
+New business rule: US clients use the NEXT FY folder from 1 January, Indian clients from 1 April, so from 1 Jan until
+the April switch BOTH folders are backed up (each FY folder is backed up for 15 months).
+- Plan (FINAL, rev 4): `docs/PLAN_FY_OVERLAP_2026-11-20.md`. Tasks (follow in order, tick per commit):
+  `docs/TASKS_FY_OVERLAP_2026-11-20.md`. Tooling audit (keep Prefect; certifi security fix; httpx2 for our own calls):
+  `docs/AUDIT_TOOLING_2026-11-20.md`.
+- **No coding until the owner says go.** First task when he does: OV-0.1 (baseline) then WP0 (upgrade all minors first).
+- The owner's uncommitted restore / upload work (core/restore.py, core/upload.py, restore.py, upload_fy.py, their tests,
+  docs/RESTORE_CLOUD.md, tools/server_health/README.md) is NOT ours - never commit it with our tasks.
+- `deploy/gcs_lifecycle.json` was reset to the git version on the owner's instruction (his staged variant: session
+  scratchpad copy `gcs_lifecycle.staged-2026-11-20.json`, may be gone); lifecycle is task OV-12.1.
+- Old FY plans moved to `docs/archive/`; `docs/AUDIT_MULTI_FY_2026-11-18.md` deleted (superseded).
+
 ## >>> 2026-10-23 - FRESH-INSTALL WORK + OPEN ITEMS (newest of the newest) <<<
 
 Owner goal: install on a clean Windows Server 2016 from scratch (owner will supply a fresh 2016 VM for the dry run).

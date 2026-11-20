@@ -11,6 +11,7 @@ Active work is the MVP hardening on branch `mvp-hardening`. Before doing anythin
 3. `docs/PLAN_OPEN_TOPICS_2026-10-18.md` — the agreed plan + task checklist for the current work (tick tasks as they are committed).
 4. `docs/PLAN_ALERT_CONTROLS_2026-10-22.md` (rev 3, binding: alert classes, switches, follow-up limits, delayed failure mails - steps A-C done, D-G open) and `docs/PLAN_RECIPIENTS_AND_SCHEDULE_ALERTS_2026-10-22.md` (two recipient lists + schedule-aware overdue, done and deployed except the alert-controls part). The newest status is the 2026-10-22 block at the top of `SESSION_HANDOFF.md`.
 5. `docs/ARCHITECTURE.md` — processes, flow step-by-step, decision points, file map, and §10 "gates" (every check each leg must pass).
+6. **Current work (2026-11-20): FY overlap.** `docs/PLAN_FY_OVERLAP_2026-11-20.md` (rev 4, FINAL, binding) and its task list `docs/TASKS_FY_OVERLAP_2026-11-20.md` (follow in order, tick per commit; rules at its top). Do not re-plan; new findings go to the list's "Found while building" and to the owner. Build only after the owner's go.
 
 **Worker agents** (asked to run tests/checks, not to build): follow `AGENT_TASKS.md` only. You never edit tracked files, and the trial box is read-only for you (worker agents only); your logs and reports go to `agent_runs/`.
 

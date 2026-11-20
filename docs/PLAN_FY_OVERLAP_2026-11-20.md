@@ -1,7 +1,7 @@
 # Plan - FY overlap (the next FY folder is backed up from 1 January)
 
-**Date:** 2026-11-20 - **Branch:** `mvp-hardening` - **Revision:** 4 (single consolidated spec) - **Status:** for owner
-sign-off, NO CODE YET.
+**Date:** 2026-11-20 - **Branch:** `mvp-hardening` - **Revision:** 4 (single consolidated spec) - **Status:** FINAL.
+Build only from the task list `docs/TASKS_FY_OVERLAP_2026-11-20.md`, and only after the owner's go.
 Rev 1 design, rev 2 three hostile code reviews (R-1..R-25), rev 3 owner answers (A-1..A-7), rev 4 two more reviews
 (open questions answered from the code + a day-by-day calendar walkthrough). Earlier FY docs were deliberately not used.
 This revision replaces all earlier text: if something is not in here, it is not part of the plan.
