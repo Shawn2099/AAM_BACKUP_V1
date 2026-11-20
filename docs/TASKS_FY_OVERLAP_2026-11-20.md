@@ -69,7 +69,7 @@
 - [x] **OV-2.1 Config keys.** `rollover.overlap_enabled` (true), `rollover.early_start_month` (1, bounds 1-3),
   `rollover.activation_alert_after_hours` (24), `rollover.sibling_ignore` ([]); Advanced + risky in
   `config_edit` / `config_help`. Test: defaults, bounds.
-- [ ] **OV-2.2 `core/fy_overlap.py`.** `run_date` (IST, scheduled time), `next_fy`, `in_window`, `switch_pending`
+- [x] **OV-2.2 `core/fy_overlap.py`.** `run_date` (IST, scheduled time), `next_fy`, `in_window`, `switch_pending`
   (journal `config_switch` step, not follow-ups), `active_folders` (new first, needs an activation row), `folder_view`,
   `folder_for`. Tests: every month; 1 Jan / 31 Mar / 1 Apr; pending 5 days; after switch; overlap off; clock behind;
   JUMP; century wrap; drive-root / nested / UNC; cloud-only placeholder untouched (R-12, R-25).
