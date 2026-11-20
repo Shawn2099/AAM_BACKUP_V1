@@ -243,7 +243,9 @@ def test_lan_guards_pass_and_return_baseline_record(tmp_path):
 
 def test_lan_guards_block_mass_delete_from_extras(tmp_path):
     with pytest.raises(g.GuardBlocked) as ei:
-        _run_lan_guards(_lan_cfg(tmp_path), _counts(400, 600), 1000)
+        # a baseline exists (not the first run of this FY), so the ordinary G3 rule decides
+        _run_lan_guards(_lan_cfg(tmp_path), _counts(400, 600), 1000,
+                        baseline={"fy": "FY26-27", "source_file_count": 1000})
     assert "would delete 600 of 1,000" in str(ei.value)
 
 
@@ -566,7 +568,8 @@ def test_cloud_guards_pass_and_return_backstop(tmp_path):
 
 
 def test_cloud_guards_block_mass_delete(tmp_path):
-    exc, _ = _run_cloud_guards(_cloud_cfg(tmp_path), 400, 1000, 600)
+    exc, _ = _run_cloud_guards(_cloud_cfg(tmp_path), 400, 1000, 600,
+                               baseline={"fy": "FY26-27", "source_file_count": 400})   # not a first run
     assert isinstance(exc, g.GuardBlocked) and "would delete 600 of 1,000" in str(exc)
 
 

@@ -278,7 +278,8 @@ def _cloud_guard_cfg():
 def _cloud_guards(planned, destination_now, already_deleted, approval=None, approval_id=None,
                   run_id="run-2"):
     db = MagicMock()
-    db.guard_baseline.return_value = None
+    # a baseline exists: these tests are about the ordinary G3 allowance, not the first run of an FY (OV-5.2)
+    db.guard_baseline.return_value = {"fy": "FY26-27", "source_file_count": 2000}
     db.get_approval.return_value = approval
     db.mark_approval_used.return_value = True
     dry = {"status": "CLOUD_COMPLETE", "planned_deletes": planned}

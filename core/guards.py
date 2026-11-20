@@ -140,6 +140,7 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                    already_deleted: int = 0, *,
                    small_folder_files: int = model_default(GuardsConfig, "small_folder_files"),
                    small_folder_max_deletes: int = model_default(GuardsConfig, "small_folder_max_deletes"),
+                   first_run: bool = False,
                    ) -> GuardResult:
     """already_deleted (XR-1/XR-2): files an earlier attempt of THIS run
     deleted. The limits apply to the whole run, so they are added to the
@@ -159,6 +160,18 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                    limit_percent=max_delete_percent, **extra)
     earlier = (f" ({already_deleted:,} of them already deleted by an earlier attempt of "
                "this run)" if already_deleted else "")
+    if first_run and planned_deletes > 0:
+        # plan 5.5 (OV-5.2): the first backup of this leg in this FY has nothing to compare with, and the
+        # destination already holds files that a mirror would remove - e.g. a cloud prefix or NAS folder
+        # somebody filled earlier. Never trimmed unasked: a person confirms it is the right destination.
+        metrics["first_run"] = True
+        return _block(
+            name,
+            f"This is the first backup of this folder and the destination already holds files that "
+            f"it would delete: {planned_deletes:,} of {destination_files:,} backup files{earlier}. "
+            "Check that it is the right destination before anything is removed.",
+            "AAM-DEL-01", **metrics,
+        )
     # B1: the verdict is the SAME allowance the cloud --max-delete backstop uses (one function), so
     # G3 can never pass what the backstop then stops. `pct` is for the message only.
     allowance = max_delete_allowance(destination_files, max_delete_files, max_delete_percent,

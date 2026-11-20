@@ -728,7 +728,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
             limits.max_delete_files, limits.max_delete_percent,
             already_deleted=already_deleted,
             small_folder_files=limits.small_folder_files,
-            small_folder_max_deletes=limits.small_folder_max_deletes))
+            small_folder_max_deletes=limits.small_folder_max_deletes,
+            first_run=not baseline))
 
     approved, approval_record = _apply_approval(config, "cloud", approval_id, run_id, results)
     if "G3_MASS_DELETE" in approved:
@@ -1254,7 +1255,8 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
                               limits.max_delete_files, limits.max_delete_percent,
                               already_deleted=already_deleted,
                               small_folder_files=limits.small_folder_files,
-                              small_folder_max_deletes=limits.small_folder_max_deletes),
+                              small_folder_max_deletes=limits.small_folder_max_deletes,
+                              first_run=not baseline),
         guards.g5_canary(dry_run.get("canary_present"), destination_files > 0, dest),
     ]
     approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)

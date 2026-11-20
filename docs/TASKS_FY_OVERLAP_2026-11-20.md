@@ -122,7 +122,7 @@
 - [x] **OV-5.1 Small folders.** Keys `guards.small_folder_files` (100), `guards.small_folder_max_deletes` (10); rule
   inside `max_delete_allowance` (G3, rclone backstop agrees) and the G2 check. Tests: 9 files + 1 rename passes;
   99 files + 11 deletes blocks; 100-file boundary; `--max-delete` matches (R-14, A-1).
-- [ ] **OV-5.2 First-run deletes.** No baseline for (leg, FY) and planned deletes > 0 → DECISION. Tests: filled
+- [x] **OV-5.2 First-run deletes.** No baseline for (leg, FY) and planned deletes > 0 → DECISION. Tests: filled
   `gs://bucket/FY27-28` and NAS folder are not trimmed unasked.
 
 ## WP6 - Overdue, attention, watchdog (plan §5.6)
