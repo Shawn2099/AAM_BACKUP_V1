@@ -33,7 +33,7 @@
   ruff, time-machine); keep wakeonlan 3.3.0, cron-descriptor 1.4.5; add constraints `sqlalchemy<2.1`,
   `websockets<17`; fastapi is 0.150.0 not latest (Prefect 3.9.4 caps `fastapi<0.151`); `uv lock --upgrade` (certifi ≥ 2026.10.19 must be in the lock). Done when: lock resolves, no major
   jumps except those listed, certifi fixed.
-- [ ] **OV-0.3 Sync + suite.** `uv sync`; full unit suite; fix every failure caused by the upgrade (behaviour, not by
+- [x] **OV-0.3 Sync + suite.** `uv sync`; full unit suite; fix every failure caused by the upgrade (behaviour, not by
   loosening tests). Done when: suite = baseline or better.
 - [ ] **OV-0.4 httpx2 for our own calls + TestClient.** Add `httpx2`; `launch.py` and `watchdog.py` health checks
   use it; our tests that patch `httpx.get` / build `httpx.Client` follow; Starlette's TestClient picks up httpx2 (the
