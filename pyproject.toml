@@ -8,22 +8,25 @@ authors = [{ name = "AAM Associates" }]
 classifiers = ["Operating System :: Microsoft Windows"]
 
 dependencies = [
-    "prefect==3.7.2",
-    "pydantic==2.13.4",
-    "loguru==0.7.3",
+    "prefect==3.9.4",
+    "pydantic==2.14.4",
+    "loguru==0.8.0",
     "pyyaml==6.0.3",
     "wakeonlan==3.3.0",
-    "fastapi==0.136.3",
-    "uvicorn==0.48.0",
+    "fastapi==0.150.0",
+    "uvicorn==0.54.0",
     "httpx==0.28.1",
-    "pendulum==3.2.0",
+    "pendulum==3.3.0",
     "psutil==7.2.2",
     "ruamel.yaml==0.19.1",
-    "humanize==4.15.0",
-    "python-multipart==0.0.32",
+    "humanize==4.17.0",
+    "python-multipart==0.0.34",
     "cron-descriptor==1.4.5",
-    "tenacity>=8.5.0",
-    "filelock==4.2.2",
+    "tenacity==9.2.1",
+    "filelock==4.2.12",
+    "sqlalchemy<2.1",
+    "websockets<17",
+    "certifi>=2026.10.19",
 ]
 
 [tool.ruff]
@@ -46,10 +49,10 @@ markers = ["anonymous: the test uses a TestClient that is NOT signed in (tests o
 
 [dependency-groups]
 dev = [
-    "hypothesis==6.168.5",
-    "pytest>=9.1.1",
+    "hypothesis==6.170.16",
+    "pytest==9.2.0",
     "pytest-cov==7.1.0",
     "pytest-timeout==2.4.0",
-    "ruff==0.14.0",
-    "time-machine>=3.5.1",
+    "ruff==0.17.6",
+    "time-machine==3.6.0",
 ]

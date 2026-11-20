@@ -28,10 +28,10 @@
 
 - [x] **OV-0.1 Baseline.** Full unit suite on the current versions; save the pass/fail list in
   `agent_runs/ov0_baseline_<stamp>.txt`. Done when: the known failures (if any) are written down. Result: 3055 passed, 18 skipped (SMB share tests), 0 failures, 1 warning (Starlette httpx).
-- [ ] **OV-0.2 Pins.** `pyproject.toml`: raise every minor / patch pin to the latest (prefect 3.9.x, pydantic 2.14.x,
+- [x] **OV-0.2 Pins.** `pyproject.toml`: raise every minor / patch pin to the latest (prefect 3.9.x, pydantic 2.14.x,
   fastapi, uvicorn, loguru 0.8, pendulum 3.3, humanize, python-multipart, filelock, tenacity; dev: hypothesis, pytest,
   ruff, time-machine); keep wakeonlan 3.3.0, cron-descriptor 1.4.5; add constraints `sqlalchemy<2.1`,
-  `websockets<17`; `uv lock --upgrade` (certifi ≥ 2026.10.19 must be in the lock). Done when: lock resolves, no major
+  `websockets<17`; fastapi is 0.150.0 not latest (Prefect 3.9.4 caps `fastapi<0.151`); `uv lock --upgrade` (certifi ≥ 2026.10.19 must be in the lock). Done when: lock resolves, no major
   jumps except those listed, certifi fixed.
 - [ ] **OV-0.3 Sync + suite.** `uv sync`; full unit suite; fix every failure caused by the upgrade (behaviour, not by
   loosening tests). Done when: suite = baseline or better.
