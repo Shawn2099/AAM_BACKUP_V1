@@ -268,7 +268,7 @@ def test_remaining_allowance_is_cumulative():
 
 def _cloud_guard_cfg():
     cfg = _cfg()
-    cfg.paths.source_drive = "E:\\DATA"
+    cfg.paths.source_drive = "E:\\DATA\\FY26-27"
     cfg.cloud.bucket = "b"
     cfg.guards = GuardsConfig(max_delete_files=500, max_delete_percent=5.0)
     cfg.approvals = ApprovalsConfig()
@@ -318,7 +318,7 @@ def test_cloud_guard_cap_is_what_is_left_of_the_allowance():
 
 def _g3_approval(planned, used_by=None):
     b = g.g3_mass_delete(planned, 1000, 500, 5.0)
-    return {"approval_id": "a1", "leg": "cloud", "status": ap.USED if used_by else ap.APPROVED,
+    return {"approval_id": "a1", "leg": "cloud", "fy": "FY26-27", "status": ap.USED if used_by else ap.APPROVED,
             "guards": [{"guard": b.guard, "reason": b.reason, "metrics": b.metrics}],
             "approved_at": NOW, "expires_at": "2026-10-14T22:00:00+05:30",
             "used_at": LATER if used_by else None, "used_by_run_id": used_by,

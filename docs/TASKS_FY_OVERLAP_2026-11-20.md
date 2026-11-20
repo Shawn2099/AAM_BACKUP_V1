@@ -111,10 +111,10 @@
   `nas_shutdown:` / `watchdog:*` stay global. Tests: subjects, keys (R-2).
 - [x] **OV-4.2 Incidents per FY.** Closure, RECOVERED, cooldown, threading per (mode, fy). Test: FY27-28 success never
   closes / recovers an FY26-27 incident (R-2).
-- [ ] **OV-4.3 Approvals per FY.** Supersede per (leg, fy); `evaluate_approval` requires `approval.fy == run fy`;
+- [x] **OV-4.3 Approvals per FY.** Supersede per (leg, fy); `evaluate_approval` requires `approval.fy == run fy`;
   the approved re-run passes `fy`; closed-FY approvals unusable. Tests: the R-1 scenario (500 vs 400 deletes) is
   refused (R-1 BLOCKER).
-- [ ] **OV-4.4 Closed FY at the switch.** Pending approvals → CLOSED "FY closed"; open incidents closed silently;
+- [x] **OV-4.4 Closed FY at the switch.** Pending approvals → CLOSED "FY closed"; open incidents closed silently;
   the final-backup G3 → G6 two-approval path works. Tests.
 
 ## WP5 - Guards (plan §5.5)
@@ -221,3 +221,11 @@
   no NAS decision while a cancel is in flight; shutdown-result merge failure logged; a WARNING mail when the active set cannot be worked out.
   Open for later: N-2 the `nas_shutdown` attention item reads the configured FY's row, so a manual early-FY LAN run does not show it (OV-6.2);
   N-5 a late scheduled run whose second folder is MISSED gets the 'scheduled X h before' text (status correct).
+- **WP4 Opus reviews (2026-11-20), no open blocker.** OV-4.3 review: B1 (approved rollover re-run could not start: `rollover_check_flow` has no `fy`) fixed -
+  the dashboard passes `fy` only to the backup deployments + a test against the real flow signatures; I1 (old FY not closed after the R3 crash shortcut)
+  fixed - `_close_old_fy` runs whenever the switch step is finished; I2 test added. The approval deploy gate is lifted (OV-4.3 done); the box is deployed
+  only at OV-11.4. OV-4.1/4.2 review: the audit alert key now carries the FY (`audit:<fy>:<mode>:...`, event.fy). **For the owner at deploy time:**
+  (a) every per-leg mail subject now has an FY label `[Firm Backup] [FY26-27] FAILURE: ...` - any mail rule matching `[Firm Backup] FAILURE` must be adjusted;
+  (b) every per-leg alert key changes series at deploy (backup:/blocked:/missed:/recovered:/stale:): at most one extra mail per OPEN problem right after
+  deploy, outside the old thread; nothing is lost or suppressed. Nits left: the FY appears twice in some `overlap:*` subjects; an old FY's incident
+  with overlap OFF stays open after the April switch (close_fy closes it only for the FY the switch moved past - it does).

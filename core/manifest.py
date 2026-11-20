@@ -1163,12 +1163,14 @@ class ManifestDB:
         mode (and FY) SENT after notification `after_id`? Ends / starts an incident.
         `keys` narrows it to those event keys (per-key incidents, N-9)."""
         op = "=" if recovered else "!="
+        # a row of status CLOSED is the silent end of an incident (its FY was closed, no mail)
+        statuses = "('SENT', 'CLOSED')" if recovered else "('SENT')"
         clause, fy_args = self._fy_filter(fy)
         kclause, key_args = self._key_filter(keys)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                f"SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
+                f"SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status IN {statuses} "
                 f"AND kind {op} 'RECOVERED'{clause}{kclause} LIMIT 1",
                 (mode, after_id, *fy_args, *key_args)).fetchone()
         return row is not None
@@ -1185,10 +1187,39 @@ class ManifestDB:
             row = conn.execute(
                 f"SELECT * FROM notifications WHERE mode = ? AND status = 'SENT'{clause}{kclause} "
                 "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
-                f"WHERE mode = ? AND status = 'SENT' AND kind = 'RECOVERED'{clause}{kclause}), 0) "
+                f"WHERE mode = ? AND status IN ('SENT', 'CLOSED') AND kind = 'RECOVERED'{clause}{kclause}), 0) "
                 "ORDER BY id DESC LIMIT 1",
                 (mode, *fy_args, *key_args, mode, *fy_args, *key_args)).fetchone()
         return dict(row) if row else None
+
+    def close_fy(self, fy: str, *, now: str) -> dict:
+        """The April switch moved past `fy` (plan 5.4, OV-4.4): its still-open approval requests become
+        CLOSED ("FY closed" - nothing can run on them) and its open incidents end silently (a row of
+        status CLOSED, no RESOLVED mail). Other FYs are untouched; idempotent. Returns the counts."""
+        from core import approvals as ap
+
+        self._need_fy(fy)
+        incidents = 0
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                approvals = conn.execute(
+                    "UPDATE approvals SET status = ?, dismissed_at = ?, dismissed_by = ? "
+                    "WHERE fy = ? AND status IN (?, ?)",
+                    (ap.CLOSED, now, "FY closed", fy, ap.PENDING, ap.APPROVED)).rowcount
+                for mode in ("cloud", "lan"):
+                    open_incident = conn.execute(
+                        "SELECT 1 FROM notifications WHERE mode = ? AND fy = ? AND status = 'SENT' "
+                        "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
+                        "WHERE mode = ? AND fy = ? AND status IN ('SENT', 'CLOSED') "
+                        "AND kind = 'RECOVERED'), 0) LIMIT 1", (mode, fy, mode, fy)).fetchone()
+                    if open_incident:
+                        conn.execute(
+                            "INSERT INTO notifications (event_key, kind, mode, subject, status, attempts, "
+                            "created_at, audience, fy) VALUES (?, 'RECOVERED', ?, 'FY closed (no mail)', "
+                            "'CLOSED', 0, ?, 'alerts', ?)", (f"closed:{fy}:{mode}", mode, now, fy))
+                        incidents += 1
+        return {"approvals": approvals, "incidents": incidents}
 
     def notification_by_message_id(self, message_id: str) -> dict | None:
         with self._lock:

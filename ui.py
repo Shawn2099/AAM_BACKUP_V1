@@ -780,7 +780,10 @@ async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
     try:
         flow_run = await arun_deployment(
             name=deployment,
-            parameters={"approval_id": req["approval_id"]},
+            parameters={"approval_id": req["approval_id"],
+                        # only the backup flows take `fy`; rollover_check_flow does not (the rollover is
+                        # the configured FY's business anyway)
+                        **({"fy": req["fy"]} if req.get("fy") and leg in ("cloud", "lan") else {})},
             timeout=_trigger_timeout(request),
         )
     except Exception as e:

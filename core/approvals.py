@@ -40,7 +40,8 @@ PENDING = "PENDING"        # blocked run waiting for a human
 APPROVED = "APPROVED"      # approved once on the dashboard, not used yet
 DISMISSED = "DISMISSED"    # human declined; nothing will run on it
 USED = "USED"              # consumed by exactly one run
-SUPERSEDED = "SUPERSEDED"  # a newer block of the same leg replaced it
+SUPERSEDED = "SUPERSEDED"  # a newer block of the same leg AND FY replaced it
+CLOSED = "CLOSED"          # its FY was closed by the April switch: nothing can run on it any more
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ def request_phrase(blocked: list[dict] | None = None) -> str:
     return APPROVE_PHRASE
 
 
-def evaluate_request(request: dict | None, *, leg: str, blocked: list, now_iso: str,
+def evaluate_request(request: dict | None, *, leg: str, blocked: list, fy: str, now_iso: str,
                      tolerance_percent: float) -> ApprovalDecision:
     """May this run proceed past ALL its blocked guards on `request`?
 
@@ -87,7 +88,7 @@ def evaluate_request(request: dict | None, *, leg: str, blocked: list, now_iso: 
                        f"{request.get('approval_id')} - a new approval is needed")
         decision = evaluate_approval(
             {**request, "guard": result.guard, "approved_metrics": approved[result.guard]},
-            leg=leg, guard=result.guard, fresh_metrics=result.metrics,
+            leg=leg, guard=result.guard, fy=fy, fresh_metrics=result.metrics,
             now_iso=now_iso, tolerance_percent=tolerance_percent)
         if not decision.allowed:
             return ApprovalDecision(False, f"{result.guard}: {decision.reason}")
@@ -102,10 +103,13 @@ def expires_at(now_iso: str, expiry_hours: float) -> str:
     return pendulum.parse(now_iso).add(seconds=int(expiry_hours * 3600)).isoformat()
 
 
-def evaluate_approval(approval: dict | None, *, leg: str, guard: str,
+def evaluate_approval(approval: dict | None, *, leg: str, guard: str, fy: str,
                       fresh_metrics: dict, now_iso: str,
                       tolerance_percent: float) -> ApprovalDecision:
-    """May this run proceed past `guard` on the strength of `approval`?"""
+    """May this run proceed past `guard` on the strength of `approval`?
+
+    `fy` is the FY folder of THIS run (no default): an approval is for ONE folder, so the approval of
+    FY26-27's mass delete can never let FY27-28 delete (plan R-1)."""
     if not approval:
         return ApprovalDecision(False, "no approval supplied")
     if approval.get("used_at"):
@@ -116,6 +120,9 @@ def evaluate_approval(approval: dict | None, *, leg: str, guard: str,
         return ApprovalDecision(
             False, f"approval is for {approval.get('leg')}/{approval.get('guard')}, "
                    f"not {leg}/{guard}")
+    if not approval.get("fy") or approval.get("fy") != fy:
+        return ApprovalDecision(
+            False, f"approval is for the {approval.get('fy') or 'unknown'} folder, not {fy}")
     if not approval.get("approved_at"):
         return ApprovalDecision(False, "approval request has not been approved")
     try:

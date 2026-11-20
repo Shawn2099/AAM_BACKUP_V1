@@ -1120,11 +1120,17 @@ def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | Non
             logger.info(f"Approval {approval_id} is for the {request.get('leg')} leg - "
                         f"not applied to {leg}")
             return frozenset(), {}
+        run_fy = _effective_fy_prefix(config)
+        if request is not None and request.get("fy") != run_fy:
+            # an approval is for ONE FY folder (plan R-1): never applied to - nor consumed by - another
+            reason = (f"approval is for the {request.get('fy') or 'unknown'} folder, not {run_fy}")
+            logger.error(f"Approval {approval_id} not applied ({leg}, {run_fy}): {reason}")
+            return frozenset(), {"approval_id": approval_id, "approval_rejected": reason}
         own_retry = (request is not None and run_id is not None
                      and request.get("used_by_run_id") == run_id)
         decision = approvals.evaluate_request(
             {**request, "used_at": None} if own_retry else request,
-            leg=leg, blocked=blocked, now_iso=now_iso(),
+            leg=leg, blocked=blocked, fy=run_fy, now_iso=now_iso(),
             tolerance_percent=config.approvals.tolerance_percent)
         if decision.allowed and not own_retry and not db.mark_approval_used(
                 approval_id, run_id=run_id, used_at=now_iso()):
@@ -2320,6 +2326,18 @@ def _enabled_legs(config) -> tuple[str, ...]:
     return tuple(leg for leg in ("cloud", "lan") if getattr(config, leg).enabled)
 
 
+def _close_old_fy(config, db, fy: str) -> None:
+    """OV-4.4: the config now points past `fy`. Its open approval requests are closed ("FY closed") and its
+    open incidents end silently (no RESOLVED mail); its history stays readable. Never raises: the switch
+    is already done, and an approval of a closed FY cannot be run anyway (backup(fy=) needs an active FY)."""
+    try:
+        closed = db.close_fy(fy, now=now_iso())
+        logger.info(f"FY {fy} closed: {closed['approvals']} approval request(s) and "
+                    f"{closed['incidents']} incident(s) closed")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"FY {fy} could not be closed cleanly ({e}); its old alerts may stay open")
+
+
 def _activate_overlap(config, db=None) -> None:
     """OV-2.7: start backing up next year's folder when it is time (plan 5.1). Called at the start of
     EVERY backup flow run and of the daily rollover check: whichever comes first activates, the other
@@ -2893,6 +2911,9 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     final = db.rollover_get(from_fy, to_fy)
     metrics["steps"] = {name: final["steps"][name]["state"] for name in rj.STEPS}
     if rj.is_finished(final["steps"][rj.CONFIG_SWITCH]):       # the new year's files are protected from now on
+        # the old FY is closed (approvals + incidents) whenever the switch is finished - also on the resume
+        # after a crash (R3), where step_config_switch never runs; idempotent
+        _close_old_fy(config, db, from_fy)
         try:
             _resolve_unprotected_new_fy(config, db, new_fy=to_fy)
         except Exception as e:  # noqa: BLE001 - a mail problem never changes the rollover's result
@@ -3108,8 +3129,9 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             logger.error(f"Integrity audit failed: {error_summary}")
             # The key carries each leg's outcome: a "could not run" alert must
             # never put a real mismatch inside its cooldown (code review 2026-10-16).
+            audit_fy = _alert_fy(config)      # the FY the audit ran for: its incident and subject are per FY
             notify(config, AlertEvent(
-                key=f"audit:{mode}:{','.join(sorted(outcomes))}",
+                key=f"audit:{_fy_seg(audit_fy)}{mode}:{','.join(sorted(outcomes))}", fy=audit_fy,
                 kind=_audit_alert_kind(outcomes), mode="audit",
                 fault_code=("AAM-AUD-02" if _audit_alert_kind(outcomes) == "WARNING"
                             else "AAM-AUD-01"),
@@ -3324,8 +3346,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     runs_lan = mode in ("lan", "all") and config.lan.enabled
     folders = _active_fys(config) if (runs_cloud or runs_lan) else []
     if approval_id is not None and fy is None and folders:
-        # an approval belongs to ONE blocked folder; until approvals are per FY (OV-4.3) an approved
-        # re-run only touches the configured FY, never the early one
+        # a re-run with an approval but no explicit fy (a hand-made call) never spreads over several folders:
+        # it only touches the configured FY (the dashboard always passes the approval's fy)
         folders = [_effective_fy_prefix(config)]
     if fy is not None and folders:
         if fy not in folders:

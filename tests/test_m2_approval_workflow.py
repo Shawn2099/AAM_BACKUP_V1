@@ -43,7 +43,7 @@ def _blocked(guard="G3_MASS_DELETE", **metrics):
 
 
 def _request(*results, **over):
-    req = {"approval_id": "a1", "leg": "lan", "status": ap.APPROVED,
+    req = {"approval_id": "a1", "leg": "lan", "fy": "FY26-27", "status": ap.APPROVED,
            "guards": [{"guard": r.guard, "reason": r.reason, "metrics": r.metrics}
                       for r in results],
            "approved_at": NOW, "expires_at": "2026-10-14T22:00:00+05:30",
@@ -62,24 +62,27 @@ def test_request_phrase_is_one_word_for_several_guards():
 
 def test_request_covers_all_blocked_guards_when_not_worse():
     b = _blocked()
-    assert ap.evaluate_request(_request(b), leg="lan", blocked=[b], now_iso=LATER,
-                               tolerance_percent=0).allowed
+    assert ap.evaluate_request(_request(b), leg="lan", blocked=[b], fy="FY26-27",
+                               now_iso=LATER, tolerance_percent=0).allowed
+    assert not ap.evaluate_request(_request(b), leg="lan", blocked=[b], fy="FY25-26",
+                                   now_iso=LATER, tolerance_percent=0).allowed  # per FY
 
 
 def test_request_rejects_uncovered_guard_worse_numbers_and_other_leg():
     b3 = _blocked()
     b2 = _blocked("G2_SOURCE_SHRINK", drop_files=10, drop_percent=50.0)
     req = _request(b3)
-    r = ap.evaluate_request(req, leg="lan", blocked=[b3, b2], now_iso=LATER, tolerance_percent=0)
+    r = ap.evaluate_request(req, leg="lan", blocked=[b3, b2], fy="FY26-27",
+                          now_iso=LATER, tolerance_percent=0)
     assert not r.allowed and "G2_SOURCE_SHRINK" in r.reason
     worse = _blocked(planned_deletes=601, delete_percent=60.1, destination_files=1000)
-    assert not ap.evaluate_request(req, leg="lan", blocked=[worse], now_iso=LATER,
-                                   tolerance_percent=0).allowed
-    assert not ap.evaluate_request(req, leg="cloud", blocked=[b3], now_iso=LATER,
-                                   tolerance_percent=0).allowed
+    assert not ap.evaluate_request(req, leg="lan", blocked=[worse], fy="FY26-27",
+                                   now_iso=LATER, tolerance_percent=0).allowed
+    assert not ap.evaluate_request(req, leg="cloud", blocked=[b3], fy="FY26-27",
+                                   now_iso=LATER, tolerance_percent=0).allowed
     assert not ap.evaluate_request(_request(b3, status=ap.PENDING, approved_at=None),
-                                   leg="lan", blocked=[b3], now_iso=LATER,
-                                   tolerance_percent=0).allowed
+                                   leg="lan", blocked=[b3], fy="FY26-27",
+                                   now_iso=LATER, tolerance_percent=0).allowed
 
 
 # ── Storage ───────────────────────────────────────────────────────────────
@@ -209,7 +212,7 @@ def test_generic_failure_alert_skips_guard_blocks(tmp_path):
 # ── Rerun with approval_id ────────────────────────────────────────────────
 
 def _lan_cfg(tmp_path):
-    src = tmp_path / "src"
+    src = tmp_path / "FY26-27"
     src.mkdir(exist_ok=True)
     (src / "ledger.xlsx").write_text("x")
     cfg = MagicMock()
@@ -323,7 +326,7 @@ def test_existing_database_gets_the_approvals_table(tmp_path):
 
 
 def test_approved_cloud_mass_delete_backstop_is_the_remeasured_count(tmp_path):
-    src = tmp_path / "csrc"
+    src = tmp_path / "FY26-27"
     src.mkdir()
     (src / "ledger.xlsx").write_text("x")
     cfg = MagicMock()
@@ -373,7 +376,7 @@ def test_missing_marker_no_longer_fails_preflight_it_is_measured(tmp_path):
 
 
 def _g5_rig(tmp_path, canary, dest_files, approval=None):
-    src = tmp_path / "src"
+    src = tmp_path / "FY26-27"
     src.mkdir(exist_ok=True)
     (src / "ledger.xlsx").write_text("x")
     dest = tmp_path / "nas"

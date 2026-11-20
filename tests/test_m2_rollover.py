@@ -53,14 +53,14 @@ def test_g6_passes_only_forward_with_every_final_backup_complete():
 def test_g6_approval_phrase_and_identity():
     m = {"from_fy": "FY26-27", "to_fy": "FY27-28"}
     assert ap.confirmation_phrase("G6_FY_ROLLOVER", m) == "APPROVE"
-    req = {"leg": "rollover", "guard": "G6_FY_ROLLOVER", "approved_metrics": m,
+    req = {"leg": "rollover", "guard": "G6_FY_ROLLOVER", "fy": "FY26-27", "approved_metrics": m,
            "approved_at": "2026-04-01T09:00:00+05:30",
            "expires_at": "2026-04-01T21:00:00+05:30"}
     now = "2026-04-01T10:00:00+05:30"
-    assert ap.evaluate_approval(req, leg="rollover", guard="G6_FY_ROLLOVER", fresh_metrics=m,
+    assert ap.evaluate_approval(req, leg="rollover", guard="G6_FY_ROLLOVER", fy="FY26-27", fresh_metrics=m,
                                 now_iso=now, tolerance_percent=0).allowed
     other = {**m, "to_fy": "FY28-29"}
-    assert not ap.evaluate_approval(req, leg="rollover", guard="G6_FY_ROLLOVER",
+    assert not ap.evaluate_approval(req, leg="rollover", guard="G6_FY_ROLLOVER", fy="FY26-27",
                                     fresh_metrics=other, now_iso=now,
                                     tolerance_percent=0).allowed
 

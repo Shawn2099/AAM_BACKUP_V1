@@ -9,7 +9,7 @@ NOW = "2026-10-14T10:00:00+05:30"
 
 
 def _approval(**over):
-    a = {"approval_id": "x", "leg": "lan", "guard": "G3_MASS_DELETE",
+    a = {"approval_id": "x", "leg": "lan", "guard": "G3_MASS_DELETE", "fy": "FY26-27",
          "approved_metrics": {"planned_deletes": 4812, "delete_percent": 96.2},
          "approved_at": "2026-10-14T09:00:00+05:30",
          "expires_at": "2026-10-14T21:00:00+05:30", "used_at": None, "dismissed_at": None}
@@ -20,7 +20,7 @@ def _approval(**over):
 def _eval(approval, **fresh):
     metrics = {"planned_deletes": 4812, "delete_percent": 96.2}
     metrics.update(fresh)
-    return ap.evaluate_approval(approval, leg="lan", guard="G3_MASS_DELETE",
+    return ap.evaluate_approval(approval, leg="lan", guard="G3_MASS_DELETE", fy="FY26-27",
                                 fresh_metrics=metrics, now_iso=NOW, tolerance_percent=0)
 
 
@@ -36,6 +36,7 @@ def test_rejections():
     assert "expired" in _eval(_approval(expires_at="2026-10-14T09:59:59+05:30")).reason
     assert "valid expiry" in _eval(_approval(expires_at="garbage")).reason
     assert "not lan/G3" in _eval(_approval(leg="cloud")).reason
+    assert not _eval(_approval(fy="FY25-26")).allowed  # approvals are per FY
 
 
 def test_worse_than_approved_needs_new_approval():
@@ -47,10 +48,10 @@ def test_worse_than_approved_needs_new_approval():
 def test_destination_must_match_for_g4():
     a = _approval(guard="G4_DESTINATION_IDENTITY",
                   approved_metrics={"destination": "\\\\nas\\NEW\\FY26-27"})
-    ok = ap.evaluate_approval(a, leg="lan", guard="G4_DESTINATION_IDENTITY",
+    ok = ap.evaluate_approval(a, leg="lan", guard="G4_DESTINATION_IDENTITY", fy="FY26-27",
                               fresh_metrics={"destination": "\\\\NAS\\new\\fy26-27"},
                               now_iso=NOW, tolerance_percent=0)
-    bad = ap.evaluate_approval(a, leg="lan", guard="G4_DESTINATION_IDENTITY",
+    bad = ap.evaluate_approval(a, leg="lan", guard="G4_DESTINATION_IDENTITY", fy="FY26-27",
                                fresh_metrics={"destination": "\\\\other\\x"},
                                now_iso=NOW, tolerance_percent=0)
     assert ok.allowed and not bad.allowed and "situation changed" in bad.reason
@@ -72,7 +73,7 @@ def test_one_word_confirms_every_approval():
 @settings(max_examples=300, deadline=None)
 def test_property_never_allows_more_deletions_than_approved_plus_tolerance(approved, fresh, tol):
     a = _approval(approved_metrics={"planned_deletes": approved, "delete_percent": 1.0})
-    r = ap.evaluate_approval(a, leg="lan", guard="G3_MASS_DELETE",
+    r = ap.evaluate_approval(a, leg="lan", guard="G3_MASS_DELETE", fy="FY26-27",
                              fresh_metrics={"planned_deletes": fresh, "delete_percent": 1.0},
                              now_iso=NOW, tolerance_percent=tol)
     if r.allowed:

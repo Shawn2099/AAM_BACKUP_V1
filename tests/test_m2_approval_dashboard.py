@@ -76,7 +76,7 @@ def test_approve_with_phrase_records_who_and_reruns_once_with_approval_id(rig):
     hours = (pendulum.parse(req["expires_at"]) - pendulum.parse(req["approved_at"])).in_hours()
     assert hours == 12
     assert rig.calls == [{"name": "aam-backup/backup-lan",
-                          "parameters": {"approval_id": aid}, "timeout": 0}]
+                          "parameters": {"approval_id": aid, "fy": "FY26-27"}, "timeout": 0}]
 
 
 @pytest.mark.parametrize("phrase", ["", "DELETE 600", "yes"])
@@ -141,7 +141,7 @@ def test_trigger_failure_keeps_approval_and_run_retries_it(rig, monkeypatch):
 
     monkeypatch.setattr(ui, "arun_deployment", ok)
     assert rig.client.post(f"/approvals/{aid}/run?wait=false", headers=KEY).status_code == 202
-    assert rig.calls[-1]["parameters"] == {"approval_id": aid}
+    assert rig.calls[-1]["parameters"] == {"approval_id": aid, "fy": "FY26-27"}
 
 
 def test_run_refuses_pending_used_and_expired(rig):
@@ -165,7 +165,7 @@ def test_rollover_approval_reruns_the_rollover_deployment(rig):
     resp = _approve(rig, aid, phrase="approve")
     assert resp.status_code == 202, resp.text
     assert rig.calls == [{"name": "rollover-check/rollover-check",
-                          "parameters": {"approval_id": aid}, "timeout": 0}]
+                          "parameters": {"approval_id": aid}, "timeout": 0}]    # rollover_check_flow takes no fy
 
 
 def test_rollover_deployment_is_tagged_for_the_busy_check():

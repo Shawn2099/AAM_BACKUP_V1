@@ -290,3 +290,11 @@ def test_other_modes_stay_incident_per_mode(db):
     assert nt._incident_keys(event) is None
     assert nt._incident_keys(_sib(K1, "RECOVERED")) == (K1, f"recovered:{K1}")
     assert nt._incident_keys(_sib(K1)) == (K1, f"recovered:{K1}")
+
+
+def test_the_audit_alert_key_and_event_carry_the_fy(monkeypatch, tmp_path):
+    """review of OV-4.1: audit:<fy>:<mode>:... so an FY27-28 VERIFIED audit cannot close FY26-27's incident."""
+    import inspect
+    src = inspect.getsource(flow.integrity_audit_flow.fn)
+    assert 'key=f"audit:{_fy_seg(audit_fy)}{mode}:' in src and "fy=audit_fy" in src
+    assert flow._fy_seg("FY26-27") + "lan" == "FY26-27:lan"
