@@ -12,6 +12,15 @@ on deploy day (see §4f).
 
 ## >>> 2026-11-21 - FY OVERLAP: BUILT, BOX DEPLOY AND OWNER ITEMS OPEN (newest, overrides below) <<<
 
+### PAUSED 2026-11-21 (owner paused the work) - exactly where we stopped
+- Branch `fy-overlap`, all pushed to origin; last commit = see `git log -1`. Unit suite green at the last full run (3465 passed, 18 skipped; later commits only added the lab scenario, the rehearsal tool + its tests, docs).
+- **FIRST THING NEXT SESSION: triage the full audit-lab run of 2026-11-21 (62 min): 244 passed, 5 FAILED** (log `agent_runs/lab_wp11.txt`, gitignored; rerun the failing tests alone with a clean PREFECT_HOME to see detail):
+  `test_w10_frameworks::test_w10_production_line_coverage_during_real_run`, `test_w19_ui::test_w19_trigger_cloud_branches` and `..._trigger_lan_branches` (got 503: the new busy check in `ui._refuse_if_busy` asks Prefect, the lab has none - fake `_is_running`/`_is_verify_running` like tests/test_f2 do, or fix the lab rig),
+  `test_w6_flow::test_w6_backup_flow_failure_alert_policy`, `test_w6_flow::test_w6_integrity_audit_flow` (its log shows `FY26-26` = a lab config whose FY name is not consecutive: `_active_fys` fell back to the configured FY and the audit then failed on a LAN path - likely a lab fixture needing a valid FY leaf, not a product bug, but VERIFY before dismissing).
+  `audit_lab/test_w25_fy_overlap.py` (the 15-month scenario) passed.
+- Then: owner decisions - OV-10.1 (needs OK to touch owner's `upload_fy.py`/`restore.py`), OV-11.3 box rights test, OV-11.4 box deploy (Opus review of the deploy steps first, tell the owner, no backup running), OV-11.5 run of `tools/fy_overlap_rehearsal.py` on the box (dry run first; it sends a real INFO mail and wakes the NAS), OV-12.1 GCS lifecycle review, "Found while building" items.
+- Never commit the owner's files (core/restore.py, core/upload.py, restore.py, upload_fy.py, tests/test_restore_engine.py, tests/test_upload_engine.py, docs/RESTORE_CLOUD.md, tools/server_health/README.md).
+
 **Branch `fy-overlap` (from mvp-hardening 968b6b4). Built and committed: WP0-WP9 (upgrade + httpx2, schema v6, active set / activation / siblings,
 orchestration, alerts + approvals + closed FY, guards, overdue / watchdog, dashboard, audit, reports), OV-10.2 (readiness probes), OV-10.3 (validator),
 OV-11.1 (audit-lab scenario `audit_lab/test_w25_fy_overlap.py`), OV-11.5 (rehearsal `tools/fy_overlap_rehearsal.py`). Last commit 0c22da1. The
