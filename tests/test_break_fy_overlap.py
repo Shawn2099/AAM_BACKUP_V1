@@ -249,9 +249,6 @@ def test_next_folder_with_odd_whitespace_is_not_mistaken_for_the_right_one(env, 
     assert found[0]["kind"] == ov.SIBLING_MISNAMED
 
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: a folder named 'FY27-8' is never reported as misnamed "
-                   "because suggested_name() gives the same name back and the check then finds the folder itself "
-                   "(core/fy_overlap.py:469-470 with suggested_name at :492-498)")
 def test_fy27_8_missing_zero_is_reported_as_misnamed(env):
     _put_file(env.src / "FY27-8")
     found = ov.sibling_findings(env.cfg, [CFG_FY])

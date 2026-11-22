@@ -118,7 +118,7 @@ def read_lock_alive(lock_path: Path) -> tuple[bool, int | None]:
         # File is exclusively locked (e.g. by Antivirus).
         # Fail safe and assume the backup process is still actively writing/locking it.
         return True, -1
-    except OSError:
+    except (OSError, UnicodeDecodeError):   # unreadable or not text: a stale lock
         return False, None
 
     # Parse "pid:create_time" (new format) or bare "pid" (legacy).

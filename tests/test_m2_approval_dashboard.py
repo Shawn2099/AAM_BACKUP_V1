@@ -30,6 +30,8 @@ def rig(monkeypatch, tmp_path):
         cloud=SimpleNamespace(enabled=True), lan=SimpleNamespace(enabled=True),
     )
     monkeypatch.setattr(ui, "_cfg", lambda: cfg)
+    # release-break #13: approve checks the approval's FY against the active set, which needs the configured FY
+    monkeypatch.setattr(ui, "_configured_fy", lambda: "FY26-27")
     monkeypatch.setattr(ui, "get_db", lambda: db)
     monkeypatch.setattr(ui, "_check_rate_limit", lambda key, max_attempts: True)
     monkeypatch.setattr(ui, "_is_running", AsyncMock(return_value=False))

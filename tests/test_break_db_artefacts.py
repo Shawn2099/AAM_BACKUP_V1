@@ -271,9 +271,6 @@ def test_very_long_path_does_not_raise(tmp_path):
     assert root.exists()
 
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: core/run_artefacts.py:37 _DATE_DIR uses \\d, "
-                   "which also matches non-ASCII digits, so an old folder named with Arabic-Indic digits "
-                   "is treated as a day folder and deleted.")
 def test_non_ascii_digit_folder_is_not_a_day_folder(tmp_path):
     root = tmp_path / "run_logs"
     root.mkdir()

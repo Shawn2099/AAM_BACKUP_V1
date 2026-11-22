@@ -51,7 +51,7 @@ EARLY = "early"
 _CANONICAL_FY = re.compile(r"^FY(\d{2})-(\d{2})$")
 _LAST_MONTH_OF_FY = 3        # March: the calendar month in which a financial year ends (April start)
 # "FY 27-28", "FY2027-28", "FY_27_28": looks like a year folder (plan 5.2). Case-insensitive, anywhere in the name.
-_FY_LOOKING = re.compile(r"FY[\s_-]*\d{2,4}\s*[-_ ]\s*\d{2,4}", re.IGNORECASE)
+_FY_LOOKING = re.compile(r"FY[\s_-]*\d{2,4}\s*[-_ ]\s*\d{1,4}", re.IGNORECASE)
 
 
 class SiblingReadError(Exception):
@@ -147,7 +147,7 @@ def switch_pending(config: AppConfig, db, run_date: _date) -> bool:
     if calendar_fy(run_date) != nxt:
         return False
     journal = db.rollover_get(configured, nxt)
-    switched = journal is not None and journal["steps"][rj.CONFIG_SWITCH]["state"] == rj.DONE
+    switched = journal is not None and rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
     return not switched
 
 
@@ -195,7 +195,10 @@ ACTIVATED = "activated"
 DEFERRED = "deferred"
 
 _META_FIRST_DEFERRED = "overlap_first_deferred:{fy}"
-_META_ALERT_SENT = "overlap_alert_sent:{fy}"
+_META_ALERT_SENT = "overlap_alert_sent:{fy}"             # when the deferral alert was last mailed
+_META_ALERT_REASON = "overlap_alert_reason:{fy}"         # the reason that mail gave (a changed one is mailed at once)
+_META_DEFERRED_REASON = "overlap_deferred_reason:{fy}"   # the CURRENT reason of the deferral (dashboard item)
+_META_RESOLVED_SENT = "overlap_resolved_sent:{fy}"
 _META_CREATED_PENDING = "overlap_created_pending:{fy}"   # folder this app just created, activation not yet recorded
 _SECONDS_PER_HOUR = 3600
 
@@ -237,8 +240,9 @@ def _find_canonical(parent: Path, fy: str) -> Path | None:
 
 
 def _defer(db, config, fy: str, reason: str, notify_fn, fault_code: str | None = None) -> dict:
-    """Not activated now: remember when this started and, after activation_alert_after_hours, tell
-    the owner ONCE. Nothing in the folders was touched."""
+    """Not activated now: remember when this started and why, and, after activation_alert_after_hours, tell
+    the owner - again every alerts.stale_repeat_hours while it stays deferred (overlap review D3), at once
+    when the reason changes. Nothing in the folders was touched."""
     now = pendulum.now(IST)
     key = _META_FIRST_DEFERRED.format(fy=fy)
     first_raw = db._meta(key)
@@ -250,10 +254,40 @@ def _defer(db, config, fy: str, reason: str, notify_fn, fault_code: str | None =
     if first is None:
         first = now
         db._set_meta(key, now.isoformat())
+    with contextlib.suppress(Exception):          # only feeds the dashboard item; never stops the alert
+        db._set_meta(_META_DEFERRED_REASON.format(fy=fy), reason)
     hours = config.rollover.activation_alert_after_hours
-    if (now - first).total_seconds() > hours * _SECONDS_PER_HOUR and not db._meta(_META_ALERT_SENT.format(fy=fy)):
-        _send_deferred_alert(db, config, fy, reason, notify_fn, fault_code)
+    if (now - first).total_seconds() > hours * _SECONDS_PER_HOUR:
+        sent_raw = db._meta(_META_ALERT_SENT.format(fy=fy))
+        last_reason = db._meta(_META_ALERT_REASON.format(fy=fy))
+        changed = bool(sent_raw) and bool(last_reason) and last_reason != reason
+        due = not sent_raw or changed
+        if not due:
+            try:
+                due = (now - pendulum.parse(sent_raw)).total_seconds() >= config.alerts.stale_repeat_hours * _SECONDS_PER_HOUR
+            except Exception:  # noqa: BLE001 - an unreadable marker counts as due
+                due = True
+        if due:
+            _send_deferred_alert(db, config, fy, reason, notify_fn, fault_code)
     return _result(DEFERRED, fy, reason)
+
+
+def deferred_state(config: AppConfig, db, run_date: _date) -> dict | None:
+    """The early FY's activation while it is deferred (junction, no create right, unproven clock ...):
+    {'fy', 'reason', 'since', 'alerted'}; None when it is not deferred (off, not the time, or activated)."""
+    if not config.rollover.overlap_enabled:
+        return None
+    configured = _configured(config)
+    if configured is None or not (in_window(config, run_date) or switch_pending(config, db, run_date)):
+        return None
+    fy = next_fy(configured)
+    if db.get_activation(fy) is not None:
+        return None
+    since = db._meta(_META_FIRST_DEFERRED.format(fy=fy))
+    if not since:
+        return None
+    return {"fy": fy, "reason": db._meta(_META_DEFERRED_REASON.format(fy=fy)) or "the reason is not known",
+            "since": since, "alerted": bool(db._meta(_META_ALERT_SENT.format(fy=fy)))}
 
 
 def _call_notify(config, db, event, notify_fn):
@@ -277,11 +311,29 @@ def _send_deferred_alert(db, config, fy: str, reason: str, notify_fn, fault_code
         message=(f"Next year's folder ({fy}) is not being backed up because {reason}. "
                  f"{configured} is still backed up every night as usual, so nothing is lost. "
                  f"The backup tries again at every run and starts on its own once the problem is gone."),
-        fault_code=fault_code, fy=fy)
+        fault_code=fault_code, fy=fy,
+        cooldown_hours=0)          # the repeat spacing (alerts.stale_repeat_hours) is decided in _defer
     res = _call_notify(config, db, event, notify_fn)
-    # SENT and SUPPRESSED (cooldown) count as told; DISABLED / FAILED / no result are tried again at the next run
+    # SENT and SUPPRESSED count as told; DISABLED / FAILED / no result are tried again at the next run
     if getattr(res, "status", None) in ("SENT", "SUPPRESSED"):
         db._set_meta(_META_ALERT_SENT.format(fy=fy), pendulum.now(IST).isoformat())
+        db._set_meta(_META_ALERT_REASON.format(fy=fy), reason)
+
+
+def _send_resolved_mail(db, config, fy: str, notify_fn) -> None:
+    """ONE RESOLVED mail when an activation that was mailed as deferred finally happens (overlap review D3)."""
+    from core.notify import AlertEvent
+
+    if not db._meta(_META_ALERT_SENT.format(fy=fy)) or db._meta(_META_RESOLVED_SENT.format(fy=fy)):
+        return
+    event = AlertEvent(
+        key=f"recovered:overlap:activation:{fy}", kind="RECOVERED", mode="rollover",
+        title=f"{fy} is being backed up now",
+        message=f"The problem that kept {fy} from being backed up is gone: both year folders are copied every night.",
+        status="RECOVERED", resolved_code="AAM-ROL-03", fy=fy)
+    res = _call_notify(config, db, event, notify_fn)
+    if getattr(res, "status", None) in ("SENT", "SUPPRESSED"):
+        db._set_meta(_META_RESOLVED_SENT.format(fy=fy), pendulum.now(IST).isoformat())
 
 
 def _send_start_mail(db, config, fy: str, configured: str, folder: Path, created: bool, when_iso: str,
@@ -367,6 +419,7 @@ def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
         if not first:
             return _result(ALREADY_ACTIVE, fy, "activated by another run at the same moment")
         _send_start_mail(db, config, fy, configured, folder, created, when, notify_fn)
+        _send_resolved_mail(db, config, fy, notify_fn)
         return _result(ACTIVATED, fy, f"{'created' if created else 'adopted'} {folder}")
     except Exception as e:  # noqa: BLE001 - activation must never break a backup flow
         logger.exception("FY overlap activation failed")
@@ -495,7 +548,7 @@ def suggested_name(name: str) -> str:
     nums = re.findall(r"\d+", m.group(0)) if m else []
     if len(nums) < 2:
         return "FYnn-nn"
-    return f"FY{nums[0][-2:]}-{nums[1][-2:]}"
+    return f"FY{nums[0][-2:].zfill(2)}-{nums[1][-2:].zfill(2)}"
 
 
 def _unprotected_reason(config: AppConfig, run_date: _date, db) -> str:

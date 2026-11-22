@@ -406,9 +406,6 @@ def test_a_wrong_or_malformed_confirmation_is_refused_and_changes_nothing(rig, c
     assert _status(rig.db, aid) == ap.PENDING and rig.calls == []
 
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: ui.py:923 passes a non-text phrase on; "
-                   "core/approvals.py:99 calls .split() on it, so a number, boolean, list or object "
-                   "raises AttributeError and answers HTTP 500")
 def test_a_non_text_confirmation_is_refused_with_a_4xx(rig):
     aid = _open(rig.db)
     client = _client(SIGNED)
@@ -446,9 +443,6 @@ def test_settings_save_answers_hostile_bodies_without_a_server_error_or_a_write(
     assert rig.cfg_file.read_bytes() == before
 
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: ui.py:1183 (save_settings), "
-                   "ui.py:1288 (validate_settings) and ui.py:1080 (password change) call "
-                   ".get() on a JSON null, array or number, which raises AttributeError -> HTTP 500")
 def test_settings_endpoints_refuse_non_object_json_with_a_4xx(rig, monkeypatch):
     monkeypatch.setattr(admin_auth, "verify_admin_password", lambda pw, d: False)
     for cookies, path in [(SIGNED, "/api/settings"), (SIGNED, "/api/settings/validate"),
@@ -533,10 +527,6 @@ def test_static_mount_never_serves_a_file_outside_the_static_folder(path):
 
 # ── 31-32. Cross-site posts, wrong verbs ─────────────────────────────────────
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: ui.py:770 (trigger_cloud) and ui.py:920 (approve_blocked_run) accept a "
-                   "state-changing POST with a valid session cookie whatever the Origin or "
-                   "Sec-Fetch-Site; the only CSRF defence is the SameSite=lax session cookie "
-                   "(ui.py:448)")
 def test_cross_site_post_with_a_valid_session_is_refused(rig):
     aid = _open(rig.db)
     client = _client(SIGNED)

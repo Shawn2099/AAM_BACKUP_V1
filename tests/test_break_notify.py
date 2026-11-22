@@ -257,11 +257,6 @@ def test_07_huge_subject_does_not_raise_and_is_recorded(tmp_path, db):
     assert len(_rows(db)) == 1 and _rows(db)[0]["status"] == result.status
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "SUSPECTED BUG: core/email_compose.py:206 and :233 - for an alert without a fault code the message is "
-    "rendered whole into the body (`what = event.message`), so body_max_chars is not applied; a 2 MB text "
-    "lands in the HTML and plain-text parts. Repro: notify(cfg, AlertEvent(kind='FAILURE', key='backup:lan:X', "
-    "message='x ' * 1_000_000)) and count the text in the body."))
 def test_08_oversized_alert_text_keeps_the_inline_body_bounded(tmp_path, db):
     """alerts.body_max_chars: 'Inline message length in the email body'. The full text belongs in the
     attachment, not repeated in the body. A 2 MB robocopy dump must not land in the HTML and text parts."""
@@ -270,7 +265,10 @@ def test_08_oversized_alert_text_keeps_the_inline_body_bounded(tmp_path, db):
         cfg = _cfg(tmp_path, srv.server_address[1])
         result = nt.notify(cfg, _event(message="robocopy line " * 150_000), db=db)
     assert result.status == nt.SENT
-    inline = _body_text(srv.messages[0]["data"])
+    # only the inline HTML / text parts: the full text is meant to sit in the support attachment
+    inline = "\n".join((p.get_payload(decode=True) or b"").decode("utf-8", "replace")
+                       for p in _parsed(srv.messages[0]["data"]).walk()
+                       if not p.is_multipart() and p.get_filename() is None)
     assert inline.count("robocopy line") * len("robocopy line ") <= 20 * limit, (
         f"inline body carries {inline.count('robocopy line')} copies of the 2 MB message")
 

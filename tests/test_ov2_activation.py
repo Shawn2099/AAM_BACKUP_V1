@@ -185,9 +185,10 @@ def test_alert_only_after_the_configured_hours_and_only_once(env, frozen):
     assert "is not being backed up because" in ev.message
     frozen(T0.add(hours=hours + 5))
     _run(env, bad, mail)
-    frozen(T0.add(hours=hours + 30))
+    assert mail.keys() == [f"overlap:activation:{NEXT}"]           # inside alerts.stale_repeat_hours: still ONE
+    frozen(T0.add(hours=hours + 1 + env.cfg.alerts.stale_repeat_hours))
     _run(env, bad, mail)
-    assert mail.keys() == [f"overlap:activation:{NEXT}"]           # still ONE
+    assert mail.keys() == [f"overlap:activation:{NEXT}"] * 2       # overlap-review D3: repeated daily
     assert env.db.get_activation(NEXT) is None
 
 

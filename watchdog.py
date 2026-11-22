@@ -65,6 +65,7 @@ Dependencies: httpx2 (D-16) and loguru are project requirements (httpx stays onl
 """
 
 import contextlib
+import html
 import sys
 import time
 from pathlib import Path
@@ -319,6 +320,58 @@ def _notify(event_kwargs: dict) -> None:
         notify(load_config(CONFIG_PATH), AlertEvent(mode="watchdog", **event_kwargs))
     except Exception as e:
         logger.warning(f"Watchdog alert delivery skipped/failed: {e}")
+
+
+def _degraded_mail_settings(raw: dict):
+    """(NotificationConfig, cooldown_hours, marker_dir) from the RAW yaml when the strict config will
+    not load. Unknown keys are dropped; the SMTP password is decrypted by the model's own validator."""
+    from models.config import AlertsConfig, NotificationConfig, PathsConfig, model_default
+    section = raw.get("notifications") if isinstance(raw.get("notifications"), dict) else {}
+    known = {k: v for k, v in section.items() if k in NotificationConfig.model_fields}
+    notifications = NotificationConfig(**known)
+    alerts = raw.get("alerts") if isinstance(raw.get("alerts"), dict) else {}
+    hours = alerts.get("repeat_cooldown_hours")
+    if isinstance(hours, bool) or not isinstance(hours, (int, float)) or hours < 0:
+        hours = model_default(AlertsConfig, "repeat_cooldown_hours")
+    paths = raw.get("paths") if isinstance(raw.get("paths"), dict) else {}
+    runtime = paths.get("runtime_dir") or model_default(PathsConfig, "runtime_dir")
+    return notifications, float(hours), Path(str(runtime))
+
+
+def _alert_invalid_config() -> None:
+    """release-break SILENCE-2: when config.yaml cannot be loaded the agent cannot start and the
+    normal alert path (which needs the same config) is dead. Send ONE ACTION_REQUIRED mail from the
+    raw notifications section, at most once per alerts cooldown window (marker file). Never raises."""
+    try:
+        import yaml
+        from core.notify import email_config_problem, send_email
+        from models.config import CONFIG_PATH, load_config
+
+        try:
+            load_config(CONFIG_PATH)
+            return
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+        logger.error(f"config.yaml is invalid - the backup agent cannot start: {error[:600]}")
+        with open(CONFIG_PATH, encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh) or {}
+        notifications, hours, runtime = _degraded_mail_settings(raw if isinstance(raw, dict) else {})
+        marker = runtime / "watchdog_invalid_config.sent"
+        if hours > 0 and marker.exists() and time.time() - marker.stat().st_mtime < hours * 3600:
+            return
+        problem = email_config_problem(notifications)
+        if problem:
+            logger.error(f"Invalid-config mail cannot be sent: {problem}")
+            return
+        text = (f"config.yaml is invalid - the backup agent cannot start: {error[:600]}; "
+                "fix it and restart AamBackupAgent")
+        result = send_email(notifications, "Backup agent cannot start: config.yaml is invalid",
+                            f"<p>{html.escape(text)}</p>", audience="alerts", body_text=text)
+        if result.status == "SENT":
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Invalid-config alert skipped/failed: {e}")
 
 
 def _watchdog_fault(key: str) -> str:
@@ -600,6 +653,7 @@ def main() -> None:
     config_mtime = _config_mtime()
     while True:
         config_mtime = _reload_tunables(config_mtime)
+        _alert_invalid_config()
         try:
             # Independent of the API state: a stale leg matters most when the
             # scheduler is broken.

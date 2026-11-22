@@ -68,6 +68,26 @@ class TestServices:
         monkeypatch.setattr(services, "run_capture", fake)
         assert services.query("x", timeout_s=30).pid is None
 
+    @pytest.mark.parametrize("labels, state_word", [
+        ({"TYPE": "TYP", "STATE": "ZUSTAND", "WIN32_EXIT_CODE": "WIN32-BEENDIGUNGSCODE", "PID": "PID"}, "ZUSTAND"),
+        ({"TYPE": "TYPE", "STATE": "ETAT", "WIN32_EXIT_CODE": "CODE_SORTIE_WIN32", "PID": "PID"}, "ETAT"),
+    ])
+    @pytest.mark.parametrize("code, name, want", [
+        (4, "RUNNING", "RUNNING"), (1, "STOPPED", "STOPPED"), (3, "STOP_PENDING", "STOP_PENDING"),
+        (2, "START_PENDING", "START_PENDING"), (7, "PAUSED", "PAUSED"),
+        (4, "EN_COURS", "RUNNING"),          # a localized state NAME: the numeric code still decides
+    ])
+    def test_queryex_parses_by_state_code_in_any_language(self, monkeypatch, labels, state_word, code, name, want):
+        out = QUERYEX_RUNNING.replace("STATE              : 4  RUNNING",
+                                      f"{state_word}             : {code}  {name}")
+        for eng, loc in labels.items():
+            if eng != "STATE":
+                out = out.replace(f"{eng} ", f"{loc} ", 1)
+        fake, _ = _sc({("queryex", "*"): [(0, out)]})
+        monkeypatch.setattr(services, "run_capture", fake)
+        st = services.query("x", timeout_s=30)
+        assert (st.state, st.pid) == (want, 1100)
+
     def test_missing_service_is_unknown_with_the_sc_text(self, monkeypatch):
         fake, _ = _sc({("queryex", "*"): [(1060, QUERYEX_MISSING)]})
         monkeypatch.setattr(services, "run_capture", fake)
