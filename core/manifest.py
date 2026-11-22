@@ -721,6 +721,37 @@ class ManifestDB:
                 ),
             )
             conn.commit()
+        if statuses.is_success(data["status"]):
+            self._supersede_pending_after_success(data["mode"], data["fy"], data["started_at"],
+                                                  data["run_id"])
+
+    def _supersede_pending_after_success(self, leg: str, fy: str, run_started_at: str,
+                                         run_id: str) -> None:
+        """A successful run of leg+FY means the cause of an older block is fixed: PENDING approval
+        requests of that same leg and FY, created before this run started, are SUPERSEDED (so the
+        health check and banner clear). Never raises: the run row is already written."""
+        from datetime import datetime
+
+        from core import approvals as ap
+
+        try:
+            started = datetime.fromisoformat(run_started_at)
+            with self._lock:
+                conn = self._get_conn()
+                rows = conn.execute(
+                    "SELECT approval_id, created_at FROM approvals WHERE leg = ? AND fy = ? AND status = ?",
+                    (leg, fy, ap.PENDING)).fetchall()
+                for r in rows:
+                    if datetime.fromisoformat(r["created_at"]) >= started:
+                        continue
+                    with conn:
+                        done = conn.execute("UPDATE approvals SET status = ? WHERE approval_id = ? AND status = ?",
+                                            (ap.SUPERSEDED, r["approval_id"], ap.PENDING)).rowcount
+                    if done:
+                        logger.info(f"Approval {r['approval_id']} ({leg} {fy}) superseded: run {run_id} "
+                                    f"finished successfully after it was requested")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Could not supersede pending approvals after run {run_id}: {e}")
 
     def get_runs_since(self, days: int, mode: str | None = None, *, fy: str) -> list[dict]:
         cutoff = cutoff_iso(days)
