@@ -131,9 +131,11 @@ def test_s2_best_apr_hand_table(sim):
     bad = [s for s in sim.subjects() if "FAILURE" in s or "ACTION" in s]
     assert bad == [], bad
 
-    # dashboard read at Apr 5 09:00 (product-view: only that it answers)
+    # dashboard read at Apr 5 09:00 (hand: after the switch ONE folder card, for FY27-28 only)   # product-view
     status = sim.status(pendulum.datetime(2027, 4, 5, 9, 0, tz=IST))
-    assert isinstance(status, dict)
+    folders = status["folders"]                                       # product-view
+    assert [f["fy"] for f in folders] == [B], folders                 # product-view: one card, FY27-28
+    assert A not in str(status.get("attention", [])), status.get("attention")   # product-view: no FY26-27 item
 
 
 def test_s2_rollover_mail_subjects_golden(sim):
