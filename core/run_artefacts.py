@@ -35,7 +35,7 @@ from core.time_utils import IST, now_iso
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _DOT_RUNS = re.compile(r"\.{2,}")
-_DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
 _RUN_DIR = re.compile(
     r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+(?:_FY\d{2}-\d{2})?)_[A-Za-z0-9]+$")
 _LEGS = ("cloud", "lan", "audit", "rollover")
