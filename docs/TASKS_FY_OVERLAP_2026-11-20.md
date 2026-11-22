@@ -178,6 +178,7 @@
 - [ ] **OV-12.1** Lifecycle rules: never ARCHIVE an active FY prefix (current + early); keep the noncurrent-version
   rules; review with the owner (the owner's staged variant is in the session scratchpad); apply with
   `gcloud storage buckets update --lifecycle-file`; verify with `gcloud storage buckets describe`.
+  **Drafted 2026-11-22, NOT applied (owner review + gcloud needed):** `deploy/gcs_lifecycle.fy_overlap_proposed.json` + `tests/test_ov12_lifecycle.py`. Finding: the git rule `age: 365 -> ARCHIVE` has no prefix filter, so from January of the year after an upload it would ARCHIVE live objects of a year that is still being backed up (e.g. Jan-Mar 2027 files in `FY27-28/` in Jan-Mar 2028). The proposal drops it; ARCHIVE then applies only to the listed CLOSED years. **Consequence for the owner:** at each April switch add the year that just closed to the ARCHIVE prefix list and re-apply (lifecycle JSON cannot say 'every prefix except these').
 
 ---
 

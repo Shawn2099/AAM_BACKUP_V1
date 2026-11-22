@@ -1,0 +1,60 @@
+{
+  "rule": [
+    {
+      "action": {
+        "type": "SetStorageClass",
+        "storageClass": "COLDLINE"
+      },
+      "condition": {
+        "isLive": false,
+        "daysSinceNoncurrentTime": 1,
+        "matchesStorageClass": [
+          "STANDARD"
+        ]
+      }
+    },
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "isLive": false,
+        "numNewerVersions": 3
+      }
+    },
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "isLive": false,
+        "daysSinceNoncurrentTime": 92
+      }
+    },
+    {
+      "action": {
+        "type": "SetStorageClass",
+        "storageClass": "ARCHIVE"
+      },
+      "condition": {
+        "matchesPrefix": [
+          "FY24-25/",
+          "FY25-26/"
+        ],
+        "matchesStorageClass": [
+          "STANDARD",
+          "NEARLINE",
+          "COLDLINE"
+        ]
+      }
+    },
+    {
+      "action": {
+        "type": "AbortIncompleteMultipartUpload"
+      },
+      "condition": {
+        "age": 7
+      }
+    }
+  ]
+}
