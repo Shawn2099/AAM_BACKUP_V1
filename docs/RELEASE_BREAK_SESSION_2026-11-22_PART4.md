@@ -39,3 +39,6 @@ Written 2026-11-23 for a new session / after a usage limit. Branch `fy-overlap` 
 - No red tests known on fy-overlap; unit suite re-run pending. Worktree runs show 3 config.yaml-only failures (test_p2_sched_pause, test_v113_round3 x2): expected, they pass in the main checkout.
 - The test stack runs OLDER code than fy-overlap (see above).
 - Agent worktrees (`.claude/worktrees/agent-*`) and `C:\AAMTest\code` are still present.
+
+## Git push log
+- 2026-11-23: `git push origin fy-overlap` (191f110..ac1b010). Owner asked for regular pushes (new branches allowed). Repo is PUBLIC: scan added lines for secrets first; never force. Push again after every merge/wave; branch release-candidate is already merged into fy-overlap.
