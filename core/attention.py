@@ -390,6 +390,18 @@ def compute_attention(db, config, now=None) -> list[dict]:
                            act("Add an address under \"Who gets problem alerts\" in Settings",
                                "The alerts list is empty, so problem alerts go to the reports list")))
 
+    try:                       # overlap review D3: next year's activation is deferred (junction, no right, clock ...)
+        deferred = fy_overlap.deferred_state(config, db, fy_overlap.run_date(now))
+    except Exception as e:  # noqa: BLE001 - the dashboard still renders
+        logger.warning(f"Could not check whether next year's activation is deferred: {e}")
+        deferred = None
+    if deferred:
+        items.append(_item(
+            RED if deferred["alerted"] else AMBER, f"overlap:deferred:{deferred['fy']}",
+            act("Fix the cause below; the backup starts on its own once it is gone (or ask support)",
+                f"{deferred['fy']} is not being backed up yet because {deferred['reason']}. "
+                f"{current} is still backed up every night")))
+
     try:                       # plan 5.2: folders next to the year folders that are not backed up
         run_date = fy_overlap.run_date()
         siblings = fy_overlap.sibling_findings(

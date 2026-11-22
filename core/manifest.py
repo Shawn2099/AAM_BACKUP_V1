@@ -1112,6 +1112,13 @@ class ManifestDB:
             row = self._journal_row(conn, from_fy, to_fy)
             return self._journal_dict(conn, row) if row else None
 
+    def rollover_journals(self) -> list[dict]:
+        """Every rollover journal, oldest first."""
+        with self._lock:
+            conn = self._get_conn()
+            return [self._journal_dict(conn, row)
+                    for row in conn.execute("SELECT * FROM rollover_journal ORDER BY id")]
+
     def rollover_incomplete(self) -> dict | None:
         """The newest journal that still has a step to do, or None."""
         with self._lock:
@@ -1512,6 +1519,17 @@ class ManifestDB:
         with self._lock:
             conn = self._get_conn()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def delete_running_row(self, run_id: str) -> bool:
+        """Delete a run's row ONLY while it is still *_RUNNING (a run that was planned but never started:
+        overlap review D1). Never touches a recorded outcome."""
+        with self._lock:
+            conn = self._get_conn()
+            cur = conn.execute(
+                "DELETE FROM run_history WHERE run_id = ? AND status IN ('CLOUD_RUNNING', 'LAN_RUNNING')",
+                (run_id,))
+            conn.commit()
+            return cur.rowcount > 0
 
     def abandon_dead_runs(self, owner_alive, older_than_hours: float) -> list[dict]:
         """*_RUNNING rows whose run can no longer finish -> *_ABANDONED (plan WP5).
