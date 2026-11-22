@@ -17,6 +17,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pendulum
 from fastapi import FastAPI, HTTPException, Request
@@ -76,6 +77,30 @@ def _check_rate_limit(client_ip: str, max_attempts: int) -> bool:
 app = FastAPI(title="AAM Backup Dashboard")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+@app.middleware("http")
+async def _refuse_cross_site_writes(request: Request, call_next):
+    """A state-changing request that a browser marks as coming from another site is refused (CSRF defence
+    on top of the SameSite cookie). No Origin and no Sec-Fetch-Site (curl, scripts) stays allowed."""
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        origin = request.headers.get("origin")
+        cross = (request.headers.get("sec-fetch-site") or "").lower() == "cross-site"
+        if origin is not None and not cross:
+            host = (request.headers.get("host") or "").lower()
+            cross = urlsplit(origin).netloc.lower() != host
+        if cross:
+            return JSONResponse({"detail": messages.act("Open the dashboard directly and try again",
+                                                         "The request came from another web site")},
+                                status_code=403)
+    return await call_next(request)
+
+
+def _object_body(body) -> dict:
+    """A JSON body must be an object; anything else is a plain 400, never a server error."""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail=messages.act("Send the form again", "The request was not in the expected form"))
+    return body
 
 # ── In-memory session store ──────────────────────────
 
@@ -929,6 +954,10 @@ async def approve_blocked_run(approval_id: str, request: Request):
     if not approvals.phrase_matches(approvals.APPROVE_PHRASE, typed):
         raise HTTPException(status_code=400,
                             detail=messages.act(f"Type {approvals.APPROVE_PHRASE} exactly, then press Approve", "The word typed did not match"))
+    if req.get("fy") and req["fy"] not in _active_fy_list():
+        raise HTTPException(status_code=409, detail=messages.act(
+            "Dismiss this request; approve the one for the current financial year instead",
+            f"{req['fy']} is no longer backed up, so a run for it cannot be approved"))
     await _ensure_leg_idle(req["leg"])
     approved_at = now_iso()
     actor = _approval_actor(request)
@@ -1076,6 +1105,7 @@ async def _change_password(request: Request, which: str) -> JSONResponse | dict:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
+    body = _object_body(body)
     dashboard = _cfg().dashboard
     if not await run_in_threadpool(admin_auth.verify_admin_password, str(body.get("current", "")), dashboard):
         raise HTTPException(status_code=400, detail=messages.act("Type the current Advanced password again", "The one entered is wrong"))
@@ -1177,6 +1207,7 @@ async def save_settings(request: Request):
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
+    body = _object_body(body)
     actor = _approval_actor(request)
     try:
         result = config_edit.apply_changes(
@@ -1285,6 +1316,7 @@ async def validate_settings(request: Request):
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
+    body = _object_body(body)
     return config_edit.validate_changes(_settings_config_path(), body.get("changes") or {},
                                         allow_advanced=_is_admin(request))
 

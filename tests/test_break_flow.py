@@ -610,10 +610,6 @@ def test_two_concurrent_backups_second_never_transfers(tmp_path, monkeypatch):
     assert len(w.cloud_calls) == 1          # only the first run ever reached rclone
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "SUSPECTED BUG: flow.py:3281 (_run_leg_folders, `except Exception` around _backup_slot) "
-    "does not catch a BaseException (cancel / Ctrl+C) raised while waiting for the slot, so no "
-    "*_SLOT_TIMEOUT row is written and the *_RUNNING row from before the wait is left behind"))
 def test_interrupt_while_waiting_for_the_slot_leaves_a_terminal_row(tmp_path, monkeypatch):
     """A cancel while the run waits for the backup slot must not leave the row in *_RUNNING.
 

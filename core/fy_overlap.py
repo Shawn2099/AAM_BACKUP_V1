@@ -51,7 +51,7 @@ EARLY = "early"
 _CANONICAL_FY = re.compile(r"^FY(\d{2})-(\d{2})$")
 _LAST_MONTH_OF_FY = 3        # March: the calendar month in which a financial year ends (April start)
 # "FY 27-28", "FY2027-28", "FY_27_28": looks like a year folder (plan 5.2). Case-insensitive, anywhere in the name.
-_FY_LOOKING = re.compile(r"FY[\s_-]*\d{2,4}\s*[-_ ]\s*\d{2,4}", re.IGNORECASE)
+_FY_LOOKING = re.compile(r"FY[\s_-]*\d{2,4}\s*[-_ ]\s*\d{1,4}", re.IGNORECASE)
 
 
 class SiblingReadError(Exception):
@@ -495,7 +495,7 @@ def suggested_name(name: str) -> str:
     nums = re.findall(r"\d+", m.group(0)) if m else []
     if len(nums) < 2:
         return "FYnn-nn"
-    return f"FY{nums[0][-2:]}-{nums[1][-2:]}"
+    return f"FY{nums[0][-2:].zfill(2)}-{nums[1][-2:].zfill(2)}"
 
 
 def _unprotected_reason(config: AppConfig, run_date: _date, db) -> str:

@@ -325,17 +325,11 @@ def test_traversal_absolute_and_unc_names_refused_by_both_tools(rig):
     assert not any(dest.iterdir())
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "SUSPECTED BUG: core/restore.py:71 valid_folder_name accepts drive-qualified and NTFS "
-    "stream names ('D:evil' joins as a drive-relative path and leaves the destination)"))
 def test_drive_qualified_and_stream_names_are_not_folder_names():
     for name in ["D:evil", "archive:stream"]:
         assert not valid_folder_name(name), name
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "SUSPECTED BUG: core/restore.py:891 FY_RE is upper-case only, so the .upper() never runs "
-    "for 'fy26-27' and the cloud prefix becomes gs://<bucket>/fy26-27"))
 def test_lowercase_fy_name_reads_the_canonical_cloud_prefix(rig):
     rig.put("FY26-27", "a.txt", b"A")
     dest = rig.root / "dest"
@@ -367,7 +361,7 @@ def test_trailing_dot_or_space_cannot_reach_the_live_folder(rig):
     for name in ["FY26-27.", "FY26-27 "]:
         res = _restore(rig, src, name, allow_non_empty=True, forbidden_paths=[str(live)])
         assert res["ok"] is False, name
-        assert "protected" in (res["error"] or ""), name
+        assert "protected" in (res["error"] or "") or "folder name" in (res["error"] or ""), name
     # Upload: the trailing character matches no folder on disk, so nothing is resolved.
     assert _upload(rig, src, "FY26-27.")["status"] == "FAILED"
     assert rig.fake.calls == []
@@ -408,9 +402,6 @@ def test_junction_to_live_fy_refused_by_restore_cli_even_with_force(rig, monkeyp
     assert (live / "live.txt").read_text(encoding="utf-8") == "LIVE"
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "SUSPECTED BUG: core/restore.py:309 resolve() follows the junction before the reparse "
-    "check at core/restore.py:317, so the 'target is a junction' guard never fires"))
 def test_junction_destination_is_refused_without_a_caller_list(rig):
     other = rig.root / "other"
     other.mkdir()

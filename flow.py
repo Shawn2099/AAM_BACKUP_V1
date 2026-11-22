@@ -3281,6 +3281,17 @@ def _run_leg_folders(config, leg: str, folders: list[str], *,
         except Exception as e:  # noqa: BLE001
             _slot_timeout_for_folders(leg, runs, started_at, monotonic_start, e)
             return [e]
+        except BaseException as e:   # a cancel / stop while waiting for the slot: no row may stay RUNNING
+            status = statuses.decide_terminal_status(leg, "pre", f"{leg.upper()}_RUNNING",
+                                                     statuses.EXC_INTERRUPTED)
+            for fy, view, run_id in runs:
+                try:
+                    _record_run(view, run_id, leg, started_at, status, -1,
+                                f"Backup interrupted while waiting to start: {e!r}",
+                                monotonic_start=monotonic_start)
+                except Exception as rec_err:  # noqa: BLE001
+                    logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
+            raise
         try:
             for i, (fy, view, run_id) in enumerate(runs):
                 logger.info(f"Starting {leg} backup pipeline for {fy}")

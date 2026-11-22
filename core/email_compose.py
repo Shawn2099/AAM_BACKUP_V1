@@ -169,6 +169,13 @@ def effective_code(event) -> str | None:
     return None
 
 
+def _clip(message, config) -> str:
+    """The alert text, cut to alerts.body_max_chars (the full text goes in the attachment)."""
+    message = message or ""
+    limit = config.alerts.body_max_chars
+    return message if len(message) <= limit else message[:limit] + " ... [truncated - full text attached]"
+
+
 def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
     """(subject, html body, plain-text body) for one alert event."""
     from core.notify import dashboard_urls, html_to_text
@@ -189,7 +196,7 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
             f" (was {was.code})" if was else "")
         headline = f"{label} is working again."
         what = (f"The problem reported earlier ({was.title}) is fixed." if was
-                else (event.message or "The earlier problem is fixed."))
+                else (_clip(event.message, config) or "The earlier problem is fixed."))
         steps: tuple[str, ...] = ()
     elif event.kind != "INFO" and (event.fault_code is not None or event.status):
         fault = faults.get(effective_code(event))
@@ -203,12 +210,12 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
         severity = SEVERITY.get(event.kind, "INFO")
         subject = f"{prefix} {severity}: {event.title}"
         headline = event.title
-        what = event.message or ""
+        what = _clip(event.message, config)
         steps = ()
 
     # a blocked run's own numbers are plain words ("would delete 1,240 of 5,800 files");
     # every other message is technical and stays in the support block
-    details = event.message if (fault and str(event.status).endswith("_BLOCKED")
+    details = _clip(event.message, config) if (fault and str(event.status).endswith("_BLOCKED")
                                 and event.message) else None
     who_list = fault.who if fault else ()
     who = ("you" if faults.YOU in who_list or not who_list
