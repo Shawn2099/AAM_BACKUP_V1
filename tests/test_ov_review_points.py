@@ -222,10 +222,9 @@ def test_p6_a_skipped_config_switch_counts_as_finished_for_the_overlap(env):
 
 # ── P-8 (D8) ──────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D8: manifest.close_fy closes only the cloud and lan incidents "
-                   "(manifest.py:1238); FY26-27's open audit incident stays open after the 1 April switch")
 def test_p8_the_switch_closes_the_open_audit_incident_of_the_old_fy(env):
-    for mode, key in (("cloud", f"cloud:{CFG_FY}:upload"), ("audit", f"audit:{CFG_FY}:all:cloud=VERIFICATION_FAILED")):
+    for mode, key in (("cloud", f"cloud:{CFG_FY}:upload"), ("audit", f"audit:{CFG_FY}:all:cloud=VERIFICATION_FAILED"),
+                      ("rollover", f"rollover:{CFG_FY}:archive_retry")):
         env.db.record_notification({
             "event_key": key, "kind": "ACTION_REQUIRED", "mode": mode, "subject": f"{mode} problem",
             "status": "SENT", "created_at": "2027-03-28T10:00:00+05:30", "fy": CFG_FY})
@@ -234,7 +233,8 @@ def test_p8_the_switch_closes_the_open_audit_incident_of_the_old_fy(env):
     closed = _rows(env.db_path,
                    "SELECT mode FROM notifications WHERE fy = ? AND kind = 'RECOVERED' AND status = 'CLOSED' "
                    "ORDER BY mode", (CFG_FY,))
-    assert [m for (m,) in closed] == ["audit", "cloud"]                    # both incidents end silently
+    # cloud and audit end silently; a rollover-mode incident (archive retries, D3 resolved mail) is NOT closed
+    assert [m for (m,) in closed] == ["audit", "cloud"]
 
 
 # ── P-9 (D11) ─────────────────────────────────────────────────────────────────
@@ -270,15 +270,25 @@ def test_p10_control_with_the_start_month_unchanged_the_activated_fy_stays_activ
     assert ov.active_folders(env.cfg, env.db, pendulum.date(2027, 2, 6)) == [NEXT, CFG_FY]
 
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D12: fy_overlap.in_window reads early_start_month on every run "
-                   "(fy_overlap.py:134), so raising it to 3 on 5 Feb drops the activated FY27-28 until 1 March; "
-                   "the activation row is still there")
 def test_p10_raising_early_start_month_in_february_keeps_the_activated_fy_active(env):
     _activated_early_fy(env)
     changed = env.cfg.model_copy(deep=True)
     changed.rollover.early_start_month = 3                                 # Settings change on 5 Feb
     assert env.db.get_activation(NEXT) is not None
     assert ov.active_folders(changed, env.db, pendulum.date(2027, 2, 6)) == [NEXT, CFG_FY]
+
+
+def test_p10_start_month_raised_before_activation_no_activation_and_no_deferred_alarm_in_february(env):
+    """opus-decision D12 (a): the rule only keeps an ALREADY activated year; before activation the month
+    is still honoured (no activation, no deferral alarm, only the configured FY is active)."""
+    changed = env.cfg.model_copy(deep=True)
+    changed.rollover.early_start_month = 3
+    feb = pendulum.date(2027, 2, 6)
+    res = ov.ensure_overlap_activated(changed, feb, env.db, clock_check=Clock(), notify_fn=Mail())
+    assert res["state"] == "not_needed"
+    assert env.db.get_activation(NEXT) is None
+    assert ov.deferred_state(changed, env.db, feb) is None
+    assert ov.active_folders(changed, env.db, feb) == [CFG_FY]
 
 
 # ── P-11 (new: not in D1-D13) ─────────────────────────────────────────────────
@@ -319,10 +329,6 @@ def lan_night(env, monkeypatch):
     return SimpleNamespace(env=env, seen=seen, clock=clock)
 
 
-@pytest.mark.xfail(strict=False, reason="NEW (not D1-D13): _run_leg_folders passes now_iso() per folder "
-                   "(flow.py:3290, pipeline(view, run_id, now_iso(), ...)), so the second folder's row is dated "
-                   "when its pipeline starts (here 1 April 03:10), not the scheduled 31 March night. Confirmed "
-                   "on the row assertion; the March-report consequence is expected but not yet observed")
 def test_p11_both_folders_of_a_night_started_at_the_scheduled_time_and_the_march_report_counts_both(lan_night):
     """Setup: LAN scheduled 2027-03-31 21:01; the first folder (FY27-28) runs to 04-01 03:10. Action: the
     LAN leg (both folders). Expected: both rows are dated 31 March (scheduled start, as a late run keeps

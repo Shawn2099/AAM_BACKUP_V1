@@ -2054,7 +2054,17 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
             if early_nas_folder:
-                nas_folder = fy_overlap.ensure_overlap_nas_folder(config, _effective_fy_prefix(config))
+                early_fy = _effective_fy_prefix(config)
+                try:   # D5: a year with a LAN success must not have its folder/marker silently re-made
+                    _db = ManifestDB.from_config(config)
+                    try:
+                        established = _db.last_successful_run("lan", fy=early_fy) is not None
+                    finally:
+                        _db.close()
+                except Exception as e:  # noqa: BLE001 - fail closed: let G5 ask
+                    logger.warning(f"Early FY established check failed ({e}); treating as established")
+                    established = True
+                nas_folder = fy_overlap.ensure_overlap_nas_folder(config, early_fy, established=established)
                 logger.info(f"Early FY NAS folder: {nas_folder['state']} ({nas_folder['reason']})")
             # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
             # completed now that the NAS is awake - before G5 looks for the mount marker
@@ -2473,7 +2483,8 @@ def log_retention_task(config) -> dict:
         for pattern in _SERVICE_LOG_GLOBS:
             removed["service_logs"] += purge_older_than(
                 config.paths.log_directory,
-                config.run_logs.service_log_retention_days, glob=pattern)
+                config.run_logs.service_log_retention_days, glob=pattern,
+                files=True)
     except Exception as e:  # noqa: BLE001 - housekeeping must never fail the flow
         logger.warning(f"Log retention task failed (non-fatal): {e}")
     logger.info(f"Log retention: removed {removed}")
@@ -2606,6 +2617,10 @@ def _alarm_siblings(config, db, run_date) -> None:
         logger.warning(f"Could not send the 'folder is fine now' notice: {e}")
 
 
+class _FinalBackupWait(fy_rollover.RolloverError):
+    """The final backup only waited for the slot (D7): the step stays unfinished, no failure mail."""
+
+
 def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):
     """Run one journal step and persist its outcome (plan A, saga).
 
@@ -2619,6 +2634,9 @@ def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):
         outcome = fn()
     except guards.GuardBlocked as e:
         db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"blocked: {e}")
+        raise
+    except _FinalBackupWait as e:
+        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"waiting: {e}")
         raise
     except Exception as e:  # noqa: BLE001 - recorded on the journal; the caller decides
         logger.error(f"FY rollover {from_fy} -> {to_fy}: step {step} failed: {e}")
@@ -2793,6 +2811,7 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         nonlocal final_status, guard_record
         logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
         final_status, final_errors = _run_final_backups(config, run_id)
+        _defer_if_only_waiting(final_status)
         g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
         approved, approval_record = _apply_approval(config, "rollover", approval_id, run_id, [g6])
         try:
@@ -2805,6 +2824,29 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
                    {"guards": e.record, "final_errors": final_errors})
             _open_block_request(config, "rollover", run_id, e.record, started_at)
             raise
+
+    def _defer_if_only_waiting(final_status: dict) -> None:
+        """D7: every failed leg only waited for the slot / had no time, and fewer than
+        rollover.final_backup_wait_retries earlier mornings did: a WARNING and a retry tomorrow, no approval."""
+        limit = config.rollover.final_backup_wait_retries
+        failed = {leg: s for leg, s in final_status.items() if not statuses.is_success(s)}
+        if limit < 1 or not failed or not all(s in statuses.WAIT_STATUSES for s in failed.values()):
+            return
+        earlier = [r for r in db.final_backup_wait_runs(from_fy, statuses.WAIT_STATUSES) if r != run_id]
+        if len(earlier) >= limit:
+            return                                    # waited long enough: G6 asks as it always did
+        msg = (f"The final backup of {from_fy} could not run tonight "
+               f"({', '.join(f'{k}={v}' for k, v in failed.items())}): "
+               f"the backup slot was busy or out of time. The switch to {to_fy} waits and is tried again "
+               f"tomorrow morning (attempt {len(earlier) + 1} of {limit}); nothing needs to be done. "
+               "Your data is safe.")
+        logger.warning(msg)
+        record("ROLLOVER_FAILED", msg, {"final_status": dict(final_status), "final_wait": True})
+        notify(config, AlertEvent(
+            key=f"rollover:{from_fy}:final_wait", kind="WARNING", mode="rollover",
+            title=f"Switch to {to_fy} waits for the last {from_fy} backup", message=msg,
+            status="ROLLOVER_FAILED", occurred_at=started_at, run_id=run_id))
+        raise _FinalBackupWait(msg)
 
     def step_source_folder():
         fy_rollover.create_source_folder(
@@ -2967,6 +3009,21 @@ def _rollover_archive_alert(config, db, from_fy: str, to_fy: str, error, run_id:
         run_id=run_id))
 
 
+def _recorded_final_status(config, final_run_id: str) -> str | None:
+    """The terminal status the pipeline itself recorded for one final-backup run (None if unreadable)."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            for r in db.get_recent_runs(50, fy=_effective_fy_prefix(config)):
+                if r["run_id"] == final_run_id:
+                    return r["status"]
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - unreadable = treated as a normal failure (G6 asks)
+        logger.warning(f"Could not read the recorded status of {final_run_id}: {e}")
+    return None
+
+
 def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
     """Final backup of the closing FY on every enabled leg, through the normal
     pipelines (config still points at the closing FY). Returns
@@ -2986,6 +3043,11 @@ def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
         except Exception as e:  # noqa: BLE001 - recorded; G6 blocks on it
             status[leg] = f"{leg.upper()}_BLOCKED" if isinstance(e, guards.GuardBlocked) \
                 else f"{leg.upper()}_NOT_COMPLETE"
+            if (not isinstance(e, guards.GuardBlocked)
+                    and config.rollover.final_backup_wait_retries > 0):
+                recorded = _recorded_final_status(config, f"{run_id}-final-{leg}")
+                if recorded in statuses.WAIT_STATUSES:
+                    status[leg] = recorded
             errors[leg] = str(e)
             logger.error(f"FY rollover: final {leg} backup did not complete: {e}")
     return status, errors
@@ -3369,7 +3431,7 @@ def _run_leg_folders(config, leg: str, folders: list[str], *,
                     kwargs.update(allow_shutdown=False, shutdown_votes=votes,
                                   early_nas_folder=(fy != configured))
                 try:
-                    pipeline(view, run_id, now_iso(), time.monotonic(), **kwargs)
+                    pipeline(view, run_id, started_at, time.monotonic(), **kwargs)
                 except Exception as e:  # noqa: BLE001 - the next folder still runs
                     excs.append(e)
         except BaseException:        # a cancel / service stop: no NAS decision while terminating

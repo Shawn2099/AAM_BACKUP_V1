@@ -249,18 +249,34 @@ def purge_older_than(
     *,
     glob: str = "*",
     now: float | None = None,
+    files: bool = False,
 ) -> int:
     """Delete entries under `root` matching `glob` older than `days`.
 
     One retention function for every kind of retained log (plan §5.2):
     run-artefact day folders, NSSM-rotated service logs, app logs.
     Age is the entry's mtime. Date-named folders (YYYY-MM-DD) are removed
-    recursively. Never raises; returns the number of entries removed.
+    recursively. Plain files are removed only when `files=True` (service
+    logs); by default only day folders are, so a misset directory cannot lose
+    unrelated files. Retention below 1 day (or not a number) is refused and
+    keeps everything. Never raises; returns the number of entries removed.
     """
+    try:
+        days_i = int(days)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(f"Retention purge refused: invalid retention {days!r}")
+        return 0
+    if days_i < 1:
+        logger.warning(f"Retention purge refused: retention {days_i}d is below 1 day")
+        return 0
     base = Path(root)
     if not base.is_dir():
         return 0
-    cutoff = (now if now is not None else time.time()) - int(days) * 86400
+    try:
+        cutoff = (now if now is not None else time.time()) - days_i * 86400
+    except OverflowError:
+        logger.warning(f"Retention purge refused: retention {days_i}d is absurd")
+        return 0
     removed = 0
     for entry in base.glob(glob):
         try:
@@ -271,6 +287,8 @@ def purge_older_than(
                     continue  # only ever remove our own day folders
                 shutil.rmtree(entry)
             else:
+                if not files:
+                    continue  # plain files only when the caller opts in
                 entry.unlink()
             removed += 1
         except OSError as e:

@@ -521,9 +521,6 @@ def test_p4_nas_folder_with_files_and_no_marker_blocks_only_the_early_fy(rig, mo
     assert rig.shutdowns == [] and rig.nas_on is True
 
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D5: ensure_overlap_nas_folder re-creates the early FY's NAS folder "
-                   "and its mount marker on EVERY LAN run, so a vanished folder (NAS reset, wrong volume) is "
-                   "silently re-created and G5 never asks")
 def test_p3_a_vanished_early_nas_folder_is_not_silently_recreated(rig, monkeypatch):
     import shutil
 

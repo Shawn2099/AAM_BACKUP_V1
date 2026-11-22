@@ -163,21 +163,15 @@ def test_huge_retention_removes_nothing_and_does_not_raise(tmp_path):
     assert old.exists()
 
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: core/run_artefacts.py:263 has no floor on "
-                   "`days` (config floor is 7). Retention 0 or negative makes the cutoff now or later, "
-                   "so today's folder, possibly a run in progress, is deleted.")
 @pytest.mark.parametrize("days", [0, -1])
 def test_zero_or_negative_retention_never_removes_todays_folder(tmp_path, days):
     root = tmp_path / "run_logs"
     root.mkdir()
     today = _day(root, "2026-11-22", when=NOW - 60)
-    purge_older_than(root, days, now=NOW)
+    assert purge_older_than(root, days, now=NOW) == 0
     assert today.exists()
 
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: core/run_artefacts.py:263 computes "
-                   "int(days)*86400 and the float arithmetic outside the try, so an absurd retention "
-                   "raises OverflowError although the docstring says 'Never raises'.")
 def test_absurd_retention_does_not_raise(tmp_path):
     root = tmp_path / "run_logs"
     root.mkdir()
@@ -279,9 +273,6 @@ def test_non_ascii_digit_folder_is_not_a_day_folder(tmp_path):
     assert odd.exists()
 
 
-@pytest.mark.xfail(strict=False, reason="SUSPECTED BUG: core/run_artefacts.py:270-274 removes any old "
-                   "plain file matching the glob, not only day folders (the comment says 'only ever "
-                   "remove our own day folders'). Default glob '*' reaches loose files at the root.")
 def test_loose_old_file_at_root_is_kept(tmp_path):
     root = tmp_path / "run_logs"
     root.mkdir()

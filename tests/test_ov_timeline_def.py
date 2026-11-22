@@ -480,19 +480,20 @@ def test_T_e3_week_after_the_switch_off_has_no_early_fy_section_and_no_missing_b
     assert B not in report.render_report_html(m, "Firm")
 
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D10: report.fy_window ends an FY's window only at a config_switch, "
-                   "so FY27-28 (left the active set on 21 Jan without a switch) is planned for the whole week "
-                   "18-24 Jan: 7 nights scheduled, 3 run. The dashboard shows no FY27-28 card, no overdue.")
-def test_T_e3_d10_report_and_dashboard_agree_about_an_fy_that_left_the_active_set(jan20):
+def test_T_e3_d10_characterization_report_still_names_an_fy_that_left_the_active_set(jan20):
+    """Characterization (opus-decision D10): INTENDED. Switching the overlap off leaves that year's files
+    unprotected, and the report shows it (3 of 7 scheduled nights; FY27-28 planned for the whole week 18-24 Jan: 7 nights
+    scheduled, 3 ran) until the week is past (test_T_e3_week_after_... is the next week, no section). The
+    dashboard shows no card but the daily sibling ACTION REQUIRED item. Making the two agree needs a durable
+    'left the active set at' record; using the last run row as the window end would hide real missed nights."""
     _run_off_period(jan20, at(2027, 1, 24))
-    # dashboard side (hand rule): only FY26-27 is active on 25 Jan
     assert ov.active_folders(jan20.cfg, jan20.db, pendulum.date(2027, 1, 25)) == [A]
     m = _week_report(jan20, at(2027, 1, 25, 8))                                # Mon 18 - Sun 24 Jan
     early = [s for s in m["sections"] if s["fy"] == B]
-    # whichever rule the owner picks, the report must not plan nights for FY27-28 that no one backs up:
-    # the 18, 19, 20 Jan nights ran (3 of 3 planned), 21-24 Jan were never planned
-    assert m["act"] is False, m["headline"]
-    assert early and early[0]["summaries"][0]["scheduled"] == 3, [s["summaries"][0].get("scheduled") for s in early]
+    # observed (the record expected act True; it is False): the section plans 7 nights and counts the 3 that
+    # ran, with no 'problems' entry and the headline 'all backups OK'; the gap is visible only as 3 of 7
+    assert early and early[0]["summaries"][0]["total"] == 3
+    assert early[0]["summaries"][0]["scheduled"] == 7, [s["summaries"][0].get("scheduled") for s in early]
 
 
 # ===============================================================================================
@@ -649,10 +650,35 @@ def test_P7_control_slot_timeout_stops_the_switch_and_the_next_morning_completes
     assert site.switch_writes == [(B, A)]
 
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D7: flow._run_final_backups turns a slot timeout into "
-                   "<LEG>_NOT_COMPLETE and G6 then opens an approval request ('approve to roll over anyway') "
-                   "for something a retry tomorrow fixes (flow.py:2960-2974, guards.py:290-300).")
 def test_P7_d7_final_backup_slot_timeout_is_a_retry_not_an_approval_request(busy_site):
     _rollover_while_busy(busy_site)
     # the proposal: a human is not asked to "approve anyway" a final backup that only waited for the slot
     assert busy_site.db.open_approvals() == [], [a["guards"] for a in busy_site.db.open_approvals()]
+
+
+def test_P7_d7_after_n_mornings_of_waiting_g6_asks_as_before(busy_site):
+    """opus-decision D7 (b), N=2 (default): mornings 1 and 2 only wait (WARNING, no approval); the 3rd
+    morning, still busy, opens the G6 'roll over anyway' request as it always did."""
+    site = busy_site
+    assert site.cfg.rollover.final_backup_wait_retries == 2
+    for day in (1, 2):
+        try:
+            site.rollover(at(2027, 4, day, 6, 0))
+        except fr.RolloverError:
+            pass
+        assert site.db.open_approvals() == [], f"morning {day}"
+        assert site.steps()[rj.CONFIG_SWITCH] == rj.PENDING and site.switch_writes == []
+    waits = site.db.last_notification(f"rollover:{A}:final_wait")
+    assert waits is not None and waits["kind"] == "WARNING"
+    try:
+        site.rollover(at(2027, 4, 3, 6, 0))
+    except fr.RolloverError:
+        pass
+    assert [a["guards"][0]["guard"] for a in site.db.open_approvals()] == ["G6_FY_ROLLOVER"]
+    assert site.switch_writes == []
+
+
+def test_P7_d7_zero_retries_asks_at_once(busy_site):
+    busy_site.cfg.rollover.final_backup_wait_retries = 0
+    _rollover_while_busy(busy_site)
+    assert len(busy_site.db.open_approvals()) == 1

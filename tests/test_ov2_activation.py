@@ -387,6 +387,26 @@ def test_nas_non_empty_without_marker_is_untouched(env):
     assert [p.name for p in _nas(env).iterdir()] == ["someone.txt"]
 
 
+def test_nas_established_year_missing_folder_is_not_created(env):
+    """opus-decision D5: a year with a LAN success must ask (G5), not be re-created."""
+    res = ov.ensure_overlap_nas_folder(env.cfg, NEXT, established=True)
+    assert res["state"] == "needs_confirmation"
+    assert not _nas(env).exists()
+
+
+def test_nas_established_year_empty_folder_gets_no_marker(env):
+    _nas(env).mkdir()
+    res = ov.ensure_overlap_nas_folder(env.cfg, NEXT, established=True)
+    assert res["state"] == "needs_confirmation"
+    assert list(_nas(env).iterdir()) == []
+
+
+def test_nas_established_year_with_marker_is_ok(env):
+    _nas(env).mkdir()
+    (_nas(env) / MOUNT_MARKER).touch()
+    assert ov.ensure_overlap_nas_folder(env.cfg, NEXT, established=True)["state"] == "ok"
+
+
 def test_nas_unreachable_share_does_nothing(env, tmp_path):
     cfg = _base_cfg(tmp_path, source=str(env.src / CFG_FY), nas=str(tmp_path / "nonas" / CFG_FY))
     res = ov.ensure_overlap_nas_folder(cfg, NEXT)
