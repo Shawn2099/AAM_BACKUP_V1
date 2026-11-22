@@ -29,9 +29,9 @@ release-candidate's versions on merge), plus whatever the overlap test agents wr
 ## 2. Test files added (all new, mostly green; suspected bugs kept as xfail(strict=False))
 `tests/test_break_{flow,notify,fy_overlap,ui,db_artefacts,restore_upload}.py`, `test_property_release_break.py` (hypothesis),
 `test_property_config_fuzz.py` (400 mutated configs), `test_break_release_{ops,secrets,cloudlog,reports,approvals,s1}.py`,
-`test_property_release_{alerts,paths}.py`. Combined run before fixes: 321 passed, 3 skipped, 15 xfailed. Design: `agent_runs/TEST_DESIGN_RELEASE.md` (Opus; 40 cards,
-live-stack runbook LS1-LS13, mutation/verification protocol, release gate). Overlap design: `agent_runs/OVERLAP_REVIEW.md` (Opus; D1-D13 + 37 cards).
-(`agent_runs/` is gitignored: copy those two files somewhere durable or re-derive; the key facts are in this file.)
+`test_property_release_{alerts,paths}.py`. Combined run before fixes: 321 passed, 3 skipped, 15 xfailed. Design: `docs/TEST_DESIGN_RELEASE_2026-11-22.md` (Opus; 40 cards,
+live-stack runbook LS1-LS13, mutation/verification protocol, release gate). Overlap design: `docs/OVERLAP_REVIEW_2026-11-22.md` (Opus; D1-D13 + 37 cards).
+(Copies of both are committed under docs/.)
 
 ## 3. Bugs found and FIXED (in `release-candidate`, each with a regression test)
 1 `suggested_name` zero-pad + `_FY_LOOKING` accepted 1-digit end year ('FY27-8' was never flagged misnamed) | 2 non-object JSON body -> 500 on settings/validate/password (now 400)
@@ -49,7 +49,7 @@ Skipped by design: #10 (restore engine default `forbidden_paths=()`; CLI passes 
 - Open design item for owner: alert-controls plan steps D-G (follow-up limits) are not in code (see docs/PLAN_ALERT_CONTROLS_2026-10-22.md).
 - Config-fuzz test failed once in a full run, not reproducible on 3 seeds: re-run it a few times (`--hypothesis-seed=N`).
 
-## 5. FY overlap deep review (Opus, `agent_runs/OVERLAP_REVIEW.md`) - verdict: nothing blocks a December deploy
+## 5. FY overlap deep review (Opus, `docs/OVERLAP_REVIEW_2026-11-22.md`) - verdict: nothing blocks a December deploy
 Fix before **1 Jan 2027**: **D3** deferred activation (junction / no create rights) = ONE mail only, no dashboard item/repeat/RESOLVED => possible silent 3-month miss (`fy_overlap.py:239-284`, `:450`);
 **D4** owner decision: big first upload of the early folder can use the whole shared budget and leave the current FY `CLOUD_MISSED` for nights (`flow.py:3285-3294`).
 Fix before **1 Apr 2027**: **D2** `_close_old_fy` never retried after journal complete (`flow.py:2331`, `:2665`); **D1** a flow that loaded config before the switch syncs the closed FY into the
