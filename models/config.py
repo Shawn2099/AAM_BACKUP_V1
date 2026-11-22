@@ -858,6 +858,14 @@ class RolloverConfig(StrictModel):
                     "(never backed up, never warned about). Plain folder names, one per entry.",
     )
 
+    final_backup_wait_retries: int = Field(
+        default=2, ge=0, le=7,
+        description="If the old year's final backup could only not get the backup slot (it was busy) or "
+                    "had no time left, the switch waits and tries again on the next mornings instead of "
+                    "asking you to approve 'roll over anyway'. You get a warning email. After this many "
+                    "mornings of waiting the approval request is opened as usual. 0 = ask at once.",
+    )
+
     archive_alert_after_days: int = Field(
         default=3, ge=1, le=365,
         description="The old FY's move to the cheaper ARCHIVE storage class is retried every "

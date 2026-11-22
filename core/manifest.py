@@ -782,6 +782,17 @@ class ManifestDB:
                 sql + " ORDER BY started_at DESC LIMIT 1", args).fetchone()
             return dict(row) if row else None
 
+    def final_backup_wait_runs(self, fy: str, statuses) -> list[str]:
+        """Distinct rollover run ids (the `<run>` of `<run>-final-<leg>`) that have a final-backup row of
+        `fy` in one of `statuses` (D7: how many mornings the final backup only waited)."""
+        statuses = sorted(statuses)
+        clause, fy_args = self._fy_filter(fy)
+        with self._lock:
+            rows = self._get_conn().execute(
+                "SELECT DISTINCT run_id FROM run_history WHERE run_id LIKE '%-final-%' AND status IN ("
+                + ",".join("?" for _ in statuses) + ")" + clause, (*statuses, *fy_args)).fetchall()
+        return sorted({r[0].rsplit("-final-", 1)[0] for r in rows})
+
     def last_successful_run(self, mode: str, *, fy: str) -> dict | None:
         """Return the last successful run for this mode.
 

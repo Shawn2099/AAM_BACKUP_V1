@@ -551,6 +551,10 @@ rollover:
   # Folder names next to the year folders that look like a year folder but are not one (never
   # backed up, never warned about). Plain names, no slashes.
   sibling_ignore: []
+  # If the old year's final backup only could not get the backup slot (busy) or had no time left,
+  # the switch waits and retries on the next mornings (warning email, no approval needed). After
+  # this many mornings the "roll over anyway" approval is asked as usual. 0 = ask at once. 0-7
+  final_backup_wait_retries: 2
   # The old year's online copy is moved to the cheaper ARCHIVE storage class after the
   # switch; if that fails it is retried every morning. After this many days of failing
   # the warning email becomes "action needed". 1–365

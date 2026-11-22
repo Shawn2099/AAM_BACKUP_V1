@@ -148,6 +148,7 @@ _UNITS = {
     "maintenance.sqlite_vacuum_freelist_threshold": "pages", "maintenance.config_backups_keep": "copies",
     "maintenance.config_replace_retries": "times", "maintenance.lock_release_retries": "times",
     "rollover.archive_alert_after_days": "days",
+    "rollover.final_backup_wait_retries": "mornings",
     "rollover.early_start_month": "month (1 = January)",
     "guards.max_delete_files": "files", "audit.detail_max_paths": "paths",
     "guards.small_folder_files": "files", "guards.small_folder_max_deletes": "files",

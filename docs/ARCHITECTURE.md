@@ -520,7 +520,7 @@ producer (flow, watchdog, rollover, reports, password change)
 | `notifications` | SMTP host/port/security/auth/timeout/retries, `recipients` (the ALERTS list) and `report_recipients` (the REPORTS list), enable flags | report, notify |
 | `alerts` | cooldown, body/attachment size | notify |
 | `dashboard` | the two password hashes, bind, port, `public_url` (empty = auto), session/rate-limit/refresh, "Apply changes" timings, history nights | ui, notify |
-| `rollover` | `archive_alert_after_days`, `overlap_enabled` (true), `early_start_month` (1, 1-3), `activation_alert_after_hours` (24), `sibling_ignore` | fy_rollover, fy_overlap |
+| `rollover` | `archive_alert_after_days`, `final_backup_wait_retries` (2, 0-7: mornings the final backup may only wait for the slot before G6 asks), `overlap_enabled` (true), `early_start_month` (1, 1-3), `activation_alert_after_hours` (24), `sibling_ignore` | fy_rollover, fy_overlap |
 | `maintenance` | DB retention, log retention, SQLite busy/vacuum/sync, slot wait | manifest, flow |
 | `health` | clock skew limit/timeout, `ntp_server`, `w32tm_timeout_seconds`, `clock_unverified_policy`, min free source GB, rollover gcloud timeouts | health, fy_rollover |
 | `run_logs` | full-log folder, retention 90 d, compression, min free GB, service-log retention | run_artefacts, flow |

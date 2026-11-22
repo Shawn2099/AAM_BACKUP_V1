@@ -107,6 +107,9 @@ FAILED_STATUSES: frozenset[str] = frozenset({
 })
 
 # A night that did not run (server off or busy): in the failed category, but only a warning (D2).
+# a final backup that only waited for the slot / had no time (D7): retried, not an approval request
+WAIT_STATUSES: frozenset[str] = frozenset({
+    RunStatus.CLOUD_SLOT_TIMEOUT, RunStatus.LAN_SLOT_TIMEOUT, RunStatus.CLOUD_MISSED, RunStatus.LAN_MISSED})
 MISSED_STATUSES: frozenset[str] = frozenset({RunStatus.CLOUD_MISSED, RunStatus.LAN_MISSED})
 
 CLOUD_SUCCESS_STATUSES = frozenset(s for s in SUCCESS_STATUSES if s.startswith("CLOUD_"))

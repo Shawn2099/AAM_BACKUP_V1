@@ -650,10 +650,35 @@ def test_P7_control_slot_timeout_stops_the_switch_and_the_next_morning_completes
     assert site.switch_writes == [(B, A)]
 
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D7: flow._run_final_backups turns a slot timeout into "
-                   "<LEG>_NOT_COMPLETE and G6 then opens an approval request ('approve to roll over anyway') "
-                   "for something a retry tomorrow fixes (flow.py:2960-2974, guards.py:290-300).")
 def test_P7_d7_final_backup_slot_timeout_is_a_retry_not_an_approval_request(busy_site):
     _rollover_while_busy(busy_site)
     # the proposal: a human is not asked to "approve anyway" a final backup that only waited for the slot
     assert busy_site.db.open_approvals() == [], [a["guards"] for a in busy_site.db.open_approvals()]
+
+
+def test_P7_d7_after_n_mornings_of_waiting_g6_asks_as_before(busy_site):
+    """opus-decision D7 (b), N=2 (default): mornings 1 and 2 only wait (WARNING, no approval); the 3rd
+    morning, still busy, opens the G6 'roll over anyway' request as it always did."""
+    site = busy_site
+    assert site.cfg.rollover.final_backup_wait_retries == 2
+    for day in (1, 2):
+        try:
+            site.rollover(at(2027, 4, day, 6, 0))
+        except fr.RolloverError:
+            pass
+        assert site.db.open_approvals() == [], f"morning {day}"
+        assert site.steps()[rj.CONFIG_SWITCH] == rj.PENDING and site.switch_writes == []
+    waits = site.db.last_notification(f"rollover:{A}:final_wait")
+    assert waits is not None and waits["kind"] == "WARNING"
+    try:
+        site.rollover(at(2027, 4, 3, 6, 0))
+    except fr.RolloverError:
+        pass
+    assert [a["guards"][0]["guard"] for a in site.db.open_approvals()] == ["G6_FY_ROLLOVER"]
+    assert site.switch_writes == []
+
+
+def test_P7_d7_zero_retries_asks_at_once(busy_site):
+    busy_site.cfg.rollover.final_backup_wait_retries = 0
+    _rollover_while_busy(busy_site)
+    assert len(busy_site.db.open_approvals()) == 1

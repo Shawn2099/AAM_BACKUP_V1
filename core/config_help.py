@@ -317,6 +317,10 @@ HELP: dict[str, tuple[str, str]] = {
         "Folders to ignore that look like a year folder",
         "Names of folders next to the year folders that are not a financial year (never backed up, "
         "never warned about)."),
+    "rollover.final_backup_wait_retries": (
+        "Mornings to wait when the last backup of the old year could not start",
+        "If the final backup of the old year only waited for the busy backup slot, the switch tries "
+        "again on the next mornings before asking you to approve 'roll over anyway'. 0 = ask at once."),
     "rollover.archive_alert_after_days": (
         "Escalate a stuck archive move after",
         "Moving last year's online copy to cheaper storage is retried every morning."),
