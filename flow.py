@@ -3151,7 +3151,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
                 # overlap review D1: the active set was worked out before the slot wait; a year closed
                 # meanwhile is skipped (info log, no row, no alert)
                 try:
-                    now_active = _active_fys(load_config(config_path))
+                    now_active = _active_fys(load_config(config_path), strict=True)
                 except Exception as e:  # noqa: BLE001 - keep the earlier plan
                     logger.warning(f"Could not re-check the active years after the slot wait ({e})")
                     now_active = list(folders)
@@ -3215,9 +3215,10 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
 # Main backup flow — entry point for all modes
 # ═══════════════════════════════════════════════════════════════
 
-def _active_fys(config) -> list[str]:
+def _active_fys(config, *, strict: bool = False) -> list[str]:
     """The FY folders to back up in this flow run, new FY first (plan 5.3). Any trouble working it out
-    falls back to the configured FY alone - the safe, always-correct answer."""
+    falls back to the configured FY alone - the safe, always-correct answer. `strict` (the re-check after the
+    slot wait): trouble is raised to the caller, no fallback and no warning mail."""
     configured = _effective_fy_prefix(config)
     if getattr(config.rollover, "overlap_enabled", True) is False:
         return [configured]          # overlap switched off: the configured FY alone, no DB needed
@@ -3226,6 +3227,8 @@ def _active_fys(config) -> list[str]:
         db = ManifestDB.from_config(config)
         return fy_overlap.active_folders(config, db, fy_overlap.run_date(_scheduled_time()))
     except Exception as e:  # noqa: BLE001 - never stops the configured folder's backup
+        if strict:
+            raise
         logger.error(f"Active FY folders could not be worked out ({e}); backing up {configured} only")
         try:
             notify(config, AlertEvent(
@@ -3298,7 +3301,7 @@ def _rederive_after_slot(config, config_path: str | None, leg: str, runs: list):
         return config, runs
     try:
         fresh = load_config(config_path)
-        active = _active_fys(fresh)
+        active = _active_fys(fresh, strict=True)
     except Exception as e:  # noqa: BLE001 - keep the plan made before the wait
         logger.warning(f"Could not re-check the active years after the slot wait ({e}); using the earlier plan")
         return config, runs
