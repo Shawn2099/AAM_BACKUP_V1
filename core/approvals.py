@@ -96,6 +96,8 @@ def evaluate_request(request: dict | None, *, leg: str, blocked: list, fy: str, 
 
 
 def phrase_matches(expected: str, typed: str) -> bool:
+    if not isinstance(typed, str):
+        return False
     return " ".join((typed or "").split()).upper() == expected.upper()
 
 
