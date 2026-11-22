@@ -1232,6 +1232,29 @@ class ManifestDB:
                 (mode, after_id, *fy_args, *key_args)).fetchone()
         return row is not None
 
+    def lost_problem(self, mode: str, *, fy: str, keys: tuple[str, ...] | None = None) -> dict | None:
+        """Newest problem mail of this mode (and FY) that could NOT be delivered (FAILED) after the last
+        RECOVERED mail, while no problem mail of the incident was SENT: the person was never told about
+        it (opus-decision L1). None when there is none."""
+        clause, fy_args = self._fy_filter(fy)
+        kclause, key_args = self._key_filter(keys)
+        with self._lock:
+            conn = self._get_conn()
+            boundary = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM notifications WHERE mode = ? AND kind = 'RECOVERED' "
+                f"AND status IN ('SENT', 'CLOSED'){clause}{kclause}", (mode, *fy_args, *key_args)).fetchone()[0]
+            delivered = conn.execute(
+                "SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
+                f"AND kind != 'RECOVERED'{clause}{kclause} LIMIT 1",
+                (mode, boundary, *fy_args, *key_args)).fetchone()
+            if delivered:
+                return None
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE mode = ? AND id > ? AND status = 'FAILED' "
+                f"AND kind != 'RECOVERED'{clause}{kclause} ORDER BY id DESC LIMIT 1",
+                (mode, boundary, *fy_args, *key_args)).fetchone()
+        return dict(row) if row else None
+
     def last_open_incident(self, mode: str, *, fy: str,
                            keys: tuple[str, ...] | None = None) -> dict | None:
         """Newest SENT problem email of this mode (and FY) with no RECOVERED after it. A

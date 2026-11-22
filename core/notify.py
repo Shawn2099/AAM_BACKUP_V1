@@ -143,6 +143,7 @@ class AlertEvent:
     audience: str = AUDIENCE_ALERTS    # which recipient list(s): alerts | reports | both
     cooldown_hours: float | None = None   # repeat window of THIS alert; None = alerts.repeat_cooldown_hours
     fy: str | None = None              # the FY folder it is about (v6); None = global / not per-FY
+    lost_alert: str | None = None      # RECOVERED: "<time> (<subject>)" of a failure mail that never arrived (L1)
 
 
 @dataclass
@@ -665,6 +666,8 @@ def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | No
     if event.kind == "RECOVERED":
         same = prior if prior and not db.sent_in_mode_after(
             event.mode, prior["id"], recovered=False, fy=fy, keys=keys) else None
+        if same and db.lost_problem(event.mode, fy=fy, keys=keys):
+            same = None       # L1: the failure mail between never arrived; this RECOVERED is not a repeat
         open_problem = db.last_open_incident(event.mode, fy=fy, keys=keys) or {}
         root = open_problem.get("thread_id") or open_problem.get("message_id")
         return same, root
@@ -681,6 +684,10 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
         from core.email_compose import effective_code
         event = replace(event, fault_code=effective_code(event))
     same, root = _incident(event, db, config)
+    if event.kind == "RECOVERED" and event.lost_alert is None:
+        lost = db.lost_problem(event.mode, fy=event.fy or ALL_FYS, keys=_incident_keys(event))
+        if lost:
+            event = replace(event, lost_alert=f"{lost['created_at']} ({lost.get('subject') or lost['event_key']})")
     if same and event.kind != "RECOVERED":
         first = (db.notification_by_message_id(root) if root else None) or same
         event = replace(event, first_reported_at=first["created_at"])
