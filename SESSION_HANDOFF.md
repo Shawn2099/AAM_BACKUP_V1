@@ -10,7 +10,7 @@ on deploy day (see §4f).
 
 ---
 
-## >>> 2026-11-22 RELEASE BREAK-IT SESSION - progress + state in `docs/RELEASE_BREAK_SESSION_2026-11-22.md` and `..._PART2.md`, `..._PART3.md` and `..._PART4.md` (READ ALL FOUR FIRST; Part 4 is newest) <<<
+## >>> 2026-11-22 RELEASE BREAK-IT SESSION - progress + state in `docs/RELEASE_BREAK_SESSION_2026-11-22.md` and `..._PART2.md`, `..._PART3.md` and `..._PART4.md` and `..._PART5.md` (READ ALL FIVE FIRST; Part 5 is newest) <<<
 Fixes live on branch `release-candidate` (worktree C:\AAMTest\code), not yet merged into fy-overlap; AAMMerger services are stopped/disabled on this PC and must be restored; test stack under C:\AAMTest.
 
 ---
