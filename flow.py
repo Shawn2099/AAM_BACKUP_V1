@@ -3120,7 +3120,7 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
             # ONE shutdown per flow run (plan 5.8): after the LAST LAN folder, and only when every
             # LAN folder was woken and audited (a skipped / not-woken folder leaves the NAS on).
             # Only after a successful wake; a failed shutdown never replaces the verdict.
-            if (last_lan_folder and len(nas_votes) == len(folders) and all(nas_votes)
+            if (last_lan_folder and len(nas_votes) == len(run_folders) and all(nas_votes)
                     and config.lan.shutdown_after_backup and config.wol.enabled):
                 try:
                     lan_shutdown_task(config, str(audit_artefacts.dir)
@@ -3132,17 +3132,27 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
     try:
         try:
             with _backup_slot(config):
+                # overlap review D1: the active set was worked out before the slot wait; a year closed
+                # meanwhile is skipped (info log, no row, no alert)
+                try:
+                    now_active = _active_fys(load_config(config_path))
+                except Exception as e:  # noqa: BLE001 - keep the earlier plan
+                    logger.warning(f"Could not re-check the active years after the slot wait ({e})")
+                    now_active = list(folders)
+                for gone in (f for f in folders if f not in now_active):
+                    logger.info(f"Integrity audit of {gone} skipped: it is no longer active")
+                run_folders = [f for f in folders if f in now_active]
                 for leg in ("cloud", "lan"):
                     if leg not in legs:
                         continue
-                    for i, folder in enumerate(folders):
+                    for i, folder in enumerate(run_folders):
                         view = views[folder]
                         audit_id, started_at = new_audit_id(leg, "full", folder), now_iso()
                         try:
                             if leg == "cloud":
                                 result = _audit_cloud_leg(audit_id, view)
                             else:
-                                result = _audit_lan_leg(audit_id, view, i == len(folders) - 1)
+                                result = _audit_lan_leg(audit_id, view, i == len(run_folders) - 1)
                         except Exception as e:  # noqa: BLE001 - recorded + alerted, never silent
                             logger.error(f"Integrity audit ({leg}, {folder}) could not run: {e}")
                             result = {"status": "AUDIT_INCOMPLETE", "scope": "full",
@@ -3251,9 +3261,46 @@ def _lan_shutdown_decision(config, votes: list, folders: int) -> dict | None:
     return lan_shutdown_task(config, votes[-1][1])
 
 
+def _drop_unrun_row(config, run_id: str) -> None:
+    """Remove the *_RUNNING row written before the slot wait for a year that was not run after all."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            db.delete_running_row(run_id)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping only; the abandoned sweep covers a leftover row
+        logger.error(f"Could not remove the unused RUNNING row {run_id}: {e}")
+
+
+def _rederive_after_slot(config, config_path: str | None, leg: str, runs: list):
+    """Overlap review D1: the active FY set was worked out BEFORE the slot wait. The rollover may have
+    switched the config and closed the old FY meanwhile: re-read the config and re-derive the set now that
+    we hold the slot. A year that is no longer active is skipped (info log, no row, no alert).
+    Returns (config, runs) to use."""
+    if config_path is None or not runs:
+        return config, runs
+    try:
+        fresh = load_config(config_path)
+        active = _active_fys(fresh)
+    except Exception as e:  # noqa: BLE001 - keep the plan made before the wait
+        logger.warning(f"Could not re-check the active years after the slot wait ({e}); using the earlier plan")
+        return config, runs
+    kept_fys = [fy for fy, _v, _r in runs if fy in active]
+    for fy, _view, _run_id in runs:
+        if fy not in active:
+            logger.info(f"{leg} backup of {fy} skipped: it is no longer active (active now: "
+                        f"{', '.join(active)}); the year was closed while this run waited for the slot")
+    if len(kept_fys) == len(runs) and _effective_fy_prefix(fresh) == _effective_fy_prefix(config):
+        return config, runs
+    if runs[0][0] not in kept_fys:
+        _drop_unrun_row(config, runs[0][2])
+    return fresh, [(fy, fy_overlap.folder_view(fresh, fy), _stable_run_id(leg, fy)) for fy in kept_fys]
+
+
 def _run_leg_folders(config, leg: str, folders: list[str], *,
                      approval_id: str | None, budget_hours: float | None,
-                     late_seconds: float) -> list[BaseException]:
+                     late_seconds: float, config_path: str | None = None) -> list[BaseException]:
     """One leg of a flow run for every FY folder in `folders` (new FY first, plan 5.3).
 
     * The backup slot and the watchdog backup.lock are taken ONCE around the whole loop: nothing can
@@ -3292,6 +3339,7 @@ def _run_leg_folders(config, leg: str, folders: list[str], *,
                 except Exception as rec_err:  # noqa: BLE001
                     logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
             raise
+        config, runs = _rederive_after_slot(config, config_path, leg, runs)
         try:
             for i, (fy, view, run_id) in enumerate(runs):
                 logger.info(f"Starting {leg} backup pipeline for {fy}")
@@ -3413,7 +3461,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             logger.info(f"Starting cloud backup for {', '.join(folders)}")
             excs.extend(_run_leg_folders(config, "cloud", folders,
                                          approval_id=approval_id, budget_hours=budget_hours,
-                                         late_seconds=late_s))
+                                         late_seconds=late_s, config_path=config_path))
             late_s = 0.0
 
         # ── LAN ──
@@ -3421,7 +3469,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             logger.info(f"Starting LAN backup for {', '.join(folders)}")
             excs.extend(_run_leg_folders(config, "lan", folders,
                                          approval_id=approval_id, budget_hours=budget_hours,
-                                         late_seconds=late_s))
+                                         late_seconds=late_s, config_path=config_path))
 
         # ── Summary ──
         if excs:
