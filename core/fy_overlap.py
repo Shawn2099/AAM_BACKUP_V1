@@ -156,10 +156,15 @@ def active_folders(config: AppConfig, db, run_date: _date) -> list[str]:
     configured = _configured(config)
     if configured is None:
         return [effective_fy_prefix(config.paths.source_drive)]
-    if config.rollover.overlap_enabled and (in_window(config, run_date) or switch_pending(config, db, run_date)):
+    if config.rollover.overlap_enabled:
         nxt = next_fy(configured)
-        if db.get_activation(nxt) is not None:
-            return [nxt, configured]
+        # an activated early year stays active until the switch, even if early_start_month is raised later
+        # (owner decision D12 a); in_window itself still honours the month for activation timing
+        kept = (calendar_fy(run_date) == configured
+                and run_date.month <= _LAST_MONTH_OF_FY and db.get_activation(nxt) is not None)
+        if in_window(config, run_date) or switch_pending(config, db, run_date) or kept:
+            if db.get_activation(nxt) is not None:
+                return [nxt, configured]
     return [configured]
 
 

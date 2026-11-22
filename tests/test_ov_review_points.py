@@ -270,15 +270,25 @@ def test_p10_control_with_the_start_month_unchanged_the_activated_fy_stays_activ
     assert ov.active_folders(env.cfg, env.db, pendulum.date(2027, 2, 6)) == [NEXT, CFG_FY]
 
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D12: fy_overlap.in_window reads early_start_month on every run "
-                   "(fy_overlap.py:134), so raising it to 3 on 5 Feb drops the activated FY27-28 until 1 March; "
-                   "the activation row is still there")
 def test_p10_raising_early_start_month_in_february_keeps_the_activated_fy_active(env):
     _activated_early_fy(env)
     changed = env.cfg.model_copy(deep=True)
     changed.rollover.early_start_month = 3                                 # Settings change on 5 Feb
     assert env.db.get_activation(NEXT) is not None
     assert ov.active_folders(changed, env.db, pendulum.date(2027, 2, 6)) == [NEXT, CFG_FY]
+
+
+def test_p10_start_month_raised_before_activation_no_activation_and_no_deferred_alarm_in_february(env):
+    """opus-decision D12 (a): the rule only keeps an ALREADY activated year; before activation the month
+    is still honoured (no activation, no deferral alarm, only the configured FY is active)."""
+    changed = env.cfg.model_copy(deep=True)
+    changed.rollover.early_start_month = 3
+    feb = pendulum.date(2027, 2, 6)
+    res = ov.ensure_overlap_activated(changed, feb, env.db, clock_check=Clock(), notify_fn=Mail())
+    assert res["state"] == "not_needed"
+    assert env.db.get_activation(NEXT) is None
+    assert ov.deferred_state(changed, env.db, feb) is None
+    assert ov.active_folders(changed, env.db, feb) == [CFG_FY]
 
 
 # ── P-11 (new: not in D1-D13) ─────────────────────────────────────────────────
