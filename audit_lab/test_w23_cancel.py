@@ -90,7 +90,7 @@ def test_w23_cancel_mid_sync_stops_the_tool_records_failed_and_frees_everything(
     cfg = load_config(str(rig["cfg_path"]))
     db = ManifestDB(cfg.paths.database_path)
     try:
-        rows = [r for r in db.get_recent_runs(20, fy="FY26-26") if r["mode"] == leg]
+        rows = [r for r in db.get_recent_runs(20, fy="FY26-27") if r["mode"] == leg]
     finally:
         db.close()
     metrics = json.loads(rows[0]["extended_metrics"] or "{}") if rows else {}

@@ -41,7 +41,7 @@ def test_w6b_nas_off_during_rollover_then_next_lan_night_completes(rig, monkeypa
 
     db = ManifestDB(after.paths.database_path)
     try:
-        journal = db.rollover_get("FY26-26", "FY27-28")
+        journal = db.rollover_get("FY26-27", "FY27-28")
         states = {k: v["state"] for k, v in journal["steps"].items()}
     finally:
         db.close()
@@ -66,7 +66,7 @@ def test_w6b_nas_off_during_rollover_then_next_lan_night_completes(rig, monkeypa
     lan_statuses = [r["status"] for r in rows if r["mode"] == "lan"]
     db = ManifestDB(after.paths.database_path)
     try:
-        final = db.rollover_get("FY26-26", "FY27-28")["steps"]
+        final = db.rollover_get("FY26-27", "FY27-28")["steps"]
         approvals = db.open_approvals()
     finally:
         db.close()

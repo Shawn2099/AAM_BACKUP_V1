@@ -12,6 +12,9 @@ on deploy day (see §4f).
 
 ## >>> 2026-11-21 - FY OVERLAP: BUILT, BOX DEPLOY AND OWNER ITEMS OPEN (newest, overrides below) <<<
 
+### UPDATE 2026-11-22: lab triage DONE; box deploy and owner decisions remain
+- The 5 lab reds of 2026-11-21 were lab fixtures / floors, not product bugs (commit b914d63). A new full lab run then showed 5 other reds caused by that fixture change (w22 x2, w23 x2, w6b share the `test_w6_flow` rig, still queried `FY26-26`); fixed, those 3 files pass (7 passed). Unit suite 3478 passed. Local OV-11.3 probe and a local rehearsal (cloud leg real GCS test prefixes, both folders) done; the LAN leg of the rehearsal needs an elevated shell (SeBackupPrivilege). Opus review of the last WPs done and fixed (41c5a3e). OV-12.1 lifecycle drafted, NOT applied. Remaining: OV-10.1 (owner OK), OV-11.4 box deploy (corrected runbook below), OV-12.1 owner review, rotate the old password in the public history.
+
 ### PAUSED 2026-11-21 (owner paused the work) - exactly where we stopped
 - Branch `fy-overlap`, all pushed to origin; last commit = see `git log -1`. Unit suite green at the last full run (3465 passed, 18 skipped; later commits only added the lab scenario, the rehearsal tool + its tests, docs).
 - **FIRST THING NEXT SESSION: triage the full audit-lab run of 2026-11-21 (62 min): 244 passed, 5 FAILED** (log `agent_runs/lab_wp11.txt`, gitignored; rerun the failing tests alone with a clean PREFECT_HOME to see detail):
