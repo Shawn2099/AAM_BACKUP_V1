@@ -1242,7 +1242,7 @@ class ManifestDB:
                     "UPDATE approvals SET status = ?, dismissed_at = ?, dismissed_by = ? "
                     "WHERE fy = ? AND status IN (?, ?)",
                     (ap.CLOSED, now, "FY closed", fy, ap.PENDING, ap.APPROVED)).rowcount
-                for mode in ("cloud", "lan"):
+                for mode in ("cloud", "lan", "audit"):
                     open_incident = conn.execute(
                         "SELECT 1 FROM notifications WHERE mode = ? AND fy = ? AND status = 'SENT' "
                         "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "

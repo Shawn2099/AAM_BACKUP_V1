@@ -222,10 +222,9 @@ def test_p6_a_skipped_config_switch_counts_as_finished_for_the_overlap(env):
 
 # ── P-8 (D8) ──────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(strict=False, reason="DEFECT D8: manifest.close_fy closes only the cloud and lan incidents "
-                   "(manifest.py:1238); FY26-27's open audit incident stays open after the 1 April switch")
 def test_p8_the_switch_closes_the_open_audit_incident_of_the_old_fy(env):
-    for mode, key in (("cloud", f"cloud:{CFG_FY}:upload"), ("audit", f"audit:{CFG_FY}:all:cloud=VERIFICATION_FAILED")):
+    for mode, key in (("cloud", f"cloud:{CFG_FY}:upload"), ("audit", f"audit:{CFG_FY}:all:cloud=VERIFICATION_FAILED"),
+                      ("rollover", f"rollover:{CFG_FY}:archive_retry")):
         env.db.record_notification({
             "event_key": key, "kind": "ACTION_REQUIRED", "mode": mode, "subject": f"{mode} problem",
             "status": "SENT", "created_at": "2027-03-28T10:00:00+05:30", "fy": CFG_FY})
@@ -234,7 +233,8 @@ def test_p8_the_switch_closes_the_open_audit_incident_of_the_old_fy(env):
     closed = _rows(env.db_path,
                    "SELECT mode FROM notifications WHERE fy = ? AND kind = 'RECOVERED' AND status = 'CLOSED' "
                    "ORDER BY mode", (CFG_FY,))
-    assert [m for (m,) in closed] == ["audit", "cloud"]                    # both incidents end silently
+    # cloud and audit end silently; a rollover-mode incident (archive retries, D3 resolved mail) is NOT closed
+    assert [m for (m,) in closed] == ["audit", "cloud"]
 
 
 # ── P-9 (D11) ─────────────────────────────────────────────────────────────────
