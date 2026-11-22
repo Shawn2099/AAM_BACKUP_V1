@@ -10,6 +10,11 @@ on deploy day (see §4f).
 
 ---
 
+## >>> 2026-11-22 RELEASE BREAK-IT SESSION - progress + state in `docs/RELEASE_BREAK_SESSION_2026-11-22.md` (READ IT FIRST; newest) <<<
+Fixes live on branch `release-candidate` (worktree C:\AAMTest\code), not yet merged into fy-overlap; AAMMerger services are stopped/disabled on this PC and must be restored; test stack under C:\AAMTest.
+
+---
+
 ## >>> 2026-11-21 - FY OVERLAP: BUILT, BOX DEPLOY AND OWNER ITEMS OPEN (newest, overrides below) <<<
 
 ### UPDATE 2026-11-22: lab triage DONE; box deploy and owner decisions remain
