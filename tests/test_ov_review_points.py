@@ -319,10 +319,6 @@ def lan_night(env, monkeypatch):
     return SimpleNamespace(env=env, seen=seen, clock=clock)
 
 
-@pytest.mark.xfail(strict=False, reason="NEW (not D1-D13): _run_leg_folders passes now_iso() per folder "
-                   "(flow.py:3290, pipeline(view, run_id, now_iso(), ...)), so the second folder's row is dated "
-                   "when its pipeline starts (here 1 April 03:10), not the scheduled 31 March night. Confirmed "
-                   "on the row assertion; the March-report consequence is expected but not yet observed")
 def test_p11_both_folders_of_a_night_started_at_the_scheduled_time_and_the_march_report_counts_both(lan_night):
     """Setup: LAN scheduled 2027-03-31 21:01; the first folder (FY27-28) runs to 04-01 03:10. Action: the
     LAN leg (both folders). Expected: both rows are dated 31 March (scheduled start, as a late run keeps

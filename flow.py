@@ -3370,7 +3370,7 @@ def _run_leg_folders(config, leg: str, folders: list[str], *,
                     kwargs.update(allow_shutdown=False, shutdown_votes=votes,
                                   early_nas_folder=(fy != configured))
                 try:
-                    pipeline(view, run_id, now_iso(), time.monotonic(), **kwargs)
+                    pipeline(view, run_id, started_at, time.monotonic(), **kwargs)
                 except Exception as e:  # noqa: BLE001 - the next folder still runs
                     excs.append(e)
         except BaseException:        # a cancel / service stop: no NAS decision while terminating
