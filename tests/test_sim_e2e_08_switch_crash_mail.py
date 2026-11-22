@@ -101,6 +101,10 @@ def test_s8_config_switch_crash_while_the_mail_server_is_down(sim):
     codes = [item.get("code") for item in data.get("attention", [])]  # product-view
     assert "alerts_undelivered" in codes, codes
 
+    # hand: the INFO "new year started" alert of the 2 Apr 06:00 check was attempted while the server was
+    # down and is RECORDED as undelivered (notify() recorded the outcome; a swallow without a record fails)
+    assert sim.sql("SELECT status FROM notifications WHERE event_key = 'rollover:done:FY27-28'")         == [("FAILED",)]
+
     # no mail reached the server while it was down
     sim.go(_t(2027, 4, 2, 12))
     assert len(sim.srv.messages) == msgs_before_outage, sim.subjects()[msgs_before_outage:]
@@ -116,6 +120,49 @@ def test_s8_config_switch_crash_while_the_mail_server_is_down(sim):
     assert all(status in OK for _, status in late), late
     assert [c["old_fy"] for c in sim.archive_calls] == [A]
     assert sim.switch_writes == [(B, A)], sim.switch_writes
+
+    # hand: no status differs from the quiet office (S2 hand table) after the 2 Apr 06:00 check
+    from tests.test_sim_e2e_02_best_apr import NIGHTS
+    expected_after = [(m, p, fys) for m, p, fys in NIGHTS if p > "2027-04-02T06"]
+    assert len(expected_after) == 6, expected_after
+    for mode, prefix, fys in expected_after:
+        rows = [r for r in sim.runs() if r["mode"] == mode and r["started_at"].startswith(prefix)]
+        assert sorted(r["fy"] for r in rows) == sorted(fys), (mode, prefix, rows)
+        assert all(r["status"] in OK for r in rows), (mode, prefix, [(r["fy"], r["status"]) for r in rows])
+    rows_after = [r for r in sim.runs() if r["mode"] in ("lan", "cloud") and r["started_at"] > "2027-04-02T06:30"]
+    assert len(rows_after) == len(expected_after), [(r["mode"], r["started_at"]) for r in rows_after]
+
+
+def test_s8_a_failed_close_is_retried_by_the_next_daily_check(sim):
+    """Non-vacuity M6: db.close_fy fails once after the 1 Apr 06:00 switch (it must not stop the switch); the
+    approval of the closed year stays PENDING until the 2 Apr 06:00 check retries the close, at the start of the
+    check (flow._close_finished_old_fys)."""
+    sim.seed_to_mar28()
+    db = ManifestDB.from_config(sim.cfg)
+    try:
+        db.open_approval_request(leg="lan", blocked_run_id=f"blocked-{A}-lan", fy=A, guards=GUARD,
+                                 phrase="APPROVE", created_at=_t(2027, 3, 30, 3).isoformat())
+    finally:
+        db.close()
+    real_close = ManifestDB.close_fy
+    calls = []
+
+    def flaky(self_, fy, now=None):
+        calls.append(fy)
+        if len(calls) == 1:
+            raise RuntimeError("disk busy")
+        return real_close(self_, fy, now=now)
+
+    sim.mp.setattr(ManifestDB, "close_fy", flaky)
+    k_1apr = _index("rollover", _t(2027, 4, 1, 6))
+    k_2apr = _index("rollover", _t(2027, 4, 2, 6))
+    sim.play(CAL_A[:k_1apr + 1])                          # through the 1 Apr 06:00 switch (the first close fails)
+    assert sim.switch_writes == [(B, A)], sim.switch_writes
+    assert calls == [A]
+    assert sim.approvals() == [("lan", A, "PENDING")], sim.approvals()
+    sim.play(CAL_A[k_1apr + 1:k_2apr + 1])                # the 2 Apr 06:00 check retries the close
+    assert sim.approvals() == [("lan", A, "CLOSED")], sim.approvals()
+    assert len(calls) == 2
 
 
 def _journal_steps(sim) -> dict:
