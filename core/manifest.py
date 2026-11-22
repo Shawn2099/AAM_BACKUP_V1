@@ -1326,6 +1326,20 @@ class ManifestDB:
                 "ORDER BY n.id DESC", (cutoff,)).fetchall()
             return [dict(r) for r in rows]
 
+    def undelivered_alerts(self, after_id: int, kinds: tuple[str, ...]) -> list[dict]:
+        """FAILED mails of the alerts list (kinds `kinds`, not the digest itself) newer than notification
+        `after_id` with no later SENT row of the same key, oldest first (opus-decision L1 digest)."""
+        marks = ", ".join("?" for _ in kinds)
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                f"SELECT n.* FROM notifications n WHERE n.status = 'FAILED' AND n.id > ? AND n.kind IN ({marks}) "
+                "AND n.event_key != ? AND COALESCE(n.audience, 'alerts') IN ('alerts', 'both') "
+                "AND NOT EXISTS (SELECT 1 FROM notifications s WHERE s.event_key = n.event_key "
+                "AND s.status = 'SENT' AND s.id > n.id) ORDER BY n.id",
+                (after_id, *kinds, "undelivered:digest")).fetchall()
+        return [dict(r) for r in rows]
+
     def record_config_change(self, data: dict) -> None:
         with self._lock:
             conn = self._get_conn()

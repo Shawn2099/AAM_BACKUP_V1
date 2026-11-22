@@ -490,6 +490,23 @@ def _check_stale_legs(cfg=None) -> list[str]:
         return []
 
 
+def _send_undelivered_digest() -> None:
+    """L1(b): after a mail outage, one digest of the alerts that never arrived. Never raises."""
+    try:
+        from core import notify as nt
+        from core.manifest import ManifestDB
+        from models.config import CONFIG_PATH, load_config
+
+        cfg = load_config(CONFIG_PATH)
+        db = ManifestDB.from_config(cfg)
+        try:
+            nt.send_undelivered_digest(cfg, db)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Undelivered-alerts digest check skipped: {e}")
+
+
 def _alert_wedged_lock(reason: str, pid: int | None = None) -> None:
     """Alert when watchdog deferrals hit their cap on a live lock owner."""
     _critical("live_lock_cap", "Backup lock held while the scheduler is unhealthy",
@@ -660,6 +677,7 @@ def main() -> None:
             if time.monotonic() >= next_stale_check:
                 _check_stale_legs()
                 next_stale_check = time.monotonic() + STALE_CHECK_INTERVAL
+            _send_undelivered_digest()
 
             healthy = _check_health()
 

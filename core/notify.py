@@ -733,6 +733,63 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     return result
 
 
+DIGEST_KEY = "undelivered:digest"
+_DIGEST_KINDS = ("ACTION_REQUIRED", "FAILURE", "WARNING", "INFO")
+
+
+def send_undelivered_digest(config, db) -> DeliveryResult | None:
+    """opus-decision L1(b): ONE mail listing the alert mails that could not be delivered, sent once mail
+    works again (called from the watchdog loop). Never a per-alert resend and never raises.
+
+    Lists FAILED alerts-list rows (ACTION_REQUIRED / FAILURE / WARNING / INFO) that are newer than the last
+    SENT digest (the watermark), newer than `alerts.undelivered_digest_max_age_hours` and have no later SENT
+    row of the same key. Attempts are `alerts.undelivered_digest_retry_minutes` apart, counted from the last
+    digest row of any status. Returns None when nothing was attempted."""
+    import html
+
+    try:
+        max_age = config.alerts.undelivered_digest_max_age_hours
+        if max_age <= 0:
+            return None
+        now = pendulum.now("UTC")
+        last_try = db.last_notification(DIGEST_KEY)
+        if last_try and (now - pendulum.parse(last_try["created_at"])).total_seconds() \
+                < config.alerts.undelivered_digest_retry_minutes * 60:
+            return None
+        watermark = (db.last_notification(DIGEST_KEY, status=SENT) or {}).get("id", 0)
+        cutoff = now.subtract(hours=max_age)
+        lost = [r for r in db.undelivered_alerts(watermark, _DIGEST_KINDS)
+                if pendulum.parse(r["created_at"]) >= cutoff]
+        if not lost:
+            return None
+        n = len(lost)
+        first, last = lost[0]["created_at"], lost[-1]["created_at"]
+        count = f"{n} alert{'s' if n != 1 else ''} could not be delivered"
+        subject = f"[{config.firm_name} Backup] WARNING: {count} (between {first[:16]} and {last[:16]})"
+        e = html.escape
+        url, alt_url = dashboard_urls(config)
+        items = "".join(f"<li>{e(r['created_at'][:16].replace('T', ' '))} - "
+                        f"{e(r.get('subject') or r['event_key'])}</li>" for r in lost)
+        body = (f"<p>{e(count)} between {e(first[:16])} and {e(last[:16])}, because the mail server did not "
+                "accept them. Mail works again. Check whether each problem is still open on the dashboard.</p>"
+                f"<ul>{items}</ul>"
+                f"<p><a href='{e(url)}'>Open the backup dashboard</a> ({e(url)}"
+                + (f" or {e(alt_url)}" if alt_url else "") + ")</p>")
+        result = send_email(config.notifications, subject, body, audience=AUDIENCE_ALERTS,
+                            headers={"X-AAM-Reference": DIGEST_KEY})
+        db.record_notification({
+            "event_key": DIGEST_KEY, "kind": "WARNING", "mode": "digest", "subject": subject,
+            "status": result.status, "error": result.error, "attempts": result.attempts,
+            "created_at": now_iso(), "message_id": result.message_id, "audience": AUDIENCE_ALERTS,
+            "recipients": result.recipients})
+        log = logger.info if result.status == SENT else logger.warning
+        log(f"Undelivered-alerts digest ({n}): {result.status}" + (f" ({result.error})" if result.error else ""))
+        return result
+    except Exception as exc:  # noqa: BLE001 - the watchdog loop must keep running
+        logger.warning(f"Undelivered-alerts digest skipped: {exc}")
+        return None
+
+
 def _within_hours(iso_ts: str, hours: float) -> bool:
     import pendulum
 

@@ -210,6 +210,12 @@ HELP: dict[str, tuple[str, str]] = {
     # ── alerts / housekeeping / health ──
     "alerts.repeat_cooldown_hours": ("Repeat the same alert at most every",
                                      "Stops your inbox filling with the same alert."),
+    "alerts.undelivered_digest_max_age_hours": (
+        "Mail the alerts that could not be delivered, if newer than (hours)",
+        "After a mail outage ONE email lists the alerts that never arrived. Older ones are left out. "
+        "0 = no such email."),
+    "alerts.undelivered_digest_retry_minutes": (
+        "Retry that email at most every", "While it cannot be delivered either (minutes)."),
     "alerts.stale_repeat_hours": ("Repeat the 'backup overdue' email at most every",
                                   "While a backup stays overdue the reminder is sent this often (hours)."),
     "watchdog.healthy_mark_seconds": ("How often the watchdog records that all is well", ""),
