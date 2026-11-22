@@ -209,6 +209,7 @@ def test_s9_fy26_27_rows_are_frozen_after_the_switch(s9):
     # runs inside backup()) may remove old rows; that is not a write and is not asserted here (see the report).
     after = {row[0]: row for row in s9["fy_a_rows_after_switch"]}
     end = {row[0]: row for row in s9["fy_a_rows_end"]}
+    assert after and end, "no FY26-27 rows were captured: the freeze check below would be vacuous"
     added = sorted(set(end) - set(after))
     changed = sorted(i for i in end if i in after and end[i] != after[i])
     assert added == [], f"FY26-27 rows added after the switch: {added}"
