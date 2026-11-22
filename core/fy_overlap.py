@@ -147,7 +147,7 @@ def switch_pending(config: AppConfig, db, run_date: _date) -> bool:
     if calendar_fy(run_date) != nxt:
         return False
     journal = db.rollover_get(configured, nxt)
-    switched = journal is not None and journal["steps"][rj.CONFIG_SWITCH]["state"] == rj.DONE
+    switched = journal is not None and rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
     return not switched
 
 
