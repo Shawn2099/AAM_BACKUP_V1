@@ -954,6 +954,10 @@ async def approve_blocked_run(approval_id: str, request: Request):
     if not approvals.phrase_matches(approvals.APPROVE_PHRASE, typed):
         raise HTTPException(status_code=400,
                             detail=messages.act(f"Type {approvals.APPROVE_PHRASE} exactly, then press Approve", "The word typed did not match"))
+    if req.get("fy") and req["fy"] not in _active_fy_list():
+        raise HTTPException(status_code=409, detail=messages.act(
+            "Dismiss this request; approve the one for the current financial year instead",
+            f"{req['fy']} is no longer backed up, so a run for it cannot be approved"))
     await _ensure_leg_idle(req["leg"])
     approved_at = now_iso()
     actor = _approval_actor(request)
