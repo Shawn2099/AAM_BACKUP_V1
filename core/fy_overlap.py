@@ -89,6 +89,32 @@ def next_fy(fy: str) -> str:
     return f"FY{nxt:02d}-{(nxt + 1) % 100:02d}"
 
 
+def protected_fy_names(config: AppConfig) -> list[str]:
+    """The year names the owner's tools (upload_fy.py, restore.py) must never write to: the configured year and,
+    while the overlap switch is on, the early next year (R-20). Deliberately ignores the January window and the
+    activation row: a tool must not guess whether the early folder is live, it refuses the name outright.
+    Empty when the configured folder is not an FY folder at all."""
+    configured = _configured(config)
+    if not configured:
+        return []
+    names = [configured]
+    if config.rollover.overlap_enabled:
+        names.append(next_fy(configured))
+    return names
+
+
+def protected_folders(config: AppConfig) -> list[str]:
+    """Source and NAS folders of every protected year (the early folder is a sibling of the configured one,
+    whether or not it exists yet)."""
+    from pathlib import Path, PureWindowsPath
+    out: list[str] = []
+    for fy in protected_fy_names(config):
+        out.append(str(Path(config.paths.source_drive).parent / fy))
+        if config.paths.lan_destination:
+            out.append(str(PureWindowsPath(config.paths.lan_destination).parent / fy))
+    return out
+
+
 def calendar_fy(date: _date) -> str:
     """The FY the calendar says for this date (April start)."""
     return get_fy_prefix(date)

@@ -155,6 +155,7 @@
 
 - [ ] **OV-10.1** `upload_fy.py` / `restore.py` refuse every active FY. Tests (R-20). (Built on top of the owner's
   restore / upload work - coordinate before touching those files.)
+  **Built 2026-11-22 (owner's go), edits sit in the owner's UNCOMMITTED working copy of `upload_fy.py` / `restore.py`** (HEAD's upload_fy only warns; the refusal itself is in the owner's WIP, so a clean partial commit is impossible). Committed: `core/fy_overlap.protected_fy_names` / `protected_folders` + `tests/test_ov10_protected_fy.py`. Uncommitted with the owner's files: `tests/test_ov10_tools_active_fy.py` (upload refuses FY26-27 and FY27-28 incl. case; restore forbids the early year's source and NAS folders). Tick when the owner commits those files.
 - [x] **OV-10.2** Readiness probes: create + delete a test folder in `parent(source_drive)` and the NAS share root as
   the service account (`deploy/probe_service_account.py`, `04_check_readiness.ps1`). Tests (R-17).
 - [x] **OV-10.3** Validator: NAS FY folder directly at a share root refused while LAN + overlap are on. Test (R-25).
