@@ -61,6 +61,19 @@ def firings_between(cron: str, timezone_name: str, start: datetime, end: datetim
     return count
 
 
+def firing_times(cron: str, timezone_name: str, start: datetime, end: datetime) -> list[datetime]:
+    """The scheduled firings in the half-open interval [start, end), in time order (the list form of
+    `firings_between`; the report matches each night to a run row)."""
+    tz = ZoneInfo(timezone_name)
+    begin, stop = _aware(start, tz), _aware(end, tz)
+    out = []
+    for when in CronSim(cron, begin - timedelta(minutes=1)):
+        if when >= stop:
+            break
+        out.append(when)
+    return out
+
+
 def deadline(cron: str, timezone_name: str, started: datetime, budget_hours: float,
              grace_hours: float) -> datetime:
     """The moment a leg whose last success started at `started` becomes overdue."""

@@ -246,12 +246,26 @@ def _name(s: dict) -> str:
     return f"{s['label']} ({s['fy']})" if s.get("show_fy") and s.get("fy") else s["label"]
 
 
+def _shortfall_line(s: dict, action: bool = True) -> str:
+    """The sentence for a leg whose scheduled nights have no run row (D10 wording for a closed FY)."""
+    n, m = s["missing"], s["expected"]
+    if s.get("no_longer_backed_up"):
+        text = f"{s['fy']} is no longer backed up - {n} of {m} nights have no record"
+    else:
+        name = f"{s['label']} ({s['fy']})" if s.get("fy") else s["label"]
+        text = f"{name} - {n} of {m} scheduled nights have no backup record"
+    return ("action needed: " + text) if action else text
+
+
 def report_headline(db, summaries: list[dict]) -> tuple[str, bool]:
     """(one line for the subject and the top, whether a person must act). A leg with no run is a
     missing backup only if a run was SCHEDULED in the period (`scheduled` > 0, or unknown)."""
     for s in summaries:
         if s["total"] == 0 and s.get("scheduled", 1) > 0:
             return f"action needed: {_name(s)} - no backup ran", True
+    for s in summaries:
+        if s.get("missing", 0) > 0:
+            return _shortfall_line(s), True
     for s in summaries:
         open_problems = [p for p in s["problems"] if not p["resolved"]]
         if open_problems:
@@ -309,6 +323,64 @@ def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod, window=
                 getattr(schedule, f"{s['leg']}_cron"), schedule.timezone, start, end))
         except Exception:  # noqa: BLE001 - unreadable schedule: leave it unknown, never hide a gap
             s.pop("scheduled", None)
+
+
+def _shortfall(db, config, s: dict, window, fy, active, switched: bool) -> None:
+    """Set `expected` / `missing` (and `no_longer_backed_up`) on one leg summary: the scheduled nights of
+    the leg's window that have NO run row (opus-decision D10 / report shortfall rule). A night is covered
+    when a run row of this leg and FY starts in [firing, firing + budget + stale_grace_hours); runs and
+    firings are matched one-to-one in time order. A row with a bad status covers its night (the problem
+    list already reports it). The window never starts before the leg's first run row ever; a leg with no
+    row at all keeps the plain "no backup ran" rule. Unknown inputs leave the summary unflagged."""
+    from datetime import timedelta
+
+    from core import overdue
+
+    leg, scope = s["leg"], fy or ALL_FYS
+    try:
+        first = _parse_ist(db.first_run_started_at(leg, scope))
+        if first is None:
+            return
+        start, end = window
+        start = max(start, first)
+        schedule = config.schedule
+        span = timedelta(hours=float(getattr(config.budget, f"{leg}_max_hours"))
+                         + float(config.dashboard.stale_grace_hours))
+        firings = [pendulum.instance(f).in_timezone(IST) for f in overdue.firing_times(
+            getattr(schedule, f"{leg}_cron"), schedule.timezone, start, end)] if end > start else []
+        starts = sorted(t for t in (_parse_ist(r.get("started_at")) for r in db.get_runs_between(
+            start, end + span, leg, fy=scope)) if t is not None)
+    except Exception as e:  # noqa: BLE001 - unreadable inputs: unflagged here, the other rules still run
+        logger.warning(f"Shortfall check skipped for {leg} {fy}: {e}")
+        return
+    missing, used = 0, 0
+    for f in firings:
+        while used < len(starts) and starts[used] < f:
+            used += 1                                   # a run before this firing cannot cover it
+        if used < len(starts) and starts[used] < f + span:
+            used += 1
+        else:
+            missing += 1
+    s["expected"], s["missing"] = len(firings), missing
+    s["no_longer_backed_up"] = bool(missing and fy and active is not None
+                                    and fy not in active and fy != _configured_fy(config) and not switched)
+
+
+def _configured_fy(config):
+    from core import fy_overlap
+
+    return fy_overlap._configured(config)
+
+
+def _switched(db, fy) -> bool:
+    """Did the journal that closes `fy` finish its config switch?"""
+    try:
+        from core import fy_overlap, rollover_journal as rj
+
+        journal = db.rollover_get(fy, fy_overlap.next_fy(fy))
+        return bool(journal and rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _parse_ist(value):
@@ -436,12 +508,25 @@ def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, s
     legs = tuple(legs) if legs is not None else BACKUP_LEGS
     plan = fy_sections(db, runs, report_period, config)
     multi = len(plan) > 1
+    active = None
+    if schedule is not None and config is not None:
+        try:
+            from core import fy_overlap
+
+            active = fy_overlap.active_folders(config, db, fy_overlap.run_date(None))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Active FYs unknown for the shortfall check ({e})")
     sections = []
     for fy, window in plan:
         sruns = [r for r in runs if (r.get("fy") == fy or fy is None)] if multi or fy else runs
         summaries = leg_summaries(db, sruns, legs, fy=fy or ALL_FYS)
         if schedule is not None:
             _scheduled_counts(schedule, summaries, report_period, window if fy else None)
+            if config is not None:
+                for s in summaries:
+                    if "scheduled" in s:
+                        _shortfall(db, config, s, window if fy else (report_period.start, report_period.end),
+                                   fy, active, _switched(db, fy) if fy else False)
         for s in summaries:
             s["fy"], s["show_fy"] = fy, multi
         audits = [_audit_row(db, leg, fy or ALL_FYS) for leg in legs]
@@ -483,6 +568,10 @@ def _summary_html(model: dict) -> str:
                      + (" - resolved" if p["resolved"] else " - <b>not resolved</b>")
                      for p in s["problems"]]
             detail = "<br>".join(items) or "No problems."
+            if s.get("missing", 0) > 0:
+                detail = (f"<b>{html.escape(_shortfall_line(s, action=False))}</b>"
+                          + (" - files saved in it are not protected" if s.get("no_longer_backed_up") else "")
+                          + ("<br>" + detail if items else ""))
         rows += (f"<tr><th style='{cell};text-align:left;background:#f9fafb'>"
                  f"{html.escape(s['label'])}</th><td style='{cell}'>{s['ok']} of {s['total']} "
                  f"runs OK<br><span style='color:#6b7280'>Last good copy: "
