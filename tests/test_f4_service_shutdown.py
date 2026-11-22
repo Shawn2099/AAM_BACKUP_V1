@@ -73,6 +73,12 @@ def test_installer_file_exists():
     assert INSTALLER.is_file()
 
 
+def test_every_service_sets_kill_process_tree_explicitly():
+    s = _settings()
+    for service in SERVICE_VARS.values():
+        assert _int(s, service, "AppKillProcessTree") == 1, service
+
+
 def test_agent_stop_config_is_180s_console_only():
     s = _settings()
     assert _int(s, "AamBackupAgent", "AppStopMethodConsole") == 180000
