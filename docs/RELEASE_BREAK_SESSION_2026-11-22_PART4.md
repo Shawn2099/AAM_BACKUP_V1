@@ -1,0 +1,41 @@
+# Release break-it session - PART 4 (newest; read Parts 1-3 first)
+
+Written 2026-11-23 for a new session / after a usage limit. Branch `fy-overlap` (main checkout) HEAD `90549cc`.
+
+## Done since Part 3
+- Opus decisions on the 12 xfailed items: `docs/OPUS_XFAIL_DECISIONS_2026-11-23.md` (binding, includes the D10 re-decision and the unified report shortfall rule at the end).
+- Owner chose: **D12 = (a)** (an activated early year stays active until the switch), **D7 = (b), N=2** (final-backup slot timeout = WARNING + retry 2 mornings before G6 asks; new key `rollover.final_backup_wait_retries` default 2, 0..7).
+- Sonnet fixer batch MERGED into fy-overlap (merge `91f24df`): A1-A4 purge (`purge_older_than` days validation, overflow-safe, `files=False` default; service-log purge passes `files=True`; a mis-set `run_logs.dir` can no longer delete customer files), D14 (second folder's run row uses the loop start time), D8 (`close_fy` also closes `audit` incidents, never rollover-mode), D5 (`ensure_overlap_nas_folder(established=...)`: an established early year's vanished NAS folder/marker now asks via G5), D12 (a), D7 (b), plus characterization tests for C (restore engine default) and D10 (old behaviour, to be replaced, see below) and an ARCHITECTURE.md restore row.
+- Calendar simulations (time-machine, real flows/DB/notify/approvals/journal, scripted tools) committed `7256232`: rig `test_support/sim_calendar.py` + `tests/test_sim_e2e_00..13*.py` covering best and worst cases around Dec 30-Jan 4 and Mar 29-Apr 5. All files together: **75 passed, 3 xfailed** (D14, D7: both now fixed on the branch so they should XPASS; SIM-S10 = D15 below). Plan: `docs/PLAN_E2E_SIMULATION_2026-11-23.md`.
+- Lab files WRITTEN BUT NEVER RUN: `audit_lab/test_w26a_corruption.py` (L1), `test_w26b_names.py` (L2,L3), `test_w26c_upload.py` (L4,L5), `test_w26d_guards.py` (L6,T-b3), `test_w26e_acl.py` (L7), `test_w27a_calendar_best.py` (LC1), `test_w27b_calendar_worst.py` (LC2). Committed in `7256232`.
+- Audit lab earlier: 249 passed, 0 failed (the 2 w23 failures were only pytest missing from the venv; rerun green).
+- Deploy fixes in release-candidate: `deploy/_common.ps1` `-split '\\'`, restore .bat without wmic. Test stack (services) installed from `C:\AAMTest\code` (branch release-candidate, merged up to `ec0b589`, NOT yet with the newest fixes).
+
+## Findings for the owner report (not fixed, owner judgement)
+- **D15**: the product opens a G6 ('roll over anyway') request on every 06:00 run before the per-leg approval; PLAN section 4 'Switch blocked for days' says leg approval first, then G6 (xfail `test_sim_e2e_10_*`).
+- **E2E-MAIL-1** (confirmed twice): the Jan 1 activation INFO mail is never re-sent after an SMTP outage (the dashboard banner shows delivery failed).
+- A LAN run recorded `LAN_MISSED` after a late start is dated by its actual start, not the scheduled night (related to D14).
+- After a power cut mid-final-backup the reboot sends an ACTION NEEDED 'switch could not be finished (AAM-ROL-04)' although the next morning self-heals.
+- April 1 rollover mail says 'New financial year FY27-28 started' although it has been backed up since January (wording).
+- `db_retention_days` 90 days deletes old run rows during the 15-month cycle (expected; reports needing >90 days of history have none).
+- D4 (early upload may starve the configured FY, characterized), D13 (GCS lifecycle `age 365 -> ARCHIVE` unscoped; apply `deploy/gcs_lifecycle.fy_overlap_proposed.json` after review before Jan 2028), restore-engine default `forbidden_paths` (accepted, rule added to ARCHITECTURE), B old-schema DB at boot (accepted, pending live step LS8b: if no mail then fix before Jan 1), config accepts `cloud.project_number` containing NUL (harmless), alert-controls plan steps D-G not in code.
+- Opus re-decision: **weekly/monthly report headline said 'all OK' when nights were missing** (only a leg with zero runs was flagged), for the configured year AND for an early year that left the active set. Verdict FIX BEFORE 2027-01-01 as one shortfall rule (no new config key): a scheduled night is covered if that leg/FY has a run row starting within the run budget + `dashboard.stale_grace_hours` after it; uncovered nights set act=True with headline 'N of M scheduled nights have no backup record'; window starts at activation / leg's first run row, ends at the switch; D10 = same check with 'no longer backed up' wording.
+
+## IN FLIGHT when this was written (check with `git branch`, worktrees under `.claude/worktrees`)
+1. **Sonnet fixer: report shortfall rule + D10** (worktree off fy-overlap `90549cc`). When it reports: review diffs and the list of completed fixtures (none may be bent to fit), `git merge` its branch into fy-overlap, rerun.
+2. **Sonnet mutation review of the sim tests** (worktree off `7256232`): 12 mutations (see PLAN_E2E section 3), tightens weak assertions (S2 status dict, S7 trivial lock check, S8 missing comparison); its commits are tests only: merge into fy-overlap.
+3. **Live-stack fault agent** on the installed test stack (`C:\AAMTest`, evidence/scripts in `C:\AAMTest\live\`, results to `C:\AAMTest\live\LIVE_RESULTS.md`): LS1 baseline, LS2 kill agent, LS3 NAS share, LS13 bad config (expects the SILENCE-2 mail), LS9 watchdog, LS11 SMTP down, LS12 secret scan, LS8 manifest rename, LS10 power loss, browser check of the Origin middleware. Collect its report; the stack must end Running + healthy.
+4. **Full unit suite on fy-overlap `91f24df`** started in the background: output `agent_runs/unit_full_after_fixes2.txt` (was ~70% when written; known: the previous run had 2 test-artefact failures, both fixed `9ad6ab2`).
+
+## TODO (in order)
+1. Collect the 4 in-flight items; merge the two fixer/mutation branches into fy-overlap; full unit suite again (`.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider -o addopts="" --timeout=600`).
+2. New live steps AFTER the live agent hands back and nothing runs on the stack (plan section 1d): LS7a/LS7b (Prefect server stopped idle / mid-run), LS2b (agent dies, robocopy survives), LS5 (NAS volume full), LS6 (overlap Jan-Apr on the live stack with the date patched in-process, never the system clock), LS8b (old-schema DB: does a mail go out?). First update the stack to the newest code: `git -C C:\AAMTest\code merge fy-overlap`, then restart AamBackupAgent + AamWatchdog via the elevated queue.
+3. Then run the lab files (never while a live step runs; the stack's watchdog treats any robocopy/rclone as a backup): max 2 pytest processes, each with its own clean `PREFECT_HOME`, order `w26a+w26b`, `w26c+w26d`, `w26e+w27a`, `w27b`; then the full audit lab once (~90 min, `--ignore=audit_lab/test_w7_deployed.py`). Check L7's weak cloud assertion and L1's premise (mtime equality) when they run.
+4. Extra gaps agreed with the owner to consider: real-cron soak (let the stack run through tonight's/next days' crons; optionally an accelerated */20 schedule copy), live April-1 rollover with patched date, install gcloud to test the real ARCHIVE class change on the QA bucket, scale test (~200k files), a Jan 1 / Apr 1 day-of runbook for the owner, a Server 2016 smoke pack (the fixed readiness probe will run there for the first time).
+5. Opus final verification against the release gate (TEST_DESIGN D3 + PLAN_E2E section 4), then the owner report (decisions above; NOT verifiable here: real Windows Server 2016/2019 runs, real NAS power-off, real mail provider).
+6. Cleanup: uninstall test services (`deploy\08_uninstall_services.bat` via the elevated queue), remove user `aamtest` + share `AAMTestNAS`, delete bucket `aam-backup-qa-bilcvx`, **restore AAMMerger** (services AAMMerger-PrefectServer, -Worker, -Web: set Automatic and start, Web last; they are STILL STOPPED AND DISABLED), `git worktree remove C:\AAMTest\code` and the agent worktrees, stop the SMTP sink, update `SESSION_HANDOFF.md`.
+
+## Current known issues
+- No red tests known on fy-overlap; unit suite re-run pending. Worktree runs show 3 config.yaml-only failures (test_p2_sched_pause, test_v113_round3 x2): expected, they pass in the main checkout.
+- The test stack runs OLDER code than fy-overlap (see above).
+- Agent worktrees (`.claude/worktrees/agent-*`) and `C:\AAMTest\code` are still present.
