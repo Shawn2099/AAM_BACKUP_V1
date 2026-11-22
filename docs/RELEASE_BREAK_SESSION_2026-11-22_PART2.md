@@ -23,7 +23,9 @@ Tests written (all in main checkout, UNTRACKED until committed; run each alone w
 | `tests/test_ov_timeline_a.py` | T-a1..a6, P-3, P-4, P-12 | 8 passed, 4 xfailed (D3 x3, D5 x1) |
 | `tests/test_ov_timeline_bc.py` | T-b1,b2,T-c1..c5 | 6 passed, 1 xfailed (D1) |
 | `tests/test_ov_review_points.py` | P-1,2,5,6,8..11,13,T-b4 | 8 passed, 4 xfailed (D6, D8, D12, D14) |
-| `tests/test_ov_timeline_def.py` | T-d1,d2,e1..e3,f1..f3,P-7 | agent (Sonnet) STILL RUNNING at time of writing - check the file / rerun it |
+| `tests/test_ov_timeline_def.py` | T-d1,d2,e1..e3,f1..f3,P-7 | 10 passed, 4 xfailed (D9 T-e1 - already fixed in release-candidate by fix #13, D10, D2 T-f3, D7 P-7); T-f4 (live) skipped. Verified: early folder never created / no create right -> final backups still run, switch blocked, WARNING; overlap OFF all year = old behaviour; overlap toggled off/on mid-window; interrupted rollover (crash after config switch) resumes next morning; archive failure retries only `gs://b/<old FY>/` never the new FY. Non-vacuity mutants all went red. NOTE: T-d1 sends two near-duplicate mails on 1 Apr (WARNING AAM-ROL-04 + later ACTION NEEDED for the same cause): cosmetic, owner to judge |
+
+NOTE for the final merge into `fy-overlap`: the four `tests/test_ov_*.py` files (and `test_break_release_{ops,approvals,s1}.py`) are UNTRACKED in the main checkout but also exist (with xfails flipped) in release-candidate / the fixer branches: DELETE the untracked copies before `git merge release-candidate`, or git refuses to overwrite them. Take the release-candidate versions.
 Verified OK by those tests (dual-folder logic is sound): Jan 1 activation once (INFO mail, folder+placeholder, run order new FY first), no duplicates, NAS folder+marker created, one real wake/shutdown per night, NAS stays on after a partial night,
 Jan-Mar failure on ONE year only is truthful (own approval, RECOVERED threads correctly, other year stays green), April 1 rollover with an early year holding 90 days of history (final backup of the old year only, then switch, then archive of
 `gs://bucket/<old FY>/` only; old-year approvals CLOSED, new-year approval still runnable; guards G2/G4 baselines carry over, no first-run block; one dashboard card; weekly report counts per year), post-switch audit covers only the new year, G5 blocks a
@@ -33,7 +35,7 @@ Defect triage (D = from the Opus review):
 |---|---|---|
 | D3 deferred activation = 1 mail only, no dashboard item / repeat / RESOLVED (silent 3-month miss) | confirmed (xfail test) | **FIX before 1 Jan 2027** - in the Sonnet fixer's batch (see C) |
 | D1 stale flow syncs the closed FY into the archived prefix after the April switch | confirmed (xfail T-c5) | **FIX before 1 Apr 2027** - in the fixer's batch |
-| D2 `_close_old_fy` never retried after the journal is complete (old approvals stay open; approving does nothing) | test pending (def agent) | FIX before 1 Apr - add to the fixer after its test lands |
+| D2 `_close_old_fy` never retried after the journal is complete (old approvals stay open; approving does nothing) | confirmed (xfail T-f3: PENDING on 2 Apr after a failed close on 1 Apr) | **FIX before 1 Apr 2027** - sent to the Sonnet fixer (idempotent close at the top of every rollover_check_flow for FYs whose switch is finished) |
 | D6 `switch_pending` uses state==DONE vs rollover_journal finished set | confirmed | fixer's batch |
 | D9 approving an approval of a non-active FY | DONE (release-break #13, 409) | - |
 | D11 mapped drive refused by share-root validator | NOT a defect (PathsConfig already refuses drive letters) | closed |
