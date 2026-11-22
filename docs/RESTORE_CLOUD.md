@@ -1,17 +1,19 @@
-# Cloud restore (whole FY)
+# Cloud restore (whole folder)
 
 Disaster-recovery restore from Google Cloud Storage. This is the bulk path:
 a server or disk is gone, and the client needs the latest state of a whole
-financial year back on a folder they choose. **Single-file restores stay in
-the Google Cloud Console.**
+folder (financial year, archive, ...) back on a folder they choose.
+**Single-file restores stay in the Google Cloud Console.**
 
 ## What it does
 
-- Lists the FY folders in the bucket (`FY25-26`, `FY26-27`, ...).
-- Restores the selected FY's **latest live state** to `<destination>\<FY>`.
+- Lists the top-level folders in the bucket (`FY25-26`, `FY26-27`, `archive`,
+  ...). FY names are flagged `[FY]`; any other name is still selectable.
+- Restores the selected folder's **latest live state** to
+  `<destination>\<folder>`.
 - Verifies every restored file against a pinned MD5 manifest.
 - Never deletes anything: only `rclone copy` is used, never `sync`.
-- Works with old FYs in the same bucket.
+- Works with old FYs and non-FY folders in the same bucket.
 - Runs without Prefect, the manifest DB, or the dashboard, so it works on a
   clean machine during a disaster.
 - **No time limit by default.** The optional `--timeout` adds a soft budget;
@@ -22,7 +24,7 @@ the Google Cloud Console.**
 ## What it does not do
 
 - **No point-in-time restore.** rclone cannot select GCS object generations.
-  The selected FY is restored as it exists in the bucket now. A future
+  The selected folder is restored as it exists in the bucket now. A future
   version/timestamp restore needs `gcloud storage` (GCS Object Versioning).
 - **No single-file restore.** Use the Google Cloud Console for that.
 - **No Windows metadata fidelity.** File content and the original modification
@@ -34,10 +36,10 @@ the Google Cloud Console.**
 ## CLI
 
 ```bat
-:: list the available FY folders
+:: list the available top-level folders (FY names are flagged)
 python restore.py --config C:\AAMBackup\config.yaml --list
 
-:: list with object counts/bytes (one size query per FY)
+:: list with object counts/bytes (one size query per folder)
 python restore.py --config C:\AAMBackup\config.yaml --list --sizes
 
 :: restore a whole FY into D:\Restore\FY26-27
@@ -48,6 +50,9 @@ python restore.py --config C:\AAMBackup\config.yaml --fy FY26-27 --target D:\Res
 
 :: restore an older year
 python restore.py --config C:\AAMBackup\config.yaml --fy FY25-26 --target D:\Restore
+
+:: restore any other top-level folder (for example an archive)
+python restore.py --config C:\AAMBackup\config.yaml --fy archive --target D:\Restore
 
 :: plan only (no files written)
 python restore.py --config C:\AAMBackup\config.yaml --fy FY26-27 --target D:\Restore --dry-run
@@ -70,13 +75,14 @@ python restore.py --bucket aam-backup-demo-innovizta ^
 `--project` is optional for a read-only restore. `--yes` skips the
 confirmation phrase (use only in automation).
 
-## Bulk upload of old FY data
+## Bulk upload of old data
 
 Use the companion tool; it is copy-only, resumable, verifies every file by MD5,
-and has no time limit by default.
+and has no time limit by default. It accepts an FY folder (`FY24-25`) or any
+other top-level folder name (`archive`).
 
 ```bat
-:: show the local FY folders under a parent
+:: show the local folders under a parent (FY names are flagged)
 python upload_fy.py --config C:\AAMBackup\config.yaml --source E:\Archive --list-local
 
 :: plan only
@@ -93,13 +99,15 @@ python upload_fy.py --config C:\AAMBackup\config.yaml ^
 ```
 
 - `--tier` is required: `STANDARD`, `NEARLINE`, `COLDLINE`, `ARCHIVE`.
-- The destination is always `gs://<bucket>/<FY>`; it refuses a different
-  prefix. It never deletes.
-- `--gcs-storage-class` applies to **new** objects. Re-running skips identical
-  objects; objects already in the bucket keep their current class.
+- The destination is always `gs://<bucket>/<folder>` (the folder name comes
+  from the local folder); it refuses a different prefix. It never deletes.
+- It **refuses the current live FY** when `config.yaml` identifies it
+  (`paths.source_drive`); the nightly cloud backup owns that prefix.
+- `--gcs-storage-class` applies to **new and rewritten** objects. Re-running
+  skips identical objects, so unchanged objects keep their current class.
 - `--bwlimit 20M` is optional; the default is unlimited.
 - `--timeout` is optional; without it there is no time limit.
-- Each run writes `upload_logs\<date>\upload_<FY>_...\upload-report.json`.
+- Each run writes `upload_logs\<date>\upload_<folder>_...\upload-report.json`.
 - Upload statuses: `UPLOADED_VERIFIED`, `UPLOADED_UNVERIFIED`, `VERIFIED`
   (`--verify-only`), `DRY_RUN`, `INCOMPLETE`, `FAILED`.
 
@@ -138,7 +146,7 @@ end-of-year ARCHIVE settings.
 Every run writes:
 
 ```
-restore_logs\<date>\restore_<FY>_<time>_<id>\
+restore_logs\<date>\restore_<folder>_<time>_<id>\
   snapshot.md5              pinned MD5 manifest
   copy.ndjson               rclone copy audit log
   verify.ndjson             rclone check log
@@ -151,7 +159,9 @@ snapshot SHA-256, counts, bytes, verification counts and the target path.
 
 ## UI integration
 
-The dashboard can import the engine directly; no Prefect/DB dependency:
+The dashboard can import the engine directly; no Prefect/DB dependency.
+The `fy` argument is the folder name (kept for compatibility), so an FY or
+`archive` both work:
 
 ```python
 from core.restore import list_fy_folders, fy_info, restore_fy
@@ -176,7 +186,7 @@ Suggested endpoints (admin-only):
 - `GET  /api/restore/status/{job_id}` -> progress/status
 - `GET  /api/restore/report/{job_id}` -> `restore-report.json`
 
-The UI page needs: FY dropdown, destination folder picker, dry-run button,
+The UI page needs: folder dropdown (FY names flagged), destination folder picker, dry-run button,
 confirmation phrase, progress/log view, and a result summary. The engine
 already writes the report and copy log for the progress view.
 
@@ -188,7 +198,7 @@ already writes the report and copy log for the progress view.
    source, the LAN share, OneDrive and git working trees.
 3. Quiesce the backup service while restoring the current FY (a restore reads
    the live prefix; a running sync can change objects mid-copy).
-4. Run `--dry-run` first, confirm the FY and destination.
+4. Run `--dry-run` first, confirm the folder and destination.
 5. Sign off only on `RESTORED_VERIFIED`; keep `restore-report.json`.
 6. Do a real restore drill on a clean Server 2016 VM before client rollout.
 
@@ -203,12 +213,13 @@ already writes the report and copy log for the progress view.
 - `--verify-only` after deleting one file: `FAILED`, `missing=1`.
 - `--force` after the deletion: restored the file, kept an extra local file,
   `RESTORED_VERIFIED`, `extra=1`.
-- Old FY (`FY25-26`) restore and the FY list both work against the real bucket.
+- Old FY (`FY25-26`) restore and the folder list both work against the real bucket.
 - Bulk upload of a real `FY24-25` to the demo bucket with `ARCHIVE`:
   `UPLOADED_VERIFIED`; `gcloud storage objects describe` confirmed
   `storageClass=ARCHIVE`.
-- Unit tests: `tests/test_restore_engine.py` (8 tests) and
-  `tests/test_upload_engine.py` (6 tests), both against a local rclone backend.
+- Unit tests: `tests/test_restore_engine.py` and
+  `tests/test_upload_engine.py`, both against a local rclone backend
+  (including non-FY folders and both CLIs).
 - Defaults are unlimited: `restore_from_cloud(timeout_s=None)` and
   `upload_fy(timeout_s=None)` add no `--max-duration` and pass
   `run_tool(timeout_s=None)`. `--timeout` remains available when an operator

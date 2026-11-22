@@ -1,16 +1,18 @@
-"""Whole-FY cloud restore engine - GCS prefix to a local folder, read-only.
+"""Whole-folder cloud restore engine - GCS prefix to a local folder, read-only.
 
 The disaster-recovery use case:
   * the server/disk is gone;
   * the operator picks a destination folder;
-  * the tool lists the FY folders in the bucket (FY25-26, FY26-27, ...);
-  * the operator picks one FY and the tool restores its **latest live state**
-    into `<destination>\\<FY>` and verifies every file by MD5.
+  * the tool lists the top-level folders in the bucket (FY25-26, FY26-27,
+    archive, ...);
+  * the operator picks one folder and the tool restores its **latest live
+    state** into `<destination>\\<folder>` and verifies every file by MD5.
 
 Deliberate limits:
   * latest state only - rclone cannot select GCS object generations. Point-in-
     time restore needs `gcloud storage` and is a separate feature.
-  * whole FY only - single-file restores are done in the Google Console.
+  * whole top-level folder only - single-file restores are done in the Google
+    Console.
   * no deletes, ever: only `rclone copy`; `sync`/`delete`/`move` are never used.
   * the target must be empty unless the caller explicitly allows a merge.
   * a restore without a complete MD5 verification is never reported as success.
@@ -61,6 +63,12 @@ def _fail(status: str, error: str, **extra) -> dict:
     }
     result.update(extra)
     return result
+
+
+def valid_folder_name(value: str | None) -> bool:
+    """A single top-level prefix name (FY, `archive`, etc.), not a path."""
+    text = (value or "").strip()
+    return bool(text) and "/" not in text and "\\" not in text and text not in (".", "..")
 
 
 def _norm(path: str | os.PathLike) -> str:
@@ -347,10 +355,11 @@ def list_fy_folders(
     rclone_config_path: str | None = None,
     artefacts: RunArtefacts | None = None,
 ) -> dict:
-    """List the FY folders available in the bucket (read-only).
+    """List the top-level folders in the bucket (read-only).
 
-    Returns `{"folders": [{"name": "FY26-27", ...}, ...], "other_folders": [...]}`.
-    The UI uses this to populate its FY dropdown; the CLI uses `--list`.
+    Returns every prefix, with `is_fy` as a display hint only. The UI and CLI
+    can select any of them (FY, `archive`, or another name); no FY rule is
+    enforced on restore.
     """
     if not _BUCKET_RE.match(bucket or ""):
         return {"error": f"invalid bucket name: {bucket!r}", "folders": [], "other_folders": []}
@@ -388,17 +397,17 @@ def list_fy_folders(
                     "name": name,
                     "prefix": name,
                     "remote": f"gs://{bucket}/{name}",
+                    "is_fy": bool(FY_RE.fullmatch(name)),
                 }
                 for name in names
-                if FY_RE.fullmatch(name)
             ]
             folders.sort(key=lambda item: item["name"], reverse=True)
-            others = sorted(name for name in names if not FY_RE.fullmatch(name))
             return {
                 "bucket": bucket,
                 "remote": f"gs://{bucket}",
                 "folders": folders,
-                "other_folders": others,
+                # Deprecated: kept for callers that still read it.
+                "other_folders": [],
                 "error": None,
             }
     except Exception as exc:  # noqa: BLE001
@@ -421,9 +430,10 @@ def fy_info(
     rclone_config_path: str | None = None,
     artefacts: RunArtefacts | None = None,
 ) -> dict:
-    """Count and bytes for one FY (read-only). The UI shows this after selection."""
-    if not FY_RE.fullmatch((fy or "").strip()):
-        return {"error": f"not an FY folder: {fy!r}"}
+    """Count and bytes for one top-level folder (FY, archive, etc.)."""
+    folder = (fy or "").strip()
+    if not valid_folder_name(folder):
+        return {"error": f"invalid folder name: {fy!r}"}
     if not rclone_config_path and not gcs_key_path:
         return {"error": "no GCS key"}
     own = artefacts is None
@@ -433,14 +443,14 @@ def fy_info(
         with _rclone_config(gcs_key_path, location, project_number, storage_class,
                             rclone_config_path) as config_path:
             size = _size_of(
-                rclone, config_path, f"aam_gcs:{bucket}/{fy}",
+                rclone, config_path, f"aam_gcs:{bucket}/{folder}",
                 excludes=CONTROL_FILES, artefacts=artefacts, label="restore-info",
             )
         if size is None:
-            return {"error": "could not read the FY prefix", "fy": fy}
-        return {"fy": fy, **size, "error": None}
+            return {"error": "could not read the folder", "folder": folder}
+        return {"folder": folder, "fy": folder, **size, "error": None}
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"{type(exc).__name__}: {exc}", "fy": fy}
+        return {"error": f"{type(exc).__name__}: {exc}", "folder": folder}
     finally:
         if own:
             shutil.rmtree(artefacts.dir, ignore_errors=True)
@@ -483,7 +493,7 @@ def restore_from_cloud(
     exclude_control: bool = True,
     artefacts: RunArtefacts | None = None,
 ) -> dict:
-    """Restore one FY prefix to a local folder and verify it by MD5.
+    """Restore one top-level folder prefix to a local folder and verify it by MD5.
 
     `status`: RESTORED_VERIFIED, RESTORED_UNVERIFIED, VERIFIED, DRY_RUN,
     INCOMPLETE (time-boxed, resumable) or FAILED.
@@ -515,8 +525,8 @@ def restore_from_cloud(
     prefix = (prefix or "").strip().strip("/\\")
     if not _BUCKET_RE.match(bucket or ""):
         return finish(_fail("FAILED", f"invalid GCS bucket name: {bucket!r}"))
-    if not prefix or "/" in prefix or prefix in (".", ".."):
-        return finish(_fail("FAILED", f"invalid FY prefix: {prefix!r}"))
+    if not valid_folder_name(prefix):
+        return finish(_fail("FAILED", f"invalid folder prefix: {prefix!r}"))
     if not rclone_config_path and not gcs_key_path:
         return finish(_fail("FAILED", "no GCS key: pass --key or configure paths.gcs_key_path"))
 
@@ -866,28 +876,32 @@ def restore_fy(
     exclude_control: bool = True,
     artefacts: RunArtefacts | None = None,
 ) -> dict:
-    """Restore a whole FY into `<target_parent>\\<FY>` (or directly with `into`).
+    """Restore a whole top-level folder into `<target_parent>\\<folder>`.
 
-    `list_fy_folders()` gives the names to offer in the UI/CLI.
+    The folder can be an FY (`FY26-27`) or any other bucket prefix
+    (`archive`, etc.). `list_fy_folders()` gives the names to offer.
     """
-    fy = (fy or "").strip()
-    if not FY_RE.fullmatch(fy):
+    folder = (fy or "").strip()
+    if not valid_folder_name(folder):
         return _fail(
             "FAILED",
-            f"choose one FY folder such as FY26-27 (got {fy!r}); use --list to see them",
+            f"choose a folder name such as FY26-27 or archive (got {fy!r}); "
+            "use --list to see them",
         )
+    if FY_RE.fullmatch(folder):
+        folder = folder.upper()
     parent = Path(target_parent).expanduser()
     if not parent.exists() or not parent.is_dir():
         return _fail(
             "FAILED",
             f"destination folder does not exist: {parent}. Create/select it first.",
         )
-    target = parent if into else parent / fy
+    target = parent if into else parent / folder
     result = restore_from_cloud(
         target,
         bucket=bucket,
-        prefix=fy,
-        fy=fy,
+        prefix=folder,
+        fy=folder,
         gcs_key_path=gcs_key_path,
         project_number=project_number,
         location=location,
@@ -905,7 +919,8 @@ def restore_fy(
         exclude_control=exclude_control,
         artefacts=artefacts,
     )
-    result["fy"] = fy
+    result["folder"] = folder
+    result["fy"] = folder
     result["target_parent"] = str(parent)
     result["into"] = into
     return result

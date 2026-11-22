@@ -32,6 +32,13 @@ powershell -ExecutionPolicy Bypass -File tools\server_health\server_health.ps1 -
 
 Or simply run `tools\server_health\run_daily.bat`.
 
+**Run it after the nightly cloud run** (cloud starts at 02:01 on the trial
+box; 02:30 is a good time). Between the cloud run and the next one, files
+added or changed on the source are legitimately not in GCS yet, so the
+source→GCS comparison reports them as missing/different. That is a timing
+artefact, not a backup failure. The LAN comparison does not have this gap
+when the LAN run (21:01) is after the day's source changes.
+
 Exit codes: `0` = PASS or WARN, `1` = FAIL (or WARN with `-Strict`).
 
 ## What each result means

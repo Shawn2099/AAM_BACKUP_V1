@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from core.restore import fy_info, list_fy_folders, restore_fy
+from core.restore import fy_info, list_fy_folders, restore_fy, valid_folder_name
+from restore import main as restore_main
 
 
 @pytest.fixture
@@ -143,8 +144,11 @@ def test_list_fy_folders_and_info(fake_bucket):
         rclone_config_path=str(fake_bucket["cfg"]),
     )
     names = [item["name"] for item in listing["folders"]]
-    assert names == ["FY26-27", "FY25-26"]
-    assert "not_an_fy" in listing["other_folders"]
+    assert names == ["not_an_fy", "FY26-27", "FY25-26"]
+    flags = {item["name"]: item["is_fy"] for item in listing["folders"]}
+    assert flags["FY26-27"] is True
+    assert flags["not_an_fy"] is False
+    assert listing["other_folders"] == []
 
     info = fy_info(
         "FY26-27",
@@ -153,3 +157,41 @@ def test_list_fy_folders_and_info(fake_bucket):
     )
     assert info["count"] == 3
     assert info["bytes"] == len(b"hello") + len(b"\x00\x01\x02" * 1000)
+
+
+def test_restore_any_top_level_folder(fake_bucket):
+    target = fake_bucket["root"] / "any-restore"
+    target.mkdir()
+    result = _restore(fake_bucket, target, fy="not_an_fy")
+
+    assert result["status"] == "RESTORED_VERIFIED"
+    assert result["folder"] == "not_an_fy"
+    assert (target / "not_an_fy" / "x.txt").read_text(encoding="utf-8") == "x"
+
+
+def test_valid_folder_name_rejects_paths():
+    assert valid_folder_name("FY26-27")
+    assert valid_folder_name("archive")
+    assert not valid_folder_name("")
+    assert not valid_folder_name("..")
+    assert not valid_folder_name("../escape")
+    assert not valid_folder_name(r"archive\escape")
+    assert not valid_folder_name("folder/child")
+
+
+def test_cli_restores_a_non_fy_folder(fake_bucket, tmp_path):
+    target = tmp_path / "cli-restore"
+    target.mkdir()
+    code = restore_main([
+        "--config", str(tmp_path / "missing.yaml"),
+        "--bucket", "fakebucket",
+        "--rclone-config", str(fake_bucket["cfg"]),
+        "--fy", "not_an_fy",
+        "--target", str(target),
+        "--yes",
+        "--verbose",
+        "--log-dir", str(tmp_path / "logs"),
+    ])
+
+    assert code == 0
+    assert (target / "not_an_fy" / "x.txt").read_text(encoding="utf-8") == "x"

@@ -1,9 +1,9 @@
-"""Bulk upload of one local FY folder to GCS - copy-only, resumable, no timeout.
+"""Bulk upload of one local folder to GCS - copy-only, resumable, no timeout.
 
 Never deletes: only `rclone copy` (no sync/move/delete flags). The destination
-prefix is always `<bucket>/<FY>`, validated, so an old FY upload cannot write
-into another year. Verification is MD5: every local source file must exist in
-GCS with the same size and hash.
+prefix is always `<bucket>/<folder>`, where the folder can be an FY
+(`FY24-25`) or any other name (`archive`). Verification is MD5: every local
+source file must exist in GCS with the same size and hash.
 
 No timeout by default. An optional `timeout_s` adds a SOFT `--max-duration`
 (rclone exit 10 means INCOMPLETE, re-run to resume). `run_tool(timeout_s=None)`
@@ -31,6 +31,7 @@ from core.restore import (
     FY_RE,
     _counts_from_log,
     _parse_combined,
+    valid_folder_name,
 )
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool, tail_lines
@@ -123,30 +124,39 @@ def list_local_fy_folders(source_root: str | os.PathLike) -> dict:
                 continue
         except OSError:
             continue
-        name = entry.name.upper()
-        if FY_RE.fullmatch(name):
-            folders.append({"name": name, "path": str(entry)})
+        name = entry.name
+        folders.append({
+            "name": name,
+            "path": str(entry),
+            "is_fy": bool(FY_RE.fullmatch(name)),
+        })
     return {"source": str(root), "folders": folders, "error": None}
 
 
-def resolve_local_fy(source: str | os.PathLike, fy: str) -> Path:
+def resolve_local_folder(source: str | os.PathLike, folder: str) -> Path:
+    """Resolve a top-level folder under `source` (FY, archive, anything)."""
     root = Path(source).expanduser()
     if not root.is_dir():
         raise ValueError(f"source folder does not exist: {root}")
-    candidate = root if root.name.upper() == fy else root / fy
-    if not candidate.is_dir():
-        raise ValueError(f"{fy} not found under {root}")
+    if root.name.casefold() == folder.casefold():
+        candidate = root
+    else:
+        matches = [
+            entry for entry in root.iterdir()
+            if entry.is_dir() and entry.name.casefold() == folder.casefold()
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"{folder} not found under {root}")
+        candidate = matches[0]
     if candidate.is_symlink():
-        raise ValueError(f"source FY folder is a link/junction: {candidate}")
+        raise ValueError(f"source folder is a link/junction: {candidate}")
     if os.name == "nt":
         try:
             import stat
             if os.lstat(candidate).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                raise ValueError(f"source FY folder is a link/junction: {candidate}")
+                raise ValueError(f"source folder is a link/junction: {candidate}")
         except AttributeError:
             pass
-    if candidate.name.upper() != fy:
-        raise ValueError(f"source folder {candidate} is not {fy}")
     return candidate
 
 
@@ -282,13 +292,15 @@ def upload_fy(
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     artefacts = artefacts or RunArtefacts.ephemeral("upload")
     report_path = Path(artefacts.dir) / "upload-report.json"
-    fy = (fy or "").strip().upper()
+    requested = (fy or "").strip()
+    folder = requested
     storage_class = (storage_class or "").strip().upper()
 
     def finish(result: dict) -> dict:
-        result.setdefault("fy", fy)
+        result.setdefault("folder", folder)
+        result.setdefault("fy", folder)  # backward-compatible field
         result.setdefault("bucket", bucket)
-        result.setdefault("remote", f"gs://{bucket}/{fy}")
+        result.setdefault("remote", f"gs://{bucket}/{folder}")
         result.setdefault("source", str(local_fy_dir))
         result.setdefault("storage_class", storage_class)
         result.setdefault("dry_run", dry_run)
@@ -305,9 +317,11 @@ def upload_fy(
             result.setdefault("warnings", []).append(f"could not write report: {exc}")
         return result
 
-    if not FY_RE.fullmatch(fy):
-        return finish(_fail("FAILED",
-                            f"choose one FY folder such as FY24-25 (got {fy!r})"))
+    if not valid_folder_name(requested):
+        return finish(_fail(
+            "FAILED",
+            f"choose a folder name such as FY24-25 or archive (got {fy!r})",
+        ))
     if storage_class not in STORAGE_CLASSES:
         return finish(_fail("FAILED",
                             f"storage class must be one of {', '.join(STORAGE_CLASSES)}"))
@@ -316,16 +330,17 @@ def upload_fy(
     if not rclone_config_path and not gcs_key_path:
         return finish(_fail("FAILED", "no GCS key: pass --key or configure paths.gcs_key_path"))
     try:
-        source = resolve_local_fy(local_fy_dir, fy)
+        source = resolve_local_folder(local_fy_dir, requested)
+        folder = source.name
         require_source_files(str(source))
     except (OSError, ValueError) as exc:
         return finish(_fail("FAILED", str(exc)))
 
     rclone = str(rclone_exe or resolve_binary("rclone") or "rclone")
     excludes = list(CONTROL_FILES) if exclude_control else []
-    remote = f"aam_gcs:{bucket}/{fy}"
-    if not remote.rstrip("/").endswith("/" + fy):
-        return finish(_fail("FAILED", f"refusing a remote prefix outside {fy}: {remote}"))
+    remote = f"aam_gcs:{bucket}/{folder}"
+    if not remote.rstrip("/").endswith("/" + folder):
+        return finish(_fail("FAILED", f"refusing a remote prefix outside {folder}: {remote}"))
     copy_log: Path | None = None
     warnings: list[str] = []
 
@@ -348,7 +363,8 @@ def upload_fy(
                 timeout_s=timeout_s, missing_ok=True,
             )
             base = {
-                "fy": fy,
+                "folder": folder,
+                "fy": folder,
                 "storage_class": storage_class,
                 "source_count": source_size["count"],
                 "source_bytes": source_size["bytes"],
@@ -357,8 +373,8 @@ def upload_fy(
             if remote_before and remote_before.get("count"):
                 warnings.append(
                     f"destination already has {remote_before['count']} object(s); "
-                    "existing objects keep their storage class and are overwritten "
-                    "only when content differs"
+                    "identical objects are skipped, changed files are rewritten with "
+                    "the requested storage class"
                 )
 
             # Verify-only: no copy.

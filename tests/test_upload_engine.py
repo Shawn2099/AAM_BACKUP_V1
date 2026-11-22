@@ -1,11 +1,13 @@
-"""Tests for the bulk FY upload engine (local rclone backend)."""
+"""Tests for the bulk folder upload engine (local rclone backend)."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import upload_fy as upload_cli
 from core.upload import list_local_fy_folders, upload_fy
 
 
@@ -21,9 +23,13 @@ def upload_lab(tmp_path, monkeypatch):
     (fy / "a.txt").write_text("alpha", encoding="utf-8")
     (fy / "nested" / "b.bin").write_bytes(b"\x00\x01" * 500)
     (fy / "nested" / ".AAM_TARGET_MOUNTED").write_text("canary", encoding="utf-8")
+    misc = source / "misc"
+    misc.mkdir()
+    (misc / "old.txt").write_text("misc", encoding="utf-8")
     cfg = tmp_path / "rclone.conf"
     cfg.write_text("[aam_gcs]\ntype = local\n", encoding="utf-8")
-    return {"bucket": bucket, "source": source, "fy": fy, "cfg": cfg, "root": tmp_path}
+    return {"bucket": bucket, "source": source, "fy": fy, "misc": misc,
+            "cfg": cfg, "root": tmp_path}
 
 
 def _upload(lab, **kwargs):
@@ -97,4 +103,60 @@ def test_wrong_fy_is_refused(upload_lab):
 
 def test_list_local_fy_folders(upload_lab):
     listing = list_local_fy_folders(upload_lab["source"])
-    assert [f["name"] for f in listing["folders"]] == ["FY24-25"]
+    assert [f["name"] for f in listing["folders"]] == ["misc", "FY24-25"]
+    flags = {f["name"]: f["is_fy"] for f in listing["folders"]}
+    assert flags["FY24-25"] is True
+    assert flags["misc"] is False
+
+
+def test_upload_any_top_level_folder(upload_lab):
+    result = upload_fy(
+        upload_lab["source"],
+        bucket="fakebucket",
+        fy="misc",
+        storage_class="STANDARD",
+        rclone_config_path=str(upload_lab["cfg"]),
+    )
+
+    assert result["status"] == "UPLOADED_VERIFIED"
+    assert result["folder"] == "misc"
+    assert (upload_lab["bucket"] / "misc" / "old.txt").read_text(encoding="utf-8") == "misc"
+
+
+def test_upload_cli_runs(upload_lab, tmp_path):
+    code = upload_cli.main([
+        "--config", str(tmp_path / "missing.yaml"),
+        "--bucket", "fakebucket",
+        "--rclone-config", str(upload_lab["cfg"]),
+        "--source", str(upload_lab["source"]),
+        "--fy", "misc",
+        "--tier", "STANDARD",
+        "--yes",
+        "--verbose",
+        "--log-dir", str(tmp_path / "logs"),
+    ])
+
+    assert code == 0
+    assert (upload_lab["bucket"] / "misc" / "old.txt").read_text(encoding="utf-8") == "misc"
+
+
+def test_upload_cli_refuses_the_current_fy(upload_lab, tmp_path, monkeypatch):
+    config = SimpleNamespace(
+        cloud=SimpleNamespace(bucket="fakebucket", project_number="", location="asia-south1"),
+        paths=SimpleNamespace(source_drive=str(upload_lab["fy"]), gcs_key_path=""),
+    )
+    monkeypatch.setattr(upload_cli, "_load_config", lambda path: config)
+
+    code = upload_cli.main([
+        "--config", str(tmp_path / "ignored.yaml"),
+        "--rclone-config", str(upload_lab["cfg"]),
+        "--source", str(upload_lab["source"]),
+        "--fy", "FY24-25",
+        "--tier", "ARCHIVE",
+        "--yes",
+        "--verbose",
+        "--log-dir", str(tmp_path / "logs"),
+    ])
+
+    assert code == 2
+    assert not (upload_lab["bucket"] / "FY24-25").exists()

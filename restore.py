@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""Bulk restore CLI - list FY folders in the bucket, restore one whole FY.
+"""Bulk restore CLI - list folders in the bucket, restore one whole folder.
 
 Disaster-recovery use:
     python restore.py --config C:\\AAMBackup\\config.yaml --list
     python restore.py --config C:\\AAMBackup\\config.yaml --fy FY26-27 --target D:\\Restore
-    python restore.py --config C:\\AAMBackup\\config.yaml --fy FY25-26 --target D:\\Restore
+    python restore.py --config C:\\AAMBackup\\config.yaml --fy archive --target D:\\Restore
 
-It restores the **latest live state** of the selected FY into
-`<target>\\<FY>` and verifies every file by MD5. Single-file restores are
+It restores the **latest live state** of the selected folder into
+`<target>\\<folder>` and verifies every file by MD5. Single-file restores are
 left to the Google Cloud Console.
 
 On a clean machine without config.yaml, pass --bucket/--key/--project:
@@ -25,7 +25,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from core.restore import FY_RE, fy_info, list_fy_folders, restore_fy
+from core.restore import FY_RE, fy_info, list_fy_folders, restore_fy, valid_folder_name
 from core.run_artefacts import RunArtefacts
 from core.time_utils import now_iso
 
@@ -75,6 +75,8 @@ def _forbidden_paths(config, config_path: Path | None) -> list[str]:
             config.paths.lan_destination,
             config.paths.runtime_dir,
         ])
+        from core.fy_overlap import protected_folders
+        paths.extend(protected_folders(config))          # the early next year's folders too (R-20)
     if config_path is not None:
         paths.append(str(config_path.parent))
     for system in (r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)",
@@ -90,12 +92,13 @@ def _print_folder_table(result: dict, sizes: bool, key: str, project: str,
         print(f"ERROR: {result['error']}", file=sys.stderr)
         return
     folders = result.get("folders") or []
-    print(f"FY folders in {result.get('remote')}:")
+    print(f"Top-level folders in {result.get('remote')}:")
     if not folders:
         print("  (none found)")
         return
     for folder in folders:
-        line = f"  {folder['name']}"
+        tag = "[FY]" if folder.get("is_fy") else "[other]"
+        line = f"  {tag:<7} {folder['name']}"
         if sizes:
             info = fy_info(
                 folder["name"], bucket=result["bucket"], gcs_key_path=key,
@@ -107,21 +110,19 @@ def _print_folder_table(result: dict, sizes: bool, key: str, project: str,
             else:
                 line += f"   {info['count']} files, {info['bytes'] / 2**20:.1f} MiB"
         print(line)
-    others = result.get("other_folders") or []
-    if others:
-        print("Other prefixes (not FY folders): " + ", ".join(others))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Restore a whole financial-year folder from Google Cloud Storage.",
+        description="Restore a whole folder from Google Cloud Storage.",
     )
-    parser.add_argument("--list", action="store_true", help="list the FY folders in the bucket")
+    parser.add_argument("--list", action="store_true",
+                        help="list the top-level folders in the bucket")
     parser.add_argument("--sizes", action="store_true", help="with --list, also show count/bytes")
-    parser.add_argument("--fy", help="FY folder to restore, e.g. FY26-27")
-    parser.add_argument("--target", help="destination parent folder; the FY is created inside it")
+    parser.add_argument("--fy", help="folder to restore, e.g. FY26-27 or archive")
+    parser.add_argument("--target", help="destination parent folder; the folder is created inside it")
     parser.add_argument("--into", action="store_true",
-                        help="restore directly into --target instead of --target\\FY")
+                        help="restore directly into --target instead of --target\\<folder>")
     parser.add_argument("--config", help="config.yaml (defaults: cwd, install config)")
     parser.add_argument("--bucket", help="GCS bucket (overrides config)")
     parser.add_argument("--key", help="service-account JSON key (overrides config)")
@@ -180,11 +181,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if not result.get("error") else 1
 
     if not args.fy:
-        print("ERROR: choose an FY with --fy (use --list to see them).", file=sys.stderr)
+        print("ERROR: choose a folder with --fy (use --list to see them).", file=sys.stderr)
         return 2
-    if not FY_RE.fullmatch(args.fy):
-        print(f"ERROR: {args.fy!r} is not an FY folder like FY26-27.", file=sys.stderr)
+    folder = args.fy.strip()
+    if not valid_folder_name(folder):
+        print(f"ERROR: {args.fy!r} is not a top-level folder name.", file=sys.stderr)
         return 2
+    if FY_RE.fullmatch(folder):
+        folder = folder.upper()
     if not args.target:
         print("ERROR: choose a destination folder with --target.", file=sys.stderr)
         return 2
@@ -193,17 +197,17 @@ def main(argv: list[str] | None = None) -> int:
     if not parent.exists() or not parent.is_dir():
         print(f"ERROR: destination folder does not exist: {parent}", file=sys.stderr)
         return 2
-    final_target = parent if args.into else parent / args.fy
+    final_target = parent if args.into else parent / folder
 
     info = fy_info(
-        args.fy, bucket=bucket, gcs_key_path=key, project_number=project,
+        folder, bucket=bucket, gcs_key_path=key, project_number=project,
         location=location, storage_class=storage, rclone_config_path=args.rclone_config,
     )
     if info.get("error"):
-        print(f"ERROR: cannot read {args.fy}: {info['error']}", file=sys.stderr)
+        print(f"ERROR: cannot read {folder}: {info['error']}", file=sys.stderr)
         return 1
-    print(f"FY:           {args.fy}")
-    print(f"Source:       gs://{bucket}/{args.fy}")
+    print(f"Folder:       {folder}")
+    print(f"Source:       gs://{bucket}/{folder}")
     print(f"Files:        {info['count']} ({info['bytes'] / 2**20:.1f} MiB)")
     print(f"Destination:  {final_target}")
     print("Mode:         latest state, MD5-verified" +
@@ -219,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         if not sys.stdin.isatty():
             print("ERROR: non-interactive; pass --yes to confirm.", file=sys.stderr)
             return 2
-        expected = f"RESTORE {args.fy} TO {final_target}"
+        expected = f"RESTORE {folder} TO {final_target}"
         print(f"Type exactly: {expected}")
         if input("> ").strip() != expected:
             print("Aborted. Nothing was changed.")
@@ -228,11 +232,11 @@ def main(argv: list[str] | None = None) -> int:
     stamp = now_iso().replace(":", "").replace("+", "_")[:18]
     artefacts = RunArtefacts(
         Path(args.log_dir).resolve(),
-        f"restore_{args.fy}_{stamp}_{uuid.uuid4().hex[:6]}",
+        f"restore_{folder}_{stamp}_{uuid.uuid4().hex[:6]}",
     )
     try:
         result = restore_fy(
-            parent, fy=args.fy, bucket=bucket, gcs_key_path=key, project_number=project,
+            parent, fy=folder, bucket=bucket, gcs_key_path=key, project_number=project,
             location=location, storage_class=storage, rclone_config_path=args.rclone_config,
             transfers=args.transfers, checkers=args.checkers, timeout_s=args.timeout,
             into=args.into, allow_non_empty=args.force, dry_run=args.dry_run,

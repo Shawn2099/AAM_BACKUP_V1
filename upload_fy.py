@@ -1,13 +1,14 @@
 #!/usr/bin/env python
-"""Bulk upload one old FY folder to Google Cloud Storage.
+"""Bulk upload one local folder to Google Cloud Storage.
 
     python upload_fy.py --config C:\\AAMBackup\\config.yaml --list-local
     python upload_fy.py --config C:\\AAMBackup\\config.yaml ^
         --source E:\\Archive --fy FY24-25 --tier ARCHIVE
     python upload_fy.py --config C:\\AAMBackup\\config.yaml ^
-        --source E:\\Archive --fy FY24-25 --tier COLDLINE --dry-run
+        --source E:\\Archive --fy archive --tier COLDLINE --dry-run
 
-The destination is always `gs://<bucket>/<FY>`. Only `rclone copy` is used:
+The destination is always `gs://<bucket>/<folder>`, where the folder is an FY
+(`FY24-25`) or any other folder name (`archive`). Only `rclone copy` is used:
 nothing is deleted, and an interrupted run resumes by re-running the command.
 There is no time limit unless `--timeout` is supplied.
 """
@@ -22,7 +23,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from core.upload import list_local_fy_folders, upload_fy
+from core.upload import list_local_fy_folders, resolve_local_folder, upload_fy
 
 
 def _candidate_configs() -> list[Path]:
@@ -79,12 +80,12 @@ def _local_size(path: Path) -> tuple[int, int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Upload a whole FY folder from a local disk to Google Cloud Storage.",
+        description="Upload a whole folder from a local disk to Google Cloud Storage.",
     )
     parser.add_argument("--list-local", action="store_true",
-                        help="list FY folders under --source")
-    parser.add_argument("--source", help="parent holding FY folders, or the FY folder itself")
-    parser.add_argument("--fy", help="FY folder to upload, e.g. FY24-25")
+                        help="list folders under --source")
+    parser.add_argument("--source", help="parent holding the folder, or the folder itself")
+    parser.add_argument("--fy", help="folder to upload, e.g. FY24-25 or archive")
     parser.add_argument("--tier", choices=("STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE"),
                         help="storage class for new objects")
     parser.add_argument("--bucket", help="GCS bucket (overrides config)")
@@ -116,11 +117,16 @@ def main(argv: list[str] | None = None) -> int:
     key = args.key or (config.paths.gcs_key_path if config else "")
     project = args.project or (config.cloud.project_number if config else "")
     location = args.location or (config.cloud.location if config else "asia-south1")
-    current_fy = ""
+    protected: list[str] = []          # every ACTIVE year: the configured one and, with overlap, the early next one
     if config:
+        from core.fy_overlap import protected_fy_names
+        try:
+            protected = [n.casefold() for n in protected_fy_names(config)]
+        except AttributeError:         # a partial config object: fall back to the configured folder name below
+            protected = []
         leaf = Path(config.paths.source_drive).name.upper()
-        if leaf.startswith("FY"):
-            current_fy = leaf
+        if leaf.startswith("FY") and leaf.casefold() not in protected:
+            protected.append(leaf.casefold())
 
     source = args.source
     if not source and config:
@@ -134,9 +140,10 @@ def main(argv: list[str] | None = None) -> int:
         if listing.get("error"):
             print(f"ERROR: {listing['error']}", file=sys.stderr)
             return 1
-        print(f"Local FY folders under {listing['source']}:")
+        print(f"Local folders under {listing['source']}:")
         for folder in listing.get("folders") or []:
-            print(f"  {folder['name']}   {folder['path']}")
+            tag = "[FY]" if folder.get("is_fy") else "[other]"
+            print(f"  {tag:<7} {folder['name']}   {folder['path']}")
         return 0
 
     if not bucket:
@@ -146,33 +153,39 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: no GCS key. Pass --key (or --rclone-config for testing).", file=sys.stderr)
         return 2
     if not args.fy:
-        print("ERROR: choose an FY with --fy (use --list-local to see them).", file=sys.stderr)
+        print("ERROR: choose a folder with --fy (use --list-local to see them).", file=sys.stderr)
         return 2
     if not args.tier:
         print("ERROR: choose the storage tier with --tier "
               "(STANDARD, NEARLINE, COLDLINE, ARCHIVE).", file=sys.stderr)
         return 2
     if not source:
-        print("ERROR: pass --source (the parent holding the FY folder).", file=sys.stderr)
+        print("ERROR: pass --source (the parent holding the folder).", file=sys.stderr)
         return 2
 
-    fy = args.fy.strip().upper()
-    root = Path(source).expanduser()
-    fy_dir = root if root.name.upper() == fy else root / fy
-    if not fy_dir.is_dir():
-        print(f"ERROR: {fy} not found under {root}", file=sys.stderr)
+    requested = args.fy.strip()
+    try:
+        fy_dir = resolve_local_folder(source, requested)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    folder = fy_dir.name
+    if folder.casefold() in protected:
+        print(
+            f"ERROR: {folder} is a live FY (the configured year or, with the overlap on, the early next year); "
+            "this tool uploads closed/old folders only. The nightly cloud backup owns that prefix.",
+            file=sys.stderr,
+        )
         return 2
     count, total = _local_size(fy_dir)
-    remote = f"gs://{bucket}/{fy}"
+    remote = f"gs://{bucket}/{folder}"
 
-    print(f"FY:           {fy}")
+    print(f"Folder:       {folder}")
     print(f"Source:       {fy_dir}")
     print(f"Destination:  {remote}")
     print(f"Tier:         {args.tier}")
     print(f"Files:        {count} ({total / 2**20:.1f} MiB)")
     print("Time limit:   " + ("none" if args.timeout is None else f"{args.timeout:.0f}s"))
-    if current_fy and fy == current_fy:
-        print("WARNING: this is the current live FY; the nightly backup also writes here.")
     if args.dry_run:
         print("Mode:         dry run")
     elif args.verify_only:
@@ -182,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         if not sys.stdin.isatty():
             print("ERROR: non-interactive; pass --yes to confirm.", file=sys.stderr)
             return 2
-        expected = f"UPLOAD {fy} TO {remote} AS {args.tier}"
+        expected = f"UPLOAD {folder} TO {remote} AS {args.tier}"
         print(f"Type exactly: {expected}")
         if input("> ").strip() != expected:
             print("Aborted. Nothing was changed.")
@@ -194,11 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     stamp = now_iso().replace(":", "").replace("+", "_")[:18]
     artefacts = RunArtefacts(
         Path(args.log_dir).resolve(),
-        f"upload_{fy}_{stamp}_{uuid.uuid4().hex[:6]}",
+        f"upload_{folder}_{stamp}_{uuid.uuid4().hex[:6]}",
     )
     try:
         result = upload_fy(
-            fy_dir, bucket=bucket, fy=fy, storage_class=args.tier,
+            fy_dir, bucket=bucket, fy=folder, storage_class=args.tier,
             gcs_key_path=key, project_number=project, location=location,
             rclone_config_path=args.rclone_config,
             transfers=args.transfers, checkers=args.checkers, bwlimit=args.bwlimit,
