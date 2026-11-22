@@ -30,6 +30,7 @@ LEG_LABEL = {
     "audit": "Weekly safety check",
     "watchdog": "Backup program on the server",
     "report": "Backup reports",
+    "db": "Backup history database",
     "rollover": "Financial-year switch",
     "rollover_files": "Financial-year switch",     # the "new year files are not backed up" alert has its own mail group
 }

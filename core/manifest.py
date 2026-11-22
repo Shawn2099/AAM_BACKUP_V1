@@ -1365,6 +1365,13 @@ class ManifestDB:
             conn.execute("INSERT OR REPLACE INTO db_meta (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
 
+    def get_meta(self, key: str) -> str | None:
+        """One value of the db_meta table (None when unset)."""
+        return self._meta(key)
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._set_meta(key, value)
+
     def meta_created_at(self) -> str | None:
         """When this database file was created (None for one that predates the marker)."""
         return self._meta("created_at")
