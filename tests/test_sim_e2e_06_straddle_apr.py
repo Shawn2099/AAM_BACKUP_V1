@@ -157,3 +157,31 @@ def test_d7_slot_timeout_requests_no_approval(sim):
     sim.play([events[_idx("rollover", 4, 1)]])
     sim.slot_busy = False
     assert sim.approvals() == [], sim.approvals()
+
+
+def test_s6_switch_pending_ends_with_the_finished_switch_journal(sim):
+    """Non-vacuity M5: `switch_pending` reads the journal. After the 2 April switch the journal says
+    config_switch done; a config that still names FY26-27 (e.g. an older config.yaml put back) must NOT
+    make the closed year pending again (spec: PLAN_FY_OVERLAP section 4, 'the switch has not happened yet').
+    Hand: pending False, active set [FY26-27] only (the calendar is FY27-28, the early folder is not 'next')."""
+    from core import fy_overlap
+    from core.manifest import ManifestDB
+
+    sim.seed_to_mar28()
+    _hooks(sim)
+    events = _events()
+    sim.play(events[:_idx("rollover", 4, 1) ])
+    sim.slot_busy = True
+    sim.play([events[_idx("rollover", 4, 1)]])
+    sim.slot_busy = False
+    sim.play(events[_idx("rollover", 4, 1) + 1:_idx("rollover", 4, 2) + 1])
+    assert sim.switch_writes == [(B, A)], sim.switch_writes
+    db = ManifestDB.from_config(sim.cfg)
+    try:
+        # right after the switch (config says FY27-28) it is not pending
+        assert fy_overlap.switch_pending(sim.cfg, db, _dt.date(2027, 4, 3)) is False
+        sim.point_config_at(A)                                   # the stale config
+        assert fy_overlap.switch_pending(sim.cfg, db, _dt.date(2027, 4, 3)) is False
+        assert fy_overlap.active_folders(sim.cfg, db, _dt.date(2027, 4, 3)) == [A]
+    finally:
+        db.close()

@@ -135,3 +135,25 @@ def test_A_apr1_2100_regular_run_backs_up_fy_b_ok(sim):
                    "2027-04-01T21:00%")
     assert [f for f, _ in rows] == [B], rows
     assert rows[0][1] in OK, rows
+
+
+# (A') the year is closed while the run waits for the slot (non-vacuity M10)
+
+def test_A_year_closed_while_waiting_for_the_slot_is_skipped(sim):
+    """The 1 Apr 21:00 LAN works out [FY27-28, FY26-27] (the 06:00 rollover has not run: switch pending), then
+    waits for the slot; while it waits the config moves to FY27-28 (the rollover switched and closed FY26-27).
+    Hand: after the wait only FY27-28 is backed up: no robocopy call and no run row for FY26-27, no failure."""
+    sim.seed_to_mar28()
+    before = [e for e in CAL_A
+              if e.at < A_APR1_REG and not (e.kind == "rollover" and e.at.day == 1 and e.at.month == 4)]
+    sim.play(before)
+    assert sim.switch_writes == [], "the 1 Apr rollover must not have run"
+    sim.on_slot = lambda: sim.point_config_at(B)
+    sim.play([Ev("lan", A_APR1_REG, A_APR1_REG)])
+    assert sim.errors == [], sim.errors
+    assert sim.on_slot is None, "the slot hook did not run"
+    assert sorted({c.fy for c in sim.calls if c.leg == "lan" and c.when == A_APR1_REG}) == [B]
+    rows = sim.sql("SELECT fy, status FROM run_history WHERE mode = 'lan' AND started_at LIKE ? ORDER BY id",
+                   "2027-04-01T21:00%")
+    assert [f for f, _ in rows] == [B], rows
+    assert rows[0][1] in OK, rows

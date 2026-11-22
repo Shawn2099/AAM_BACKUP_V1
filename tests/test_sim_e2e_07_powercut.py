@@ -112,7 +112,9 @@ def test_s7_power_cut_in_the_final_cloud_backup_then_reboot_and_the_switch_still
     assert states and all(s in ("done", "skipped") for (s,) in states), states
 
     assert sim.acts() and [a[0] for a in sim.acts()] == [B], sim.acts()   # one activation, ever
-    assert not sim.cfg.paths.backup_lock_path.exists()
+    # (the former 'backup.lock absent' check was trivially true: the rig fakes the slot, so no lock is ever
+    # written; replaced by what the sweep and the re-run really leave: no row is still RUNNING at the end)
+    assert sim.sql("SELECT COUNT(*) FROM run_history WHERE status LIKE '%_RUNNING'") == [(0,)]
 
     # after the switch only FY27-28 is backed up
     late = sim.sql("SELECT fy, status FROM run_history WHERE mode IN ('lan','cloud') "

@@ -257,6 +257,7 @@ class Sim:
         self.shutdowns = 0
         self.slots = 0
         self.slot_busy = False
+        self.on_slot = None          # one-shot callable run when the slot is acquired
         self.switch_writes: list[tuple] = []
         self.archive_calls: list[dict] = []
         self.archive_ok = True
@@ -303,7 +304,18 @@ class Sim:
         mp.setattr(flow, "cleanup_orphaned_robocopy_logs", lambda **k: None)
         mp.setattr(flow, "log_retention_task", MagicMock())
         mp.setattr(flow, "time", _NoSleepTime())
-        mp.setattr(flow, "_scheduled_time", lambda: sim.sched)
+        # flow._scheduled_time stays REAL (non-vacuity M4): only the Prefect context it reads is faked, and
+        # only for that one caller; every other FlowRunContext.get() is the real one.
+        import prefect.context as _pctx
+        _real_get = _pctx.FlowRunContext.get
+
+        def _ctx_get(*a, **k):
+            if sys._getframe(1).f_code.co_name == "_scheduled_time" and sim.sched is not None:
+                return SimpleNamespace(flow_run=SimpleNamespace(
+                    auto_scheduled=True, expected_start_time=sim.sched.in_timezone("UTC")))
+            return _real_get(*a, **k)
+
+        mp.setattr(_pctx.FlowRunContext, "get", staticmethod(_ctx_get))
         mp.setattr(flow, "_scheduled_lateness_seconds", lambda: sim.lateness_s)
         mp.setattr(flow, "_flow_run_prefix", lambda: f"f{sim.now.format('YYYYMMDDHHmm')}")
         mp.setattr(flow, "check_clock", lambda **k: ClockResult(CLOCK_OK, 1.0, "google", ""))
@@ -319,6 +331,9 @@ class Sim:
             if sim.slot_busy:
                 raise TimeoutError("Timed out waiting for the backup slot")
             sim.slots += 1
+            if sim.on_slot is not None:          # what happens while a run waits for the slot (a rollover
+                hook, sim.on_slot = sim.on_slot, None   # that holds it switches the config)
+                hook()
             yield
 
         mp.setattr(flow, "_backup_slot", slot)

@@ -86,6 +86,10 @@ def test_s4_cloud_401_on_activation_night_with_smtp_outage(sim):
     # product-view: the dashboard shows the undelivered-alert item on Jan 1 09:00
     codes = [item["code"] for item in status["attention"]]
     assert "alerts_undelivered" in codes, codes
+    # hand: each FY's cloud-failure alert was attempted during the outage and is RECORDED as undelivered
+    for fy in (A, B):
+        assert sim.sql("SELECT status FROM notifications WHERE event_key = ?",
+                       f"backup:{fy}:cloud:CLOUD_FAILED") == [("FAILED",)], fy
 
     # the mail server comes back on Jan 2 00:00
     sim.go(outage_off)
