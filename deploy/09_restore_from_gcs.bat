@@ -72,8 +72,8 @@ set "LOG_DIR=%RUNTIME_DIR%\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 
 :: Timestamped log file per restore session
-for /f "tokens=2 delims==" %%I in ('wmic os get LocalDateTime /value') do set "DT=%%I"
-set "TIMESTAMP=%DT:~0,4%-%DT:~4,2%-%DT:~6,2%_%DT:~8,2%-%DT:~10,2%"
+rem wmic is removed on Windows 11 24H2+; Windows PowerShell 5.1 exists on every supported OS
+for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HH-mm"') do set "TIMESTAMP=%%I"
 set "LOG_FILE=%LOG_DIR%\restore_%TIMESTAMP%.log"
 
 :: -- Banner --------------------------------------------------------------
