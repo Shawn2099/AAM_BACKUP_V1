@@ -2473,7 +2473,8 @@ def log_retention_task(config) -> dict:
         for pattern in _SERVICE_LOG_GLOBS:
             removed["service_logs"] += purge_older_than(
                 config.paths.log_directory,
-                config.run_logs.service_log_retention_days, glob=pattern)
+                config.run_logs.service_log_retention_days, glob=pattern,
+                files=True)
     except Exception as e:  # noqa: BLE001 - housekeeping must never fail the flow
         logger.warning(f"Log retention task failed (non-fatal): {e}")
     logger.info(f"Log retention: removed {removed}")

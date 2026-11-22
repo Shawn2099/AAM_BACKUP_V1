@@ -111,7 +111,7 @@ def test_purge_removes_only_old_day_folders_and_files(tmp_path):
     f_old, f_new = logs / "agent_svc-1.log", logs / "agent_svc-2.log"
     f_old.write_text("x"); f_new.write_text("y")
     os.utime(f_old, (old, old))
-    assert purge_older_than(logs, 90, glob="agent_svc-*.log", now=now) == 1
+    assert purge_older_than(logs, 90, glob="agent_svc-*.log", now=now, files=True) == 1
     assert not f_old.exists() and f_new.exists()
 
 

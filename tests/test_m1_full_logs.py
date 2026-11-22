@@ -57,6 +57,28 @@ def test_log_retention_purges_only_expired(tmp_path):
     assert app_log.exists()
 
 
+def test_log_retention_keeps_old_loose_file_in_run_logs_root(tmp_path):
+    """opus-decision A4: only day folders are purged from the run-logs root;
+    a misset run_logs.dir must not lose plain files. Service logs still go."""
+    cfg = _cfg(tmp_path, retention_days=90, service_log_retention_days=30)
+    runs = cfg.run_logs_dir
+    runs.mkdir(parents=True, exist_ok=True)
+    notes = runs / "notes.txt"
+    notes.write_text("keep me")
+    _age(notes, 400)
+    logs = Path(cfg.paths.log_directory)
+    logs.mkdir(parents=True, exist_ok=True)
+    svc_old = logs / "agent_svc-20260101T000000.log"
+    svc_old.write_text("x")
+    _age(svc_old, 31)
+
+    removed = flow.log_retention_task.fn(cfg)
+
+    assert removed == {"run_logs": 0, "service_logs": 1}
+    assert notes.exists()
+    assert not svc_old.exists()
+
+
 def test_rollover_check_runs_retention_even_when_rollover_blocked(tmp_path):
     from core.fy_rollover import RolloverError
 
