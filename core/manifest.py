@@ -748,6 +748,17 @@ class ManifestDB:
             rows = self._get_conn().execute(sql + " ORDER BY started_at DESC", args).fetchall()
             return [dict(r) for r in rows]
 
+    def first_run_started_at(self, mode: str, fy: str) -> str | None:
+        """Start time (stored IST ISO string) of the first run row ever of this leg and FY, or None.
+        The report window of a leg never starts before it (an install or switch-on mid-week is not a
+        missed night; opus-decision shortfall). `fy` is required (ALL_FYS for any FY)."""
+        clause, fy_args = self._fy_filter(fy)
+        with self._lock:
+            row = self._get_conn().execute(
+                "SELECT MIN(started_at) AS first FROM run_history WHERE mode = ?" + clause,
+                (mode, *fy_args)).fetchone()
+            return row["first"] if row and row["first"] else None
+
     def merge_run_metrics(self, run_id: str, fields: dict) -> bool:
         """Add `fields` to the extended_metrics JSON of an already recorded run (never drops the
         existing keys). Used for what is known only after the run row was written - the one NAS
