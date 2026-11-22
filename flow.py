@@ -2054,7 +2054,17 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
             if early_nas_folder:
-                nas_folder = fy_overlap.ensure_overlap_nas_folder(config, _effective_fy_prefix(config))
+                early_fy = _effective_fy_prefix(config)
+                try:   # D5: a year with a LAN success must not have its folder/marker silently re-made
+                    _db = ManifestDB.from_config(config)
+                    try:
+                        established = _db.last_successful_run("lan", fy=early_fy) is not None
+                    finally:
+                        _db.close()
+                except Exception as e:  # noqa: BLE001 - fail closed: let G5 ask
+                    logger.warning(f"Early FY established check failed ({e}); treating as established")
+                    established = True
+                nas_folder = fy_overlap.ensure_overlap_nas_folder(config, early_fy, established=established)
                 logger.info(f"Early FY NAS folder: {nas_folder['state']} ({nas_folder['reason']})")
             # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
             # completed now that the NAS is awake - before G5 looks for the mount marker

@@ -599,10 +599,12 @@ def open_sibling_alerts(db) -> list[tuple[str, int]]:
 
 # ---- NAS folder (OV-2.5) --------------------------------------------------------------------
 
-def ensure_overlap_nas_folder(config: AppConfig, fy: str) -> dict:
+def ensure_overlap_nas_folder(config: AppConfig, fy: str, *, established: bool = False) -> dict:
     """The NAS folder of `fy` for the LAN flow (NAS awake, before the first pipeline). Never raises.
     state: created | ok | marked | needs_confirmation | unreachable. Nothing is ever created above the
-    share root; a non-empty folder without the marker is left for guard G5 to ask about."""
+    share root; a non-empty folder without the marker is left for guard G5 to ask about.
+    `established` (the year already has a LAN success): a vanished folder or an empty one without the
+    marker is NOT re-created or re-marked; it returns needs_confirmation so G5 asks (AAM-NAS-09/10)."""
     nas = None
     try:
         if not config.lan.enabled:
@@ -612,6 +614,9 @@ def ensure_overlap_nas_folder(config: AppConfig, fy: str) -> dict:
             return {"state": "unreachable", "fy": fy, "path": str(nas),
                     "reason": f"the share {nas.parent} cannot be reached"}
         if not nas.exists():
+            if established:
+                return {"state": "needs_confirmation", "fy": fy, "path": str(nas),
+                        "reason": "NAS folder of an established year vanished: nothing created (guard G5 asks)"}
             nas.mkdir(exist_ok=False)             # never parents=True
             (nas / MOUNT_MARKER).touch()
             return {"state": "created", "fy": fy, "path": str(nas), "reason": "folder and marker created"}
@@ -622,6 +627,10 @@ def ensure_overlap_nas_folder(config: AppConfig, fy: str) -> dict:
         if MOUNT_MARKER.lower() in names:
             return {"state": "ok", "fy": fy, "path": str(nas), "reason": "marker present"}
         if not names:
+            if established:
+                return {"state": "needs_confirmation", "fy": fy, "path": str(nas),
+                        "reason": "empty folder without marker in an established year: nothing written "
+                                  "(guard G5 asks)"}
             (nas / MOUNT_MARKER).touch()
             return {"state": "marked", "fy": fy, "path": str(nas), "reason": "empty folder, marker written"}
         return {"state": "needs_confirmation", "fy": fy, "path": str(nas),
