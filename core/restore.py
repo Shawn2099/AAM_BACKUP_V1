@@ -65,10 +65,15 @@ def _fail(status: str, error: str, **extra) -> dict:
     return result
 
 
+# Characters Windows refuses in a file name (a ':' also makes 'D:evil' drive-relative or an NTFS stream).
+_ILLEGAL_NAME_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')
+
+
 def valid_folder_name(value: str | None) -> bool:
     """A single top-level prefix name (FY, `archive`, etc.), not a path."""
     text = (value or "").strip()
-    return bool(text) and "/" not in text and "\\" not in text and text not in (".", "..")
+    return (bool(text) and "/" not in text and "\\" not in text and text not in (".", "..")
+            and not _ILLEGAL_NAME_CHARS.search(text) and not text.endswith("."))
 
 
 def _norm(path: str | os.PathLike) -> str:
@@ -306,7 +311,11 @@ def validate_target(
 ) -> tuple[Path | None, str | None]:
     """Return (resolved target, error). Does not create anything."""
     try:
-        path = Path(target_dir).expanduser().resolve(strict=False)
+        raw = Path(target_dir).expanduser()
+        # the junction/symlink check must look at the path as given: resolve() follows it away
+        if raw.exists() and _is_reparse_point(raw):
+            return None, f"target is a junction/symlink; choose its real folder: {raw}"
+        path = raw.resolve(strict=False)
     except OSError as exc:
         return None, f"target path is not usable: {exc}"
 
@@ -888,7 +897,7 @@ def restore_fy(
             f"choose a folder name such as FY26-27 or archive (got {fy!r}); "
             "use --list to see them",
         )
-    if FY_RE.fullmatch(folder):
+    if FY_RE.fullmatch(folder.upper()):
         folder = folder.upper()
     parent = Path(target_parent).expanduser()
     if not parent.exists() or not parent.is_dir():
