@@ -338,6 +338,25 @@ def _degraded_mail_settings(raw: dict):
     return notifications, float(hours), Path(str(runtime))
 
 
+def _resolve_invalid_config(cfg) -> None:
+    """opus-decision L3: config.yaml loads again after an invalid-config mail (marker file present): send ONE
+    RESOLVED mail through core.notify (recorded in `notifications`, never held back by the cooldown) and
+    remove the marker. The marker goes whatever the delivery result: a failed mail is recorded FAILED and
+    shows on the dashboard; retrying every loop would block the watchdog. Never raises."""
+    try:
+        marker = Path(str(cfg.paths.runtime_dir)) / "watchdog_invalid_config.sent"
+        if not marker.exists():
+            return
+        from core.notify import AlertEvent, notify
+        notify(cfg, AlertEvent(
+            key="recovered:watchdog:invalid_config", kind="RECOVERED", mode="watchdog",
+            title="config.yaml is valid again",
+            message="config.yaml is valid again; the agent can start.", cooldown_hours=0))
+        marker.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Invalid-config RESOLVED mail skipped/failed: {e}")
+
+
 def _alert_invalid_config() -> None:
     """release-break SILENCE-2: when config.yaml cannot be loaded the agent cannot start and the
     normal alert path (which needs the same config) is dead. Send ONE ACTION_REQUIRED mail from the
@@ -348,7 +367,8 @@ def _alert_invalid_config() -> None:
         from models.config import CONFIG_PATH, load_config
 
         try:
-            load_config(CONFIG_PATH)
+            cfg = load_config(CONFIG_PATH)
+            _resolve_invalid_config(cfg)
             return
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
