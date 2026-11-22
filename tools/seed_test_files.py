@@ -119,10 +119,19 @@ def _pdf(rng, size):
     return out + b"%" + rng.randbytes(max(0, size - len(out) - 1)).replace(b"\n", b"x")  # pad after EOF
 
 
+_ZIP_TIME = (2020, 1, 1, 0, 0, 0)     # a fixed entry time: writestr(name, ...) stamps "now", so equal seeds differed
+
+
+def _zip_entry(name, compress_type):
+    info = zipfile.ZipInfo(name, date_time=_ZIP_TIME)
+    info.compress_type = compress_type
+    return info
+
+
 def _zip(rng, size):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
-        z.writestr("data.bin", rng.randbytes(max(1, size - 200)))
+        z.writestr(_zip_entry("data.bin", zipfile.ZIP_STORED), rng.randbytes(max(1, size - 200)))
     return buf.getvalue()
 
 
@@ -130,9 +139,10 @@ def _office(kind):
     def make(rng, size):
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("[Content_Types].xml", "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>")
-            z.writestr(f"{kind}/document.xml", _xml(rng, max(100, size // 2)))
-            z.writestr("docProps/blob.bin", rng.randbytes(max(1, size // 2)))
+            deflated = zipfile.ZIP_DEFLATED
+            z.writestr(_zip_entry("[Content_Types].xml", deflated), "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>")
+            z.writestr(_zip_entry(f"{kind}/document.xml", deflated), _xml(rng, max(100, size // 2)))
+            z.writestr(_zip_entry("docProps/blob.bin", deflated), rng.randbytes(max(1, size // 2)))
         return buf.getvalue()
     return make
 

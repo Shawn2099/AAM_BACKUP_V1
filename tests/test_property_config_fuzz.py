@@ -60,7 +60,9 @@ def test_mutated_config_is_refused_cleanly_or_accepted(path, value, extra):
         assert True
         return
     assert not extra, "unknown top-level section must be refused (StrictModel)"
-    assert isinstance(cfg, AppConfig)
+    # By behaviour, not class identity: other tests in a full run re-import models.config, so the class
+    # object can differ from the one imported at the top of this file (the failure only showed in full runs).
+    assert hasattr(cfg, "model_dump") and type(cfg).__name__ == "AppConfig"
     # accepted -> must survive a dump/load round trip unchanged
-    again = AppConfig.model_validate(cfg.model_dump(mode="json"))
+    again = type(cfg).model_validate(cfg.model_dump(mode="json"))
     assert again.model_dump(mode="json") == cfg.model_dump(mode="json")
