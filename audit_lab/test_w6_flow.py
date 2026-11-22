@@ -46,10 +46,10 @@ def rig(sandbox, monkeypatch):
     """Full production wiring: config.yaml on disk + real flow runtime + local GCS."""
     import core.lan_sync as ls
 
-    src = sandbox / "source" / "FY26-26"
+    src = sandbox / "source" / "FY26-27"
     for i in range(60):
         L.write_file(src / "Clients" / f"f_{i:04d}.txt", f"LEDGER {i}\n".encode() * 40)
-    nas = L.make_canary(sandbox / "nas" / "FY26-26")
+    nas = L.make_canary(sandbox / "nas" / "FY26-27")
     L.write_file(sandbox / "lab-key.json", b'{"type": "service_account"}')
 
     cfg = L.build_config(sandbox, source=src, lan_dest=str(nas), runtime=sandbox / "runtime")
@@ -100,9 +100,9 @@ def _db_rows(cfg_path: Path):
     from models.config import load_config
     c = load_config(str(cfg_path))
     m = ManifestDB(c.paths.database_path)
-    rows = m.get_recent_runs(10, fy="FY26-26")
-    lan_rows = m.file_count("lan_status", fy="FY26-26")
-    cloud_rows = m.file_count("cloud_status", fy="FY26-26")
+    rows = m.get_recent_runs(10, fy="FY26-27")
+    lan_rows = m.file_count("lan_status", fy="FY26-27")
+    cloud_rows = m.file_count("cloud_status", fy="FY26-27")
     m.close()
     return rows, lan_rows, cloud_rows
 
@@ -228,7 +228,7 @@ def test_w6_backup_flow_failure_alert_policy(rig, monkeypatch):
           f"status={[r['status'] for r in rows]} keys={[e.key for e in failures]}")
     # M3 3.4 (WP8): the duplicate page this test used to record is fixed.
     assert exc is not None and len(failures) == 1
-    assert failures[0].key == "backup:cloud:CLOUD_VERIFY_FAILED"
+    assert failures[0].key == "backup:FY26-27:cloud:CLOUD_VERIFY_FAILED"
 
 
 def test_w6_rollover_check_flow(rig, monkeypatch):
@@ -236,7 +236,7 @@ def test_w6_rollover_check_flow(rig, monkeypatch):
     final backups through the normal pipelines -> new folders + placeholder ->
     config backup -> config.yaml rewrite, all recorded.
 
-    The clock is pinned to the NEXT FY: the rig's FY26-26 folders are then
+    The clock is pinned to the NEXT FY: the rig's FY26-27 folders are then
     exactly one FY behind (the forward-only rule no longer treats any
     difference as a rollover - that was probe P4's backward-rollover bug)."""
     flow = rig["flow"]
@@ -297,7 +297,7 @@ def test_w6_integrity_audit_flow(rig, monkeypatch):
 
     c = load_config(str(rig["cfg_path"]))
     m = ManifestDB(c.paths.database_path)
-    audits = [m.latest_audit("lan", fy="FY26-26")]
+    audits = [m.latest_audit("lan", fy="FY26-27")]
     m.close()
     L.record("W6.integrity_audit_flow",
              "integrity_audit_flow records a durable audit row for the LAN leg",

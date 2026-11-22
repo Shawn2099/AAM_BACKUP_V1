@@ -323,7 +323,7 @@ def test_w19_trigger_timeout(ui_rig):
 
 # ── trigger endpoints ─────────────────────────────────────────────────────────
 
-def _prep_triggers(ui_rig, *, leg_enabled=True, running=False, verify=None,
+def _prep_triggers(ui_rig, *, leg_enabled=True, running=False, verify=False,
                    run=None, raise_exc=None):
     ui = ui_rig["ui"]
     ui_rig["cfg"].cloud.enabled = leg_enabled
