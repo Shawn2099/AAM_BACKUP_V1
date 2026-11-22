@@ -1232,6 +1232,29 @@ class ManifestDB:
                 (mode, after_id, *fy_args, *key_args)).fetchone()
         return row is not None
 
+    def lost_problem(self, mode: str, *, fy: str, keys: tuple[str, ...] | None = None) -> dict | None:
+        """Newest problem mail of this mode (and FY) that could NOT be delivered (FAILED) after the last
+        RECOVERED mail, while no problem mail of the incident was SENT: the person was never told about
+        it (opus-decision L1). None when there is none."""
+        clause, fy_args = self._fy_filter(fy)
+        kclause, key_args = self._key_filter(keys)
+        with self._lock:
+            conn = self._get_conn()
+            boundary = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM notifications WHERE mode = ? AND kind = 'RECOVERED' "
+                f"AND status IN ('SENT', 'CLOSED'){clause}{kclause}", (mode, *fy_args, *key_args)).fetchone()[0]
+            delivered = conn.execute(
+                "SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
+                f"AND kind != 'RECOVERED'{clause}{kclause} LIMIT 1",
+                (mode, boundary, *fy_args, *key_args)).fetchone()
+            if delivered:
+                return None
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE mode = ? AND id > ? AND status = 'FAILED' "
+                f"AND kind != 'RECOVERED'{clause}{kclause} ORDER BY id DESC LIMIT 1",
+                (mode, boundary, *fy_args, *key_args)).fetchone()
+        return dict(row) if row else None
+
     def last_open_incident(self, mode: str, *, fy: str,
                            keys: tuple[str, ...] | None = None) -> dict | None:
         """Newest SENT problem email of this mode (and FY) with no RECOVERED after it. A
@@ -1303,6 +1326,20 @@ class ManifestDB:
                 "ORDER BY n.id DESC", (cutoff,)).fetchall()
             return [dict(r) for r in rows]
 
+    def undelivered_alerts(self, after_id: int, kinds: tuple[str, ...]) -> list[dict]:
+        """FAILED mails of the alerts list (kinds `kinds`, not the digest itself) newer than notification
+        `after_id` with no later SENT row of the same key, oldest first (opus-decision L1 digest)."""
+        marks = ", ".join("?" for _ in kinds)
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                f"SELECT n.* FROM notifications n WHERE n.status = 'FAILED' AND n.id > ? AND n.kind IN ({marks}) "
+                "AND n.event_key != ? AND COALESCE(n.audience, 'alerts') IN ('alerts', 'both') "
+                "AND NOT EXISTS (SELECT 1 FROM notifications s WHERE s.event_key = n.event_key "
+                "AND s.status = 'SENT' AND s.id > n.id) ORDER BY n.id",
+                (after_id, *kinds, "undelivered:digest")).fetchall()
+        return [dict(r) for r in rows]
+
     def record_config_change(self, data: dict) -> None:
         with self._lock:
             conn = self._get_conn()
@@ -1327,6 +1364,13 @@ class ManifestDB:
             conn = self._get_conn()
             conn.execute("INSERT OR REPLACE INTO db_meta (key, value) VALUES (?, ?)", (key, value))
             conn.commit()
+
+    def get_meta(self, key: str) -> str | None:
+        """One value of the db_meta table (None when unset)."""
+        return self._meta(key)
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._set_meta(key, value)
 
     def meta_created_at(self) -> str | None:
         """When this database file was created (None for one that predates the marker)."""

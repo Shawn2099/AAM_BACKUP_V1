@@ -996,6 +996,16 @@ def dismiss_blocked_run(approval_id: str, request: Request):
                                     "Dismissed. Nothing will run on this request; the next scheduled backup checks again")}
 
 
+@app.post("/attention/db-recreated/ack")
+def acknowledge_db_recreated(request: Request):
+    """opus-decision L2: an admin has seen that the backup database was created new; clears the red item."""
+    _require_approval_rights(request)
+    from core import db_identity
+    if not db_identity.acknowledge(get_db(), _approval_actor(request)):
+        raise HTTPException(status_code=409, detail=messages.act("Refresh the page", "There is nothing to acknowledge"))
+    return {"status": "acknowledged", "detail": "Acknowledged. The red notice is cleared."}
+
+
 # ── Settings (owner decision DEC-9) ──────────────────────────
 # Every config key except the lock-out keys can be changed here by a signed-in
 # person. core.config_edit validates the whole candidate exactly like service

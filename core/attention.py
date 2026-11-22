@@ -416,6 +416,18 @@ def compute_attention(db, config, now=None) -> list[dict]:
                 else "Keep working in this year's folder until the new one is backed up (or ask support)")
         items.append(_item(RED, fy_overlap.sibling_key(found), act(todo, message)))
 
+    try:                       # opus-decision L2: the backup database was created new although runs exist
+        from core import db_identity
+        recreated = db_identity.pending(db)
+    except Exception as e:  # noqa: BLE001 - the dashboard still renders
+        logger.warning(f"Could not read the database identity notice: {e}")
+        recreated = None
+    if recreated is not None:
+        items.append(_item(RED, "db:recreated", act(
+            "Check for a restore mistake, then press Acknowledge on the dashboard",
+            "The backup database was created new although earlier runs exist: the backup history and "
+            "approvals were lost. Backups still run")))
+
     from core import alert_class
 
     for cls in alert_class.switched_off(config):

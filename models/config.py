@@ -570,6 +570,15 @@ class AlertsConfig(StrictModel):
         description="An alert with no resolution signal of its own (financial-year, dashboard and other "
                     "alerts) that has not occurred again for this many days counts as over: the next "
                     "occurrence is a NEW problem and its first email is always sent.")
+    undelivered_digest_max_age_hours: int = Field(
+        default=72, ge=0, le=336,
+        description="When alert emails could not be delivered (mail server down) and mail works again, ONE "
+                    "digest email lists the alerts of the last this many hours that never arrived. "
+                    "Older ones are not sent again. 0 = no digest.")
+    undelivered_digest_retry_minutes: int = Field(
+        default=30, ge=5, le=1440,
+        description="While the digest email cannot be delivered either, the watchdog tries again at most "
+                    "once per this many minutes.")
     stale_repeat_hours: float = Field(
         default=24, ge=1, le=720,
         description="The 'backup overdue' email for a leg is repeated at most once per this many "

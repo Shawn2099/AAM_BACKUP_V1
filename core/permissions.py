@@ -27,7 +27,7 @@ import shutil
 from loguru import logger
 
 from core import guards
-from core.faults import TRANSPORT_CODES, coded
+from core.faults import TRANSPORT_CODES, UNREACHABLE_WINERRORS, coded
 from core.process import resolve_binary
 from core.rclone_errors import find_transport_failure
 from core.run_artefacts import RunArtefacts
@@ -120,7 +120,7 @@ def _remove_quietly(path: str) -> None:
 
 # Windows error numbers for "the NAS cannot be reached" (not a rights problem): network path not found,
 # network name not found, host not found / no longer available, semaphore timeout, network down.
-_UNREACHABLE_WINERRORS = {53, 67, 64, 59, 121, 1222, 1231, 1232}
+_UNREACHABLE_WINERRORS = UNREACHABLE_WINERRORS
 _PATH_NOT_FOUND_WINERROR = 3
 
 

@@ -110,8 +110,19 @@ function renderAttention(items) {
     if (!items || !items.length) { box.innerHTML = ''; return; }
     box.innerHTML = items.map(function(i) {
         var red = i.level === 'red';
-        return '<div class="banner ' + (red ? 'red' : 'amber') + '">' + escHtml(i.message) + '</div>';
+        var ack = i.code === 'db:recreated'
+            ? ' <button class="btn-secondary" onclick="ackDbRecreated()">Acknowledge</button>' : '';
+        return '<div class="banner ' + (red ? 'red' : 'amber') + '">' + escHtml(i.message) + ack + '</div>';
     }).join('');
+}
+async function ackDbRecreated() {
+    if (!confirm('Acknowledge? Confirm only after checking that no backup database was lost by mistake.')) return;
+    try {
+        const response = await fetch('/attention/db-recreated/ack', { method: 'POST' });
+        const data = await response.json();
+        showToast(data.detail || (response.ok ? 'Done.' : 'Refresh the page and try again.'), response.ok ? 'success' : 'error');
+    } catch (err) { showToast('Check your connection and try again (' + err.message + ').', 'error'); }
+    await updateStatus();
 }
 
 // The one sentence at the top: what a partner needs to know without reading the cards.

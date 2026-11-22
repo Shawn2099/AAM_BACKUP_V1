@@ -141,6 +141,25 @@ def _mark_abandoned_runs():
         print(f"[launch] Warning: could not mark abandoned runs (non-fatal): {e}")
 
 
+def _check_db_identity():
+    """opus-decision L2: tell the owner when the manifest database was silently re-created (a lost or
+    renamed manifest.db while earlier runs exist). Loud, never blocks startup."""
+    try:
+        from core import db_identity
+        from core.manifest import ManifestDB
+        from models.config import CONFIG_PATH, load_config
+
+        cfg = load_config(CONFIG_PATH)
+        db = ManifestDB.from_config(cfg)
+        try:
+            if db_identity.check_at_startup(cfg, db):
+                print("[launch] WARNING: the backup database was created new although earlier runs exist")
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[launch] Warning: could not check the database identity (non-fatal): {e}")
+
+
 def _cancel_orphaned_runs():
     """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session.
 
@@ -377,6 +396,7 @@ def main():
     # Cancel orphaned flow runs from previous crashed/shutdown sessions
     _cancel_orphaned_runs()
     _mark_abandoned_runs()
+    _check_db_identity()
 
     # P2-SCHED: pause deployments whose leg is disabled in config (and resume
     # re-enabled ones). Filtering registration alone is NOT enough - Prefect's

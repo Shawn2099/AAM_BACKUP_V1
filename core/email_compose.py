@@ -30,6 +30,7 @@ LEG_LABEL = {
     "audit": "Weekly safety check",
     "watchdog": "Backup program on the server",
     "report": "Backup reports",
+    "db": "Backup history database",
     "rollover": "Financial-year switch",
     "rollover_files": "Financial-year switch",     # the "new year files are not backed up" alert has its own mail group
 }
@@ -239,6 +240,9 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
          "and is still not fixed.</p>" if event.first_reported_at else ""),
         f"<p>{e(what)}</p>",
     ]
+    if getattr(event, "lost_alert", None):
+        parts.append(f"<p><b>Note:</b> the alert of {e(event.lost_alert)} could not be delivered; "
+                     "the problem has since been resolved.</p>")
     if details:
         parts.append(f"<p><b>Details:</b> {e(details)}</p>")
     parts.append("<h3 style='margin:18px 0 6px 0'>Is my data safe?</h3><ul>"
