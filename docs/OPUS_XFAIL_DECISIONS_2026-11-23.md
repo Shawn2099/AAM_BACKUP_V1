@@ -214,6 +214,106 @@ characterization test, or delete it. OWNER = a business rule only the owner can 
 | D10 report window | ACCEPT AND DOCUMENT | P4 | XS | - | the report is the truthful loud side; matching the dashboard would fail open |
 | D7 G6 on slot wait | OWNER, rec. (b) N=2 | P3 | M | medium | stop inviting "roll over anyway" for a wait; touches DEC-4 |
 
+## D10 re-decision (2026-11-23, after the engineer's finding) -> FIX BEFORE 2027-01-01 (replaces ACCEPT)
+- **Correction:** my premise was wrong. For the week 18-24 Jan, the report says `act=False`, "all backups OK",
+  and has an empty problems list. The gap is visible only as `scheduled=7` vs `total=3`. That is false assurance
+  (R13) while the year's files really are unprotected.
+- Why: `report_headline` (report.py:249-273) flags a leg only when `total == 0` with nights scheduled, or when there
+  is an open problem. A shortfall (`total < scheduled`) is never a problem. That is true for the configured FY too.
+- Options considered:
+  - (a) Keep ACCEPT: rejected, because the report states something false.
+  - (b) A general "scheduled > total = act": right in principle, but it gives false alerts in the install week
+    (`fy_window` has no start for the configured FY, so the whole week counts as planned) and for a run that starts
+    after midnight at the end of a period. It needs its own design. See the new finding below.
+  - (c) End the window, or say "no longer backed up": ending the window needs a "left at" time that is not stored.
+    The statement itself needs none.
+- **Decision: (c) as a statement, with the window left as it is.** An FY that has a section in the report, is not
+  the configured FY, is not in the active set now, and has no finished `config_switch` from it, is a problem.
+- Minimal design:
+  1. `fy_sections` already calls `fy_overlap.active_folders`. Return that active set, or compute it once in
+     `build_report_model` with the same call. Do this only when `config` is given.
+  2. On each summary of such a section, set `s["not_backed_up"] = True`.
+  3. In `report_headline`, add a first loop: `action needed: <FY> is no longer backed up - files saved in it are
+     not protected` returns `True`.
+  4. The section detail in the renderer gets the same sentence.
+  5. `fy_window` stays unchanged. No config key.
+- Cases: a closed FY after the April switch has a finished switch, so it is not flagged. During a pending switch
+  both years are active. With no config (old callers and tests) nothing changes.
+- Tests: `test_T_e3_d10_*` becomes a hard test: `act is True` and the headline names FY27-28 and "no longer
+  backed up". `test_T_e3_week_after...` stays green: that week has no FY27-28 section, and the daily sibling
+  ACTION REQUIRED is the channel there, which is acceptable. Run all report and `test_ov9*` tests, plus T-c4 (the
+  post-switch report must not flag FY26-27).
+- Risk: low. It changes only the headline when config is given and a non-active, non-switched FY has rows.
+- **New finding for the owner (before 2027-01-01, not this release):** the general shortfall rule (b). Today an
+  agent that was down for 4 of 7 nights gives a weekly report that says "all backups OK". Overdue and watchdog
+  mails went out at the time, but the report is wrong. A safe design needs:
+  - a window start at the first run row ever (install week);
+  - a tolerance of 1 run at the period edge, or counting runs by scheduled night.
+  Add it to "Found while building".
+
+## Report shortfall rule (2026-11-23) -> FIX BEFORE 2027-01-01 (one rule for every FY; D10 is its special case)
+- **Gap:** `report_headline` (report.py:249-273) flags a leg only when it has no run at all. If 4 of 7 nights
+  have no run row (agent or scheduler down, box off), the weekly report still says "all backups OK". The
+  overdue/watchdog mails warned at the time, but the report is the owner's record of whether every night happened.
+  That is R13 (false assurance).
+- **Rule:** for each section FY and each reported leg, when `scheduled` is known, `missing = scheduled - covered`.
+  If `missing > 0`, the headline says `action needed: <leg> (<FY>) - N of M scheduled nights have no backup
+  record`, and `act` is True. This check comes right after the existing "no backup ran" check and before
+  open problems. A night that has a row with a bad status (MISSED, BLOCKED, FAILED, SLOT_TIMEOUT, ABANDONED)
+  counts as covered, because the existing problem logic already reports it. The new rule catches only nights
+  with **no record**.
+- **How a night counts as covered:** take each cron firing `f` in the section window (the same
+  `overdue.firings_between` / CronSim as today). It is covered when a run row of that leg and FY has `started_at`
+  in `[f, f + budget.<leg>_max_hours + dashboard.stale_grace_hours)`. A late-scheduled run or an approval re-run
+  of that night therefore counts. Match runs to firings one-to-one, in time order.
+  - To do this, the runs for the section are read up to `window_end + budget + grace`, not only up to the period
+    end. That way the last night of the period, which runs after midnight, is still found. D14 makes a midnight
+    crossing harmless too.
+  - This reuses existing keys (the overdue logic already uses this budget plus grace), so it needs **no new
+    config key** and **no tolerance**. A tolerance of 1 would hide exactly the single missed night the owner
+    wants to see.
+- **Window start and end (to avoid false alarms):**
+  - Early FY: the window starts at activation. This is already in `fy_window`, and
+    `test_first_january_weekly_counts_from_activation` (3 of 3) shows it.
+  - Closed FY: the window ends at the switch (already in `fy_window`).
+  - **New, for the install week:** for each (leg, FY), the window also starts no earlier than that leg's first
+    run row ever for that FY. Add a new `ManifestDB.first_run_started_at(leg, fy)` (a MIN query; `fy` is
+    required, per plan §5.4). This covers a fresh install mid-week and a leg switched on mid-week.
+  - A leg with no row ever keeps today's "no backup ran" rule, so an install that never ran still says so.
+  - A leg that was switched off and on again within the period: the nights while it was off count as missing.
+    That is loud but true, so it is accepted.
+- **D10 folded in:** when the FY with missing nights is not configured, not active now, and was not switched, use
+  the wording `<FY> is no longer backed up - N of M nights have no record`. This replaces D10's separate check,
+  so there is one code path.
+- **Scope:** `build_report_model` applies to weekly, monthly and the on-demand dashboard report (ui.py:1621-1705),
+  because they all render the same model. When `schedule` is None, `scheduled` is unknown, so the rule does not
+  run and old callers are unchanged.
+- **Tests:**
+  - Fixtures that are already complete stay green: `test_ov9_reports_per_fy.py` (7/7, 3/3, 31/31, 0 scheduled),
+    and P-11 (31/31 after D14).
+  - `test_m5_reports_plain.py` passes no schedule, so it is unaffected.
+  - `test_break_release_reports.py` only asserts "not all OK", which is the same direction as the new rule.
+  - Check the `test_ov_timeline_def.py` report cards (lines 335 and 462: T-c4, T-e3). Complete any fixture that
+    leaves a night without a row while asserting OK, and do not weaken any assertion.
+  - Run `pytest tests -k "report or ov9 or timeline"`.
+  - New hard tests:
+    1. 4 of 7 rows: act is True, and the headline names the leg and FY with "4 of 7".
+    2. Install on Wednesday with first rows from Wednesday: OK.
+    3. Sunday 21:01 run that starts Monday 00:30: covered.
+    4. A blocked night: still the existing problem line, no double count.
+    5. D10 week: "no longer backed up".
+- **Risk:** medium-low.
+  - It changes the verdict of every report that has a schedule.
+  - A false alarm is possible only if a row's `started_at` falls outside budget plus grace of its firing. That
+    happens after a manual run at an odd hour while the scheduled run did not happen, and in that case the
+    alarm is true.
+  - The first days after activation are handled by `fy_window`. The first days after install are handled by the
+    first-run start.
+- **Why not FIX NOW:** the release runs a single FY, and the overdue/watchdog mails cover outages in real time.
+  The change touches the verdict of every report and needs its own test round. **Why before 1 Jan:** from
+  activation onward there are two FYs and the D10 case, and the report becomes the only per-FY retrospective.
+  Effort M (one DB method, matching in `leg_summaries`/`_scheduled_counts`, one headline branch, renderer line).
+
 ## Ordered fix list (Sonnet engineer, own worktree, one commit per item, test first)
 1. **A1-A4** `core/run_artefacts.purge_older_than`: days validation, overflow-safe cutoff, `files=False` keyword;
    `flow.log_retention_task` passes `files=True` for service logs; update `test_m1_tool_runner.py:114`; un-xfail
@@ -223,7 +323,9 @@ characterization test, or delete it. OWNER = a business rule only the owner can 
 4. **D5** the `established` parameter plus the flow call site; un-xfail P-3; new unit cases; then
    `test_ov_timeline_a/bc`, `test_ov2_activation`, lab `test_w25`. (Batch 1.)
 5. **D12** only after the owner picks (a): `active_folders` activated case; un-xfail P-10. (Batch 1.)
-6. **C, D10** convert the tests into characterization tests as described above; add the ARCHITECTURE restore-caller rule.
+6. **C** convert the test as described; add the ARCHITECTURE restore-caller rule. **D10**: see the re-decision above
+   (headline "no longer backed up"; un-xfail T-e3-d10). Batch 1, before 1 Jan. Implement it as part of the
+   **Report shortfall rule** (one path, D10 wording), after D14.
 7. **B** after LS8b: either a characterization test, or the watchdog old-schema mail (before 1 Jan).
 8. **D7** only after the owner picks (b): config key, rollover deferral, P-7 hard. (Before 1 Apr.)
 Every batch: full unit suite, then the audit lab in the background, then `detect_changes`, then merge, then
