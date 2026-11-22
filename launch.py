@@ -330,7 +330,12 @@ def main():
     print("=" * 50)
 
     from models.config import CONFIG_PATH, load_config
-    _cfg = load_config(CONFIG_PATH)
+    try:
+        _cfg = load_config(CONFIG_PATH)
+    except Exception as exc:
+        one_line = " ".join(str(exc).split())[:600]
+        print(f"[launch] FATAL: config.yaml is invalid - the backup agent cannot start: {one_line}")
+        raise
 
     # Wait for Prefect API — retry loop handles the startup race that occurs after
     # a watchdog-triggered service restart (Prefect takes ~45s to be API-ready).
