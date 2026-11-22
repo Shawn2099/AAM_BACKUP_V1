@@ -42,7 +42,7 @@ function Get-ServiceAccountState([string]$Account) {
     # Does the service account exist and is it enabled? Works for a local account (.\name) AND a domain account
     # (DOMAIN\name). A domain controller has no local accounts at all (Get-LocalUser / New-LocalUser do not exist
     # there), so the account must be DOMAIN\name. Returns @{ Exists; Enabled; Note }.
-    $parts = $Account -split '\'
+    $parts = $Account -split '\\'
     $short = $parts[-1]
     $realm = if ($parts.Count -gt 1) { $parts[0] } else { "." }
     $isDc = ((Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole -ge 4)
