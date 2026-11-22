@@ -314,6 +314,99 @@ characterization test, or delete it. OWNER = a business rule only the owner can 
   activation onward there are two FYs and the D10 case, and the report becomes the only per-FY retrospective.
   Effort M (one DB method, matching in `leg_summaries`/`_scheduled_counts`, one headline branch, renderer line).
 
+## Live-stack defects (2026-11-23, from C:\AAMTest\live\LIVE_RESULTS.md)
+
+### L1 - Undelivered mails are never made up for -> FIX BEFORE 2027-01-01 (parts c and b; part a needs no change)
+- **What the code does** (notify.py:655-698):
+  - The dedup and cooldown already count only **SENT** rows (`last_notification(key, status=SENT)`), so (a) is
+    already the case.
+  - The bug is in the RECOVERED branch. `same` is the earlier SENT RECOVERED of that key, unless a **SENT**
+    problem mail came after it (`sent_in_mode_after(..., recovered=False)`). The failure row in between is
+    FAILED, so it does not count. The new RECOVERED is therefore treated as a repeat of the earlier RESOLVED and
+    suppressed.
+  - An ongoing problem is **not** lost: the next failure mail finds no recent SENT row and goes out. What is
+    lost is a problem that started and ended inside the outage, and one-shot INFO mails (E2E-MAIL-1, the 1 Jan
+    activation).
+- **(c) Yes, minimal.** In `_incident` for RECOVERED: if a FAILED problem row of the same mode/FY (and keys) exists
+  after `prior`, then `same = None`, so the mail is not suppressed. `render_alert` adds one line: "The alert of
+  <time> (<subject>) could not be delivered; the problem has since been resolved." One mail per recovery, so there
+  is no storm.
+  - Test: SENT RESOLVED, then FAILED failure, then RECOVERED within the cooldown. Expect SENT, with the line.
+  - Existing RECOVERED cooldown tests (SENT-only history) must stay green.
+- **(b) Yes, but as ONE digest, never a per-alert resend.**
+  - New `notify.send_undelivered_digest(config, db)`, called from the watchdog loop. It gathers FAILED rows of
+    the alerts audience (kinds ACTION_REQUIRED/FAILURE/WARNING/INFO) that:
+    - are newer than the last SENT digest (key `undelivered:digest`, which is the watermark);
+    - are newer than `alerts.undelivered_digest_max_age_hours`;
+    - have no later SENT row of the same key.
+  - If there is at least one, it sends one mail "N alerts could not be delivered between X and Y", listing the
+    subjects. The dashboard link stays as it is.
+  - Attempts are spaced at least `alerts.undelivered_digest_retry_minutes` apart, measured from the last digest
+    row of any status.
+  - New keys:
+    - `alerts.undelivered_digest_max_age_hours`: default 72, `ge=0, le=336`, 0 = off. The 72 h covers a weekend
+      and the 1 Jan INFO mail.
+    - `alerts.undelivered_digest_retry_minutes`: default 30, `ge=5, le=1440`.
+  - Tests:
+    1. 3 FAILED rows, then SMTP back: exactly 1 digest.
+    2. A second loop: 0 mails.
+    3. SMTP still down: FAILED digest rows spaced by the retry interval, no mail.
+    4. Rows older than the max age: excluded.
+    5. A row whose key was later SENT: excluded.
+  - The `alerts_undelivered` banner logic (`notification_failures_since`) is unchanged.
+- Risk: low to medium (notify is the alert spine). Run every `test_*notify*`, recipients, alert-controls and
+  watchdog test.
+
+### L2 - A lost or renamed manifest.db is silently replaced -> FIX BEFORE 2027-01-01 (loud, not blocking)
+- Harm: history, approvals, guard baselines, activation rows and incidents are gone, and nobody is told. Backups
+  themselves stay safe: G1/G3 caps work without a baseline, and the live run was a correct 0-file mirror. A G2
+  drop check is impossible for one night.
+- **Do not block backups.** Blocking would turn a bookkeeping loss into missed backups. Be loud instead.
+- Detection, with no false alarm on a genuine fresh install:
+  1. At fresh-schema creation, the DB records the meta `db_created_at`.
+  2. A startup check (`launch.py`, beside `_mark_abandoned_runs`, in a new `core/db_identity.py`) treats the DB as
+     suspicious when `db_created_at` is newer than the oldest `_DATE_DIR` folder under `config.run_logs_dir`.
+     Those folders are written only by runs, which also write the DB.
+  3. A fresh install has no run-logs folders, so it gives no alarm. A DB from before this change has no
+     `db_created_at`, so it is treated as old and gives no alarm.
+- Action:
+  - One ACTION_REQUIRED mail, key `db:recreated` (normal notify path), saying "the backup database was created
+    new at <time> although runs exist since <oldest day>; history and approvals were lost; check for a restore
+    mistake".
+  - A red attention item, kept until an admin acknowledges it on the dashboard. The acknowledgement sets the meta
+    `db_recreated_ack` (a small POST, with Origin and auth as for approvals).
+  - No config key: this is a fact check, not a tunable.
+- Tests:
+  1. Runtime with an old day folder and a fresh DB: 1 mail and the item.
+  2. Empty runtime: nothing.
+  3. Old DB without the meta: nothing.
+  4. Acknowledge: the item is cleared and no new mail.
+  5. A second boot: no second mail (cooldown or meta).
+- Risk: low. It is additive and touches only startup and attention. Re-run LS8 live.
+
+### L3 - Cosmetics
+- **A pending G4 approval keeps /health 503 and the banner red** -> ACCEPT (intended). The leg is blocked until a
+  human decides, so "action needed" is the truth.
+  - Check: if that leg/FY had a **later success** while the approval stayed PENDING, supersede should have closed
+    it. If it did not, that is a bug: fix before 1 Jan with a test.
+- **An unreachable share is labelled "Unexpected program error (AAM-SYS-06)"** -> FIX BEFORE 2027-01-01 (XS-S). The
+  wrong label sends the owner to the vendor instead of to the NAS.
+  - Find where the LAN preflight or health check raises on an unreachable share without classification (WinError
+    53/67/1231, or a `FileNotFoundError` on the UNC path).
+  - Map it to the existing NAS-unreachable code (AAM-NAS-01) in `core/faults`.
+  - Test: a fake OSError(53) in the LAN preflight gives AAM-NAS-01.
+- **The invalid-config mail is not in `notifications` and has no recovery mail** -> recording: ACCEPT. Without a
+  valid config the DB path is not trusted, and the marker file plus the log line are the record. Recovery: FIX
+  BEFORE 2027-01-01 (XS).
+  - In `watchdog._alert_invalid_config`: when `load_config` succeeds and the marker file
+    `watchdog_invalid_config.sent` exists, send one RESOLVED mail "config.yaml is valid again; the agent can
+    start" through normal `notify`, then delete the marker.
+  - Test with the SMTP test server.
+- **AamPrefectServer does not stop within 150 s** -> ACCEPT for the release, after one check. Confirm that
+  `deploy/06_install_services.ps1` sets the NSSM stop and kill settings (`AppStopMethod*`, `AppKillProcessTree`),
+  and that the deploy and uninstall scripts continue after a forced kill. Prefect's own SQLite recovers from a
+  hard kill; our manifest.db is not in that process. If a script hangs or aborts, fix it in the script.
+
 ## Ordered fix list (Sonnet engineer, own worktree, one commit per item, test first)
 1. **A1-A4** `core/run_artefacts.purge_older_than`: days validation, overflow-safe cutoff, `files=False` keyword;
    `flow.log_retention_task` passes `files=True` for service logs; update `test_m1_tool_runner.py:114`; un-xfail
@@ -327,6 +420,9 @@ characterization test, or delete it. OWNER = a business rule only the owner can 
    (headline "no longer backed up"; un-xfail T-e3-d10). Batch 1, before 1 Jan. Implement it as part of the
    **Report shortfall rule** (one path, D10 wording), after D14.
 7. **B** after LS8b: either a characterization test, or the watchdog old-schema mail (before 1 Jan).
+7b. **Before 1 Jan, live-stack items:** L1(c), then L1(b) digest (2 keys), then L2 db_identity, then the L3 NAS
+   label, then the L3 config RESOLVED mail. Do the L3 G4-supersede check and the NSSM stop check first, because
+   they only need reading.
 8. **D7** only after the owner picks (b): config key, rollover deferral, P-7 hard. (Before 1 Apr.)
 Every batch: full unit suite, then the audit lab in the background, then `detect_changes`, then merge, then
 redeploy the test stack, and record the owner decisions in the task list's "Found while building".
