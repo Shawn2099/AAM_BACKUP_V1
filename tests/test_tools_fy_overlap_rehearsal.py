@@ -173,3 +173,31 @@ def test_failed_safety_check_blocks_even_with_execute(tmp_path, monkeypatch, cap
     rc = fr.main(["--execute", "--config", str(cfg_file), "--scratch", str(tmp_path / "scratch")])
     assert rc == 2 and not called
     assert "would NOT run" in capsys.readouterr().out
+
+
+def test_cleanup_removes_the_scratch_folder_although_this_process_still_holds_its_files(tmp_path, monkeypatch):
+    """Found in the local rehearsal: the flows leave a loguru file sink and the manifest connection open inside
+    the scratch folder, and Windows refuses to delete a folder with open files - the check 'removed' was red."""
+    import sqlite3
+
+    from loguru import logger
+
+    plan = fr.build_plan(_cfg(tmp_path), tmp_path / fr.SCRATCH_NAME)
+    plan.scratch.mkdir(parents=True)
+    sink = logger.add(plan.scratch / "run.log")
+    logger.info("holds the file open")
+    import ui
+    conn = sqlite3.connect(plan.scratch / "m.db")
+    conn.execute("create table t(x)")
+    ui._DB_INSTANCE = type("DB", (), {"close": lambda self: conn.close()})()
+    monkeypatch.setattr(fr, "remove_nas_folder", lambda *a, **k: False)
+    monkeypatch.setattr(fr, "_cloud_purge", lambda *a, **k: None)
+    try:
+        assert fr.cleanup(None, plan) is True
+        assert not plan.scratch.exists()
+    finally:
+        ui._DB_INSTANCE = None
+        try:
+            logger.remove(sink)
+        except ValueError:
+            pass

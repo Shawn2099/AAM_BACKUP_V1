@@ -368,6 +368,26 @@ def remove_nas_folder(path: str, plan: Plan) -> bool:
     return True
 
 
+def _release_handles() -> None:
+    """Windows cannot delete a folder with open files. The flows leave the sandbox log sinks and the dashboard's
+    manifest connection open in this process; close them (this process only prints from here on)."""
+    import gc
+
+    try:
+        from loguru import logger
+        logger.remove()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import ui
+        if getattr(ui, "_DB_INSTANCE", None) is not None:
+            ui._DB_INSTANCE.close()
+            ui._DB_INSTANCE = None
+    except Exception:  # noqa: BLE001
+        pass
+    gc.collect()
+
+
 def cleanup(prod_cfg, plan: Plan, report: Report | None = None) -> bool:
     """Remove every test folder and prefix. Returns True when nothing is left."""
     clean = True
@@ -380,6 +400,7 @@ def cleanup(prod_cfg, plan: Plan, report: Report | None = None) -> bool:
                 clean = False
                 print(f"  cleanup of {what} {fy} FAILED: {e}")
     if plan.scratch.name == SCRATCH_NAME and plan.scratch.exists():
+        _release_handles()
         shutil.rmtree(plan.scratch, ignore_errors=True)
         clean = clean and not plan.scratch.exists()
     if report is not None:
