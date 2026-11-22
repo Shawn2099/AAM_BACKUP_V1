@@ -94,13 +94,14 @@ def test_s6_straddle_hand_table(sim):
     i_cloud_apr2 = _idx("cloud", 4, 2)
     i_roll_apr2 = _idx("rollover", 4, 2)
 
-    # 1. the 31 March night: FY27-28 starts at 21:00, FY26-27 starts after midnight
+    # 1. the 31 March night: FY27-28 runs first and spends the night past midnight, then FY26-27 runs. Since the D14
+    # fix both rows carry the FLOW's start (21:00 on 31 March); before it FY26-27's row was dated 1 April 00:30.
     sim.play(events[:i_lan_mar31 + 1])
     assert sim.errors == [], sim.errors
-    assert sorted(r["fy"] for r in _night(sim, "lan", "2027-03-31T21:")) == [B]
+    assert sorted(r["fy"] for r in _night(sim, "lan", "2027-03-31T21:")) == sorted([A, B])
     a_lan_after_midnight = [r for r in sim.runs()
                             if r["mode"] == "lan" and r["fy"] == A and r["started_at"].startswith("2027-04-01T00:")]
-    assert len(a_lan_after_midnight) == 1, [(r["fy"], r["started_at"]) for r in sim.runs() if r["mode"] == "lan"]
+    assert a_lan_after_midnight == [], [(r["fy"], r["started_at"]) for r in sim.runs() if r["mode"] == "lan"]
 
     # 2. the 1 April 02:00 cloud: both FYs; FY26-27's overruns to 06:30
     sim.play(events[i_lan_mar31 + 1:i_roll_apr1])
@@ -140,18 +141,16 @@ def test_s6_straddle_hand_table(sim):
     assert len(sim.switch_writes) == 1 and len(sim.archive_calls) == 1
 
 
-@pytest.mark.xfail(strict=False, reason="D14: the second folder's run row is dated at its own pipeline start "
-                                        "(2027-04-01 00:30), not at its scheduled night (2027-03-31)")
 def test_d14_row_a_of_mar31_is_dated_mar31(sim):
+    # D14 (opus-decision, fixed): both folders of a night carry the flow's start, not the pipeline's own start
     _play_to_straddle(sim, ("lan", 3, 31))
     rows = [r for r in sim.runs() if r["mode"] == "lan" and r["fy"] == A and r["started_at"] >= WINDOW_FROM]
     assert rows, "the FY26-27 LAN row of the 31 March night is missing"
     assert rows[-1]["started_at"][:10] == "2027-03-31", rows[-1]["started_at"]
 
 
-@pytest.mark.xfail(strict=False, reason="D7: a final-backup slot timeout on 1 April asks for a G6 "
-                                        "'roll over anyway' approval; the owner has not decided")
 def test_d7_slot_timeout_requests_no_approval(sim):
+    # D7 (owner chose option b, N=2; fixed): a final-backup slot timeout is a warning + retry, no G6 request yet
     _play_to_straddle(sim, ("cloud", 4, 1))
     events = _events()
     sim.slot_busy = True
