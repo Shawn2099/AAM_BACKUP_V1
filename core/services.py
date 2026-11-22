@@ -14,6 +14,7 @@ watchdog; this module only executes and reports.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -49,19 +50,49 @@ def _one_line(text: str) -> str:
     return " ".join(text.split())
 
 
+# SCM state codes (winsvc.h) -> the English state names the callers compare with. sc.exe localizes the LABELS
+# (`STATE` is `ZUSTAND` on a German system, `ETAT` on a French one), never the numeric code.
+_STATE_BY_CODE = {1: STOPPED, 2: START_PENDING, 3: STOP_PENDING, 4: RUNNING,
+                  5: "CONTINUE_PENDING", 6: "PAUSE_PENDING", 7: "PAUSED"}
+_LABEL_NUMBER_NAME = re.compile(r"^\s*[^:]+?\s*:\s*(\d+)\s+([A-Za-z_]+)\s*$")
+
+
+def _parse_queryex(output: str) -> tuple[str, int | None]:
+    """(state, pid) from `sc queryex` text, whatever the language of the labels: the state is the first
+    `<label> : <number> <NAME>` line whose number is a state code (the TYPE line has 10/20/110/120; a
+    driver's `1 KERNEL_DRIVER` is skipped by name), the PID the first bare `<label> : <integer>` line after it."""
+    lines = output.splitlines()
+    state_at = None
+    for exact in (True, False):
+        for i, line in enumerate(lines):
+            m = _LABEL_NUMBER_NAME.match(line)
+            if not m or int(m.group(1)) not in _STATE_BY_CODE:
+                continue
+            name = m.group(2).upper()
+            code_name = _STATE_BY_CODE[int(m.group(1))]
+            if (name == code_name) if exact else ("DRIVER" not in name and "PROCESS" not in name):
+                state_at = i
+                break
+        if state_at is not None:
+            break
+    if state_at is None:
+        return "", None
+    state = _STATE_BY_CODE[int(_LABEL_NUMBER_NAME.match(lines[state_at]).group(1))]
+    pid = None
+    for line in lines[state_at + 1:]:
+        _label, sep, value = line.partition(":")
+        if sep and value.strip().isdigit():
+            pid = int(value.strip()) or None
+            break
+    return state, pid
+
+
 def query(service: str, *, timeout_s: float) -> ServiceStatus:
     """`sc queryex` -> state + PID (PID 0 = no process -> None)."""
     res = run_capture(["sc", "queryex", service], timeout_s=timeout_s)
     if not res.completed:
         return ServiceStatus("", None, res.describe_failure())
-    state, pid = "", None
-    for line in res.output.splitlines():
-        key, _, value = line.strip().partition(":")
-        tokens = value.split()
-        if key.strip() == "STATE" and tokens:
-            state = tokens[1] if len(tokens) >= 2 and tokens[0].isdigit() else tokens[0]
-        elif key.strip() == "PID" and tokens and tokens[0].isdigit():
-            pid = int(tokens[0]) or None
+    state, pid = _parse_queryex(res.output)
     if not state:
         return ServiceStatus("", None, f"sc queryex exit {res.exit_code}: {_one_line(res.output)}")
     return ServiceStatus(state, pid, "")
