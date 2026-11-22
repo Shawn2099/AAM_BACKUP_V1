@@ -473,17 +473,28 @@ def test_restore_into_source_parent_refused_even_with_force(rig):
     assert (live / "live.txt").read_text(encoding="utf-8") == "LIVE"
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "SUSPECTED BUG: core/restore.py:856 restore_fy() defaults forbidden_paths=(); a caller that "
-    "omits the protected list can restore into an EMPTY live FY folder, which the non-empty "
-    "check does not stop"))
-def test_engine_refuses_empty_live_folder_without_a_caller_list(rig):
+def test_restore_cli_always_passes_the_protected_list_to_the_engine(rig, monkeypatch):
+    """opus-decision C: restore_fy() defaults forbidden_paths=() (accepted; the only caller is the CLI,
+    which always passes the list). Pin that the CLI passes the live source folder and, while the overlap
+    is on, the early folder. Any new caller must do the same (ARCHITECTURE.md, restore row)."""
+    from unittest.mock import MagicMock
+
+    cfg = make_cfg(rig.root, overlap=True)
     src = rig.root / "src"
-    (src / "FY26-27").mkdir(parents=True)
-    rig.put("FY26-27", "a.txt", b"A")
-    res = _restore(rig, src, "FY26-27")
-    assert res["status"] == "FAILED"
-    assert not (src / "FY26-27" / "a.txt").exists()
+    live = rig.live(src)
+    (rig.root / "dest").mkdir()
+    rig.put("FY24-25", "old.txt", b"OLD")
+    fake = MagicMock(return_value={"ok": True, "status": "OK"})
+    monkeypatch.setattr(restore_cli, "restore_fy", fake)
+    monkeypatch.setattr(restore_cli, "_load_config", lambda path: (cfg, None))
+    code = restore_cli.main([
+        "--config", "ignored.yaml", "--bucket", BUCKET, "--rclone-config", str(rig.conf),
+        "--fy", "FY24-25", "--target", str(rig.root / "dest"), "--yes", "--log-dir", str(rig.logs),
+    ])
+    assert code == 0
+    forbidden = [str(p) for p in fake.call_args.kwargs["forbidden_paths"]]
+    assert str(live) in forbidden
+    assert str(src / "FY27-28") in forbidden
 
 
 # ---------------------------------------------------------------- early next FY
