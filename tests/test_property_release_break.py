@@ -144,7 +144,7 @@ def test_lan_result_fails_closed(code, log, tail):
     if type(code) is not int or code < 0 or code & 16:
         assert out["status"] == "LAN_FAILED"
     if out["status"] == "LAN_COMPLETE":
-        assert out["log_complete"] and code in (0, 1, 2, 3)
+        assert out["log_complete"] and code in range(0, 8)  # 4-7 = documented BUG-05 analysis, forensics only
 
 
 class _E(Exception):
