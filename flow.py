@@ -2334,10 +2334,25 @@ def _close_old_fy(config, db, fy: str) -> None:
     is already done, and an approval of a closed FY cannot be run anyway (backup(fy=) needs an active FY)."""
     try:
         closed = db.close_fy(fy, now=now_iso())
-        logger.info(f"FY {fy} closed: {closed['approvals']} approval request(s) and "
-                    f"{closed['incidents']} incident(s) closed")
+        if closed["approvals"] or closed["incidents"]:
+            logger.info(f"FY {fy} closed: {closed['approvals']} approval request(s) and "
+                        f"{closed['incidents']} incident(s) closed")
     except Exception as e:  # noqa: BLE001
         logger.error(f"FY {fy} could not be closed cleanly ({e}); its old alerts may stay open")
+
+
+def _close_finished_old_fys(config, db) -> None:
+    """Overlap review D2: a failed close (or one skipped by a crash) is retried at the start of every daily
+    check, for every FY whose config switch is finished. close_fy is idempotent and a no-op when nothing is
+    open. Never raises."""
+    from core import rollover_journal as rj
+
+    try:
+        for journal in db.rollover_journals():
+            if rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]):
+                _close_old_fy(config, db, journal["from_fy"])
+    except Exception as e:  # noqa: BLE001 - housekeeping, never stops the rollover check
+        logger.error(f"Closing finished financial years failed: {e}")
 
 
 def _activate_overlap(config, db=None) -> None:
@@ -2499,6 +2514,7 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
     config = load_config(config_path)
     db = ManifestDB.from_config(config)
     try:
+        _close_finished_old_fys(config, db)   # overlap review D2: retry a close that failed earlier
         _activate_overlap(config, db)         # before the sibling check, so a folder it adopts is not reported
         _alarm_siblings(config, db, fy_overlap.run_date(_scheduled_time()))   # first: the blocked days below raise
         return _rollover_resume(config, config_path, approval_id, db)

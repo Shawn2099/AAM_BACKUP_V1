@@ -1112,6 +1112,13 @@ class ManifestDB:
             row = self._journal_row(conn, from_fy, to_fy)
             return self._journal_dict(conn, row) if row else None
 
+    def rollover_journals(self) -> list[dict]:
+        """Every rollover journal, oldest first."""
+        with self._lock:
+            conn = self._get_conn()
+            return [self._journal_dict(conn, row)
+                    for row in conn.execute("SELECT * FROM rollover_journal ORDER BY id")]
+
     def rollover_incomplete(self) -> dict | None:
         """The newest journal that still has a step to do, or None."""
         with self._lock:
