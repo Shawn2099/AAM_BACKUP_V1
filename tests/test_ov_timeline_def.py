@@ -480,20 +480,19 @@ def test_T_e3_week_after_the_switch_off_has_no_early_fy_section_and_no_missing_b
     assert B not in report.render_report_html(m, "Firm")
 
 
-def test_T_e3_d10_characterization_report_still_names_an_fy_that_left_the_active_set(jan20):
-    """Characterization (opus-decision D10): INTENDED. Switching the overlap off leaves that year's files
-    unprotected, and the report shows it (3 of 7 scheduled nights; FY27-28 planned for the whole week 18-24 Jan: 7 nights
-    scheduled, 3 ran) until the week is past (test_T_e3_week_after_... is the next week, no section). The
-    dashboard shows no card but the daily sibling ACTION REQUIRED item. Making the two agree needs a durable
-    'left the active set at' record; using the last run row as the window end would hide real missed nights."""
+def test_T_e3_d10_report_says_an_fy_that_left_the_active_set_is_no_longer_backed_up(jan20):
+    """opus-decision D10 / report shortfall rule: switching the overlap off leaves that year's files
+    unprotected. The week 18-24 Jan plans 7 nights for FY27-28 and only 3 ran: the report must be action
+    needed and say 'FY27-28 is no longer backed up - 4 of 7 nights have no record' (not 'all backups OK')."""
     _run_off_period(jan20, at(2027, 1, 24))
     assert ov.active_folders(jan20.cfg, jan20.db, pendulum.date(2027, 1, 25)) == [A]
     m = _week_report(jan20, at(2027, 1, 25, 8))                                # Mon 18 - Sun 24 Jan
     early = [s for s in m["sections"] if s["fy"] == B]
-    # observed (the record expected act True; it is False): the section plans 7 nights and counts the 3 that
-    # ran, with no 'problems' entry and the headline 'all backups OK'; the gap is visible only as 3 of 7
     assert early and early[0]["summaries"][0]["total"] == 3
-    assert early[0]["summaries"][0]["scheduled"] == 7, [s["summaries"][0].get("scheduled") for s in early]
+    assert early[0]["summaries"][0]["scheduled"] == 7
+    assert m["act"] is True
+    assert f"{B} is no longer backed up - 4 of 7 nights have no record" in m["headline"], m["headline"]
+    assert "no longer backed up" in report.render_report_html(m, "Firm")
 
 
 # ===============================================================================================

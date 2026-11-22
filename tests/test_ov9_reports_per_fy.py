@@ -180,7 +180,7 @@ def _strip_clock(html: str) -> str:
 
 def test_one_fy_report_is_unchanged(db, tmp_path):
     cfg = _cfg(tmp_path)
-    _nightly(db, A, at(2026, 10, 12), at(2026, 10, 17))
+    _nightly(db, A, at(2026, 10, 12), at(2026, 10, 18))
     rp = ReportPeriod.previous_week(at(2026, 10, 19, 8))
     with patch.object(fy_overlap, "run_date", return_value=at(2026, 10, 19).date()):
         with_cfg = report.build_report_model(db, rp, legs=("lan",), schedule=cfg.schedule, config=cfg)
