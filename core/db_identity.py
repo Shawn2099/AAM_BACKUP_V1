@@ -63,7 +63,7 @@ def check_at_startup(config, db) -> bool:
                      f"since {found['oldest_day']}: history and approvals were lost")
         from core import notify as nt
         nt.notify(config, nt.AlertEvent(
-            key=ALERT_KEY, kind="ACTION_REQUIRED", mode="db",
+            key="db:recreated", kind="ACTION_REQUIRED", mode="db",
             title="Backup history database was created new",
             message=(f"The backup database was created new at {found['created_at']} although runs exist "
                      f"since {found['oldest_day']}; history and approvals were lost; check for a restore "

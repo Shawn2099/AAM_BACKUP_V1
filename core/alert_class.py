@@ -22,7 +22,7 @@ CLASSES = (FAILURE, DECISION, OVERDUE, ACTION, RESOLVED, INFO, SECURITY, TEST)
 # scan test enforces it); the class itself still comes from `classify`, this is only the coverage list.
 KNOWN_PREFIXES = frozenset({
     "backup:", "missed:", "nas_shutdown:", "recovered:", "blocked:", "stale:", "rollover:", "audit:",
-    "watchdog:", "password:", "test:", "overlap:",
+    "watchdog:", "password:", "test:", "overlap:", "db:",
 })
 
 
