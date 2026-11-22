@@ -382,6 +382,24 @@ def code_of(exc: BaseException | None) -> str | None:
     return None
 
 
+# Windows error numbers for "the NAS cannot be reached" (not a rights problem): network path not found,
+# network name not found, host not found / no longer available, semaphore timeout, network down.
+UNREACHABLE_WINERRORS = frozenset({53, 67, 64, 59, 121, 1222, 1231, 1232})
+
+
+def is_unreachable_error(exc: BaseException | None) -> bool:
+    """Is this error, or one of its causes, "the share cannot be reached" (opus-decision L3)? A timeout or
+    connection error counts; a missing folder (winerror 3) and a rights error do not."""
+    seen = 0
+    while exc is not None and seen < 10:
+        if isinstance(exc, (TimeoutError, ConnectionError)) or (
+                isinstance(exc, OSError) and getattr(exc, "winerror", None) in UNREACHABLE_WINERRORS):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
 def blocked_guard_code(guard_record: dict | None) -> str | None:
     """Code of the first BLOCKing guard (its own code, else by guard name)."""
     for result in (guard_record or {}).get("results", []):
@@ -406,6 +424,8 @@ def classify_run(leg: str, status: str, *, exc: BaseException | None = None,
         return attached
     if exc is not None and not isinstance(exc, Exception):
         return "AAM-SYS-02"      # A2: the flow was cancelled / stopped (KeyboardInterrupt, TerminationSignal)
+    if leg == "lan" and is_unreachable_error(exc):
+        return "AAM-NAS-01"      # L3: an unreachable share is the NAS's problem, not "unexpected program error"
     if status in statuses.BLOCKED_STATUSES:
         return blocked_guard_code(guard_record) or UNKNOWN
     cloud = leg == "cloud"
