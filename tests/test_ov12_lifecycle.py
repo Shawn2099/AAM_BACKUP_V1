@@ -8,7 +8,17 @@ from pathlib import Path
 DEPLOY = Path(__file__).resolve().parent.parent / "deploy"
 PROPOSED = DEPLOY / "gcs_lifecycle.fy_overlap_proposed.json"
 CURRENT = DEPLOY / "gcs_lifecycle.json"
-ACTIVE_PREFIXES = ("FY26-27/", "FY27-28/")        # configured year + the early next year (Jan 2027 on)
+
+
+def _active_prefixes(today=None):
+    """The configured year (April-March) and the next one (backed up early from January): never archived."""
+    import datetime
+    t = today or datetime.date.today()
+    start = t.year if t.month >= 4 else t.year - 1
+    return tuple(f"FY{y % 100:02d}-{(y + 1) % 100:02d}/" for y in (start, start + 1))
+
+
+ACTIVE_PREFIXES = _active_prefixes()
 
 
 def _archive_rules(path):
@@ -50,3 +60,17 @@ def test_the_noncurrent_version_rules_are_unchanged():
 def test_the_current_file_has_the_unscoped_age_rule_that_this_proposal_removes():
     """Documents the finding: the git version can archive an active year's objects."""
     assert any(not r["condition"].get("matchesPrefix") for r in _archive_rules(CURRENT))
+
+
+def test_active_prefixes_follow_the_calendar():
+    import datetime
+    assert _active_prefixes(datetime.date(2026, 11, 22)) == ("FY26-27/", "FY27-28/")
+    assert _active_prefixes(datetime.date(2028, 2, 1)) == ("FY27-28/", "FY28-29/")
+
+
+def test_every_delete_rule_is_for_noncurrent_versions_only():
+    """Review #7: a Delete rule without isLive:false would delete LIVE objects of an active year."""
+    for path in (PROPOSED, CURRENT):
+        for r in json.loads(path.read_text(encoding="utf-8"))["rule"]:
+            if r["action"]["type"] == "Delete":
+                assert r["condition"].get("isLive") is False, (path.name, r)

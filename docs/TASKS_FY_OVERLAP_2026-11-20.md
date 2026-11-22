@@ -168,6 +168,7 @@
   the NAS share root as the service account).
 - [ ] **OV-11.4** Trial-box deploy: no backup running; stop watchdog → agent; rename `manifest.db` + `-wal` / `-shm`;
   deploy (git bundle); start agent → watchdog; `/health`; watch the next LAN and cloud runs.
+  **Corrected after the Opus review (2026-11-22), full order in the SESSION_HANDOFF top block:** load the live config with the new code first; `uv sync --frozen --no-dev` after the bundle; start AamPrefectServer (wait for the migration) before the agent; rollback restores the venv, `prefect.db` and the old `manifest.db` too.
 - [x] **OV-11.5** Box overlap rehearsal: a rehearsal script under `tools/` (NOT production code, no date switch in
   config) that runs one cloud + one LAN flow on the box with the run date patched to a January date, proving the
   two-card dashboard, the INFO mail and both folders in the cloud and on the NAS; test folders / prefixes removed

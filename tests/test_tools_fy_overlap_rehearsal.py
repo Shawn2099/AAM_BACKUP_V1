@@ -201,3 +201,45 @@ def test_cleanup_removes_the_scratch_folder_although_this_process_still_holds_it
             logger.remove(sink)
         except ValueError:
             pass
+
+
+# ---- Opus review of 2026-11-22 ------------------------------------------------------------------
+
+def test_sandbox_never_mails_the_production_recipients(tmp_path):
+    """Review #4: the rehearsal's INFO / failure / approval mails must not reach the office."""
+    raw = _raw(tmp_path, notifications={"recipients": ["office@example.com"], "report_recipients": ["boss@example.com"]})
+    plan = fr.build_plan(_cfg(tmp_path), tmp_path / "scratch")
+    own = fr.build_sandbox_raw(raw, plan, mail_to="owner@example.com")["notifications"]
+    assert own["recipients"] == ["owner@example.com"] and own["report_recipients"] == ["owner@example.com"]
+    none = fr.build_sandbox_raw(raw, plan)["notifications"]
+    assert none["recipients"] == [] and none["report_recipients"] == []
+    assert raw["notifications"]["recipients"] == ["office@example.com"]            # input untouched
+
+
+def test_execute_needs_a_mail_address(tmp_path):
+    plan = _plan(tmp_path)
+    with pytest.raises(fr.Refusal, match="--mail-to"):
+        fr.execute(_cfg(tmp_path), _raw(tmp_path), plan, fr.Report(), keep=True, mail_to=None)
+    assert not plan.scratch.exists()
+
+
+def test_ctrl_c_during_a_flow_stops_the_rehearsal(tmp_path):
+    """Review #5: only ordinary errors are a red check; Ctrl-C / SystemExit must not start the LAN flow."""
+    report, ran = fr.Report(), []
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        fr._run_leg(report, "cloud", interrupted)
+    fr._run_leg(report, "lan", lambda: ran.append(1))
+    fr._run_leg(report, "lan", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert ran == [1] and [c[1] for c in report.checks] == [True, False]
+
+
+def test_slot_check_refuses_when_no_prefect_api_url(monkeypatch):
+    """Review #9: without PREFECT_API_URL get_client() would start an ephemeral server and read 'no slot'."""
+    monkeypatch.setattr(fr, "_api_url", lambda: "")
+    problems = fr.check_slot()
+    assert problems and "PREFECT_API_URL" in problems[0]
+    assert fr.check_slot(get_active_slots=lambda: 0) == []                       # injected reader: unchanged

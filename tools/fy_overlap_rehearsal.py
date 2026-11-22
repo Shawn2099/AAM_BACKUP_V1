@@ -139,9 +139,10 @@ def build_plan(prod_cfg, scratch: Path | None = None) -> Plan:
         sandbox_config=scratch / "config.rehearsal.yaml")
 
 
-def build_sandbox_raw(raw: dict, plan: Plan) -> dict:
+def build_sandbox_raw(raw: dict, plan: Plan, mail_to: str | None = None) -> dict:
     """The production config (raw mapping, read only) as the rehearsal flows see it. Same mail, bucket,
-    key and NAS settings; everything that is state (DB, lock, logs, sources) is the scratch one; the
+    key and NAS settings (but NEVER the office's mail addresses: mail goes to `mail_to` only, nobody without it);
+    everything that is state (DB, lock, logs, sources) is the scratch one; the
     configured year is the rehearsal year; NAS shutdown is off."""
     cfg = json.loads(json.dumps(raw))                       # deep copy, never mutate the caller's
     paths = cfg.setdefault("paths", {})
@@ -155,6 +156,9 @@ def build_sandbox_raw(raw: dict, plan: Plan) -> dict:
     lan = cfg.setdefault("lan", {})
     lan["shutdown_after_backup"] = False
     lan["shutdown_on_all_retries_exhausted"] = False
+    notifications = cfg.setdefault("notifications", {})
+    notifications["recipients"] = [mail_to] if mail_to else []
+    notifications["report_recipients"] = [mail_to] if mail_to else []
     rollover = cfg.setdefault("rollover", {})
     rollover["overlap_enabled"] = True
     rollover["early_start_month"] = 1
@@ -183,6 +187,9 @@ def _read_lock(lock: Path):
 
 def check_slot(get_active_slots=None) -> list[str]:
     """The Prefect slot 'aam-backup' must be readable and empty (fail closed on any doubt)."""
+    if get_active_slots is None and not _api_url():
+        return [f"the Prefect slot '{SLOT_NAME}' cannot be read: PREFECT_API_URL is not set (without it Prefect "
+                f"would start a private empty server and report no slot)"]
     try:
         active = (get_active_slots or _prefect_active_slots)()
     except Exception as e:  # noqa: BLE001
@@ -192,6 +199,14 @@ def check_slot(get_active_slots=None) -> list[str]:
     if active != 0:
         return [f"the Prefect slot '{SLOT_NAME}' is taken ({active} active)"]
     return []
+
+
+def _api_url() -> str:
+    try:
+        from prefect.settings import PREFECT_API_URL
+        return PREFECT_API_URL.value() or ""
+    except Exception:  # noqa: BLE001
+        return os.environ.get("PREFECT_API_URL", "")
 
 
 def _prefect_active_slots():
@@ -408,6 +423,16 @@ def cleanup(prod_cfg, plan: Plan, report: Report | None = None) -> bool:
     return clean
 
 
+def _run_leg(report: Report, mode: str, run) -> None:
+    """One flow. An ordinary error is a red check (the checks below say what is missing); Ctrl-C / SystemExit are
+    not caught, so an interrupted rehearsal never goes on to wake the NAS for the LAN flow."""
+    try:
+        run()
+        report.add(f"{mode} flow finished", True)
+    except Exception as e:  # noqa: BLE001
+        report.add(f"{mode} flow finished", False, f"{type(e).__name__}: {e}")
+
+
 def _run_flows(prod_cfg, plan: Plan, report: Report) -> None:
     """Patch the run date and the shutdown task, run one cloud and one LAN flow, then verify."""
     import pendulum
@@ -428,11 +453,7 @@ def _run_flows(prod_cfg, plan: Plan, report: Report) -> None:
     try:
         for mode in ("cloud", "lan"):
             print(f"Running the {mode} flow ...")
-            try:
-                flow.backup(config_path=str(plan.sandbox_config), mode=mode)
-                report.add(f"{mode} flow finished", True)
-            except BaseException as e:  # noqa: BLE001 - the checks below say what is missing
-                report.add(f"{mode} flow finished", False, f"{type(e).__name__}: {e}")
+            _run_leg(report, mode, lambda m=mode: flow.backup(config_path=str(plan.sandbox_config), mode=m))
         report.add("NAS shutdown never called", not shutdown_calls)
         sandbox_cfg = mc.load_config(str(plan.sandbox_config))
         db = ManifestDB.from_config(sandbox_cfg)
@@ -485,13 +506,16 @@ def _verify(prod_cfg, sandbox_cfg, plan: Plan, db, report: Report) -> None:
         report.add(f"files in the cloud under {fy}", count >= SEED_FILES_PER_FOLDER, f"{count} objects")
 
 
-def execute(prod_cfg, raw: dict, plan: Plan, report: Report, *, keep: bool) -> bool:
+def execute(prod_cfg, raw: dict, plan: Plan, report: Report, *, keep: bool, mail_to: str | None = None) -> bool:
     """Create the sandbox, run the flows, verify, clean up. Assumes the safety checks passed."""
+    if not mail_to:
+        raise Refusal("--mail-to <address> is required with --execute: the rehearsal sends a real INFO mail and "
+                      "must never use the office's addresses")
     from models.config import AppConfig, _drop_deprecated_keys
 
     plan.scratch.mkdir(parents=True, exist_ok=True)
     try:
-        sandbox_raw = build_sandbox_raw(_drop_deprecated_keys(raw), plan)
+        sandbox_raw = build_sandbox_raw(_drop_deprecated_keys(raw), plan, mail_to)
         sandbox_cfg = AppConfig(**sandbox_raw)
         problems = check_sandbox(sandbox_cfg, prod_cfg, plan)
         if problems:
@@ -521,6 +545,9 @@ def main(argv=None) -> int:
     ap.add_argument("--cleanup", action="store_true", help="only remove the leftovers of an earlier run")
     ap.add_argument("--config", default=None, help="production config.yaml (read only); default: AAM_CONFIG / repo")
     ap.add_argument("--scratch", default=None, help="scratch folder (default: <runtime>\\_overlap_rehearsal)")
+    ap.add_argument("--mail-to", default=None,
+                    help="address that receives the rehearsal's INFO mail (required with --execute; the office's "
+                         "addresses are never used)")
     ap.add_argument("--min-gap-minutes", type=int, default=DEFAULT_MIN_GAP_MINUTES,
                     help="refuse when a scheduled backup/audit is due within this many minutes")
     args = ap.parse_args(argv)
@@ -549,6 +576,7 @@ def main(argv=None) -> int:
 
     print("FY overlap rehearsal - " + ("EXECUTE" if args.execute else "DRY RUN (nothing is changed)"))
     print("It WOULD do:" if not args.execute else "It will do:")
+    print(f"  - Mail: the INFO mail goes to {args.mail_to or '(nobody: --mail-to is required with --execute)'} only")
     for line in plan.lines():
         print("  - " + line)
 
@@ -564,8 +592,11 @@ def main(argv=None) -> int:
         print("Dry run only. Add --execute to run it.")
         return 0
 
+    if not args.mail_to:
+        print("REFUSED: --mail-to <address> is required with --execute (the office's addresses are never used)")
+        return 2
     report = Report()
-    ok = execute(prod_cfg, raw, plan, report, keep=args.keep)
+    ok = execute(prod_cfg, raw, plan, report, keep=args.keep, mail_to=args.mail_to)
     print("\nRESULT: " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
