@@ -65,7 +65,7 @@ D6, D8, D10, D11, D12, D13 (gcs_lifecycle.json `age 365 -> ARCHIVE` unscoped; WP
   `secrets\` (aam-gcs-key.json copy, svc_password.txt, dashboard.txt - NEVER commit/print), `smtp_sink.py` (running detached, appends `mails.jsonl`), `INSTALL_REPORT.md` (the install agent's state/commands).
 - Real GCS test bucket **`aam-backup-qa-bilcvx`** (asia-south1, project 920173882190), created by this session; the demo bucket `aam-backup-demo-innovizta` was NOT touched. Delete the bucket when done.
 - Local user `aamtest` and SMB share `AAMTestNAS` -> `C:\AAMTest\nas` exist. Services (AamPrefectServer / AamBackupAgent / AamWatchdog) are **NOT installed yet** (install agent was working from `C:\AAMTest\code`; check `INSTALL_REPORT.md`).
-- Elevated worker queue (may be dead in a new session): drop `NNN_name.ps1` into `C:\Users\malliath\AppData\Local\Temp\claude\f0b75212b996e1b8\65ef6d5c-77fe-4adc-a206-90eb3d2ece7d\scratchpad\elevq\`; worker kills scripts after 600 s.
+- Elevated worker queue (may be dead in a new session): drop `NNN_name.ps1` into `<session scratchpad>\elevq\`; worker kills scripts after 600 s.
   Needs a UAC click to (re)start it (`scratchpad\elev_worker2.ps1`). Never use Get-LocalUser/New-LocalUser or unbounded service-stop waits in elevated scripts (a script hung that way before).
 - **Gotcha:** `deploy/04_check_readiness.ps1` runs `uv sync --frozen` WITHOUT the dev group: run from the dev checkout it removed pytest/hypothesis from the main `.venv` (restored with `uv sync --frozen`).
   Run deploy scripts only from `C:\AAMTest\code`. Memory: `readiness-script-strips-dev-venv`.
