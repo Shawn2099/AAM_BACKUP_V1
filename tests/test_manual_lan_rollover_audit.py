@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import flow
-from core import faults, manual_leg
+from core import faults, fy_overlap, manual_leg
 from core import fy_rollover as fr
 from core.wol import WolTimeout
 from tests.test_a4_final_lan_no_shutdown import _make_lan_config
@@ -30,7 +30,7 @@ def _manual_lan(r):
 
 def _warnings(r):
     return [c.args[1] for c in r.m["notify"].call_args_list
-            if c.args[1].kind == "WARNING" and "lan_not_final" in c.args[1].key]
+            if c.args[1].kind == "WARNING" and "not_fully_copied" in c.args[1].key]
 
 
 def test_manual_only_lan_nas_off_does_not_block_the_switch_and_warns_once():
@@ -42,33 +42,66 @@ def test_manual_only_lan_nas_off_does_not_block_the_switch_and_warns_once():
         r.m["_open_block_request"].assert_not_called()
         assert r.m["_run_lan_pipeline"].call_args.kwargs["nas_offline_expected"] is True
         [w] = _warnings(r)
-        assert w.key == "rollover:FY26-27:lan_not_final" and "did not happen" in w.message
-        meta = json.loads(r.db.get_meta("lan_final_missing"))
-        assert meta["fy"] == "FY26-27"
+        assert w.key == "rollover:FY26-27:not_fully_copied" and w.fy == "FY26-27"
+        assert "FY26-27 is not yet fully copied to LAN" in w.message
+        assert "start a LAN backup from the dashboard" in w.message       # the truth, not 'it will be brought up to date'
+        assert "up to date" not in w.message
+        assert r.db.get_meta("lan_final_missing") is None                 # derived from run_history now
+        assert fy_overlap.year_closed(r.db, "FY26-27") is False            # NOT closed: it stays tracked
         # the rollover run row says it
         recorded = [c for c in r.m["_record_run"].call_args_list if c.args[4] == "ROLLOVER_COMPLETE"]
-        assert json.loads(recorded[-1].kwargs["extended_metrics"])["lan_final_not_reached"] == "FY26-27"
+        metrics = json.loads(recorded[-1].kwargs["extended_metrics"])
+        assert metrics["lan_final_not_reached"] == "FY26-27"
+        assert metrics["old_year_not_fully_copied"] == {"fy": "FY26-27", "legs": ["lan"]}
 
 
-def test_the_not_final_note_shows_in_the_truth_line_until_a_lan_backup_succeeds():
+def test_the_year_closes_only_after_a_real_lan_backup_of_it_started_after_the_year_ended():
     with _Rig() as r:
         _manual_lan(r)
         r.m["_run_lan_pipeline"].side_effect = _nas_off
         r.run()
-        assert manual_leg.lan_not_final_fy(r.db) == "FY26-27"
-        cfg = _lan_cfg()
-        line = manual_leg.mode_line(cfg, r.db, "lan")
-        assert "FY26-27 was not final-synced to the NAS" in line["text"] and line["soft_warn"] is True
-        r.db.insert_run({"fy": "FY26-27", "run_id": "later", "mode": "lan",
-                         "started_at": "2999-01-01T10:00:00+05:30", "ended_at": "2999-01-01T11:00:00+05:30",
-                         "status": "LAN_COMPLETE"})
-        assert manual_leg.lan_not_final_fy(r.db) is None
+        r.cfg.paths.source_drive = "E:\\DATA\\FY27-28"                  # what the switch did to config.yaml
+        r.cfg.paths.lan_destination = "\\\\nas\\backup\\FY27-28"
+        for run_id, mode, status, started in (
+                ("c1", "cloud", "CLOUD_COMPLETE", "2027-04-01T06:00:00+05:30"),
+                ("l0", "lan", "LAN_COMPLETE", "2027-03-31T21:00:00+05:30"),      # before the year ended
+                ("l1", "lan", "LAN_FAILED", "2027-04-05T10:00:00+05:30"),
+                ("l2", "lan", "LAN_PARTIAL", "2027-04-06T10:00:00+05:30")):
+            r.db.insert_run({"fy": "FY26-27", "run_id": run_id, "mode": mode, "status": status,
+                             "started_at": started, "ended_at": started})
+        flow._close_finished_old_fys(r.cfg, r.db)
+        assert fy_overlap.year_closed(r.db, "FY26-27") is False
+        assert [o["missing"] for o in fy_overlap.unfinished_old_years(r.cfg, r.db)] == [["lan"]]
+        r.db.insert_run({"fy": "FY26-27", "run_id": "l3", "mode": "lan", "status": "LAN_COMPLETE",
+                         "started_at": "2027-04-07T10:00:00+05:30", "ended_at": "2027-04-07T11:00:00+05:30"})
+        flow._close_finished_old_fys(r.cfg, r.db)
+        assert fy_overlap.year_closed(r.db, "FY26-27") is True
+        assert fy_overlap.unfinished_old_years(r.cfg, r.db) == []
 
 
-def _lan_cfg():
-    from types import SimpleNamespace
-    return SimpleNamespace(lan=SimpleNamespace(enabled=True, scheduled=False, on_demand_warn_after_days=30),
-                           cloud=SimpleNamespace(enabled=False, scheduled=True, on_demand_warn_after_days=30))
+def test_a_normal_rollover_closes_the_year_at_the_switch_as_before():
+    with _Rig() as r:
+        assert r.run() == "ROLLOVER_COMPLETED"
+        assert fy_overlap.year_closed(r.db, "FY26-27") is True
+        assert _warnings(r) == []
+
+
+def test_an_approved_rollover_over_a_failed_final_backup_keeps_the_year_tracked():
+    with _Rig(lan="LAN_FAILED", approved=True) as r:
+        assert r.run(approval_id="a1") == "ROLLOVER_COMPLETED"
+        assert fy_overlap.year_closed(r.db, "FY26-27") is False
+        [w] = _warnings(r)
+        assert "FY26-27 is not yet fully copied to LAN" in w.message
+
+
+def test_a_manual_only_cloud_leg_that_did_not_copy_the_year_keeps_it_tracked():
+    with _Rig(cloud="CLOUD_FAILED", approved=True) as r:
+        r.cfg.cloud.scheduled = False
+        assert r.run(approval_id="a1") == "ROLLOVER_COMPLETED"
+        assert fy_overlap.year_closed(r.db, "FY26-27") is False
+        [w] = _warnings(r)
+        assert "FY26-27 is not yet fully copied to Cloud" in w.message
+        assert "start a Cloud backup from the dashboard" in w.message
 
 
 def test_nightly_lan_with_the_nas_off_still_blocks_the_switch_as_today():
