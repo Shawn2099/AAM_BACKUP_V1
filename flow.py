@@ -2933,7 +2933,7 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     if rj.is_finished(final["steps"][rj.CONFIG_SWITCH]):       # the new year's files are protected from now on
         try:
             fy_overlap.end_overlap(db, from_fy, to_fy, now_iso())    # plan 4: no-op without an overlap record
-        except Exception as e:  # noqa: BLE001 - the switch stands; the record is stamped again next morning
+        except Exception as e:  # noqa: BLE001 - the switch stands; retried only while an unfinished step makes the next morning's check resume this journal. Once the journal is finished the record keeps no ended_at (harmless: the config points at the new FY)
             logger.warning(f"Could not end the FY overlap record of {to_fy}: {e}")
         try:
             _resolve_unprotected_new_fy(config, db, new_fy=to_fy)
