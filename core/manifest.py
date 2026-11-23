@@ -1049,6 +1049,19 @@ class ManifestDB:
                 (ap.PENDING, ap.APPROVED)).fetchall()
         return [self._approval_row(r) for r in rows]
 
+    def leg_approval_state(self, leg: str, fy: str) -> tuple[bool, bool]:
+        """(has a PENDING request, a human ever approved a request) of this leg and FY (D15: the FY rollover
+        asks for its own approval only after the leg's own approval was given)."""
+        from core import approvals as ap
+
+        with self._lock:
+            conn = self._get_conn()
+            pending = conn.execute("SELECT 1 FROM approvals WHERE leg = ? AND fy = ? AND status = ? LIMIT 1",
+                                   (leg, fy, ap.PENDING)).fetchone() is not None
+            given = conn.execute("SELECT 1 FROM approvals WHERE leg = ? AND fy = ? AND approved_at IS NOT NULL "
+                                 "LIMIT 1", (leg, fy)).fetchone() is not None
+        return pending, given
+
     def _transition(self, sql: str, params: tuple) -> bool:
         with self._lock:
             conn = self._get_conn()

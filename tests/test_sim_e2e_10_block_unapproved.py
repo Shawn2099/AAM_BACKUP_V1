@@ -228,10 +228,6 @@ def test_s10_no_switch_on_4_april_06_00_while_no_rollover_approval_has_been_give
     assert s10["switch_writes_end"] == [], s10["switch_writes_end"]
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "SIM-S10: plan section 4 'Switch blocked for days' orders the per-leg approval before the G6 approval; "
-    "the product opens a rollover (G6) request in each 06:00 run from 1 April, before any leg approval exists "
-    "(approval rows 3, 6, 9 created 1, 2, 3 April 06:00)"))
 def test_s10_a_rollover_approval_is_not_requested_before_the_leg_approval_was_given(s10):
     """Plan section 4 row 'Switch blocked for days': 'a final-backup G3 block needs the per-leg approval first,
     then the G6 approval'. Asserted as stated: no rollover (G6) request exists before the leg approval is given."""
