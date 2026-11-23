@@ -43,7 +43,7 @@ reminder, not a fault. Do nothing; the files are backed up from 1 January. TO CO
 - **Expect:** nothing new. One card on the dashboard. No red banner.
 - **Check:** the dashboard shows the last NAS run as success.
 - **If not:** section 4 (table).
-- **Do not:** create `FY27-28` by hand.
+- **Do not:** create `FY27-28` under any other name (for example `FY 27-28`).
 
 ### Thu 31 Dec 2026
 - **Automatic:** 02:00 cloud backup of `FY26-27`. 06:00 rollover check: daily folder check.
@@ -61,9 +61,9 @@ reminder, not a fault. Do nothing; the files are backed up from 1 January. TO CO
 - **Expect:** an INFO email that `FY27-28` is now backed up as well (exact subject TO CONFIRM). Two cards by the evening.
   The 08:30 monthly email (December) has no `FY27-28` section yet.
 - **Check (morning, 09:00):** dashboard has two cards; new year first. No red banner. The INFO email arrived.
-  Note: an INFO email sent during a mail outage is not re-sent automatically; look for an
-  "alerts could not be delivered" banner instead (fixed by the digest, TO CONFIRM it is in the build).
-- **Check (21:30):** NAS was on and is off again. `FY27-28` shows a success on the NAS card.
+  If the mail server was down that day, look for an "alerts could not be delivered" banner. The digest
+  email (up to 72 h later) should bring the lost mail; TO CONFIRM it is in the build.
+- **Check (next morning):** the NAS was on and is off again. `FY27-28` shows a success on the NAS card.
 - **If not:** section 4. Activation not done after 24 hours = action-needed email (`rollover.activation_alert_after_hours`).
 - **Do not:** restart the server or stop services between 02:00 and 08:00 or 21:00 and 01:00 (backup window).
 
@@ -97,15 +97,15 @@ reminder, not a fault. Do nothing; the files are backed up from 1 January. TO CO
 ### Thu 1 Apr 2027 (switch day)
 - **Automatic:**
   1. 02:00 cloud backup still backs up **both** years (the switch is not done yet).
-  2. 06:00 rollover check: final backup of `FY26-27` (cloud, then NAS: the NAS is woken for it).
+  2. 06:00 rollover check: final backup of `FY26-27` on the cloud and the NAS (the NAS is woken for it).
   3. Creates or confirms the `FY27-28` folders (already exist since 1 January).
   4. Switches the configuration so `FY27-28` is the current year (automatic).
   5. Moves the old year's online copy `gs://<bucket>/FY26-27/` to the cheaper ARCHIVE storage class.
      The files stay in the cloud; only the storage class changes. TO CONFIRM restore time from ARCHIVE.
-  6. NAS shut down if configured. One INFO "rollover complete" email (wording TO CONFIRM; open item W1).
+  6. NAS shut down if configured. One INFO announcement email (wording TO CONFIRM; open item W1).
   7. 21:00 NAS backup: `FY27-28` only. 08:30 monthly email (March) covers both years.
 - **Expect:** rollover card in Settings says the switch is done. One card (`FY27-28`). `FY26-27` card gone.
-- **Check (09:00):** Settings > rollover card shows the switch done and the current folder `FY27-28`.
+- **Check (09:00):** Settings > FY rollover card shows the switch done and the current folder `FY27-28`.
   Dashboard: one card. No red banner. Archive step done (TO CONFIRM where it is shown).
 - **If not:** section 4 (rollover codes AAM-ROL-02, -04, -05). A final-backup block needs your approval;
   the switch waits until then. Approve the leg first, then the "roll over anyway" request, only if the reason is understood.
@@ -124,6 +124,9 @@ reminder, not a fault. Do nothing; the files are backed up from 1 January. TO CO
 
 ## 4. Abnormal signs: what to do
 
+Codes are shown as `AAM-ROL-xx` / `AAM-NAS-xx` in the emails. Some docs drop the `AAM-` prefix, and the
+clock codes are CLK-03 (clock behind) and ROL-03 (not proven). TO CONFIRM each code against the email.
+
 | You see | Meaning (from the docs) | What to do |
 |---|---|---|
 | Red banner on the dashboard | A card needs action (overdue, blocked, failed, or mail not delivered) | Open that card and read the reason. Do the matching row below |
@@ -135,7 +138,8 @@ reminder, not a fault. Do nothing; the files are backed up from 1 January. TO CO
 | AAM-NAS-09 or -10 | NAS folder has no mount marker (or is non-empty without one) | Approve only if the folder is the correct year folder. The approval recreates the marker |
 | AAM-SRC-01 | Source folder missing or unreadable | Check the drive is connected. Do not recreate the folder by hand with a new name |
 | AAM-ROL-02 | Final backup of the old year blocked (switch waits) | Approve the leg first, then "roll over anyway", only if the reason is understood |
-| AAM-ROL-03 | Clock not proven (activation or switch waits) | Check the server clock and time sync. Do not change the clock by hand |
+| AAM-ROL-03 (or ROL-03) | Clock not proven (activation or switch waits) | Check the server clock and time sync. Do not change the clock by hand |
+| CLK-03 | Clock behind (switch refused) | Same as above; call if it does not clear |
 | AAM-ROL-04 | Switch could not be finished (retried daily) | Read the reason. It usually self-heals the next morning. Call if it repeats 2 days |
 | AAM-ROL-05 | Archive step failed (retried daily) | Nothing to approve. Action-needed email after 3 days. Call if it repeats |
 | AAM-ROL-07 | A year-like folder is misnamed or an inactive newer folder holds files | Do not rename by hand without calling. Tell the developer the folder name |
@@ -144,7 +148,7 @@ reminder, not a fault. Do nothing; the files are backed up from 1 January. TO CO
 | Guard G4 (destination changed, or NAS is this server) | Backup target is not the expected one | Do not approve. Call |
 | Guard G5 (mount marker missing) | NAS share does not look like the expected drive | Check the NAS share is the right one. Approve only then |
 | Guard G6 "roll over anyway" | Switch waits for a decision | See AAM-ROL-02 |
-| Watchdog email "service restarted" or "critical" | The backup service stopped | Check the dashboard. Do not restart services during a run; wait for the dashboard to show no run |
+| Watchdog email (CRITICAL, or RECOVERED after one) | The backup service stopped or was restarted | Check the dashboard. Do not restart services during a run; wait for the dashboard to show no run |
 | `/health` shows 503 | A red item exists | Read the dashboard reason (same as banner) |
 | Power cut | Run was cut off | Start the server. The next run continues; a reboot email may say the switch could not be finished (open item W2) |
 
@@ -156,7 +160,7 @@ Tick each line. If any line fails, go to section 4.
 
 - [ ] Dashboard: **no red banner**.
 - [ ] Cards: **one** (Apr to Dec, from 1 Apr) or **two** (1 Jan to 31 Mar). Newest year first in January.
-- [ ] Each card: last cloud and last NAS success **last night** (or the night before, if it was a Sunday audit day).
+- [ ] Each card: last cloud and last NAS success **last night** (or within the overdue rule in section 4).
 - [ ] No approval waiting on any card.
 - [ ] Monday weekly email: no "action needed" in any section.
 - [ ] 1 Jan: the activation email arrived (or no "alerts could not be delivered" banner).
