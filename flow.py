@@ -2621,10 +2621,6 @@ class _FinalBackupWait(fy_rollover.RolloverError):
     """The final backup only waited for the slot (D7): the step stays unfinished, no failure mail."""
 
 
-class _FinalBackupBlocked(fy_rollover.RolloverError):
-    """A leg's final backup waits for its own approval (D15): the step stays unfinished, no rollover request."""
-
-
 def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):
     """Run one journal step and persist its outcome (plan A, saga).
 
@@ -2641,9 +2637,6 @@ def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):
         raise
     except _FinalBackupWait as e:
         db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"waiting: {e}")
-        raise
-    except _FinalBackupBlocked as e:
-        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"blocked: {e}")
         raise
     except Exception as e:  # noqa: BLE001 - recorded on the journal; the caller decides
         logger.error(f"FY rollover {from_fy} -> {to_fy}: step {step} failed: {e}")
@@ -2819,7 +2812,6 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
         final_status, final_errors = _run_final_backups(config, run_id)
         _defer_if_only_waiting(final_status)
-        _defer_if_leg_approval_open(final_status)
         g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
         approved, approval_record = _apply_approval(config, "rollover", approval_id, run_id, [g6])
         try:
@@ -2855,36 +2847,6 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
             title=f"Switch to {to_fy} waits for the last {from_fy} backup", message=msg,
             status="ROLLOVER_FAILED", occurred_at=started_at, run_id=run_id))
         raise _FinalBackupWait(msg)
-
-    def _defer_if_leg_approval_open(final_status: dict) -> None:
-        """D15 (plan FY overlap section 4, 'Switch blocked for days'): a leg whose final backup is guard-blocked
-        has its own approval request. The rollover (G6) asks only AFTER that approval was given (or the final
-        backup succeeded). Until then the switch stays blocked, nothing is requested, nothing proceeds."""
-        waiting = []
-        try:
-            for leg, s in final_status.items():
-                if s != f"{leg.upper()}_BLOCKED":
-                    continue
-                pending, given = db.leg_approval_state(leg, from_fy)
-                if pending and not given:
-                    waiting.append(leg)
-        except Exception as e:  # noqa: BLE001 - unknown = fail closed the old way: G6 asks and mails
-            logger.warning(f"Could not read the leg approvals of {from_fy}: {e}")
-            return
-        if not waiting:
-            return
-        msg = (f"The switch to {to_fy} is blocked: the last {from_fy} backup of the "
-               f"{' and '.join(w.upper() for w in waiting)} backup needs your approval first. Open the dashboard and "
-               f"approve or dismiss that backup request; the switch asks for its own approval afterwards. "
-               "Nothing was changed. Your data is safe.")
-        logger.error(msg)
-        record("ROLLOVER_BLOCKED", msg, {"final_status": dict(final_status), "leg_approval_open": waiting})
-        notify(config, AlertEvent(
-            key="blocked:rollover", kind="ACTION_REQUIRED", mode="rollover",
-            title="Financial-year switch blocked - approval needed",
-            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
-            fault_code="AAM-ROL-02", run_id=run_id))
-        raise _FinalBackupBlocked(msg)
 
     def step_source_folder():
         fy_rollover.create_source_folder(
