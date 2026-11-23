@@ -336,3 +336,39 @@ def test_a_resumed_announce_still_warns_about_an_earlier_copy_time():
 
 def _resumed_ok(r):
     return _resume_next_morning(r) == "ROLLOVER_COMPLETED"
+
+
+# ---- B4 review G5: gaps found by mutation ----------------------------------------------------------------
+
+def test_a_run_of_the_next_fy_pass_after_april_is_not_a_final_copy_of_the_old_year():
+    with _OverlapRig(lan="LAN_FAILED") as r:
+        r.copy("lan", "2027-04-02T01:00:00+05:30", "LAN_COMPLETE", fy=TO)    # the FY27-28 pass, after 1 April
+        with pytest.raises(fr.RolloverError):
+            r.run()
+        r.m["update_config_yaml"].assert_not_called()
+        assert r.metrics("ROLLOVER_BLOCKED")["final_copy"]["lan"]["outstanding"] is True
+
+
+@pytest.mark.parametrize("started, counts", [
+    ("2027-04-01T00:00:00+05:30", True),            # exactly the closing moment
+    ("2027-03-31T18:30:00+00:00", True),            # the same instant written in UTC
+    ("2027-03-31T23:59:00+05:30", False),           # one minute before
+    ("2027-03-31T18:29:00+00:00", False),
+])
+def test_the_closing_moment_is_1_april_midnight_ist_through_the_whole_check(started, counts):
+    with _OverlapRig(lan="LAN_FAILED") as r:
+        r.copy("lan", started, "LAN_COMPLETE")
+        if counts:
+            assert r.run() == "ROLLOVER_COMPLETED"
+            r.m["update_config_yaml"].assert_called_once()
+        else:
+            with pytest.raises(fr.RolloverError):
+                r.run()
+            r.m["update_config_yaml"].assert_not_called()
+
+
+def test_the_overlap_is_not_open_once_ended_at_is_stamped():
+    with _OverlapRig() as r:
+        assert fo.overlap_open(r.cfg, r.db, TO) is True
+        r.db.set_overlap_record(TO, {**REC, "ended_at": "2027-04-01T06:00:00+05:30"})
+        assert fo.overlap_open(r.cfg, r.db, TO) is False
