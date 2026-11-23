@@ -426,9 +426,19 @@ def test_w10_production_line_coverage_during_real_run(sandbox, monkeypatch):
         # flow.py 55 -> 54 (2026-10-23): the new-financial-year code (early source folder, files alarm,
         # re-entered switch, FY-1..FY-18) runs only around 1 April; measured 54.8% on the clean run.
         # tests/test_fy*.py cover it.
+        # core/manifest.py 30 -> 27 (2026-11-23): the manifest gained code a clean one-night LAN+cloud run never calls:
+        # superseding a PENDING approval once the leg later succeeds, the size-bounded run-history retention
+        # (maintenance.db_retention_max_mb), the loud DB-re-created alarm, the undelivered-alert digest/RECOVERED queries,
+        # first_run_started_at and the D15 G6-after-leg-approval reader. All are failure-night, maintenance or
+        # watchdog/dashboard paths (not dead code); measured 29.1% on the clean run. tests/test_approval_superseded_by_success.py,
+        # test_l1_*.py, test_l2_db_identity.py and test_d3_undelivered_alerts_clear.py cover them.
+        # flow.py 45 -> 41 (2026-11-23): manual-only LAN/cloud rollover branches, the F1 service-down refusal, the
+        # NAS-10 not-approvable handling, FV-1 (close a year only when every enabled leg copied it), the D7 final-backup
+        # retry and the D15 G6-after-approval path run only for manual-only legs, around 1 April or on failure nights;
+        # measured 43% on the clean run. tests/test_ov*.py, test_f1_manual_start_guard.py and the guard/approval tests cover them.
     floors = {"core/lan_sync.py": 55, "core/cloud_sync.py": 80, "core/cloud_verify.py": 60,
-              "core/manifest.py": 30, "core/health.py": 40, "core/lan_preflight.py": 55,
-              "core/cloud_preflight.py": 50, "flow.py": 45}
+              "core/manifest.py": 27, "core/health.py": 40, "core/lan_preflight.py": 55,
+              "core/cloud_preflight.py": 50, "flow.py": 41}
     for target, floor in floors.items():
         if target not in report:
             continue

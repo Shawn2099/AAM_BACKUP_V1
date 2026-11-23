@@ -299,8 +299,13 @@ def test_w17_service_state_parsing(monkeypatch):
     assert wd._service_state("AamPrefectServer") == "RUNNING"
     monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("STATE              : 1  STOPPED\n")))
     assert wd._service_state("x") == "STOPPED"
+    # Localized labels (German ZUSTAND): the numeric code decides, not the label (6085714).
+    monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("ZUSTAND            : 4  RUNNING\n")))
+    assert wd._service_state("x") == "RUNNING"
+    # A bare number with no state name never occurs in real sc output; the old one-token fallback
+    # ('4') was dropped on purpose: unparseable means unknown ('') so callers fail closed.
     monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("STATE              : 4\n")))
-    assert wd._service_state("x") == "4"          # one-token fallback
+    assert wd._service_state("x") == ""
     monkeypatch.setattr(wd.services, "run_capture", adapt(run_factory("no state line here")))
     assert wd._service_state("x") == ""
 

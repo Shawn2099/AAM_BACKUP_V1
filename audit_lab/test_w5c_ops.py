@@ -8,6 +8,7 @@ c4. a file is locked by a user          (accountants with Excel open)
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import threading
 import time
@@ -118,10 +119,34 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
         assert (dest / ".AAM_TARGET_MOUNTED").is_file()
         assert len(files()) == len([p for p in src.rglob("*") if p.is_file()]) + 1
 
-        # 4. the same approval can never cover another run
+        # 4a. marker gone again on a folder that NOW HOLDS FILES = wrong disk/folder (AAM-NAS-10): not
+        # approvable at all, so the approval is not even looked at: nothing is copied, the text says
+        # to fix the cause, and the used approval keeps its original owner run.
         (dest / ".AAM_TARGET_MOUNTED").unlink()
+        before = files()
+        exc4a = run("w5c-4a", approval_id=req["approval_id"])
+        assert isinstance(exc4a, guards.GuardBlocked), exc4a
+        assert "Do NOT approve" in str(exc4a) and "Fix the cause" in str(exc4a), str(exc4a)
+        assert "already used" not in str(exc4a)
+        assert files() == before and not (dest / ".AAM_TARGET_MOUNTED").exists()
+        db = ManifestDB.from_config(cfg)
+        try:
+            again = db.get_approval(req["approval_id"])
+        finally:
+            db.close()
+        assert again["status"] == ap.USED and again["used_by_run_id"] == "w5c-3"
+
+        # 4b. the same approval can never cover another run: on a genuinely NEW, EMPTY folder (AAM-NAS-09,
+        # approvable) the used approval is refused as 'already used' and nothing is written.
+        for p in dest.iterdir():
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+        assert files() == []
         exc4 = run("w5c-4", approval_id=req["approval_id"])
-        assert isinstance(exc4, guards.GuardBlocked) and "already used" in str(exc4)
+        assert isinstance(exc4, guards.GuardBlocked) and "already used" in str(exc4), exc4
+        assert files() == [], "a used approval must not allow a second copy"
     finally:
         ls.build_robocopy_command = orig
 
