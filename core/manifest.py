@@ -940,6 +940,16 @@ class ManifestDB:
             ).fetchone()
         return json.loads(row[0])["guards"] if row else None
 
+    def statuses_of_flow_run(self, flow_run_id: str) -> list[str]:
+        """The status of every run row written by one Prefect flow run (run ids are `<flow run id>-<leg>[-<fy>]`),
+        all FYs. Empty when the flow run wrote none."""
+        like = flow_run_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "-%"
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute("SELECT status FROM run_history WHERE run_id LIKE ? ESCAPE '\\'",
+                                (like,)).fetchall()
+            return [r[0] for r in rows]
+
     def get_recent_runs(self, limit: int = 10, *, fy: str) -> list[dict]:
         clause, fy_args = self._fy_filter(fy)
         with self._lock:

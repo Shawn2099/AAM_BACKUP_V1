@@ -379,6 +379,15 @@ def _trigger_timeout(request: Request) -> float:
     return _dash("trigger_wait_seconds")
 
 
+def _flow_run_statuses(run_id: str) -> list[str]:
+    """Statuses of the run rows this flow run wrote (empty when unknown: the plain 'ended as' text is used)."""
+    try:
+        return get_db().statuses_of_flow_run(run_id)
+    except Exception as e:  # noqa: BLE001 - the answer must still be given
+        logger.warning(f"Could not read the outcome of flow run {run_id}: {e}")
+        return []
+
+
 def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
     run_id = str(flow_run.id)
     state = getattr(flow_run, "state", None)
@@ -396,6 +405,20 @@ def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
                 "flow_run_id": run_id,
                 "detail": messages.act("Start it again when you are ready", f"The {label} {noun} was cancelled", f"run {run_id}"),
             }, status_code=409)
+        # F5: a guard BLOCK and a PARTIAL run are failed Prefect runs; say what happened and where to go
+        categories = {statuses.category(s) for s in _flow_run_statuses(run_id)}
+        if "blocked" in categories:
+            return JSONResponse({
+                "status": "failed", "outcome": "blocked", "flow_run_id": run_id,
+                "detail": messages.act("Open the pending decision on this page and approve or dismiss it",
+                                       f"The {label} {noun} was stopped for your safety", f"run {run_id}"),
+            }, status_code=500)
+        if "partial" in categories:
+            return JSONResponse({
+                "status": "failed", "outcome": "partial", "flow_run_id": run_id,
+                "detail": messages.act("Open Recent backups on this page to see what was left out",
+                                       f"The {label} {noun} was only partly done", f"run {run_id}"),
+            }, status_code=500)
         return JSONResponse({
             "status": "failed",
             "flow_run_id": run_id,
