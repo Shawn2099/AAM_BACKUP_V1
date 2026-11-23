@@ -367,7 +367,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   `CLOCK_BEHIND` / `JUMP` -> nothing; overlap off -> nothing; office-made folder adopted; junction refused;
   `ensure_nas_folder` cases (missing, empty, marker, non-empty without marker, `\\nas\backup` unreachable). Review of
   the existing tests that cross 31 Dec (see default-on note).
-- [ ] **B2 Pipelines take `fy_pass` / `budget_start`.** `tests/test_fy_overlap_pipelines.py` with `fake_run_tool`:
+- [x] **B2 Pipelines take `fy_pass` / `budget_start`.** `tests/test_fy_overlap_pipelines.py` with `fake_run_tool`:
   next-FY cloud pass uses `E:\FY27-28` -> `gs://bucket/FY27-28`, LAN `E:\FY27-28` -> `\\nas\backup\FY27-28`,
   suffixed run_id, row `fy`/`overlap`, artifact key, no `file_entries` write, alert keys/titles, other FY's approval
   not applied; LAN next pass creates the NAS folder after WoL; unreachable parent = `LAN_FAILED` AAM-LAN-01;

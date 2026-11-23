@@ -325,22 +325,25 @@ def _cloud_diff_count(manifest: list, before: dict) -> int:
 def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
                     occurred_at: str, *, run_id: str | None = None,
                     sync_result: dict | None = None, fault_code: str | None = None,
-                    artefacts_dir: str | None = None) -> None:
+                    artefacts_dir: str | None = None, fy: str | None = None,
+                    title_fy: str | None = None) -> None:
     """THE failure alert of one run (plan WP8): one per failed run, at the
     terminal decision, through core.notify (delivery recorded, cooldown per
     leg+status, dashboard link). Never raises. The fault code is the one the
-    pipeline classified, else derived from the status + tool evidence."""
+    pipeline classified, else derived from the status + tool evidence.
+    fy / title_fy: the overlap scope of the pass (plan 2.3, see _alert_scope)."""
     try:
         code = fault_code or faults.classify_run(leg, status, sync_result=sync_result)
     except Exception:  # noqa: BLE001 - the alert must still go out
         code = faults.UNKNOWN
     notify(config, AlertEvent(
-        key=f"backup:{leg}:{status}", kind="FAILURE", mode=leg,
-        title=f"{leg.upper()} backup {statuses.label(status).lower()}",
+        key=f"backup:{leg}:{fy}:{status}" if fy else f"backup:{leg}:{status}",
+        kind="FAILURE", mode=leg,
+        title=f"{_leg_title(leg, title_fy or fy)} backup {statuses.label(status).lower()}",
         message=message, status=status,
         exit_code=exit_code if type(exit_code) is int else None,
         occurred_at=occurred_at, fault_code=code, run_id=run_id,
-        artefacts_dir=artefacts_dir,
+        artefacts_dir=artefacts_dir, fy=fy,
     ))
 
 
@@ -352,13 +355,15 @@ def _failure_alert_text(leg: str, status: str, error: str | None, nas_note: str 
     return f"{name} backup {statuses.label(status)}: {error or status} {nas_note}".strip()
 
 
-def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
-    """RECOVERED email on the first success after a failure (plan WP8)."""
+def _send_recovery_if_needed(config, leg: str, run_id: str, *, fy: str | None = None,
+                             title_fy: str | None = None) -> None:
+    """RECOVERED email on the first success after a failure (plan WP8). fy: the pass's own FY (plan 2.3)."""
     try:
         db = ManifestDB.from_config(config)
         try:
-            previous = db.previous_run_status(leg, run_id)
-            previous_code = db.previous_run_fault_code(leg, run_id)
+            scope = {"fy": fy} if fy else {}
+            previous = db.previous_run_status(leg, run_id, **scope)
+            previous_code = db.previous_run_fault_code(leg, run_id, **scope)
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 - never affects the run
@@ -367,12 +372,12 @@ def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
     if previous and statuses.category(previous) in (
             statuses.CATEGORY_FAILED, statuses.CATEGORY_PARTIAL, statuses.CATEGORY_BLOCKED):
         notify(config, AlertEvent(
-            key=f"recovered:{leg}", kind="RECOVERED", mode=leg,
-            title=f"{leg.upper()} backup recovered",
+            key=f"recovered:{leg}:{fy}" if fy else f"recovered:{leg}", kind="RECOVERED", mode=leg,
+            title=f"{_leg_title(leg, title_fy or fy)} backup recovered",
             message=f"The {leg.upper()} backup completed successfully again "
                     f"(previous run: {statuses.label(previous)}).",
             status="RECOVERED", run_id=run_id,
-            resolved_code=previous_code or faults.classify_run(leg, previous)))
+            resolved_code=previous_code or faults.classify_run(leg, previous), fy=fy))
 
 
 def _exception_kind(exc: BaseException) -> str:
@@ -409,6 +414,95 @@ def _merge_metrics(extended_metrics: str | None, **fields) -> str | None:
         payload = {"unparsed_metrics": extended_metrics}
     payload.update(fields)
     return json.dumps(payload, default=str)
+
+
+# ── FY overlap passes (docs/PLAN_BASELINE_OVERLAP_2026-11-23.md, section 2.3) ──────────────────
+# fy_pass None = no overlap pass: every helper below returns the baseline value (no extra kwargs,
+# no FY metrics, the baseline key and title).
+
+def _budget_origin(budget_start: float | None, monotonic_start: float | None) -> float:
+    """Where the leg's run budget starts: the leg's first pass sets it, the next pass shares it."""
+    if budget_start is not None:
+        return budget_start
+    return monotonic_start if monotonic_start is not None else time.monotonic()
+
+
+def _pass_run_id(run_id: str, fy_pass) -> str:
+    """The next-FY pass's run id carries its FY: `<flow-run>-cloud-FY27-28` (plan D-4)."""
+    if fy_pass is None or not fy_pass.extra or fy_overlap.fy_of_id(run_id):
+        return run_id
+    return fy_overlap.pass_run_id(run_id, fy_pass.fy)
+
+
+def _writes_entries(fy_pass) -> bool:
+    """file_entries and the cloud bucket-vs-DB cross-check belong to the configured FY (plan D-9)."""
+    return fy_pass is None or not fy_pass.extra
+
+
+def _alert_scope(fy_pass) -> dict:
+    """Alert keys, groups and titles of a pass (plan 2.3). `fy` keys the alert of the next-FY pass only;
+    `title_fy` names the FY in the title of BOTH passes while the overlap is active. {} = baseline."""
+    if fy_pass is None:
+        return {}
+    return {"fy": fy_pass.fy if fy_pass.extra else None, "title_fy": fy_pass.fy}
+
+
+def _other_fy(fy_pass) -> str | None:
+    """The other active FY: a pass's approval request supersedes only the requests of its own FY (plan 2.4)."""
+    if fy_pass is None:
+        return None
+    return fy_overlap.prev_fy(fy_pass.fy) if fy_pass.extra else fy_overlap.next_fy(fy_pass.fy)
+
+
+def _pass_metrics(fy_pass, *, cloud: bool = False) -> dict:
+    """extended_metrics of a pass: its FY; the next-FY pass also says so and, on the cloud leg, that the
+    cross-check was skipped (D-9)."""
+    if fy_pass is None:
+        return {}
+    if not fy_pass.extra:
+        return {"fy": fy_pass.fy}
+    metrics = {"fy": fy_pass.fy, "overlap": True}
+    if cloud:
+        metrics["cross_check"] = "skipped (overlap pass)"
+    return metrics
+
+
+def _artifact_kwargs(fy_pass, base: str) -> dict:
+    """The Prefect summary key: only the next-FY pass has its own (plan 2.3); otherwise the task's default."""
+    if fy_pass is not None and fy_pass.extra:
+        return {"key": fy_overlap.artifact_key(base, fy_pass.fy)}
+    return {}
+
+
+def _approval_of_pass(config, approval_id: str | None, fy_pass) -> str | None:
+    """An approval made for the other FY is not offered to this pass (plan 2.3). It is not consumed here,
+    so it stays open for its own FY. No pass (baseline): the id is returned unchanged, no database read."""
+    if fy_pass is None or not approval_id:
+        return approval_id
+    db = ManifestDB.from_config(config)
+    try:
+        request = db.get_approval(approval_id)
+    finally:
+        db.close()
+    if request is not None and request.get("fy") and request.get("fy") != fy_pass.fy:
+        logger.info(f"Approval {approval_id} is for {request.get('fy')} - not applied to the "
+                    f"{fy_pass.fy} pass")
+        return None
+    return approval_id
+
+
+def _leg_title(leg: str, title_fy: str | None) -> str:
+    return f"{leg.upper()} ({title_fy})" if title_fy else leg.upper()
+
+
+def _ensure_pass_nas_folder(config, fy: str) -> None:
+    """The next-FY LAN pass's NAS folder, after WoL (plan 2.3). A refused destination or an unreachable
+    share is LAN_FAILED with AAM-LAN-01: that pass fails, the other pass still runs."""
+    try:
+        fy_overlap.ensure_pass_nas_folder(config, fy)
+    except (OSError, ValueError) as e:
+        raise faults.coded(RuntimeError(f"The NAS folder for {fy} could not be prepared: {e}"),
+                           "AAM-LAN-01") from e
 
 
 def _record_running(config, leg: str, run_id: str, started_at: str) -> None:
@@ -448,25 +542,33 @@ def _scheduled_lateness_seconds() -> float:
 
 
 def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget: RunBudget,
-                         reserve_s: float, late_s: float, monotonic_start: float | None) -> None:
+                         reserve_s: float, late_s: float, monotonic_start: float | None, *,
+                         fy: str | None = None, title_fy: str | None = None) -> None:
     """Plan I2: a run that starts with no budget left (less than the time its last steps need)
     would run into office hours. Record <LEG>_MISSED and send ONE warning per leg (the stable
     key `missed:<leg>` keeps several missed nights at boot from sending one email each), then
-    raise PartialRun so Prefect never shows this run as completed. Takes no backup slot."""
-    if late_s <= 0 or budget.remaining() > reserve_s:
+    raise PartialRun so Prefect never shows this run as completed. Takes no backup slot.
+    A next-FY overlap pass (fy set) has no lateness of its own: it is missed when the leg's
+    budget is used up by the earlier pass (plan D-7)."""
+    if (late_s <= 0 and fy is None) or budget.remaining() > reserve_s:
         return
     status = f"{leg.upper()}_MISSED"
-    late_h = late_s / 3600
-    error = (f"The {leg.upper()} backup was scheduled for {late_h:.1f} h before it could start "
-             f"(the server was off or busy), so its {budget.describe()} run budget was already "
-             "used up. Nothing was changed; the next scheduled run continues.")
+    if late_s > 0:
+        late_h = late_s / 3600
+        error = (f"The {leg.upper()} backup was scheduled for {late_h:.1f} h before it could start "
+                 f"(the server was off or busy), so its {budget.describe()} run budget was already "
+                 "used up. Nothing was changed; the next scheduled run continues.")
+    else:
+        error = (f"The {leg.upper()} backup for {fy} could not start: the {budget.describe()} run budget "
+                 "of this night was used up by the earlier pass. Nothing was changed; the next "
+                 "scheduled run continues.")
     logger.warning(error)
     _record_run(config, run_id, leg, started_at, status, -1, error,
                 monotonic_start=monotonic_start)
     notify(config, AlertEvent(
-        key=f"missed:{leg}", kind="WARNING", mode=leg,
-        title=f"{leg.upper()} backup night missed", message=error, status=status,
-        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id))
+        key=f"missed:{leg}:{fy}" if fy else f"missed:{leg}", kind="WARNING", mode=leg,
+        title=f"{_leg_title(leg, title_fy or fy)} backup night missed", message=error, status=status,
+        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id, fy=fy))
     raise PartialRun(f"{leg.upper()} run ended {status} - {error}")
 
 
@@ -492,10 +594,11 @@ def _slot_stuck(config, exc: BaseException) -> bool:
 
 @contextmanager
 def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
-                   monotonic_start: float | None = None):
+                   monotonic_start: float | None = None, **scope):
     """RUNNING row, then the backup slot. If the slot (or the watchdog lock)
     cannot be obtained, the row becomes *_SLOT_TIMEOUT ("could not start")
-    and the error is re-raised - previously no row was written at all."""
+    and the error is re-raised - previously no row was written at all.
+    scope: the pass's alert scope (fy, title_fy; plan 2.3), {} for the baseline."""
     _record_running(config, leg, run_id, started_at)
     with ExitStack() as stack:
         try:
@@ -516,7 +619,7 @@ def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
             _send_run_alert(config, leg, status,
                             f"The {leg.upper()} backup could not start: {detail}",
                             None, started_at, run_id=run_id,
-                            fault_code="AAM-SYS-08" if stuck else None)
+                            fault_code="AAM-SYS-08" if stuck else None, **scope)
             raise
         yield
 
@@ -1081,11 +1184,14 @@ def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | Non
 
 def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
                         occurred_at: str, artefacts_dir: str | None = None,
-                        sync_attempted: bool = False) -> None:
+                        sync_attempted: bool = False, *, fy: str | None = None,
+                        title_fy: str | None = None, keep_fy: str | None = None) -> None:
     """BLOCKED run -> one approval request + ONE attention email (DEC-3).
 
     sync_attempted (A3): a sync attempt ran before the block (delete backstop, re-measure
     between retries), so the text must not say nothing was changed.
+    fy / title_fy / keep_fy (plan 2.3, 2.4): the pass's alert scope and the other active FY,
+    whose pending requests this request does not supersede. None = the baseline call.
 
     Never raises: the run row is already written, and the human must be
     told even when the request could not be stored.
@@ -1100,7 +1206,8 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
             approval_id = db.open_approval_request(
                 leg=leg, blocked_run_id=run_id, fy=guard_record.get("fy"),
                 guards=[{k: r.get(k) for k in ("guard", "reason", "metrics")} for r in blocked],
-                phrase=approvals.request_phrase(blocked), created_at=now_iso())
+                phrase=approvals.request_phrase(blocked), created_at=now_iso(),
+                **({"keep_fy": keep_fy} if keep_fy else {}))
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001 - the alert below must still go out
@@ -1114,9 +1221,9 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
     message += (f"\n\n{changed} Open the dashboard to review the "
                 "numbers and either approve this backup once or dismiss it.")
     notify(config, AlertEvent(
-        key=f"blocked:{leg}", kind="ACTION_REQUIRED", mode=leg,
-        title=f"{leg.upper()} backup blocked - approval needed",
-        message=message, status=f"{leg.upper()}_BLOCKED",
+        key=f"blocked:{leg}:{fy}" if fy else f"blocked:{leg}", kind="ACTION_REQUIRED", mode=leg,
+        title=f"{_leg_title(leg, title_fy or fy)} backup blocked - approval needed",
+        message=message, status=f"{leg.upper()}_BLOCKED", fy=fy,
         fault_code=faults.blocked_guard_code(guard_record) or faults.UNKNOWN, run_id=run_id,
         artefacts_dir=artefacts_dir,
         details={"Blocked by": ", ".join(r.get("guard", "?") for r in blocked),
@@ -1349,7 +1456,8 @@ def _summary_counts(files_copied: int | None, bytes_copied: int | None) -> tuple
 
 @task(name="cloud-publish-artifact")
 def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
-                                files_copied: int | None, bytes_copied: int | None):
+                                files_copied: int | None, bytes_copied: int | None,
+                                key: str = "cloud-backup-summary"):
     """Publish a beautiful Markdown summary of the Cloud Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
@@ -1375,7 +1483,7 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
         )
         create_markdown_artifact(
             markdown=markdown_content,
-            key="cloud-backup-summary"
+            key=key
         )
         logger.info("Published Cloud Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
@@ -1384,7 +1492,8 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
 
 @task(name="lan-publish-artifact")
 def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int | None,
-                              bytes_copied: int | None, total_files: int):
+                              bytes_copied: int | None, total_files: int,
+                              key: str = "lan-backup-summary"):
     """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
@@ -1411,7 +1520,7 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int |
         )
         create_markdown_artifact(
             markdown=markdown_content,
-            key="lan-backup-summary"
+            key=key
         )
         logger.info("Published LAN Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
@@ -1535,21 +1644,26 @@ def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> st
 
 def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                         budget_hours: float | None = None,
-                        approval_id: str | None = None, late_seconds: float = 0.0):
+                        approval_id: str | None = None, late_seconds: float = 0.0,
+                        fy_pass=None, budget_start: float | None = None):
     """Execute cloud backup tasks sequentially. Each task is independently tracked.
 
     late_seconds: how long after its scheduled time the run started (plan I2); the budget
-    counts from the scheduled time, so a late start gets only what is left of it."""
+    counts from the scheduled time, so a late start gets only what is left of it.
+    fy_pass / budget_start (plan 2.3): one FY pass of an overlap. `config` is then that pass's
+    config; budget_start is the leg's shared budget origin (the first pass sets it). None = baseline."""
+    run_id = _pass_run_id(run_id, fy_pass)
+    scope = _alert_scope(fy_pass)
     # WP14: the run budget counts from the job's start (I2: its scheduled start), including
     # the slot wait
     budget = RunBudget(
         "cloud",
         (budget_hours if budget_hours is not None else config.budget.cloud_max_hours) * 3600,
-        (monotonic_start if monotonic_start is not None else time.monotonic()) - late_seconds)
+        _budget_origin(budget_start, monotonic_start) - late_seconds)
     _missed_if_no_budget(config, "cloud", run_id, started_at, budget,
                          config.budget.cloud_verify_reserve_minutes * 60, late_seconds,
-                         monotonic_start)
-    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start):
+                         monotonic_start, **scope)
+    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start, **scope):
         fy_prefix = _effective_fy_prefix(config)
 
         # Apply config-driven retries to tasks that benefit from retrying
@@ -1567,14 +1681,16 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         )
 
         # Fetch database state before sync to calculate differential transfers
-        db = ManifestDB.from_config(config)
+        # (not for the next-FY pass: the cross-check is the configured FY's, plan D-9)
         before_dict = {}
-        try:
-            before_dict = db.get_cloud_synced_entries()
-        except Exception as e:
-            logger.warning(f"Could not fetch database state before cloud sync: {e}")
-        finally:
-            db.close()
+        if _writes_entries(fy_pass):
+            db = ManifestDB.from_config(config)
+            try:
+                before_dict = db.get_cloud_synced_entries()
+            except Exception as e:
+                logger.warning(f"Could not fetch database state before cloud sync: {e}")
+            finally:
+                db.close()
 
         status = "CLOUD_SKIPPED"
         sync_result = {"exit_code": -1}
@@ -1599,6 +1715,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         clock = None         # WP12: clock verdict from the health check
 
         try:
+            approval_id = _approval_of_pass(config, approval_id, fy_pass)
             clock = health_check_task(config, "cloud", artefacts_dir)
             preflight(config, fy_prefix, artefacts_dir)
             guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
@@ -1660,7 +1777,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 _send_run_alert(config, "cloud", status, error_msg,
                                 sync_result.get("exit_code"), started_at,
                                 run_id=run_id, sync_result=sync_result,
-                                artefacts_dir=artefacts_dir)
+                                artefacts_dir=artefacts_dir, **scope)
                 alert_sent = True
                 raise PartialRun(f"Cloud run ended {status} - {error_msg}")
             phase = "verify"
@@ -1694,7 +1811,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 _send_run_alert(config, "cloud", status, verify_err,
                                 sync_result.get("exit_code"), started_at,
                                 run_id=run_id, sync_result=sync_result,
-                                artefacts_dir=artefacts_dir)
+                                artefacts_dir=artefacts_dir, **scope)
                 alert_sent = True
                 raise RuntimeError(verify_err)
 
@@ -1703,7 +1820,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             # BUG-01: ManifestDB record MUST only happen after evidence_ok passes.
             # M6: a failed manifest query is NEVER recorded as bucket state.
             manifest_error = verify_data.get("manifest_error")
-            if manifest_error:
+            if not _writes_entries(fy_pass):
+                logger.info(f"Overlap pass {fy_pass.fy}: no file_entries rows written (plan D-9)")
+            elif manifest_error:
                 logger.error(
                     f"Cloud manifest query failed ({manifest_error}) - file-level "
                     "DB record and transfer metrics are SKIPPED this run; the "
@@ -1717,7 +1836,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             # WP6: the numbers are rclone's OWN accounting (final stats line).
             # The bucket-vs-DB diff is only a cross-check (it re-derived "579
             # files copied" on no-change nights when the baseline was wrong).
-            diff_copied = _cloud_diff_count(verify_data.get("manifest", []), before_dict)
+            # The next-FY pass has no cross-check: its DB state is the configured FY's (plan D-9).
+            cross_check_skipped = not _writes_entries(fy_pass)
+            diff_copied = None if cross_check_skipped else _cloud_diff_count(
+                verify_data.get("manifest", []), before_dict)
             stats = sync_result.get("stats")
             if isinstance(stats, dict):
                 files_copied, bytes_copied = stats.get("transfers"), stats.get("bytes")
@@ -1726,8 +1848,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 files_copied = bytes_copied = None
                 counts_source = "unavailable"
                 logger.warning("rclone final stats missing - files/bytes copied recorded as unknown")
-            metrics_consistent = files_copied is not None and diff_copied == files_copied
-            if files_copied is not None and not metrics_consistent:
+            metrics_consistent = (None if cross_check_skipped
+                                  else files_copied is not None and diff_copied == files_copied)
+            if not cross_check_skipped and files_copied is not None and not metrics_consistent:
                 logger.warning(f"Cloud metrics cross-check: rclone uploaded {files_copied} file(s), "
                                f"the bucket-vs-DB diff shows {diff_copied} - the tool count is "
                                "recorded; the DB baseline was stale")
@@ -1758,7 +1881,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 "metrics_consistent": metrics_consistent,
             })
             try:
-                cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
+                cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied,
+                                            **_artifact_kwargs(fy_pass, "cloud-backup-summary"))
             except Exception as e:
                 # The Prefect summary is cosmetic; the run row is the record.
                 logger.warning(f"Cloud run summary not published to Prefect: {e}")
@@ -1776,7 +1900,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                     "continues from where this one left off.",
                     sync_result.get("exit_code"), started_at,
                     run_id=run_id, sync_result=sync_result,
-                                artefacts_dir=artefacts_dir)
+                                artefacts_dir=artefacts_dir, **scope)
                 alert_sent = True
             # Terminal-state policy (single authoritative decision point):
             # a non-success status must never return normally (which the
@@ -1802,7 +1926,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             elif not alert_sent:
                 alert = ((config, "cloud", status, _failure_alert_text("cloud", status, error_msg),
                           sync_result.get("exit_code"), started_at),
-                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
+                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir,
+                              **scope))
                 if isinstance(e, Exception):
                     _send_run_alert(*alert[0], **alert[1])
                 else:
@@ -1834,6 +1959,9 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             if fault_code:
                 extended_metrics = _merge_metrics(extended_metrics, fault_code=fault_code)
+            if fy_pass is not None:
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  **_pass_metrics(fy_pass, cloud=True))
             try:
                 _record_run(
                     config, run_id, "cloud", started_at, status,
@@ -1850,9 +1978,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 _send_run_alert(*deferred_alert[0], **deferred_alert[1])
             if status == "CLOUD_BLOCKED" and guard_record:
                 _open_block_request(config, "cloud", run_id, guard_record, started_at,
-                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
+                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")),
+                                    keep_fy=_other_fy(fy_pass), **scope)
             elif statuses.is_success(status):
-                _send_recovery_if_needed(config, "cloud", run_id)
+                _send_recovery_if_needed(config, "cloud", run_id, **scope)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1902,22 +2031,25 @@ def _complete_pending_rollover_nas_folder(config) -> None:
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                        budget_hours: float | None = None,
                       approval_id: str | None = None, allow_shutdown: bool = True,
-                      late_seconds: float = 0.0):
+                      late_seconds: float = 0.0, fy_pass=None, budget_start: float | None = None):
     """Execute LAN backup tasks sequentially. Each task is independently tracked.
 
     allow_shutdown=False (the final backup of an FY rollover, plan A4): the NAS is NOT powered
     off at any call site - the new NAS FY folder is created after this run.
-    late_seconds: see _run_cloud_pipeline (plan I2)."""
+    late_seconds: see _run_cloud_pipeline (plan I2).
+    fy_pass / budget_start: see _run_cloud_pipeline (plan 2.3)."""
+    run_id = _pass_run_id(run_id, fy_pass)
+    scope = _alert_scope(fy_pass)
     # WP14: the run budget counts from the job's start (I2: its scheduled start), including
     # the slot wait
     budget = RunBudget(
         "lan",
         (budget_hours if budget_hours is not None else config.budget.lan_max_hours) * 3600,
-        (monotonic_start if monotonic_start is not None else time.monotonic()) - late_seconds)
+        _budget_origin(budget_start, monotonic_start) - late_seconds)
     _missed_if_no_budget(config, "lan", run_id, started_at, budget,
                          config.budget.lan_post_reserve_minutes * 60, late_seconds,
-                         monotonic_start)
-    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start):
+                         monotonic_start, **scope)
+    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start, **scope):
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = lan_preflight_task.with_options(
@@ -1950,11 +2082,16 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         nas_shutdown = None  # WP10: verified shutdown result, if one was attempted
 
         try:
+            approval_id = _approval_of_pass(config, approval_id, fy_pass)
             health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
-            # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
-            # completed now that the NAS is awake - before G5 looks for the mount marker
-            _complete_pending_rollover_nas_folder(config)
+            if fy_pass is not None and fy_pass.extra:
+                # plan 2.3: the next FY's NAS folder is made once the NAS is awake (offline-safe)
+                _ensure_pass_nas_folder(config, fy_pass.fy)
+            else:
+                # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
+                # completed now that the NAS is awake - before G5 looks for the mount marker
+                _complete_pending_rollover_nas_folder(config)
             dry_run = preflight(config, artefacts_dir)
             before_dict = lan_snapshot_before_task(config)
             guard_record = lan_guards_task(
@@ -2006,9 +2143,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             }
             after_dict = lan_snapshot_after_task(config)
             if after_dict is not None:
-                lan_record_task(
-                    config, sync_result, before_dict, after_dict,
-                )
+                if _writes_entries(fy_pass):   # the next-FY pass writes no file_entries rows (plan D-9)
+                    lan_record_task(
+                        config, sync_result, before_dict, after_dict,
+                    )
 
                 # Cross-check only: the before/after walk diff vs the tool count.
                 diff = diff_snapshots(before_dict, after_dict)
@@ -2029,7 +2167,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     "metrics_consistent": metrics_consistent,
                 })
                 try:
-                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
+                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict),
+                                              **_artifact_kwargs(fy_pass, "lan-backup-summary"))
                 except Exception as e:
                     # The Prefect summary is cosmetic; the run row is the record.
                     logger.warning(f"LAN run summary not published to Prefect: {e}")
@@ -2075,7 +2214,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 _send_run_alert(config, "lan", status, partial_text,
                                 sync_result.get("exit_code"), started_at,
                                 run_id=run_id, sync_result=sync_result,
-                                artefacts_dir=artefacts_dir)
+                                artefacts_dir=artefacts_dir, **scope)
                 alert_sent = True
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
@@ -2114,7 +2253,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 )
                 alert = ((config, "lan", status, _failure_alert_text("lan", status, error_msg, nas_msg),
                           sync_result.get("exit_code"), started_at),
-                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
+                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir,
+                              **scope))
                 if isinstance(e, Exception):
                     _send_run_alert(*alert[0], **alert[1])
                 else:
@@ -2145,6 +2285,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             extended_metrics = _with_artefacts(extended_metrics, artefacts)
             if fault_code:
                 extended_metrics = _merge_metrics(extended_metrics, fault_code=fault_code)
+            if fy_pass is not None:
+                extended_metrics = _merge_metrics(extended_metrics, **_pass_metrics(fy_pass))
             try:
                 _record_run(
                     config, run_id, "lan", started_at, status,
@@ -2161,9 +2303,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 _send_run_alert(*deferred_alert[0], **deferred_alert[1])
             if status == "LAN_BLOCKED" and guard_record:
                 _open_block_request(config, "lan", run_id, guard_record, started_at,
-                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
+                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")),
+                                    keep_fy=_other_fy(fy_pass), **scope)
             elif statuses.is_success(status):
-                _send_recovery_if_needed(config, "lan", run_id)
+                _send_recovery_if_needed(config, "lan", run_id, **scope)
 
 
 # ═══════════════════════════════════════════════════════════════

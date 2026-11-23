@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pendulum
@@ -50,6 +51,22 @@ def next_fy(fy: str) -> str:
     """FY26-27 -> FY27-28; FY99-00 -> FY00-01."""
     start = _start_year(fy) + 1
     return f"FY{start % 100:02d}-{(start + 1) % 100:02d}"
+
+
+def prev_fy(fy: str) -> str:
+    """FY27-28 -> FY26-27; FY00-01 -> FY99-00."""
+    start = _start_year(fy) - 1
+    return f"FY{start % 100:02d}-{(start + 1) % 100:02d}"
+
+
+@dataclass(frozen=True)
+class FyPass:
+    """One financial year's pass of a backup leg (plan 2.1). `extra` is True for the next FY of an overlap;
+    `config` is that pass's own config (`config_for_fy`). The pipelines take the pass config as their `config`."""
+
+    fy: str
+    extra: bool
+    config: object
 
 
 def activation_date(configured_fy: str, activate_on: str) -> dt.date:
@@ -138,6 +155,18 @@ def row_fy(row: dict) -> str | None:
 
 def _is_dir(path: str) -> bool:
     return Path(path).is_dir()
+
+
+def ensure_pass_nas_folder(config, fy: str) -> str:
+    """The NAS folder of a next-FY LAN pass (plan 2.3, section 3): `<share parent>\\<fy>`, made by `ensure_nas_folder`.
+
+    The pass config's destination must end in `fy`: a destination of another year is refused before anything is
+    made, so a pass can never mirror into the other year's folder. Raises ValueError (refused) or OSError (share
+    unreachable); the pipeline turns both into LAN_FAILED with AAM-LAN-01."""
+    destination = config.paths.lan_destination
+    if _fy_name(destination) != fy.upper():
+        raise ValueError(f"The NAS destination {destination!r} is not the {fy} folder; the {fy} pass is refused")
+    return ensure_nas_folder(_parent_path(destination), fy)
 
 
 def ensure_nas_folder(lan_root: str, fy: str) -> str:
