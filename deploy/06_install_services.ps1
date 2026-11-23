@@ -307,6 +307,8 @@ Write-Host "[setup] Installing $SVC_SERVER..."
 & $NSSM set $SVC_SERVER AppStopMethodThreads 15000
 
 & $NSSM set $SVC_SERVER AppRestartDelay 30000
+# Explicit (not the NSSM default): a force stop kills the whole child process tree.
+& $NSSM set $SVC_SERVER AppKillProcessTree 1
 & $NSSM set $SVC_SERVER AppEnvironmentExtra `
   "PREFECT_HOME=$PrefectHome" `
   "PREFECT_API_URL=http://127.0.0.1:4200/api" `
@@ -365,6 +367,8 @@ if (-not $KeepServiceAccount) {
 & $NSSM set $SVC_AGENT AppStopMethodSkip 6
 
 & $NSSM set $SVC_AGENT AppRestartDelay 30000
+# Explicit (not the NSSM default): a force stop kills the whole child process tree.
+& $NSSM set $SVC_AGENT AppKillProcessTree 1
 & $NSSM set $SVC_AGENT AppEnvironmentExtra "PREFECT_HOME=$PrefectHome" "PREFECT_API_URL=http://127.0.0.1:4200/api" "PREFECT_API_DATABASE_CONNECTION_TIMEOUT=60.0" "AAM_CONFIG=$ConfigFile"
 if ($ServiceAccount) {
     # NSSM grants the account "Log on as a service" when it sets ObjectName
@@ -403,6 +407,8 @@ Write-Host "[setup] Installing $SVC_WATCHDOG..."
 & $NSSM set $SVC_WATCHDOG DisplayName "AAM Backup Watchdog"
 & $NSSM set $SVC_WATCHDOG Description "Monitors API health and restarts services if hung"
 & $NSSM set $SVC_WATCHDOG Start SERVICE_AUTO_START
+# Explicit (not the NSSM default): a force stop kills the whole child process tree.
+& $NSSM set $SVC_WATCHDOG AppKillProcessTree 1
 
 & $NSSM set $SVC_WATCHDOG AppStdout "$LogDir\watchdog_svc.log"
 & $NSSM set $SVC_WATCHDOG AppStderr "$LogDir\watchdog_svc.log"
