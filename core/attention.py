@@ -314,6 +314,11 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                        f"The safety check of the {who} could not run "
                                        f"({audit.get('detail') or 'see the logs'})")))
 
+        if leg == "lan" and manual_leg.is_manual_only(config, "lan") and manual_leg.lan_not_final_fy(db):
+            line = manual_leg.mode_line(config, db, "lan", now)["text"]
+            items.append(_item(AMBER, "manual_not_final:lan",
+                               act("Start a LAN backup from its card when the NAS is on",
+                                   f"{line}. This is a reminder only; the cloud copy is not affected")))
         if manual_leg.is_old(config, db, leg, now):
             line = manual_leg.mode_line(config, db, leg, now)["text"]
             items.append(_item(AMBER, f"manual_old:{leg}",

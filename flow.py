@@ -22,7 +22,8 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import alert_class, approvals, faults, fy_overlap, fy_rollover, guards, permissions, report, statuses
+from core import (alert_class, approvals, faults, fy_overlap, fy_rollover, guards, manual_leg, permissions,
+                  report, statuses)
 from core.rclone_errors import find_transport_failure
 from core.backup_repository import (
     record_run_history,
@@ -56,7 +57,7 @@ from core.run_artefacts import RunArtefacts
 from core.shutdown import FAILED as SHUTDOWN_FAILED
 from core.shutdown import ShutdownResult, shutdown_from_config
 from core.report_period import ReportPeriod
-from core.time_utils import IST, get_fy_prefix, now_iso
+from core.time_utils import IST, format_ist, get_fy_prefix, now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
 
@@ -1991,7 +1992,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                       approval_id: str | None = None, allow_shutdown: bool = True,
                       late_seconds: float = 0.0, slot_held: bool = False, shared_budget: bool = False,
                       budget_monotonic_start: float | None = None,
-                      shutdown_votes: list | None = None, early_nas_folder: bool = False):
+                      shutdown_votes: list | None = None, early_nas_folder: bool = False,
+                      nas_offline_expected: bool = False):
     """Execute LAN backup tasks sequentially. Each task is independently tracked.
 
     allow_shutdown=False (the final backup of an FY rollover, plan A4): the NAS is NOT powered
@@ -2000,7 +2002,11 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
     shutdown_votes (the FY leg loop, plan 5.3): a list; instead of powering the NAS off itself this
     pipeline appends (own_rule_says_shut_down, artefacts_dir) - the loop makes ONE shutdown decision
     over all folders. early_nas_folder: this is the early FY folder - create / check its NAS folder
-    (after the NAS is awake, before the guards look for the mount marker)."""
+    (after the NAS is awake, before the guards look for the mount marker).
+    nas_offline_expected (manual-only NAS at the rollover final backup, owner 2026-11-23): a NAS that
+    cannot be reached or woken is recorded truthfully (run row, `nas_offline_expected` metric) but sends
+    no failure mail; the caller decides what that means. Guard blocks and every other failure alert as
+    always."""
     # WP14: the run budget counts from the job's start (I2: its scheduled start), including
     # the slot wait
     budget = RunBudget(
@@ -2224,6 +2230,11 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             if not allow_shutdown:
                 _vote(isinstance(e, Exception) and not isinstance(e, PartialRun) and getattr(
                     config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+            if (nas_offline_expected and isinstance(e, Exception) and not isinstance(e, guards.GuardBlocked)
+                    and fault_code in faults.NAS_UNREACHABLE_CODES):
+                alert_sent = True      # expected: the owner is told once by the rollover, not per run
+                extended_metrics = _merge_metrics(
+                    extended_metrics or _failure_telemetry(stage_seconds, phase), nas_offline_expected=True)
             if not alert_sent and not isinstance(e, guards.GuardBlocked):
                 # The one alert of this run, sent BEFORE any NAS shutdown below.
                 nas_msg = _nas_alert_note(shutdown_on_fail, shutdown_votes is not None, config)
@@ -2814,10 +2825,34 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     config_backup = None
     archive_ok = None
 
+    def _note_lan_not_final(final_status: dict, final_errors: dict) -> dict:
+        """Manual-only NAS that could not be reached for the final backup (owner 2026-11-23): expected and
+        NON-BLOCKING. The run row of that final backup already says it did not happen; here the rollover
+        remembers which FY was not final-synced (dashboard / reports say so until a LAN backup of it
+        succeeds) and sends ONE warning. Returns the status dict the guards judge (without that leg)."""
+        if final_status.get("lan") != LAN_NOT_REACHED:
+            return final_status
+        db.set_meta("lan_final_missing", json.dumps({"fy": from_fy, "at": now_iso(),
+                                                     "reason": str(final_errors.get("lan", ""))[:300]}))
+        metrics["lan_final_not_reached"] = from_fy      # the rollover run row says it too
+        last = manual_leg.last_success_age_days(db, "lan")[0]
+        msg = (f"The final LAN backup of {from_fy} did not happen: the NAS could not be reached "
+               "(the office copy is started by hand, so an offline NAS is expected). "
+               f"Last LAN backup: {format_ist(last) if last else 'none yet'}. The switch to {to_fy} "
+               "goes ahead; the cloud copy is not affected. Start a LAN backup from the dashboard "
+               f"when the NAS is on to bring {from_fy} up to date.")
+        logger.warning(msg)
+        notify(config, AlertEvent(
+            key=f"rollover:{from_fy}:lan_not_final", kind="WARNING", mode="rollover",
+            title=f"{from_fy} not final-synced to the NAS", message=msg,
+            status="ROLLOVER_COMPLETE", occurred_at=started_at, run_id=run_id))
+        return {k: v for k, v in final_status.items() if k != "lan"}
+
     def step_final_backups():
         nonlocal final_status, guard_record
         logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
         final_status, final_errors = _run_final_backups(config, run_id)
+        final_status = _note_lan_not_final(final_status, final_errors)
         _defer_if_only_waiting(final_status)
         _defer_if_leg_approval_open(final_status)
         g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
@@ -3062,6 +3097,11 @@ def _recorded_final_status(config, final_run_id: str) -> str | None:
     return None
 
 
+# final_status marker (not a run status): the NAS of a manual-only LAN leg could not be reached for the
+# final backup. It is not judged by G6; the rollover records it and tells the owner once (owner 2026-11-23).
+LAN_NOT_REACHED = "LAN_NOT_REACHED"
+
+
 def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
     """Final backup of the closing FY on every enabled leg, through the normal
     pipelines (config still points at the closing FY). Returns
@@ -3075,12 +3115,18 @@ def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
         try:
             # plan A4: the LAN final backup leaves the NAS on - its new FY folder follows
             extra = {"allow_shutdown": False} if leg == "lan" else {}
+            if leg == "lan" and manual_leg.is_manual_only(config, "lan"):
+                extra["nas_offline_expected"] = True
             result = pipeline(config, f"{run_id}-final-{leg}", now_iso(), time.monotonic(),
                               **extra)
             status[leg] = result.get("status", "UNKNOWN")
         except Exception as e:  # noqa: BLE001 - recorded; G6 blocks on it
             status[leg] = f"{leg.upper()}_BLOCKED" if isinstance(e, guards.GuardBlocked) \
                 else f"{leg.upper()}_NOT_COMPLETE"
+            if (leg == "lan" and manual_leg.is_manual_only(config, "lan") and isinstance(e, Exception)
+                    and not isinstance(e, guards.GuardBlocked)
+                    and faults.classify_run("lan", status[leg], exc=e) in faults.NAS_UNREACHABLE_CODES):
+                status[leg] = LAN_NOT_REACHED     # manual-only NAS that is off: expected, not a G6 block
             if (not isinstance(e, guards.GuardBlocked)
                     and config.rollover.final_backup_wait_retries > 0):
                 recorded = _recorded_final_status(config, f"{run_id}-final-{leg}")
@@ -3190,7 +3236,11 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
         except Exception as e:
             _fail(RuntimeError(f"{name} audit persistence failed: {e}"))
             outcomes.append(f"{leg}=NOT_RECORDED")
-        if result["status"] not in (statuses.AuditStatus.VERIFIED, statuses.AuditStatus.PENDING_BACKUP):
+        if result.get("expected_offline"):
+            # manual-only NAS that is off (owner 2026-11-23): the row above says the check could not run;
+            # no alert mail and the flow does not fail - the next report / dashboard line shows the truth
+            logger.warning(f"{name} audit did not run: the NAS is not reachable (LAN is manual only)")
+        elif result["status"] not in (statuses.AuditStatus.VERIFIED, statuses.AuditStatus.PENDING_BACKUP):
             _fail(RuntimeError(_audit_outcome_text(name, result)))
             outcomes.append(f"{leg}={result['status']}")
 
@@ -3275,6 +3325,11 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
                                       "files_checked": None, "bytes_checked": None,
                                       "mismatches": 0,
                                       "detail": f"could not run - {type(e).__name__}: {e}"}
+                            if (leg == "lan" and manual_leg.is_manual_only(config, "lan") and faults.classify_run(
+                                    "lan", "AUDIT_INCOMPLETE", exc=e) in faults.NAS_UNREACHABLE_CODES):
+                                result["expected_offline"] = True
+                                result["detail"] = ("not run: the NAS is not reachable (LAN is manual only) - "
+                                                    + result["detail"])
                         _record(leg, folder, audit_id, started_at, result)
         except Exception as e:  # noqa: BLE001 - backup slot / lock not obtained
             logger.error(f"Integrity audit could not run: {e}")

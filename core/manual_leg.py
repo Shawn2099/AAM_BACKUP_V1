@@ -72,6 +72,24 @@ def is_old(config, db, leg: str, now=None) -> bool:
     return ts is None or days > warn_after_days(config, leg)
 
 
+def lan_not_final_fy(db) -> str | None:
+    """The FY whose final NAS backup at the April rollover did not happen (manual-only NAS that was off),
+    until a successful LAN backup of that FY started after it (owner 2026-11-23). None otherwise."""
+    import json
+
+    try:
+        raw = db.get_meta("lan_final_missing")
+        rec = json.loads(raw) if raw else None
+        if not isinstance(rec, dict) or not rec.get("fy"):
+            return None
+        later = db.last_successful_run("lan", fy=rec["fy"])
+        if later and str(later.get("started_at") or "") > str(rec.get("at") or ""):
+            return None
+        return str(rec["fy"])
+    except Exception:  # noqa: BLE001 - unreadable = no note; the run rows still tell the truth
+        return None
+
+
 def mode_line(config, db, leg: str, now=None) -> dict | None:
     """The truth line for a leg that is off or manual-only; None for a nightly leg.
 
@@ -88,7 +106,10 @@ def mode_line(config, db, leg: str, now=None) -> dict | None:
     else:
         unit = "day" if days == 1 else "days"
         text = f"{name}: manual only, last backup {format_ist(ts)}, {days} {unit} ago"
-    return {"mode": MANUAL, "text": text, "soft_warn": is_old(config, db, leg, now)}
+    unsynced = lan_not_final_fy(db) if leg == "lan" else None
+    if unsynced:
+        text += f"; {unsynced} was not final-synced to the NAS at the year switch"
+    return {"mode": MANUAL, "text": text, "soft_warn": is_old(config, db, leg, now) or bool(unsynced)}
 
 
 def mode_lines(config, db, now=None) -> list[dict]:
