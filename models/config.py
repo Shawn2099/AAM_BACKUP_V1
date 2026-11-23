@@ -683,10 +683,12 @@ class MaintenanceConfig(StrictModel):
                     "passes as a 'first run'.",
     )
     log_retention_days: int = Field(
-        default=90,
+        default=730,
         ge=1,
-        le=365,
-        description="Days of log files to retain before Loguru auto-deletion (1–365)",
+        le=1825,
+        description="Days of application log files (backup_*.log) to retain before Loguru auto-deletion "
+                    "(1-1825; default 730 = two years, owner 2026-11-23). Check the free disk space of the "
+                    "server when you raise it",
     )
     orphan_robocopy_log_max_age_hours: int = Field(
         default=24,
@@ -756,8 +758,9 @@ class RunLogsConfig(StrictModel):
                     "outputs). Empty = <runtime_dir>/run_logs.",
     )
     retention_days: int = Field(
-        default=90, ge=7, le=3650,
-        description="Delete run artefact folders older than this many days.",
+        default=730, ge=7, le=3650,
+        description="Delete run artefact folders older than this many days (default 730 = two years, owner "
+                    "2026-11-23; nothing younger is ever deleted). Check the free disk space of the server.",
     )
     compress_after_kb: int = Field(
         default=1024, ge=0, le=10_485_760,
@@ -769,9 +772,10 @@ class RunLogsConfig(StrictModel):
                     "volume has less free space than this.",
     )
     service_log_retention_days: int = Field(
-        default=90, ge=7, le=3650,
+        default=730, ge=7, le=3650,
         description="Delete NSSM-rotated service logs (agent_svc-*, prefect_svc-*, "
-                    "watchdog_svc-*) older than this many days.",
+                    "watchdog_svc-*) and watchdog_app.log older than this many days (default 730 = two years, "
+                    "owner 2026-11-23). Check the free disk space of the server.",
     )
 
 

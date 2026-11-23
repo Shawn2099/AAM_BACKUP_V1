@@ -589,6 +589,7 @@ Config notes: `lan.enabled: false` still needs a UNC `paths.lan_destination` (pl
 | `logs\backup_YYYY-MM-DD.log` | app log (loguru) | all flows | operator |
 | `logs\*_svc*.log` | NSSM stdout/stderr per service | NSSM | operator |
 | `backup.lock` | `PID:create_time` of the running backup | `_backup_slot` | watchdog, launch |
+| *(retention, W40)* | Everything is kept two years by default (owner 2026-11-23: the AMC reads the logs every 6-12 months). Purged only by: `run_history` rows older than `maintenance.db_retention_days` (after a successful backup); app logs by loguru after `maintenance.log_retention_days`; run-log day folders and `*_svc-*` service logs by `flow.log_retention_task` after `run_logs.retention_days` / `service_log_retention_days` (`run_artefacts.purge_older_than`: a day folder goes only when the folder AND every file in it is older than the limit; the watchdog's own `watchdog_app.log` uses the service-log setting). NEVER purged: `notifications` (mail audit log), `approvals`, `integrity_audits`, `config_changes`, `file_entries`, rollover journal, `overlap_activations`. Count-based, not time-based: `config.yaml.bak-*` (`maintenance.config_backups_keep`). Reports are not stored. Check the free disk space of the server when raising any of these | `core/manifest`, `flow`, `core/logging` | operator |
 | Prefect DB (`.prefect`) | flow/task states, Prefect UI logs | Prefect | Prefect UI, ui.py |
 
 ---
@@ -607,9 +608,9 @@ Config notes: `lan.enabled: false` still needs a UNC `paths.lan_destination` (pl
 | `alerts` | cooldown, body/attachment size, one switch per kind of mail, `resolved_mail_min_hours` (24, 1-720, section 5.7) | notify |
 | `dashboard` | the two password hashes, bind, port, `public_url` (empty = auto), session/rate-limit/refresh, "Apply changes" timings, history nights, `alerts_history_page_size` (50, 10-500) | ui, notify |
 | `rollover` | `archive_alert_after_days`, `final_backup_wait_retries` (2, 0-7: mornings the final backup may only wait for the slot before G6 asks), `overlap_enabled` (true), `early_start_month` (1, 1-3), `activation_alert_after_hours` (24), `sibling_ignore` | fy_rollover, fy_overlap |
-| `maintenance` | DB retention, log retention, SQLite busy/vacuum/sync, slot wait | manifest, flow |
+| `maintenance` | `db_retention_days` (730, 35-3650), `log_retention_days` (730, 1-1825), SQLite busy/vacuum/sync, slot wait | manifest, flow |
 | `health` | clock skew limit/timeout, `ntp_server`, `w32tm_timeout_seconds`, `clock_unverified_policy`, min free source GB, rollover gcloud timeouts | health, fy_rollover |
-| `run_logs` | full-log folder, retention 90 d, compression, min free GB, service-log retention | run_artefacts, flow |
+| `run_logs` | full-log folder, `retention_days` (730, 7-3650), compression, min free GB, `service_log_retention_days` (730, 7-3650) | run_artefacts, flow |
 | `guards` | `max_delete_files` 500, `max_delete_percent` 10, `max_source_shrink_percent` 20, `forbid_local_destination` true, `small_folder_files` 100, `small_folder_max_deletes` 10 (+ `cloud.dry_run_timeout_seconds` 1800) | flow `lan-guards` / `cloud-guards` |
 | *(M2)* `approvals`, more `lan` keys (WP4) | added with their consumers | approvals, lan_preflight |
 

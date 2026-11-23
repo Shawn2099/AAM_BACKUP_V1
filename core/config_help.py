@@ -257,7 +257,8 @@ HELP: dict[str, tuple[str, str]] = {
     "maintenance.sqlite_synchronous": ("Database safety level", ""),
     "maintenance.db_retention_days": ("Keep backup history for",
                                       "At least 35 days: the monthly report and the safety checks read it."),
-    "maintenance.log_retention_days": ("Keep program logs for", ""),
+    "maintenance.log_retention_days": ("Keep program logs for (days)",
+                                       "Two years (730) by default. Check the free disk space of the server."),
     "maintenance.orphan_robocopy_log_max_age_hours": ("Delete leftover copy logs after",
                                                       "Logs left behind by a stopped copy."),
     "maintenance.lock_release_retries": ("Retries when the 'backup running' marker cannot be removed",
@@ -289,10 +290,12 @@ HELP: dict[str, tuple[str, str]] = {
     "health.rollover_auth_timeout_seconds": ("Time for cloud sign-in at year end", ""),
     "health.rollover_archive_timeout_seconds": ("Time to archive last year's cloud data", ""),
     "run_logs.dir": ("Detailed log folder", "Leave empty."),
-    "run_logs.retention_days": ("Keep detailed logs for", ""),
+    "run_logs.retention_days": ("Keep detailed logs for (days)",
+                                "Two years (730) by default. Check the free disk space of the server."),
     "run_logs.compress_after_kb": ("Compress logs larger than", ""),
     "run_logs.min_free_gb": ("Warn when free space for logs is below", ""),
-    "run_logs.service_log_retention_days": ("Keep service logs for", ""),
+    "run_logs.service_log_retention_days": ("Keep service logs for (days)",
+                                            "Two years (730) by default. Check the free disk space of the server."),
 
     # ── safety ──
     "guards.max_delete_files": (

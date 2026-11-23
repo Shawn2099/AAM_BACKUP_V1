@@ -39,6 +39,7 @@ def test_log_retention_purges_only_expired(tmp_path):
     old_day, new_day = runs / "2026-01-01", runs / "2026-10-13"
     (old_day / "r1").mkdir(parents=True)
     (new_day / "r2").mkdir(parents=True)
+    _age(old_day / "r1", 91)    # W40: a day folder goes only when everything inside is old too
     _age(old_day, 91)
     logs = Path(cfg.paths.log_directory)
     logs.mkdir(parents=True, exist_ok=True)
