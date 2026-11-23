@@ -71,3 +71,17 @@ D15 fix RE-APPLIED (revert of the revert `7ac7f72`): the correct behaviour is pe
 - LS5 NAS volume full: SKIPPED (Windows 11 Home has no New-VHD, C: is 94% full, a second destination on 127.0.0.1 would hit the G4 same-machine gate). Cover it with the fake-tool rig tests instead (robocopy exit 8 / disk full).
 - LS2b, LS6 not run (need design).
 - Rules kept: clock untouched, nothing under C:\BackupAgent, demo bucket or secrets touched, AAMMerger untouched, nothing committed/pushed by the agent.
+
+## Manual button flows review RESULT (Haiku, read-only; full trace in `docs/REVIEW_MANUAL_BUTTON_FLOWS_2026-11-23.md`)
+Both buttons work as designed in code and are largely covered by tests (busy refusal, Prefect down 503, ?fy= validation, approval flow; named in the doc). No 'both legs' manual button exists (one click = one leg; during an overlap each FY card sends ?fy= = one folder). Ranked findings:
+1. HIGH (ops): agent down -> the manual start answers 202 'started', dashboard says 'copying now', the queued run has NO expiry and starts whenever the agent returns (LAN: wakes and may switch off the NAS at an unplanned time). UNTESTED.
+2. NAS is switched off after a manual LAN run even if it was already on: owner decided ALWAYS shut down (no change); the confirm text says it will be switched off.
+3. MEDIUM: with `shutdown_on_all_retries_exhausted=True` a guard BLOCK also switches the NAS off (GuardBlocked is a RuntimeError, not PartialRun, flow.py:2222-2242); config text lists only PARTIAL/FAILED. UNTESTED.
+4. MEDIUM UX: the classic 'Back up' button can stay disabled at 'Starting...' after a run that finishes within the 180 s wait (dashboard.js:23,27,277,308); needs a reload.
+5. MEDIUM-LOW race: the trigger endpoints check-then-create without a lock; two concurrent POSTs = two back-to-back runs (slot prevents overlap).
+6. UX text: LAN confirm omits that /MIR deletes files gone from the source; per-FY confirm (the only manual route during overlap) omits WoL, switch-off and deletion (dashboard.js:482).
+7. A BLOCKED/PARTIAL result shows on the button as HTTP 500 'ended as Failed' with no pointer to the approval card.
+8. A long manual cloud run can make a queued LAN run end LAN_SLOT_TIMEOUT (schedule validator ignores manual runs).
+9-15 LOW: backup-first ignores the early folder in an overlap; stale RUNNING row accepted when the scheduler is unknown; a failed run leaves the NAS on with no persistent dashboard item (being added by the manual-LAN fixer: 'NAS was woken and left on'); a successful run sends no mail (only RECOVERED after a failure; by design); ARCHITECTURE.md:166/SMB probe wording stale; `test_wol_comprehensive::test_already_online` has no assertion; cross-site check only applies when Origin/Sec-Fetch-Site is present (cookie SameSite=Lax).
+- Live test steps (17, in the doc) for the test stack. NEVER enable shutdown on loopback (`shutdown /m \127.0.0.1` powers off this PC). WoL, real power-off and the verify window are covered only by fakes (tests/test_wol_comprehensive.py, test_m4_shutdown.py, test_lan_shutdown_policy.py, audit_lab w17/w18/w5c/w16/w6b).
+- PLAN: after the manual-LAN/cloud fixer merges, a Sonnet fixer takes items 1, 3, 4, 6, 7 (flow.py/ui.py/dashboard.js; not in parallel with that fixer to avoid conflicts); items 5, 8 and the rest are recorded only.
