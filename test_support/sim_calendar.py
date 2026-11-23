@@ -45,10 +45,12 @@ import models.config
 import ui
 from core import fy_overlap as ov
 from core.guards import MOUNT_MARKER
+from core import faults
 from core.health import CLOCK_OK, ClockResult
 from core.run_artefacts import RunArtefacts
 from core.time_utils import IST
 from core.tool_runner import ToolResult
+from core.wol import WolTimeout
 from models.config import AppConfig, CloudConfig, LanConfig, PathsConfig, RolloverConfig, WolConfig
 from test_support import ui_login
 from test_support.fake_tools import robocopy_log
@@ -253,6 +255,7 @@ class Sim:
         self.wakes = 0               # wake calls that found the NAS asleep
         self.wol_calls = 0
         self.wake_ok = True
+        self.nas_unreachable = False   # True: the wake raises the coded 'NAS did not wake' error (AAM-NAS-02)
         self.nas_on = False
         self.shutdowns = 0
         self.slots = 0
@@ -367,6 +370,8 @@ class Sim:
 
     def _wake(self, config):
         self.wol_calls += 1
+        if self.nas_unreachable:
+            raise faults.coded(WolTimeout("Backup server unreachable after WoL"), "AAM-NAS-02")
         if not self.nas_on:                 # a real wake only when the NAS is asleep
             self.wakes += 1
             self.nas_on = True

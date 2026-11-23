@@ -669,6 +669,8 @@ def test_t_c5_a_flow_that_waited_through_the_switch_does_not_back_up_the_closed_
         for step in rj.STEPS:
             d.rollover_step_done(CFG_FY, NEXT, step, at(4, 1, 6, 5).isoformat())
         d.close_fy(CFG_FY, now=at(4, 1, 6, 5).isoformat())                 # ... and the old year is closed
+        from core import fy_overlap                                         # (settled: every leg had copied it)
+        fy_overlap.mark_year_closed(d, CFG_FY, at(4, 1, 6, 5).isoformat())
         d.close()
 
     w.slot_hooks.append(rollover_finishes_while_we_waited)

@@ -108,7 +108,7 @@ each FY folder is backed up for 15 months (its own 12 plus January-March before 
 | Database | `core/manifest.py` schema v6 | `fy` on `file_entries` (`UNIQUE(fy, relative_path)`), `run_history`, `integrity_audits`, `notifications`, `approvals`; table `overlap_activations`; every per-FY reader takes `fy` with no default (`ALL_FYS` = explicit "every FY"); an older database file is refused ("rename it, start fresh"), never migrated |
 | Approvals | `core/approvals.evaluate_approval`, `ManifestDB` approvals, `flow.backup(fy=)` | an approval belongs to ONE (leg, FY): superseding is per (leg, FY), `evaluate_approval` needs `approval.fy == run fy` (the 500-vs-400-deletes case of another FY is refused), the dashboard re-run passes the approval's `fy` to the backup deployments only (`rollover_check_flow` has no `fy`). A re-run with an approval id but no `fy` touches only the configured FY |
 | First run of a leg in an FY | `guards.g3_mass_delete(first_run=...)` via `flow` (`first_run = not baseline`) | no successful baseline for (leg, FY) and planned deletes > 0 -> a DECISION (`*_BLOCKED` + approval): a filled `gs://bucket/FY27-28` or NAS folder is never trimmed unasked |
-| Closed FY at the switch | `flow._close_old_fy` -> `ManifestDB.close_fy` (called whenever the rollover's `config_switch` step is finished) | the closed FY's open approval requests become CLOSED ("FY closed"), its open incidents end silently (no RESOLVED mail); history stays; its approvals can no longer run (`backup(fy=)` needs an active FY). The final-backup G3 -> G6 two-approval path still works |
+| Closed FY at the switch | `flow._settle_old_fy` -> `flow._close_old_fy` -> `ManifestDB.close_fy` (called whenever the rollover's `config_switch` step is finished, and by every daily check): the year is closed ONLY once every enabled leg has a confirmed full copy of it (section 5.9b) | the closed FY's open approval requests become CLOSED ("FY closed"), its open incidents end silently (no RESOLVED mail); history stays; its approvals can no longer run (`backup(fy=)` needs an active FY). The final-backup G3 -> G6 two-approval path still works |
 | Alerts and incidents | `AlertEvent.fy`, `core/email_compose.compose`, `core/notify` | keys `backup:<fy>:<leg>:<status>`, `blocked:`, `missed:`, `recovered:`, `stale:`, `audit:<fy>:<mode>:...`, abandoned-run key carry the FY; per-leg subjects get `[FY27-28]`; incidents, cooldown and RECOVERED run per (mode, fy); `nas_shutdown:` and `watchdog:*` stay global |
 | Overdue / attention / watchdog | `core/overdue`, `core/attention.leg_timing`, `watchdog._stale_code_parts` | overdue per (leg, FY); the early FY's base is its `activated_at` (no red on 1 Jan before the first run); codes `stale:<fy>:<leg>`, `approval:<fy>:<leg>`, `last_run:<fy>:<leg>`; the watchdog suppresses per FY and an FY it cannot work out suppresses nothing; closed FYs never appear |
 | Integrity audit | `flow.integrity_audit_flow(mode, fy=None)` | loops the active set (new first) under ONE slot, ONE `budget.audit_max_hours`, ONE NAS wake / shutdown vote; rows, alerts and `_pending_context` per FY |
@@ -290,7 +290,8 @@ steps, in order (each idempotent):
   3 nas_folder      NAS woken / SMB ready as in the LAN leg, new NAS FY folder + mount marker
   4 config_switch   compare-and-set inside config_transaction: at from_fy → switch; already at
                     to_fy → done; anything else → refuse (ROL-04). Validate, restore on failure.
-                    Once finished, `flow._close_old_fy(from_fy)` closes the old FY's approvals and incidents (§3.4);
+                    Once finished, `flow._settle_old_fy(from_fy)` closes the old FY's approvals and incidents
+                    (§3.4) if every enabled leg has fully copied it, else the year stays tracked (§5.9b);
                     it also runs when a crash left the step finished
   5 archive         old FY objects to ARCHIVE (gcloud, key as a file; §5.8). Failure = ROL-05,
                     retried every morning, ACTION_REQUIRED after rollover.archive_alert_after_days
@@ -437,6 +438,31 @@ producer (flow, watchdog, rollover, reports, password change)
 
 ---
 
+### 5.9b A year is closed only when every enabled leg has fully copied it (owner 2026-11-23, finding FV-1)
+
+Applies to manual and scheduled legs alike. The 1 April switch still happens exactly as before (including the
+manual-only LAN rule above), but the OLD year is closed (tracking stopped, approvals/incidents closed) only
+when **every enabled leg** has a CONFIRMED full copy of it: a `run_history` row of that leg and FY whose status
+is in `core.statuses.SUCCESS_STATUSES` and whose `started_at` is after the year ended (1 April 00:00 IST of its
+second year). Failed, partial, blocked, slot-timeout, suspect and never-run syncs do not count; a leg that is off
+is not required; a manual-only leg is. Where:
+
+- `core/fy_overlap.py`: `copy_state` (per-FY done/missing legs), `unfinished_old_years` (derived each time from
+  finished rollover journals + `run_history`; nothing duplicated, so a crash or restart loses nothing; only years
+  named by a finished journal are ever kept, never an arbitrary old year), `active_folders` (new FY first, then
+  the unfinished old years: scheduled legs back up both folders nightly, the manual buttons and `?fy=<old FY>`
+  accept both), `role_of` (`old`), `not_fully_copied_text` / `_advice` (the one wording).
+- `flow._settle_old_fy`: closes via `_close_old_fy` once nothing is missing, then writes the tombstone
+  `db_meta fy_copy_closed:<FY>` (so a leg switched on later or purged history never re-opens a settled year) and
+  sends one RESOLVED mail if the warning went out. Called at the end of the rollover (the rollover's own
+  successful final backups count at once) and by `_close_finished_old_fys` on every daily check.
+- Truth shown: dashboard card note + amber `old_year:<FY>` attention item ("<FY> is not yet fully copied to
+  <LAN|Cloud>"), report mode note (`manual_leg.old_year_lines`, amber, never "all OK"), ONE WARNING mail per year
+  (`rollover:<FY>:not_fully_copied`). Never red: nothing is wrong, the copy is simply not finished.
+- Edge decisions: guards G1-G5, canary and approvals apply to the old year's folders like any other folder
+  (baselines per leg+FY); a NAS folder that vanished for a year that had a LAN success goes to G5 (never silently
+  re-made); the year stays tracked until the copy succeeds, there is no automatic give-up.
+
 ### 5.9 Manual-only legs: `lan.scheduled` / `cloud.scheduled` (owner 2026-11-23)
 
 A leg (`cloud`, `lan`) is in one of three modes, decided in ONE place, `core/manual_leg.py`:
@@ -451,7 +477,7 @@ A leg (`cloud`, `lan`) is in one of three modes, decided in ONE place, `core/man
 | `core/attention` (banner, `/health`, watchdog C6) | no `stale:` / `first_run:` item and no "schedule cannot be read" item for the leg; `leg_timing` returns state `manual` (no due / overdue time). Instead: AMBER `manual_old:<leg>` (never succeeded, or last success older than `<leg>.on_demand_warn_after_days`), AMBER `manual_not_final:lan` (see rollover), AMBER `manual:none_automatic` when every enabled leg is manual. A FAILED manual run is still a real `last_run:` item |
 | Dashboard | `/status` `<leg>.mode` = `{mode, text, soft_warn}`: "LAN: manual only, last backup <date>, N days ago" (amber after the warn days); "LAN: off" for a disabled leg; the "Next scheduled backup" line shows only for a nightly leg; the button works (WoL, backup, verify, shutdown for LAN) |
 | Reports (weekly / monthly / dashboard download) | no `scheduled` count, no shortfall ("N of M nights have no backup record") and no "no backup ran" for the leg; a "mode notes" block under the table states every off / manual-only leg and "Nothing runs automatically ..." when all are manual; an old manual backup makes the headline `note: ...` (amber, `act` false, no "all backups OK") |
-| Rollover final backup (1 April) | the final backups still run. LAN: a NAS that cannot be reached or woken (fault `AAM-NAS-01/02`, `faults.NAS_UNREACHABLE_CODES`) at that moment is EXPECTED: the LAN pipeline gets `nas_offline_expected=True` (run row `LAN_FAILED` + metric, no failure mail), `final_status["lan"]` becomes `LAN_NOT_REACHED`, G6 does not judge it, the switch proceeds, the rollover run row carries `lan_final_not_reached=<FY>`, `db_meta.lan_final_missing` remembers the FY (dashboard / report line "<FY> was not final-synced to the NAS" until a LAN backup of that FY succeeds) and ONE WARNING mail `rollover:<FY>:lan_not_final` is sent. Guard blocks and every other failure still block (G1-G6 as today). Cloud: a manual-only cloud leg behaves exactly as today, a real failure blocks |
+| Rollover final backup (1 April) | the final backups still run. LAN: a NAS that cannot be reached or woken (fault `AAM-NAS-01/02`, `faults.NAS_UNREACHABLE_CODES`) at that moment is EXPECTED: the LAN pipeline gets `nas_offline_expected=True` (run row `LAN_FAILED` + metric, no failure mail), `final_status["lan"]` becomes `LAN_NOT_REACHED`, G6 does not judge it, the switch proceeds, the rollover run row carries `lan_final_not_reached=<FY>`, and the old year is NOT closed: it stays tracked (section 5.9b: dashboard "<FY> is not yet fully copied to LAN", reports, ONE WARNING mail `rollover:<FY>:not_fully_copied`) until a LAN backup of it that started after the year ended succeeds (`db_meta.lan_final_missing` is gone, the fact is derived from `run_history`). Guard blocks and every other failure still block (G1-G6 as today). Cloud: a manual-only cloud leg behaves exactly as today, a real failure blocks |
 | Weekly audit | still wakes the NAS. LAN unreachable (same fault codes) = row `AUDIT_INCOMPLETE` ("not run: the NAS is not reachable (LAN is manual only)") with no alert mail and no flow failure; any other audit failure alerts as today. Cloud audit unchanged |
 | Manual LAN run | covers both active FY folders under one slot, one wake, one shutdown decision; after a SUCCESS the NAS is always shut down (no "was on" flag). A failed manual run that left the NAS answering on SMB records `nas_left_on` on its last run row: AMBER `nas_left_on` item (cleared by the next run). Failure mail text says "the next manual backup will re-sync" (`flow._next_run_words`) |
 | Mails | `_next_text` does not promise an automatic next run for a manual leg; the FY activation mail names which backups copy both folders; `email_compose._facts`, `notify._nas_host` and the support bundle ignore the placeholder NAS path when `lan.enabled` is false |

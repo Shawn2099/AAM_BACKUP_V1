@@ -144,6 +144,8 @@ def _leg_clock(db, config, leg: str, sched: dict, fy: str | None = None, role: s
         base = last.get("started_at") or last.get("ended_at")
     elif role == fy_overlap.CURRENT:   # never succeeded: count from when the system (or this leg) came into being
         base = _later(db.first_known_at(), db.last_config_change_at(f"{leg}.enabled"))
+    elif role == fy_overlap.OLD:       # a year being finished after the switch: nothing is owed before it ended
+        base = fy_overlap.year_end(fy).isoformat()
     else:       # the early FY: from its activation (an FY without an activation row is not active: no clock)
         activation = db.get_activation(fy)
         base = activation.get("activated_at") if activation else None
@@ -258,7 +260,18 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                "Could not work out which year folders are backed up, so only "
                                f"{current} is checked")))
     multi = len(folders) > 1
-    roles = {fy: (fy_overlap.CURRENT if fy == current else fy_overlap.EARLY) for fy in folders}
+    roles = {fy: (fy_overlap.CURRENT if fy == current else fy_overlap.role_of(config, fy)) for fy in folders}
+    try:    # owner 2026-11-23: a year the switch moved past that is not fully copied yet says so, plainly
+        for old in fy_overlap.unfinished_old_years(config, db):
+            if old["fy"] in folders:
+                advice = fy_overlap.not_fully_copied_advice(config, old["fy"], old["missing"])
+                items.append(_item(AMBER, f"old_year:{old['fy']}",
+                                   act(advice[0].upper() + advice[1:],
+                                       f"{fy_overlap.not_fully_copied_text(old['fy'], old['missing'])}. "
+                                       "It stays in the backups and is closed by itself once every copy is "
+                                       "complete")))
+    except Exception as e:  # noqa: BLE001 - the dashboard still renders
+        logger.warning(f"Old years that are not fully copied could not be listed: {e}")
 
     for leg in ("cloud", "lan"):
         if not getattr(config, leg).enabled:
@@ -314,11 +327,6 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                        f"The safety check of the {who} could not run "
                                        f"({audit.get('detail') or 'see the logs'})")))
 
-        if leg == "lan" and manual_leg.is_manual_only(config, "lan") and manual_leg.lan_not_final_fy(db):
-            line = manual_leg.mode_line(config, db, "lan", now)["text"]
-            items.append(_item(AMBER, "manual_not_final:lan",
-                               act("Start a LAN backup from its card when the NAS is on",
-                                   f"{line}. This is a reminder only; the cloud copy is not affected")))
         if manual_leg.is_old(config, db, leg, now):
             line = manual_leg.mode_line(config, db, leg, now)["text"]
             items.append(_item(AMBER, f"manual_old:{leg}",

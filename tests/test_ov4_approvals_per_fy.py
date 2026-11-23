@@ -201,8 +201,9 @@ def test_the_old_fy_is_closed_whenever_the_switch_is_finished():
     marker = 'final = db.rollover_get(from_fy, to_fy)'
     tail = src[src.index(marker):]
     assert 'rj.CONFIG_SWITCH' in tail
-    assert tail.index("_close_old_fy(config, db, from_fy)") < tail.index("_resolve_unprotected_new_fy(")
-    assert "_close_old_fy(" not in src[:src.index(marker)]
+    # owner decision 2026-11-23: closed through _settle_old_fy, i.e. only once every enabled leg has fully copied it
+    assert tail.index("_settle_old_fy(config, db, from_fy") < tail.index("_resolve_unprotected_new_fy(")
+    assert "_settle_old_fy(" not in src[:src.index(marker)] and "_close_old_fy(" not in src
 
 
 def test_close_old_fy_never_raises_and_closes_through_the_db(tmp_path):

@@ -455,7 +455,7 @@ function updateVerifyUi(data) {
 // ── One card per financial year (Jan-Mar: next year and current year both) ───────────────
 // The server (ui.py /status -> folders[]) decides which years are backed up, what each one's role is and
 // whether it is running; this only draws it. With a single year the classic cards above stay as they are.
-var _FY_ROLE = { early: 'Next year - backed up early', current: 'Current year' };
+var _FY_ROLE = { early: 'Next year - backed up early', current: 'Current year', old: 'Last year - still being copied' };
 var _fySig = '';
 function fyAnyBusy(data) {
     var busy = !!(data.verify_running || (data.cloud && data.cloud.running) || (data.lan && data.lan.running));
@@ -501,6 +501,7 @@ function renderFolders(data) {
         var since = f.active_since_formatted ? 'Backed up since ' + f.active_since_formatted : '';
         return '<div class="fy-card"><h3>' + escHtml(f.fy) + ' <small>' + escHtml(_FY_ROLE[f.role] || f.role) + '</small></h3>'
             + (since ? '<p class="fy-since">' + escHtml(since) + '</p>' : '')
+            + (f.copy_note ? '<p class="fy-since"><b>' + escHtml(f.copy_note) + '.</b> It is closed by itself once every copy is complete.</p>' : '')
             + '<div class="dests">' + fyLegCard(f, 'lan', busy) + fyLegCard(f, 'cloud', busy) + '</div></div>';
     }).join('');
     if (html === _fySig) return;            // nothing changed: keep focus and hover

@@ -2411,29 +2411,111 @@ def _enabled_legs(config) -> tuple[str, ...]:
     return tuple(leg for leg in ("cloud", "lan") if getattr(config, leg).enabled)
 
 
-def _close_old_fy(config, db, fy: str) -> None:
-    """OV-4.4: the config now points past `fy`. Its open approval requests are closed ("FY closed") and its
-    open incidents end silently (no RESOLVED mail); its history stays readable. Never raises: the switch
-    is already done, and an approval of a closed FY cannot be run anyway (backup(fy=) needs an active FY)."""
+def _close_old_fy(config, db, fy: str) -> bool:
+    """OV-4.4: the config now points past `fy` and every enabled leg has fully copied it (`_settle_old_fy`).
+    Its open approval requests are closed ("FY closed") and its open incidents end silently (no RESOLVED
+    mail); its history stays readable. Never raises: the switch is already done, and an approval of a
+    closed FY cannot be run anyway (backup(fy=) needs an active FY). True when it was closed cleanly."""
     try:
         closed = db.close_fy(fy, now=now_iso())
         if closed["approvals"] or closed["incidents"]:
             logger.info(f"FY {fy} closed: {closed['approvals']} approval request(s) and "
                         f"{closed['incidents']} incident(s) closed")
+        return True
     except Exception as e:  # noqa: BLE001
         logger.error(f"FY {fy} could not be closed cleanly ({e}); its old alerts may stay open")
+        return False
+
+
+def _old_year_notice_key(fy: str) -> str:
+    return f"rollover:{fy}:not_fully_copied"
+
+
+def _warn_old_year_not_copied(config, db, fy: str, to_fy: str | None, missing: list[str],
+                              run_id: str | None = None, occurred_at: str | None = None) -> None:
+    """ONE warning mail per old year (idempotent: never again once one was recorded) that says plainly which
+    legs have not fully copied it. Truth only, no promise about when. Never raises."""
+    try:
+        key = _old_year_notice_key(fy)
+        if db.last_notification(key) is not None:
+            return
+        names = fy_overlap.not_fully_copied_text(fy, missing)
+        went = f"The switch to {to_fy} went ahead, so new files are saved in {to_fy}. " if to_fy else ""
+        notify(config, AlertEvent(
+            key=key, kind="WARNING", mode="rollover", fy=fy,
+            title=names[0].upper() + names[1:],
+            message=(f"{names}. {went}Until a backup that started after the year ended has copied all of "
+                     f"{fy}, both year folders stay in the backup: "
+                     f"{fy_overlap.not_fully_copied_advice(config, fy, missing)}. "
+                     f"When the copy is complete {fy} is closed by itself and you get one more email. "
+                     "The other copies of that year are not affected."),
+            occurred_at=occurred_at or now_iso(), run_id=run_id), db=db)
+    except Exception as e:  # noqa: BLE001 - a mail problem never changes what is tracked
+        logger.warning(f"Could not send the 'not yet fully copied' notice for {fy}: {e}")
+
+
+def _resolve_old_year_notice(config, db, fy: str) -> None:
+    """The matching RESOLVED mail - once - for a year the office was told was not fully copied."""
+    try:
+        key = _old_year_notice_key(fy)
+        warned = db.last_notification(key, status="SENT")
+        if warned is None:
+            return
+        done = db.last_notification(f"recovered:{key}", status="SENT")
+        if done is not None and done["id"] > warned["id"]:
+            return
+        notify(config, AlertEvent(
+            key=f"recovered:{key}", kind="RECOVERED", mode="rollover", fy=fy,
+            title=f"{fy} is fully copied now",
+            message=(f"{fy} is now fully copied to every backup copy that is switched on, so it is closed "
+                     "and no longer part of the backups. Nothing to do."),
+            status="RECOVERED"), db=db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not send the 'fully copied now' notice for {fy}: {e}")
+
+
+def _settle_old_fy(config, db, fy: str, confirmed_legs=()) -> list[str] | None:
+    """Owner decision 2026-11-23: a year the config switched past is CLOSED (tracking stopped) only once EVERY
+    enabled leg has a confirmed successful full sync of it that started after the year ended
+    (`fy_overlap.copy_state`; `confirmed_legs`: legs the caller has just seen succeed). Until then it stays in
+    the active set, so both folders keep being backed up. Idempotent and crash-safe: the facts come from
+    run_history; the only stored mark is the tombstone written after a clean close, so a leg switched on
+    later never re-opens a settled year. Returns the legs still missing ([] = closed now), None when it could
+    not be worked out (nothing is closed then: the safe side). Never raises."""
+    try:
+        state = fy_overlap.copy_state(config, db, fy, confirmed_legs)
+        if state["missing"]:
+            return state["missing"]
+        if _close_old_fy(config, db, fy):
+            fy_overlap.mark_year_closed(db, fy, now_iso())
+            _resolve_old_year_notice(config, db, fy)
+        return []
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not tell whether {fy} is fully copied ({e}); it stays in the backups")
+        return None
 
 
 def _close_finished_old_fys(config, db) -> None:
-    """Overlap review D2: a failed close (or one skipped by a crash) is retried at the start of every daily
-    check, for every FY whose config switch is finished. close_fy is idempotent and a no-op when nothing is
-    open. Never raises."""
+    """Overlap review D2 + owner decision 2026-11-23: at the start of every daily check, for every FY whose
+    config switch is finished: a year already settled gets its idempotent close retried (a failed close, or
+    one skipped by a crash); any other year is closed only when every enabled leg has fully copied it, and
+    otherwise the one 'not yet fully copied' mail is sent if it was never sent. Never raises."""
     from core import rollover_journal as rj
 
     try:
+        configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
         for journal in db.rollover_journals():
-            if rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]):
-                _close_old_fy(config, db, journal["from_fy"])
+            if not rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]):
+                continue
+            fy = journal["from_fy"]
+            if fy == configured:
+                continue                           # the settings were put back to this year: it is current
+            if fy_overlap.year_closed(db, fy):
+                _close_old_fy(config, db, fy)
+                continue
+            missing = _settle_old_fy(config, db, fy)
+            if missing:
+                _warn_old_year_not_copied(config, db, fy, journal["to_fy"], missing)
     except Exception as e:  # noqa: BLE001 - housekeeping, never stops the rollover check
         logger.error(f"Closing finished financial years failed: {e}")
 
@@ -2889,25 +2971,15 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
 
     def _note_lan_not_final(final_status: dict, final_errors: dict) -> dict:
         """Manual-only NAS that could not be reached for the final backup (owner 2026-11-23): expected and
-        NON-BLOCKING. The run row of that final backup already says it did not happen; here the rollover
-        remembers which FY was not final-synced (dashboard / reports say so until a LAN backup of it
-        succeeds) and sends ONE warning. Returns the status dict the guards judge (without that leg)."""
+        NON-BLOCKING. The run row of that final backup already says it did not happen (LAN_FAILED, which
+        never counts as a confirmed copy), so the year stays tracked after the switch until a LAN backup
+        has copied it (`_settle_old_fy`; dashboard, reports and the one warning mail say so).
+        Returns the status dict the guards judge (without that leg)."""
         if final_status.get("lan") != LAN_NOT_REACHED:
             return final_status
-        db.set_meta("lan_final_missing", json.dumps({"fy": from_fy, "at": now_iso(),
-                                                     "reason": str(final_errors.get("lan", ""))[:300]}))
         metrics["lan_final_not_reached"] = from_fy      # the rollover run row says it too
-        last = manual_leg.last_success_age_days(db, "lan")[0]
-        msg = (f"The final LAN backup of {from_fy} did not happen: the NAS could not be reached "
-               "(the office copy is started by hand, so an offline NAS is expected). "
-               f"Last LAN backup: {format_ist(last) if last else 'none yet'}. The switch to {to_fy} "
-               "goes ahead; the cloud copy is not affected. Start a LAN backup from the dashboard "
-               f"when the NAS is on to bring {from_fy} up to date.")
-        logger.warning(msg)
-        notify(config, AlertEvent(
-            key=f"rollover:{from_fy}:lan_not_final", kind="WARNING", mode="rollover",
-            title=f"{from_fy} not final-synced to the NAS", message=msg,
-            status="ROLLOVER_COMPLETE", occurred_at=started_at, run_id=run_id))
+        logger.warning(f"The final LAN backup of {from_fy} did not happen: the NAS could not be reached "
+                       f"(manual-only LAN, expected): {str(final_errors.get('lan', ''))[:300]}")
         return {k: v for k, v in final_status.items() if k != "lan"}
 
     def step_final_backups():
@@ -3108,8 +3180,14 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     metrics["steps"] = {name: final["steps"][name]["state"] for name in rj.STEPS}
     if rj.is_finished(final["steps"][rj.CONFIG_SWITCH]):       # the new year's files are protected from now on
         # the old FY is closed (approvals + incidents) whenever the switch is finished - also on the resume
-        # after a crash (R3), where step_config_switch never runs; idempotent
-        _close_old_fy(config, db, from_fy)
+        # after a crash (R3), where step_config_switch never runs - but ONLY once every enabled leg has a
+        # confirmed full copy of it (owner decision 2026-11-23); otherwise it stays tracked. Idempotent.
+        copied = {leg for leg, s in final_status.items() if statuses.is_success(s)}
+        still_missing = _settle_old_fy(config, db, from_fy, copied)
+        if still_missing:
+            metrics["old_year_not_fully_copied"] = {"fy": from_fy, "legs": still_missing}
+            logger.warning(f"{fy_overlap.not_fully_copied_text(from_fy, still_missing)}: it stays in the backups")
+            _warn_old_year_not_copied(config, db, from_fy, to_fy, still_missing, run_id, started_at)
         try:
             _resolve_unprotected_new_fy(config, db, new_fy=to_fy)
         except Exception as e:  # noqa: BLE001 - a mail problem never changes the rollover's result
@@ -3437,8 +3515,7 @@ def _active_fys(config, *, strict: bool = False) -> list[str]:
     falls back to the configured FY alone - the safe, always-correct answer. `strict` (the re-check after the
     slot wait): trouble is raised to the caller, no fallback and no warning mail."""
     configured = _effective_fy_prefix(config)
-    if getattr(config.rollover, "overlap_enabled", True) is False:
-        return [configured]          # overlap switched off: the configured FY alone, no DB needed
+    overlap_on = getattr(config.rollover, "overlap_enabled", True) is not False
     db = None
     try:
         db = ManifestDB.from_config(config)
@@ -3447,6 +3524,8 @@ def _active_fys(config, *, strict: bool = False) -> list[str]:
         if strict:
             raise
         logger.error(f"Active FY folders could not be worked out ({e}); backing up {configured} only")
+        if not overlap_on:
+            return [configured]      # overlap off: the configured FY (an old year may be missed this once)
         try:
             notify(config, AlertEvent(
                 key="overlap:active_set", kind="WARNING", mode="rollover",
