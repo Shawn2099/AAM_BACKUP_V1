@@ -2833,12 +2833,14 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
                 " A few follow-up steps are still being retried automatically "
                 f"({', '.join(p.replace('_', ' ') for p in pending)}); your data is safe.")
         overlap_note = fy_overlap.announce_text(final_copy or {}, from_fy, forced_legs)
+        message = (f"From today your backups use the new folder {to_fy}. The {from_fy} "
+                   f"backups are kept unchanged.{todo or ' Nothing to do.'}")
+        if overlap_note:
+            message += f" {overlap_note}"
         notify(config, AlertEvent(
             key=f"rollover:done:{to_fy}", kind="INFO", mode="rollover",
             title=f"New financial year {to_fy} started",
-            message=(f"From today your backups use the new folder {to_fy}. The {from_fy} "
-                     f"backups are kept unchanged.{todo or ' Nothing to do.'}"
-                     + (f" {overlap_note}" if overlap_note else "")),
+            message=message,
             status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at,
             audience=AUDIENCE_REPORTS))
 
