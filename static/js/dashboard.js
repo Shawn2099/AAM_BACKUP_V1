@@ -8,6 +8,11 @@ function showToast(message, type = 'info') {
     setTimeout(() => { toast.classList.remove('shown'); setTimeout(() => { toast.remove(); }, 300); }, 5000);
 }
 
+function resetTriggerButton(btn, mode) {
+    btn.removeAttribute('disabled'); btn.style.pointerEvents = ''; btn.style.opacity = '';
+    btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup';
+}
+
 async function triggerBackup(event, mode) {
     event.preventDefault();
     const btnInfo = document.getElementById('btn-' + mode);
@@ -24,9 +29,13 @@ async function triggerBackup(event, mode) {
     try {
         const response = await fetch('/trigger/' + mode, { method: 'POST' });
         const data = await response.json();
+        // F3: every answer re-enables the button first. A run that finished inside the wait is no longer
+        // running, so updateStatus would never touch a button left at 'Starting...'; a run that is still
+        // going is switched to 'Running...' by updateStatus right after.
+        resetTriggerButton(btn, mode);
         if (response.ok) { showToast(data.detail || 'Leave this page open to follow it. The backup started.', 'success'); }
-        else { showToast(data.detail || 'Try again, and ask support if it keeps failing. The backup did not start.', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
-    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
+        else { showToast(data.detail || 'Try again, and ask support if it keeps failing. The backup did not start.', 'error'); }
+    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); resetTriggerButton(btn, mode); }
     await updateStatus();
 }
 
