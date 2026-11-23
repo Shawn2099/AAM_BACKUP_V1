@@ -107,8 +107,15 @@ def test_lc2a_junction_at_fy27_28_is_never_a_silent_false_success(lab: Lab, sand
     mails = [a for a in lab.alerts if getattr(a, "fy", None) == FY_B]
     adopted_and_converged = act is not None and bool(ok["cloud"]) and bool(ok["lan"]) and _converged_ok(lab, FY_B)
     blocked_or_failed_with_mail = bool(blocked or failed) and bool(mails)
+    # LC2a (fixed): a refused link is not silent any more: no activation, no row for the link, ONE ACTION_REQUIRED
+    # mail naming the folder (not an INFO log line only), and the configured FY keeps backing up
+    refused_loudly = (act is None and not rows["cloud"] and not rows["lan"]
+                      and [getattr(a, "kind", None) for a in mails].count("ACTION_REQUIRED") >= 1
+                      and any(str(link) in getattr(a, "message", "") for a in mails))
     if adopted_and_converged:
         outcome = "adopted+converged"
+    elif refused_loudly:
+        outcome = "refused+ACTION_REQUIRED mail"
     elif blocked_or_failed_with_mail:
         outcome = "blocked/failure+mail"
     else:
