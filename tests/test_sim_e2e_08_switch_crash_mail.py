@@ -45,15 +45,19 @@ def _index(kind: str, at) -> int:
 def test_s8_config_switch_crash_while_the_mail_server_is_down(sim):
     sim.seed_to_mar28()
 
-    # a PENDING approval of the closing year, as in T-f1 (it must be CLOSED by the switch)
+    # an APPROVED but unused approval of the closing year, as in T-f1 (it must be CLOSED by the switch). It is
+    # APPROVED, not PENDING, on purpose: a PENDING LAN request of FY26-27 is SUPERSEDED by the next successful
+    # LAN night (02ddc18), long before the switch, and then there is nothing left for the switch to close.
     db = ManifestDB.from_config(sim.cfg)
     try:
         approval_id = db.open_approval_request(
             leg="lan", blocked_run_id=f"blocked-{A}-lan", fy=A, guards=GUARD, phrase="APPROVE",
             created_at=_t(2027, 3, 30, 3).isoformat())
+        db.approve_request(approval_id, approved_by="owner", approved_at=_t(2027, 3, 30, 3).isoformat(),
+                           expires_at=_t(2027, 4, 5, 3).isoformat())
     finally:
         db.close()
-    assert sim.approvals() == [("lan", A, "PENDING")]
+    assert sim.approvals() == [("lan", A, "APPROVED")]
 
     def write_then_die(config_path, src_root, lan_root, to_fy, expect_fy=None, **kw):
         sim.switch_writes.append((to_fy, expect_fy))     # the compare-and-set write happened ...
@@ -78,7 +82,7 @@ def test_s8_config_switch_crash_while_the_mail_server_is_down(sim):
     assert st["config_switch"] not in ("done", "skipped"), st
     assert sim.switch_writes == [(B, A)], sim.switch_writes
     assert sim.archive_calls == []
-    assert sim.approvals() == [("lan", A, "PENDING")]
+    assert sim.approvals() == [("lan", A, "APPROVED")]
 
     # 1 Apr 08:30 monthly, 21:00 LAN (config already says FY27-28: one folder), 2 Apr 02:00 cloud, 06:00 check
     sim.play(CAL_A[k_cut + 1:k_check + 1])
@@ -135,13 +139,15 @@ def test_s8_config_switch_crash_while_the_mail_server_is_down(sim):
 
 def test_s8_a_failed_close_is_retried_by_the_next_daily_check(sim):
     """Non-vacuity M6: db.close_fy fails once after the 1 Apr 06:00 switch (it must not stop the switch); the
-    approval of the closed year stays PENDING until the 2 Apr 06:00 check retries the close, at the start of the
+    approval of the closed year stays open (APPROVED, see test_s8_config_switch_crash) until the 2 Apr 06:00 check retries the close, at the start of the
     check (flow._close_finished_old_fys)."""
     sim.seed_to_mar28()
     db = ManifestDB.from_config(sim.cfg)
     try:
-        db.open_approval_request(leg="lan", blocked_run_id=f"blocked-{A}-lan", fy=A, guards=GUARD,
-                                 phrase="APPROVE", created_at=_t(2027, 3, 30, 3).isoformat())
+        aid = db.open_approval_request(leg="lan", blocked_run_id=f"blocked-{A}-lan", fy=A, guards=GUARD,
+                                       phrase="APPROVE", created_at=_t(2027, 3, 30, 3).isoformat())
+        db.approve_request(aid, approved_by="owner", approved_at=_t(2027, 3, 30, 3).isoformat(),
+                           expires_at=_t(2027, 4, 5, 3).isoformat())
     finally:
         db.close()
     real_close = ManifestDB.close_fy
@@ -159,7 +165,7 @@ def test_s8_a_failed_close_is_retried_by_the_next_daily_check(sim):
     sim.play(CAL_A[:k_1apr + 1])                          # through the 1 Apr 06:00 switch (the first close fails)
     assert sim.switch_writes == [(B, A)], sim.switch_writes
     assert calls == [A]
-    assert sim.approvals() == [("lan", A, "PENDING")], sim.approvals()
+    assert sim.approvals() == [("lan", A, "APPROVED")], sim.approvals()
     sim.play(CAL_A[k_1apr + 1:k_2apr + 1])                # the 2 Apr 06:00 check retries the close
     assert sim.approvals() == [("lan", A, "CLOSED")], sim.approvals()
     assert len(calls) == 2

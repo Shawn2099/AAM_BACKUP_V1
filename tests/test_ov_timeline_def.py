@@ -503,7 +503,8 @@ def test_T_f1_crash_after_config_write_one_folder_that_night_and_everything_clos
     site.activate_early()
     old_pending = site.approval(A, when=at(2027, 3, 30, 3, 0))
     old_approved = site.approval(A, leg="cloud", approved=True)
-    early_pending = site.approval(B, when=at(2027, 3, 30, 3, 0))
+    # a CLOUD request of FY27-28: only the LAN night of FY27-28 runs on 1 April, so nothing supersedes it
+    early_pending = site.approval(B, leg="cloud", when=at(2027, 3, 30, 3, 0))
 
     def write_then_die(config_path, src_root, lan_root, to_fy, expect_fy=None):
         site.point_config_at(to_fy)                                            # config.yaml is written ...
@@ -515,7 +516,11 @@ def test_T_f1_crash_after_config_write_one_folder_that_night_and_everything_clos
     st = site.steps()
     assert st[rj.FINAL_BACKUPS] == rj.DONE and st[rj.CONFIG_SWITCH] not in (rj.DONE, rj.SKIPPED)
     assert site.archive_calls == []
-    assert site.status_of(old_pending) == ap.PENDING                           # nothing closed yet
+    # old_pending is a LAN request of FY26-27: the final LAN backup (06:00) succeeded after it was asked for, so it
+    # is SUPERSEDED already (terminal, 02ddc18); the APPROVED cloud one is not touched by a success, and no
+    # FY has been closed yet
+    assert site.status_of(old_pending) == ap.SUPERSEDED
+    assert site.status_of(old_approved) == ap.APPROVED
     finals_before = [c for c in site.calls if "-final-" in c.run_id]
     assert sorted((c.leg, c.fy) for c in finals_before) == [("cloud", A), ("lan", A)]
 
@@ -527,7 +532,8 @@ def test_T_f1_crash_after_config_write_one_folder_that_night_and_everything_clos
     assert site.rollover(at(2027, 4, 2, 6, 0)) == "ROLLOVER_COMPLETED"
     assert all(s in (rj.DONE, rj.SKIPPED) for s in site.steps().values()), site.steps()
     assert [c["old_fy"] for c in site.archive_calls] == [A]
-    assert site.status_of(old_pending) == ap.CLOSED and site.status_of(old_approved) == ap.CLOSED
+    # SUPERSEDED stays SUPERSEDED (close_fy only closes PENDING/APPROVED); the unused APPROVED one is CLOSED
+    assert site.status_of(old_pending) == ap.SUPERSEDED and site.status_of(old_approved) == ap.CLOSED
     assert site.status_of(early_pending) == ap.PENDING                         # the new year's request is kept
     assert [c for c in site.calls if "-final-" in c.run_id] == finals_before    # no second final backup
 
@@ -597,7 +603,9 @@ def test_T_f3_control_without_a_failure_the_switch_closes_the_old_fy_approvals(s
     site.activate_early()
     pending, approved = site.approval(A), site.approval(A, leg="cloud", approved=True)
     assert site.rollover(at(2027, 4, 1, 6, 0)) == "ROLLOVER_COMPLETED"
-    assert site.status_of(pending) == ap.CLOSED and site.status_of(approved) == ap.CLOSED
+    # the LAN request was SUPERSEDED by the final LAN backup's success (terminal, kept); the unused APPROVED
+    # cloud request is what the switch closes ("FY closed")
+    assert site.status_of(pending) == ap.SUPERSEDED and site.status_of(approved) == ap.CLOSED
 
 
 def test_T_f3_d2_a_failed_close_is_repeated_on_the_next_morning(site, monkeypatch):
@@ -606,10 +614,13 @@ def test_T_f3_d2_a_failed_close_is_repeated_on_the_next_morning(site, monkeypatc
     calls = _fail_close_fy_once(site, monkeypatch)
     assert site.rollover(at(2027, 4, 1, 6, 0)) == "ROLLOVER_COMPLETED"
     assert calls == [A]                                                        # the one failing call happened
-    assert site.status_of(pending) == ap.PENDING                               # as the defect leaves it on 1 April
+    assert site.status_of(pending) == ap.SUPERSEDED                            # by the final LAN success
+    assert site.status_of(approved) == ap.APPROVED                             # as the defect leaves it on 1 April
+    assert site.db.open_approvals()[0]["approval_id"] == approved
     site.rollover(at(2027, 4, 2, 6, 0))
-    assert site.status_of(pending) == ap.CLOSED, "FY26-27 approvals still open on 2 April"
-    assert site.status_of(approved) == ap.CLOSED
+    assert site.status_of(approved) == ap.CLOSED, "FY26-27 approvals still open on 2 April"
+    assert site.status_of(pending) == ap.SUPERSEDED                            # never turned into CLOSED
+    assert site.db.open_approvals() == []
 
 
 # ===============================================================================================
