@@ -2274,10 +2274,13 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             fault_code = faults.classify_run("lan", status, exc=e, guard_record=guard_record,
                                              sync_result=sync_result)
             # An interrupted run (service stop, cancel) never powers the NAS off.
-            shutdown_on_fail = (allow_shutdown and isinstance(e, Exception) and getattr(
+            # F2: a guard BLOCK is a decision pending for a human (data risk), not a failure: the failure
+            # rule (PARTIAL / FAILED only, see the config text) never switches the NAS off for it.
+            blocked = isinstance(e, guards.GuardBlocked)
+            shutdown_on_fail = (allow_shutdown and isinstance(e, Exception) and not blocked and getattr(
                 config.lan, "shutdown_on_all_retries_exhausted", False) is True)
             if not allow_shutdown:
-                _vote(isinstance(e, Exception) and not isinstance(e, PartialRun) and getattr(
+                _vote(isinstance(e, Exception) and not isinstance(e, PartialRun) and not blocked and getattr(
                     config.lan, "shutdown_on_all_retries_exhausted", False) is True)
             if (nas_offline_expected and isinstance(e, Exception) and not isinstance(e, guards.GuardBlocked)
                     and fault_code in faults.NAS_UNREACHABLE_CODES):
