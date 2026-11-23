@@ -59,3 +59,5 @@ D4, D13, wording of the April-1 rollover mail and the reboot ACTION NEEDED mail,
 
 ### D15 final (owner: "do whatever is correct")
 D15 fix RE-APPLIED (revert of the revert `7ac7f72`): the correct behaviour is per the plan: per-leg approval first, then G6. Kept: `_defer_if_leg_approval_open` in flow.py, `ManifestDB.leg_approval_state`, S10 test without xfail. Caveat unchanged: 'leg approval given' = any approved request of that leg+FY. The size-budget retention stays reverted (db_retention_days default 730).
+
+### Owner rule (2026-11-23): the full audit lab (~90 min) is NOT run every time, only occasionally if needed; run only the targeted lab files (the 15 new w26/w27 tests) for a change.
