@@ -134,3 +134,17 @@ Stack updated to fy-overlap (merge 93036fd in C:\AAMTest\code), ended Running, /
 15 x tests/test_lan_sync.py real-robocopy-over-SMB tests (need an SMB share named 'lan_backup' at \127.0.0.1; this PC has AAMTestNAS instead; the same paths are exercised by the audit lab and the live LAN runs), 3 x chaos harness batches (tool dir C:\ChaosTest\tools absent), 1 x file symlink cannot be created here, 1 x Windows stored a folder under a different name (odd-name test), 1 more environment skip. None is a product failure.
 
 ### Owner (2026-11-23): do not over-think passwords/credentials in the repo (trial values, all rotated). The repo must CLONE to a new device and WORK there; hygiene work = clone-and-run readiness, not a secrets hunt.
+
+## Prefect stop experiment RESULT (Haiku, idle stack; logs C:\AAMTest\live\exp_prefect_stop\, LIVE_RESULTS 'Prefect stop experiment')
+Two full stop chains: Watchdog Stopped in 0.3 s, Agent 0.3 s, Prefect StopPending at 0 s and Stopped with python gone at 1.05 s; restore: Prefect API 200 after about 4 s, dashboard 200 about 5 s after the agent start. NONE of the three predicted failure readings fired (no NSSM hang, no cascade, no script problem). The earlier '150 s' results came from the LS8 scripts (`-Force` on Prefect = also stops the agent via the dependency, errors hidden). Caveat: idle stack only; a stop DURING an active run (agent 180 s Console window) is untested. VERDICT: the slow-stop finding is NOT reproduced: accept (no product change); an in-run stop stays as designed (180 s window cancels in-flight runs).
+
+## Lab files w26/w27 RESULT (Haiku; `docs/LAB_RUN_W26_W27_2026-11-23.md`; 14 tests, not 15): 8 passed, 6 failed (watchdog stopped during the run, restarted after)
+1. L1 same-size/same-mtime corruption: the audit DID detect it on both legs (VERIFICATION_FAILED); the test expected alert kind FAILURE, got ACTION_REQUIRED (product choice vs test expectation: UNSURE).
+2. L2 case-only rename (LEDGER.xlsx vs Ledger.xlsx): the NAS keeps the old name (robocopy on NTFS, case-insensitive): low severity, accept/record.
+3. L4 file growing during upload: CLOUD_FAILED (rclone exit 6, size changed), test accepts only SUSPECT/PARTIAL; no data loss. 4. L5 exclusively locked file: CLOUD_FAILED (rclone exit 1), same pattern.
+5. L7 ACL-denied subfolder: product fail-closed (cloud not COMPLETE); the test failed in its OWN cleanup (`icacls /remove:d` access denied) so its assertions were not reached: TEST RIG.
+6. LC2a junction at the FY27-28 folder: the product refused it with ONE INFO log line, no run rows, no activation row, no mail = SILENT. Not a false success but a silent refusal: PRODUCT (medium): needs an attention item + one mail (ACTION).
+Passed: w26b names (1/2), w26d guards 3/3, w27a calendar best 1/1, w27b calendar worst 3/4. 'database is locked' appears in several outputs (not investigated: check whether they are deliberate fault injections as in the earlier close_fy tests).
+PLAN: a Sonnet fixer: item 6 (attention + one mail when an overlap folder is a junction/refused), adjust tests 1/3/4 to the actual product behaviour with reasons, fix the rig cleanup in 5, record 2, check 'database is locked'.
+
+## Release hygiene review (Haiku; `docs/REVIEW_RELEASE_HYGIENE_2026-11-23.md`): no blocker. Merge into a new branch from origin/main is conflict-free (`git merge-tree`). 457 commits over origin/main, 18 merges, no rewrite in the reflog. `.gitignore` extended (`c40a2b3`). Owner: do not worry about credentials; clone-and-run to be tested by the owner later.
