@@ -332,7 +332,8 @@ def test_run_logs_are_filed_under_the_ist_day_and_kept_exactly_retention_days(si
         with pendulum.travel_to(when, freeze=True):
             art = RunArtefacts.for_config(cfg, f"run-{when.format('YYYYMMDD')}")
             assert art.dir.parent.name == when.format("YYYY-MM-DD")   # IST day, not UTC
-            os.utime(art.dir.parent, (time.time(), time.time()))      # disk mtime = sim time
+            for p in (*art.dir.parent.rglob("*"), art.dir.parent):    # disk mtime = sim time (whole folder, W40)
+                os.utime(p, (time.time(), time.time()))
             flow.log_retention_task.fn(cfg)
 
     kept = sorted(p.name for p in Path(cfg.run_logs_dir).iterdir())

@@ -342,6 +342,12 @@ POST /trigger/cloud | /trigger/lan | /trigger/verify/{mode}[?fy=FY27-28]   → p
   after it was requested (service stopped between the check and the start, or died with the run queued) is recorded <LEG>_MISSED per folder
   and fails; no slot, no WoL, no copy. Why both: the endpoint check cannot see a service that dies a moment later or a run created by other
   means; the flow check cannot stop the 'started' answer or the queued run. Together no hidden queued run can wake the NAS later.
+GET  /alerts-history       page: the mail audit log (read only; a link in the dashboard header)
+GET  /api/alerts-history?page=N   JSON, newest first, `dashboard.alerts_history_page_size` rows (50, 10-500) per page:
+                  time (IST), kind, class, fault code, title (first line of the subject), FY, leg, delivery status
+                  (SENT / FAILED / SUPPRESSED / DISABLED / LOGGED_ONLY / CLOSED), number of recipients (never the
+                  addresses), "recovered after X" for recoveries, a short note for rows the program wrote itself. Same
+                  sign-in as every page; no write path (`core/alerts_history.py`).
 GET  /report/weekly|monthly          HTML download
 POST /trigger/report/*/email         send now
 auth: always on - dashboard password (`dashboard.login_password_hash`) → session cookie; Advanced password (`dashboard.admin_password_hash`) → second cookie; sessions carry the fingerprint of the hash they were opened with (a change or reset ends older sessions); no hash = 'not set up' page, nothing opens; rate limits in memory
@@ -403,6 +409,19 @@ producer (flow, watchdog, rollover, reports, password change)
                        is stored in `notifications.attachments_rung`
 ```
 - ACTION_REQUIRED / RECOVERED / INFO are never silenced by `alerts.send_on_failure`.
+- **RESOLVED mails (W39, owner 2026-11-23).** A normal recovery sends NO "working again" mail: `core.notify._notify`
+  records a `notifications` row (kind RECOVERED, status `LOGGED_ONLY`, the same event key and fault code, the reason
+  and "recovered after X" in `error`), so the history reads "problem at T1, recovered at T2". The RESOLVED mail IS
+  sent when (a) the problem mail was DELIVERED (a SENT problem row in the open incident) AND (b) the problem lasted at
+  least `alerts.resolved_mail_min_hours` (24, 1-720), measured from the first SENT/FAILED problem row of the incident
+  (`ManifestDB.incident_start`) to the recovery, `>=` (exactly the minimum is sent). When the problem mail was NOT
+  delivered (FAILED, no SENT after) the L1 rule is unchanged: the recovery mail goes out whatever the duration and says
+  the alert was lost. `alerts.send_resolved: false` = never any RESOLVED mail (status DISABLED). A lookup error sends
+  the mail (fail open). A LOGGED_ONLY row ends the incident like a SENT RECOVERED (`sent_in_mode_after`,
+  `last_open_incident`, `lost_problem`, `close_fy`), and the callers that remember "RESOLVED done"
+  (`flow._resolve_old_year_notice`, `fy_overlap._send_resolved_mail`, `open_sibling_alerts`) count it as done. The
+  watchdog's invalid-config mail is not in the table: its marker file keeps the time of the FIRST mail and the
+  recovery passes it as `AlertEvent.problem_since`.
 - The dashboard link is resolved per email (`core/netinfo.py`: default-route address, else the
   route to the NAS, else the host name; never 127.x / 169.254.x / 0.0.0.0; cached
   `dashboard.link_cache_seconds`). A manual `dashboard.public_url` that differs from the detected
@@ -571,6 +590,7 @@ Config notes: `lan.enabled: false` still needs a UNC `paths.lan_destination` (pl
 | `logs\backup_YYYY-MM-DD.log` | app log (loguru) | all flows | operator |
 | `logs\*_svc*.log` | NSSM stdout/stderr per service | NSSM | operator |
 | `backup.lock` | `PID:create_time` of the running backup | `_backup_slot` | watchdog, launch |
+| *(retention, W40)* | Everything is kept two years by default (owner 2026-11-23: the AMC reads the logs every 6-12 months). Purged only by: `run_history` rows older than `maintenance.db_retention_days` (after a successful backup); app logs by loguru after `maintenance.log_retention_days`; run-log day folders and `*_svc-*` service logs by `flow.log_retention_task` after `run_logs.retention_days` / `service_log_retention_days` (`run_artefacts.purge_older_than`: a day folder goes only when the folder AND every file in it is older than the limit; the watchdog's own `watchdog_app.log` uses the service-log setting). NEVER purged: `notifications` (mail audit log), `approvals`, `integrity_audits`, `config_changes`, `file_entries`, rollover journal, `overlap_activations`. Count-based, not time-based: `config.yaml.bak-*` (`maintenance.config_backups_keep`). Reports are not stored. Check the free disk space of the server when raising any of these | `core/manifest`, `flow`, `core/logging` | operator |
 | Prefect DB (`.prefect`) | flow/task states, Prefect UI logs | Prefect | Prefect UI, ui.py |
 
 ---
@@ -586,12 +606,12 @@ Config notes: `lan.enabled: false` still needs a UNC `paths.lan_destination` (pl
 | `schedule` | 6 cron expressions + timezone; at load, `core.budget.schedule_problems` (cronsim, 1 year) refuses any slot-job start whose budget could run past the next slot job's start + `maintenance.concurrency_wait_seconds` (WP14) | serve.py, models.config |
 | `budget` | per-job run budgets `cloud/lan/audit_max_hours` (from job start, slot wait included) + `cloud_verify_reserve_minutes`, `lan_post_reserve_minutes`. The long steps get `RunBudget.cap(...)`: cloud upload = rclone `--max-duration`, robocopy / checks = timeout. Budget stop = `*_PARTIAL` + `budget_stopped` (cloud: not verified, not recorded as bucket state), audit = `AUDIT_INCOMPLETE`; `extended_metrics.budget` on every run. Manual override: `backup(budget_hours=...)` | flow, core/budget |
 | `notifications` | SMTP host/port/security/auth/timeout/retries, `recipients` (the ALERTS list) and `report_recipients` (the REPORTS list), enable flags | report, notify |
-| `alerts` | cooldown, body/attachment size | notify |
-| `dashboard` | the two password hashes, bind, port, `public_url` (empty = auto), session/rate-limit/refresh, "Apply changes" timings, history nights | ui, notify |
+| `alerts` | cooldown, body/attachment size, one switch per kind of mail, `resolved_mail_min_hours` (24, 1-720, section 5.7) | notify |
+| `dashboard` | the two password hashes, bind, port, `public_url` (empty = auto), session/rate-limit/refresh, "Apply changes" timings, history nights, `alerts_history_page_size` (50, 10-500) | ui, notify |
 | `rollover` | `archive_alert_after_days`, `final_backup_wait_retries` (2, 0-7: mornings the final backup may only wait for the slot before G6 asks), `overlap_enabled` (true), `early_start_month` (1, 1-3), `activation_alert_after_hours` (24), `sibling_ignore` | fy_rollover, fy_overlap |
-| `maintenance` | DB retention, log retention, SQLite busy/vacuum/sync, slot wait | manifest, flow |
+| `maintenance` | `db_retention_days` (730, 35-3650), `log_retention_days` (730, 1-1825), SQLite busy/vacuum/sync, slot wait | manifest, flow |
 | `health` | clock skew limit/timeout, `ntp_server`, `w32tm_timeout_seconds`, `clock_unverified_policy`, min free source GB, rollover gcloud timeouts | health, fy_rollover |
-| `run_logs` | full-log folder, retention 90 d, compression, min free GB, service-log retention | run_artefacts, flow |
+| `run_logs` | full-log folder, `retention_days` (730, 7-3650), compression, min free GB, `service_log_retention_days` (730, 7-3650) | run_artefacts, flow |
 | `guards` | `max_delete_files` 500, `max_delete_percent` 10, `max_source_shrink_percent` 20, `forbid_local_destination` true, `small_folder_files` 100, `small_folder_max_deletes` 10 (+ `cloud.dry_run_timeout_seconds` 1800) | flow `lan-guards` / `cloud-guards` |
 | *(M2)* `approvals`, more `lan` keys (WP4) | added with their consumers | approvals, lan_preflight |
 

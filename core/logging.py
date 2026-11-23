@@ -1,4 +1,4 @@
-"""Structured logging via Loguru — rotating daily, 30-day retention."""
+"""Structured logging via Loguru — rotating daily, retention = maintenance.log_retention_days (default 730)."""
 
 import sys
 from pathlib import Path

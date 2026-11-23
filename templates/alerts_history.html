@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>AAM Backup Alerts history</title>
+<link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+<header class="bar"><div class="in">
+    <div class="brand"><span class="name">AAM Backup</span></div>
+    <nav aria-label="Pages"><a href="/">Dashboard</a><a href="/alerts-history" aria-current="page">Alerts history</a><a href="/settings">Settings</a><a href="/logout">Sign out</a></nav>
+</div></header>
+<div class="page">
+<main>
+    <h1>Alerts history</h1>
+    <p>Every email the program sent or tried to send, and every recovery it only wrote down (LOGGED_ONLY: the problem
+    fixed itself quickly, so no "working again" email was sent). Newest first. Read-only; mail addresses are not shown.</p>
+    <p id="ah-summary" aria-live="polite">Loading...</p>
+    <div style="overflow-x:auto">
+    <table>
+        <thead><tr><th>Time (IST)</th><th>Kind</th><th>Code</th><th>Title</th><th>Year</th><th>Copy</th><th>Delivery</th><th>Recipients</th><th>Recovered after</th></tr></thead>
+        <tbody id="ah-rows"></tbody>
+    </table>
+    </div>
+    <p><button type="button" id="ah-prev">Newer</button> <button type="button" id="ah-next">Older</button></p>
+</main>
+</div>
+<script src="/static/js/alerts_history.js"></script>
+</body>
+</html>

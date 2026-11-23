@@ -101,7 +101,7 @@ def test_purge_removes_only_old_day_folders_and_files(tmp_path):
         (d / "r").mkdir(parents=True)
     now = time.time()
     old = now - 91 * 86400
-    for d in (old_day, foreign):
+    for d in (old_day / "r", old_day, foreign):     # W40: a day folder goes only when everything inside is old
         os.utime(d, (old, old))
     assert purge_older_than(root, 90, now=now) == 1
     assert not old_day.exists() and new_day.exists() and foreign.exists()

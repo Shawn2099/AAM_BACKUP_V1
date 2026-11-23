@@ -2461,7 +2461,7 @@ def _resolve_old_year_notice(config, db, fy: str) -> None:
         warned = db.last_notification(key, status="SENT")
         if warned is None:
             return
-        done = db.last_notification(f"recovered:{key}", status="SENT")
+        done = db.last_notification(f"recovered:{key}", status=("SENT", "LOGGED_ONLY"))
         if done is not None and done["id"] > warned["id"]:
             return
         notify(config, AlertEvent(

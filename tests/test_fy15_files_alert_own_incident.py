@@ -12,6 +12,7 @@ from core import notify as nt
 from core.manifest import ManifestDB
 from models.config import AppConfig
 from test_support import ui_login
+from test_support.notify_aging import age_notifications
 from test_support.smtp_server import smtp_server
 from tests.test_a6_rollover_journal_flow import FROM, TO, _events
 from tests.test_m2_rollover import _Rig
@@ -68,6 +69,7 @@ def test_the_resolved_mail_does_not_end_an_open_archive_warning_incident(tmp_pat
         cfg = _cfg(tmp_path, srv.server_address[1])
         assert nt.notify(cfg, _archive_warning(), db=db).status == nt.SENT
         assert nt.notify(cfg, _files_alert(), db=db).status == nt.SENT
+        age_notifications(db, mode="rollover_files")      # W39: that alarm lasted over a day, so RESOLVED is mailed
         assert nt.notify(cfg, _files_alert("RECOVERED", KEY_OK), db=db).status == nt.SENT
         # the archive problem is STILL the same open incident: its repeat is suppressed, not a "new" first mail
         again = nt.notify(cfg, _archive_warning(), db=db)

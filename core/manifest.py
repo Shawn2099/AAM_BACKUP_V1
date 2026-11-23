@@ -1248,13 +1248,16 @@ class ManifestDB:
                                    "state = ?, finished_at = ?, last_error = ?",
                                    (rj.SKIPPED, now, reason))
 
-    def last_notification(self, event_key: str, status: str | None = None) -> dict | None:
+    def last_notification(self, event_key: str, status: str | tuple[str, ...] | None = None) -> dict | None:
+        """Newest row of `event_key` (of status `status`, one or any of a tuple, when given)."""
         with self._lock:
             conn = self._get_conn()
             if status:
+                wanted = (status,) if isinstance(status, str) else tuple(status)
+                marks = ", ".join("?" for _ in wanted)
                 row = conn.execute(
-                    "SELECT * FROM notifications WHERE event_key = ? AND status = ? "
-                    "ORDER BY id DESC LIMIT 1", (event_key, status)).fetchone()
+                    f"SELECT * FROM notifications WHERE event_key = ? AND status IN ({marks}) "
+                    "ORDER BY id DESC LIMIT 1", (event_key, *wanted)).fetchone()
             else:
                 row = conn.execute(
                     "SELECT * FROM notifications WHERE event_key = ? "
@@ -1275,7 +1278,7 @@ class ManifestDB:
         `keys` narrows it to those event keys (per-key incidents, N-9)."""
         op = "=" if recovered else "!="
         # a row of status CLOSED is the silent end of an incident (its FY was closed, no mail)
-        statuses = "('SENT', 'CLOSED')" if recovered else "('SENT')"
+        statuses = "('SENT', 'CLOSED', 'LOGGED_ONLY')" if recovered else "('SENT')"
         clause, fy_args = self._fy_filter(fy)
         kclause, key_args = self._key_filter(keys)
         with self._lock:
@@ -1296,7 +1299,7 @@ class ManifestDB:
             conn = self._get_conn()
             boundary = conn.execute(
                 "SELECT COALESCE(MAX(id), 0) FROM notifications WHERE mode = ? AND kind = 'RECOVERED' "
-                f"AND status IN ('SENT', 'CLOSED'){clause}{kclause}", (mode, *fy_args, *key_args)).fetchone()[0]
+                f"AND status IN ('SENT', 'CLOSED', 'LOGGED_ONLY'){clause}{kclause}", (mode, *fy_args, *key_args)).fetchone()[0]
             delivered = conn.execute(
                 "SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
                 f"AND kind != 'RECOVERED'{clause}{kclause} LIMIT 1",
@@ -1321,9 +1324,40 @@ class ManifestDB:
             row = conn.execute(
                 f"SELECT * FROM notifications WHERE mode = ? AND status = 'SENT'{clause}{kclause} "
                 "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
-                f"WHERE mode = ? AND status IN ('SENT', 'CLOSED') AND kind = 'RECOVERED'{clause}{kclause}), 0) "
+                f"WHERE mode = ? AND status IN ('SENT', 'CLOSED', 'LOGGED_ONLY') AND kind = 'RECOVERED'{clause}{kclause}), 0) "
                 "ORDER BY id DESC LIMIT 1",
                 (mode, *fy_args, *key_args, mode, *fy_args, *key_args)).fetchone()
+        return dict(row) if row else None
+
+    def notifications_page(self, limit: int, offset: int = 0) -> tuple[list[dict], int]:
+        """(rows newest first, total rows) of the mail audit log - read only (Alerts history)."""
+        with self._lock:
+            conn = self._get_conn()
+            total = conn.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+            rows = conn.execute("SELECT * FROM notifications ORDER BY id DESC LIMIT ? OFFSET ?",
+                                (limit, offset)).fetchall()
+        return [dict(r) for r in rows], total
+
+    def incident_start(self, mode: str, *, fy: str, keys: tuple[str, ...] | None = None,
+                       before_id: int | None = None) -> dict | None:
+        """The FIRST problem row (SENT or FAILED, any kind but RECOVERED) of the incident that is open for this
+        mode (and FY): after the newest closing RECOVERED row (SENT / CLOSED / LOGGED_ONLY) that lies before
+        `before_id` (None = no upper bound). W39: the age of the incident is measured from this row.
+        None when the incident has no such row."""
+        clause, fy_args = self._fy_filter(fy)
+        kclause, key_args = self._key_filter(keys)
+        upper = "" if before_id is None else " AND id < ?"
+        upper_args = () if before_id is None else (before_id,)
+        with self._lock:
+            conn = self._get_conn()
+            boundary = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM notifications WHERE mode = ? AND kind = 'RECOVERED' "
+                f"AND status IN ('SENT', 'CLOSED', 'LOGGED_ONLY'){clause}{kclause}{upper}",
+                (mode, *fy_args, *key_args, *upper_args)).fetchone()[0]
+            row = conn.execute(
+                "SELECT * FROM notifications WHERE mode = ? AND id > ? AND status IN ('SENT', 'FAILED') "
+                f"AND kind != 'RECOVERED'{clause}{kclause}{upper} ORDER BY id LIMIT 1",
+                (mode, boundary, *fy_args, *key_args, *upper_args)).fetchone()
         return dict(row) if row else None
 
     def close_fy(self, fy: str, *, now: str) -> dict:
@@ -1345,7 +1379,7 @@ class ManifestDB:
                     open_incident = conn.execute(
                         "SELECT 1 FROM notifications WHERE mode = ? AND fy = ? AND status = 'SENT' "
                         "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
-                        "WHERE mode = ? AND fy = ? AND status IN ('SENT', 'CLOSED') "
+                        "WHERE mode = ? AND fy = ? AND status IN ('SENT', 'CLOSED', 'LOGGED_ONLY') "
                         "AND kind = 'RECOVERED'), 0) LIMIT 1", (mode, fy, mode, fy)).fetchone()
                     if open_incident:
                         conn.execute(

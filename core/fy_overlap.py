@@ -460,7 +460,7 @@ def _send_resolved_mail(db, config, fy: str, notify_fn) -> None:
         message=f"The problem that kept {fy} from being backed up is gone: both year folders are copied every night.",
         status="RECOVERED", resolved_code="AAM-ROL-03", fy=fy)
     res = _call_notify(config, db, event, notify_fn)
-    if getattr(res, "status", None) in ("SENT", "SUPPRESSED"):
+    if getattr(res, "status", None) in ("SENT", "SUPPRESSED", "LOGGED_ONLY"):
         db._set_meta(_META_RESOLVED_SENT.format(fy=fy), pendulum.now(IST).isoformat())
 
 
@@ -737,7 +737,7 @@ def open_sibling_alerts(db) -> list[tuple[str, int]]:
     open_ones = []
     for row in rows:
         key, last_id = row[0], row[1]
-        resolved = db.last_notification(f"recovered:{key}", status="SENT")
+        resolved = db.last_notification(f"recovered:{key}", status=("SENT", "LOGGED_ONLY"))
         if resolved is None or resolved["id"] < last_id:
             open_ones.append((key, last_id))
     return open_ones

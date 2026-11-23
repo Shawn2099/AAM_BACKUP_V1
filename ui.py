@@ -2000,4 +2000,24 @@ async def _get_health() -> dict:
         return {"error": "unavailable"}
 
 
+# ── Alerts history (W39): read-only view of the mail audit log ───────────────────────────────
+# Kept in one small section so it merges cleanly. Nothing here writes; no address is ever returned.
+
+@app.get("/alerts-history", response_class=HTMLResponse)
+async def alerts_history_page(request: Request):
+    _require_auth(request)
+    context = {"request": request}
+    try:
+        return templates.TemplateResponse(request=request, name="alerts_history.html", context=context)
+    except TypeError:
+        return templates.TemplateResponse("alerts_history.html", context)
+
+
+@app.get("/api/alerts-history")
+def alerts_history_api(request: Request, page: int = 1):
+    _require_auth(request)
+    from core import alerts_history
+    return alerts_history.build_page(get_db(), page, _cfg().dashboard.alerts_history_page_size)
+
+
 
