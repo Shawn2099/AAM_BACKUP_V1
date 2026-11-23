@@ -123,6 +123,29 @@ def config_for_fy(config, fy: str):
     return config.model_copy(update={"paths": paths})
 
 
+def active_passes(config, overlap_record) -> list[FyPass]:
+    """The FY passes of a backup run, the configured FY first (plan 2.1, D-1).
+
+    `overlap_record(fy)` returns the activation record of an FY (ManifestDB.overlap_record); it is called only
+    while `rollover.overlap_enabled` is on, so a run without an overlap opens no database for it.
+    The next FY is added while its record exists without `ended_at`. Folder existence does not decide (fail
+    closed: a missing next folder fails that pass in its own health check). Returns [] when there is no FY
+    folder to back up; a list of one pass means no overlap (the baseline call, for the configured year)."""
+    source = config.paths.source_drive
+    if not isinstance(source, str):   # not a loaded configuration (no folder paths): no FY passes
+        return []
+    configured = fy_rollover.configured_fy(source, config.paths.lan_destination)
+    if configured is None:
+        return []
+    passes = [FyPass(fy=configured, extra=False, config=config)]
+    if config.rollover.overlap_enabled:
+        nxt = next_fy(configured)
+        record = overlap_record(nxt)
+        if isinstance(record, dict) and not record.get("ended_at"):
+            passes.append(FyPass(fy=nxt, extra=True, config=config_for_fy(config, nxt)))
+    return passes
+
+
 def _metrics(value) -> dict:
     if isinstance(value, dict):
         return value

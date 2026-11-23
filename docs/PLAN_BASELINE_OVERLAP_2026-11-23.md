@@ -372,7 +372,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   suffixed run_id, row `fy`/`overlap`, artifact key, no `file_entries` write, alert keys/titles, other FY's approval
   not applied; LAN next pass creates the NAS folder after WoL; unreachable parent = `LAN_FAILED` AAM-LAN-01;
   `fy_pass=None` produces exactly today's task calls.
-- [ ] **B3 `backup()` loop.** `tests/test_fy_overlap_backup_flow.py`: order per leg; `fy=` runs one pass, inactive `fy`
+- [x] **B3 `backup()` loop.** `tests/test_fy_overlap_backup_flow.py`: order per leg; `fy=` runs one pass, inactive `fy`
   raises; first pass fails, second still runs, flow FAILED with both; cloud OK both FYs while LAN FY27-28 fails ->
   rows/alerts only for it; shared budget, `CLOUD_MISSED` for FY27-28 with its key; one WoL, shutdown rule D-8; race
   guard; overlap inactive -> one baseline call; manual run of an unscheduled leg runs both FYs.

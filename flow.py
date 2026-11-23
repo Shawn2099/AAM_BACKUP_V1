@@ -3115,9 +3115,40 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
 # Main backup flow — entry point for all modes
 # ═══════════════════════════════════════════════════════════════
 
+def _pass_kwargs(fy_pass, overlap_on: bool, leg_start: float) -> dict:
+    """The FY keywords of a pipeline call (plan 2.2): none while there is no overlap (the baseline call)."""
+    if not overlap_on:
+        return {}
+    return {"fy_pass": fy_pass, "budget_start": leg_start}
+
+
+def _overlap_record(config, fy: str):
+    """The activation record of an FY (plan 2.1); the database is opened only when the overlap is asked."""
+    db = ManifestDB.from_config(config)
+    try:
+        return db.overlap_record(fy)
+    finally:
+        db.close()
+
+
+def _configured_fy_switched(config_path: str, started_fy: str) -> bool:
+    """Race guard (plan 2.2): the rollover switched the configured FY while this run was going. config.yaml is
+    read again before each later pass. An unreadable config counts as switched: the pass does not start."""
+    try:
+        now = load_config(config_path)
+        changed = fy_rollover.configured_fy(now.paths.source_drive, now.paths.lan_destination) != started_fy
+    except Exception as e:  # noqa: BLE001 - fail closed: the remaining passes do not start
+        logger.error(f"FY race guard: config.yaml could not be read ({e}) - the remaining passes do not start")
+        return True
+    if changed:
+        logger.error(f"FY race guard: the configured FY changed from {started_fy} during this run - "
+                     "the remaining passes do not start")
+    return changed
+
+
 @flow(name="aam-backup", log_prints=True)
 def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str | None = None,
-           budget_hours: float | None = None):
+           budget_hours: float | None = None, fy: str | None = None):
     """AAM Backup Automation — nightly backup orchestrator.
 
     Each pipeline step is a separate Prefect task — visible in the Prefect UI
@@ -3134,6 +3165,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     budget_hours: manual runs only (e.g. the first full upload over a
     weekend): replaces budget.<leg>_max_hours for this run. Scheduled runs
     never pass it, so the schedule check (WP14) stays valid.
+
+    fy: one financial year's pass of an overlap (plan 2.2, the dashboard's per-FY buttons). An FY that is
+    not active raises before anything runs. Without it every active FY runs, the configured one first.
     """
     if budget_hours is not None and not 0 < budget_hours <= 168:
         raise ValueError(f"budget_hours must be between 0 and 168, got {budget_hours}")
@@ -3160,6 +3194,19 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     if mode == "lan" and not config.lan.enabled:
         raise ValueError("LAN backup leg is disabled in configuration; refusing to run.")
 
+    # FY overlap (plan 2.2): the passes of this run, the configured FY first. Without an active
+    # overlap there is one pass and every call is the baseline call (fy_pass None, no FY keywords).
+    active = fy_overlap.active_passes(config, lambda fy: _overlap_record(config, fy))
+    overlap_on = len(active) > 1
+    if fy is not None:
+        wanted = fy.upper()
+        if not any(p.fy == wanted for p in active):
+            active_names = ", ".join(p.fy for p in active) or "none"
+            raise ValueError(f"{fy} is not an active financial year (active: {active_names}); refusing to run.")
+    passes = [p for p in active if fy is None or p.fy == fy.upper()]
+    runs = passes or [None]   # no FY folder to back up: the baseline call, once per leg
+    started_fy = active[0].fy if active else None
+
     # G8: clean up orphaned robocopy temp logs left behind by hard-killed
     # processes (SCM stop, timeout kill, crash). Normal runs delete their own
     # log in a finally block; only killed runs strand them in %TEMP%. The age
@@ -3179,28 +3226,54 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     excs = []
     # plan I2: only the FIRST leg of this flow run is late; a second leg starts when it starts
     late_s = 0.0 if budget_hours is not None else _scheduled_lateness_seconds()
+    pass_no = 0   # passes started so far in this run (the race guard applies from the second one)
 
     try:
         # ── Cloud ──
         if mode in ("cloud", "all") and config.cloud.enabled:
             logger.info("Starting cloud backup pipeline")
-            try:
-                _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic(),
-                                    approval_id=approval_id, budget_hours=budget_hours,
-                                    late_seconds=late_s)
-            except Exception as e:
-                excs.append(e)
+            cloud_run_id = _stable_run_id("cloud")
+            leg_start = time.monotonic()
+            for index, p in enumerate(runs):
+                if overlap_on and pass_no and _configured_fy_switched(config_path, started_fy):
+                    break
+                pass_no += 1
+                try:
+                    _run_cloud_pipeline(p.config if p is not None else config, cloud_run_id, now_iso(),
+                                        time.monotonic(), approval_id=approval_id, budget_hours=budget_hours,
+                                        late_seconds=late_s if index == 0 else 0.0,
+                                        **_pass_kwargs(p, overlap_on, leg_start))
+                except Exception as e:
+                    excs.append(e)
             late_s = 0.0
 
         # ── LAN ──
         if mode in ("lan", "all") and config.lan.enabled:
             logger.info("Starting LAN backup pipeline")
-            try:
-                _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic(),
-                                  approval_id=approval_id, budget_hours=budget_hours,
-                                  late_seconds=late_s)
-            except Exception as e:
-                excs.append(e)
+            lan_run_id = _stable_run_id("lan")
+            leg_start = time.monotonic()
+            earlier_completed = True   # every pass before this one ended LAN_COMPLETE (plan D-8)
+            for index, p in enumerate(runs):
+                if overlap_on and pass_no and _configured_fy_switched(config_path, started_fy):
+                    break
+                pass_no += 1
+                last = index == len(runs) - 1
+                extra = _pass_kwargs(p, overlap_on, leg_start)
+                if overlap_on:
+                    # plan D-8: one NAS shutdown, after the last pass, and only when every earlier pass completed
+                    # (or the failure shutdown is configured, the rule of today)
+                    extra["allow_shutdown"] = last and (
+                        earlier_completed or config.lan.shutdown_on_all_retries_exhausted is True)
+                try:
+                    result = _run_lan_pipeline(p.config if p is not None else config, lan_run_id, now_iso(),
+                                               time.monotonic(), approval_id=approval_id,
+                                               budget_hours=budget_hours,
+                                               late_seconds=late_s if index == 0 else 0.0, **extra)
+                    earlier_completed = earlier_completed and isinstance(result, dict) \
+                        and result.get("status") == "LAN_COMPLETE"
+                except Exception as e:
+                    earlier_completed = False
+                    excs.append(e)
 
         # ── Summary ──
         if excs:
