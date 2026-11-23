@@ -89,6 +89,10 @@ HELP: dict[str, tuple[str, str]] = {
 
     # ── LAN ──
     "lan.enabled": ("Back up to the NAS", "Copy the files to the NAS in the office."),
+    "lan.scheduled": ("Back up to the NAS every night",
+                      "Off = the NAS is backed up only when someone presses the button on the dashboard."),
+    "lan.on_demand_warn_after_days": ("Days before an old NAS backup is flagged",
+                                      "Manual NAS backups only: a yellow note shows when the last NAS backup is older than this."),
     "lan.shutdown_after_backup": ("Switch the NAS off after the backup",
                                   "Saves power: the NAS is switched on for the backup and off again."),
     "lan.shutdown_on_all_retries_exhausted": ("Switch the NAS off even if the backup failed", ""),
