@@ -338,7 +338,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   `01-15`, `10-01` accepted; `02-29`, `04-01`, `13-01`, `12-32`, `1231` refused with a plain message; help + risky
   lists; `test_fallback_defaults_from_model.py`, `test_config_validation.py` green; the owner pair
   `E:\FY26-27` / `\\nas\backup\FY26-27` loads.
-- [ ] **A2 `core/fy_overlap.py` helpers.** `tests/test_fy_overlap_unit.py`: `next_fy` (FY26-27, FY99-00);
+- [x] **A2 `core/fy_overlap.py` helpers.** `tests/test_fy_overlap_unit.py`: `next_fy` (FY26-27, FY99-00);
   `activation_date` (FY26-27 -> 2026-12-31, `01-15` -> 2027-01-15, FY27-28 / leap year 2028); `closing_moment`;
   `fy_of_id` on `x-cloud`, `x-cloud-FY27-28`, `x-rollover-final-cloud`, `u-cloud-full-FY27-28`; `config_for_fy`:
   `E:\FY26-27` -> `E:\FY27-28` (not `E:FY27-28`, not `E:/FY27-28`), `\\nas\backup\FY26-27` -> `\\nas\backup\FY27-28`,
