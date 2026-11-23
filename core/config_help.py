@@ -133,6 +133,10 @@ HELP: dict[str, tuple[str, str]] = {
 
     # ── cloud ──
     "cloud.enabled": ("Back up to Google Cloud", "Copy the files to Google Cloud."),
+    "cloud.scheduled": ("Back up to Google Cloud every night",
+                        "Off = the cloud backup runs only when someone presses the button on the dashboard."),
+    "cloud.on_demand_warn_after_days": ("Days before an old cloud backup is flagged",
+                                        "Manual cloud backups only: a yellow note shows when the last cloud backup is older than this."),
     "cloud.bandwidth_limit": ("Upload speed limit", "Keeps the office internet usable during the upload."),
     "cloud.bucket": ("Cloud storage name (bucket)", "Set up once by the support team."),
     "cloud.project_number": ("Google project number", "Set up once by the support team."),

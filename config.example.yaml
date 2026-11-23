@@ -128,6 +128,14 @@ wol:
 # CLOUD BACKUP (rclone sync → Google Cloud Storage)
 # ═══════════════════════════════════════════════════
 cloud:
+  # true = the cloud backup runs every night (schedule.cloud_cron). false = manual only: no
+  # nightly cloud run and no schedule-based cloud alarms; the dashboard button still backs up and
+  # verifies. The 1 April rollover and the Sunday audit still run the cloud leg; a real failure
+  # there still blocks.
+  scheduled: true
+  # Manual-only cloud (scheduled false): soft amber note, no email, when the last successful
+  # cloud backup is older than this many days (1-365).
+  on_demand_warn_after_days: 30
   enabled: true
   bucket: "your-gcs-bucket-name"
   project_number: "YOUR_GCP_PROJECT_NUMBER"
