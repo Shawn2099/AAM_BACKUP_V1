@@ -109,8 +109,13 @@ class TestOrderAndConfigs:
         with backup_env(owner_config(), lateness=600.0) as env:
             backup.fn(CONFIG_PATH, "all")
         cloud_first, cloud_next, lan_first, lan_next = env.calls
-        assert cloud_first.kwargs["budget_start"] == cloud_next.kwargs["budget_start"]
-        assert lan_first.kwargs["budget_start"] == lan_next.kwargs["budget_start"]
+        def origin(call):
+            """Where the pipeline's RunBudget starts: budget_start - late_seconds (see _run_*_pipeline)."""
+            return call.kwargs["budget_start"] - call.kwargs["late_seconds"]
+
+        # a run that started 10 minutes late: the second pass counts from the same (late) origin
+        assert origin(cloud_first) == origin(cloud_next)
+        assert origin(lan_first) == origin(lan_next)
         assert cloud_first.kwargs["late_seconds"] == 600.0
         assert cloud_next.kwargs["late_seconds"] == 0.0
         assert lan_first.kwargs["late_seconds"] == 0.0     # a second leg starts when it starts (as today)

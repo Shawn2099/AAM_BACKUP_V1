@@ -3121,11 +3121,14 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
 # Main backup flow — entry point for all modes
 # ═══════════════════════════════════════════════════════════════
 
-def _pass_kwargs(fy_pass, overlap_on: bool, leg_start: float) -> dict:
-    """The FY keywords of a pipeline call (plan 2.2): none while there is no overlap (the baseline call)."""
+def _pass_kwargs(fy_pass, overlap_on: bool, leg_start: float, index: int = 0, leg_late: float = 0.0) -> dict:
+    """The FY keywords of a pipeline call (plan 2.2): none while there is no overlap (the baseline call).
+    Every pass of a leg shares the first pass's budget origin `leg_start - leg_late` (plan D-7): the first pass
+    gets late_seconds=leg_late with budget_start=leg_start, a later pass late_seconds=0 with the late origin as
+    its budget_start (the pipeline counts `budget_start - late_seconds`)."""
     if not overlap_on:
         return {}
-    return {"fy_pass": fy_pass, "budget_start": leg_start}
+    return {"fy_pass": fy_pass, "budget_start": leg_start if index == 0 else leg_start - leg_late}
 
 
 def _overlap_record(config, fy: str):
@@ -3248,7 +3251,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
                     _run_cloud_pipeline(p.config if p is not None else config, cloud_run_id, now_iso(),
                                         time.monotonic(), approval_id=approval_id, budget_hours=budget_hours,
                                         late_seconds=late_s if index == 0 else 0.0,
-                                        **_pass_kwargs(p, overlap_on, leg_start))
+                                        **_pass_kwargs(p, overlap_on, leg_start, index, late_s))
                 except Exception as e:
                     excs.append(e)
             late_s = 0.0
@@ -3264,7 +3267,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
                     break
                 pass_no += 1
                 last = index == len(runs) - 1
-                extra = _pass_kwargs(p, overlap_on, leg_start)
+                extra = _pass_kwargs(p, overlap_on, leg_start, index, late_s)
                 if overlap_on:
                     # plan D-8: one NAS shutdown, after the last pass, and only when every earlier pass completed
                     # (or the failure shutdown is configured, the rule of today)
