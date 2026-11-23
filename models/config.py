@@ -624,7 +624,7 @@ class MaintenanceConfig(StrictModel):
         ),
     )
     db_retention_days: int = Field(
-        default=90,
+        default=730,
         ge=35,
         le=3650,
         description="Days of run history to keep in ManifestDB (35–3650). At least 35: the 30-day "

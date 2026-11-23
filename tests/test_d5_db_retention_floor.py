@@ -28,7 +28,7 @@ def test_longer_histories_are_accepted(days):
 
 
 def test_the_default_and_the_purge_fallback_follow_the_model():
-    assert model_default(MaintenanceConfig, "db_retention_days") == 90
+    assert model_default(MaintenanceConfig, "db_retention_days") == 730
     import inspect
     default = inspect.signature(ManifestDB.purge_old_runs).parameters["retention_days"].default
     assert default == 90

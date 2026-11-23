@@ -72,7 +72,7 @@ class TestMaintenanceConfig:
         config = MaintenanceConfig()
         assert config.concurrency_wait_seconds == 3600
         assert config.sqlite_synchronous == "normal"
-        assert config.db_retention_days == 90
+        assert config.db_retention_days == 730
 
     def test_concurrency_wait_bounds(self):
         with pytest.raises(ValidationError):
