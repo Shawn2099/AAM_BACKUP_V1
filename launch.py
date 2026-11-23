@@ -291,6 +291,7 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
     from prefect.client.orchestration import get_client
     from prefect.exceptions import ObjectNotFound
 
+    legs_default = legs is None
     if legs is None:
         audit_enabled = bool(
             getattr(config.lan, "enabled", False) or getattr(config.cloud, "enabled", True)
@@ -307,6 +308,11 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
         "integrity-audit": "integrity-audit",
     }
 
+    from core import manual_leg
+
+    manual = {n for n, leg in (("backup-lan", "lan"), ("backup-cloud", "cloud"))
+              if legs_default and manual_leg.is_manual_only(config, leg)}
+
     async def _reconcile() -> dict:
         results: dict = {}
         async with get_client() as client:
@@ -319,7 +325,17 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
                     results[dep_name] = "absent (nothing to reconcile)"
                     continue
                 paused = bool(getattr(dep, "paused", False))
-                if enabled and paused:
+                if dep_name in manual:
+                    # manual only: the deployment stays runnable (the dashboard button) but must not
+                    # fire by itself, so any schedule left from an earlier boot is removed
+                    removed = 0
+                    for sch in await client.read_deployment_schedules(dep.id):
+                        await client.delete_deployment_schedule(dep.id, sch.id)
+                        removed += 1
+                    if paused:
+                        await client.resume_deployment(dep.id)
+                    results[dep_name] = f"manual only ({removed} schedule(s) removed)"
+                elif enabled and paused:
                     await client.resume_deployment(dep.id)
                     results[dep_name] = "resumed (leg enabled)"
                 elif not enabled and not paused:

@@ -189,6 +189,9 @@ def test_one_fy_report_is_unchanged(db, tmp_path):
     assert with_cfg["headline"] == without["headline"]
     assert with_cfg["summaries"][0]["scheduled"] == without["summaries"][0]["scheduled"] == 7
     html = _strip_clock(report.render_report_html(with_cfg, "Firm"))
+    # the only difference: the config-aware report also states that the cloud leg is off (2026-11-23)
+    assert "Cloud: off" in html
+    html = html.replace("<p style='margin:0 0 6px 0;color:#374151'>Cloud: off</p>", "")
     assert html == _strip_clock(report.render_report_html(without, "Firm"))
     assert "FY26-27" not in html and "<h4" not in html
     assert "LAN Integrity" in html and "(FY" not in html

@@ -37,7 +37,7 @@ def _deployments():
             backup.to_deployment(
                 name="backup-cloud",
                 parameters={"config_path": CONFIG_PATH, "mode": "cloud"},
-                schedules=[Cron(config.schedule.cloud_cron, tz)],
+                schedules=_nightly_schedules(config, "cloud", config.schedule.cloud_cron, tz),
                 tags=["production", "cloud"],
                 description="Daily cloud backup - rclone sync to GCS (asia-south1)",
             )
@@ -48,7 +48,7 @@ def _deployments():
             backup.to_deployment(
                 name="backup-lan",
                 parameters={"config_path": CONFIG_PATH, "mode": "lan"},
-                schedules=[Cron(config.schedule.lan_cron, tz)],
+                schedules=_nightly_schedules(config, "lan", config.schedule.lan_cron, tz),
                 tags=["production", "lan"],
                 description="Daily LAN backup - robocopy /MIR, includes WoL and auto-shutdown",
             )
@@ -102,6 +102,14 @@ def _deployments():
 
     _record_schedule_in_effect(config)
     return tuple(deployments_out)
+
+
+def _nightly_schedules(config, leg: str, cron: str, tz) -> list:
+    """The cron of a leg that runs every night; NO schedule for a manual-only leg (`<leg>.scheduled`
+    false): its deployment is still registered so the dashboard button can start it (owner 2026-11-23)."""
+    from core import manual_leg
+
+    return [Cron(cron, tz)] if manual_leg.is_nightly(config, leg) else []
 
 
 def _record_schedule_in_effect(config) -> None:

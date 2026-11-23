@@ -131,6 +131,16 @@ class PathsConfig(StrictModel):
 
 class LanConfig(StrictModel):
     enabled: bool = True
+    scheduled: bool = Field(
+        default=True,
+        description="true = the NAS backup runs every night on schedule.lan_cron. false (with "
+                    "enabled true) = manual only: no nightly NAS run and no schedule-based NAS "
+                    "alarms; the dashboard button still wakes the NAS, backs up, verifies and "
+                    "shuts it down. The 1 April rollover and the weekly audit still try the NAS.")
+    on_demand_warn_after_days: int = Field(
+        default=30, ge=1, le=365,
+        description="Manual-only NAS backup (scheduled false): show a soft amber note (no email) "
+                    "when the last successful NAS backup is older than this many days.")
     retry_count: int = Field(default=3, ge=1, le=10)
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
@@ -174,6 +184,16 @@ class LanConfig(StrictModel):
     privilege_check_timeout_seconds: int = Field(
         default=60, ge=5, le=600,
         description="Timeout for the `whoami /priv` SeBackupPrivilege check (seconds)")
+
+    @property
+    def nightly(self) -> bool:
+        """The NAS leg runs on the schedule (and so is judged against it)."""
+        return self.enabled and self.scheduled
+
+    @property
+    def manual_only(self) -> bool:
+        """The NAS leg is on but has no nightly run: started from the dashboard only."""
+        return self.enabled and not self.scheduled
 
 
 class WolConfig(StrictModel):
@@ -302,6 +322,17 @@ class WolConfig(StrictModel):
 
 class CloudConfig(StrictModel):
     enabled: bool = True
+    scheduled: bool = Field(
+        default=True,
+        description="true = the cloud backup runs every night on schedule.cloud_cron. false (with "
+                    "enabled true) = manual only: no nightly cloud run and no schedule-based "
+                    "cloud alarms; the dashboard button still backs up and verifies. The 1 April "
+                    "rollover and the weekly audit still run the cloud leg and a real failure "
+                    "there still blocks.")
+    on_demand_warn_after_days: int = Field(
+        default=30, ge=1, le=365,
+        description="Manual-only cloud backup (scheduled false): show a soft amber note (no email) "
+                    "when the last successful cloud backup is older than this many days.")
     # C-A: in-rclone duration cap. None = auto (subprocess timeout minus a
     # 300s margin); 0 disables the flag entirely; explicit value wins.
     max_duration_seconds: int | None = Field(
@@ -420,6 +451,16 @@ class CloudConfig(StrictModel):
         if not re.match(r"^\d+[kMG]$", v):
             raise ValueError(f"Enter the speed limit like 10M, 500k or 1G (now: '{v}').")
         return v
+
+    @property
+    def nightly(self) -> bool:
+        """The cloud leg runs on the schedule (and so is judged against it)."""
+        return self.enabled and self.scheduled
+
+    @property
+    def manual_only(self) -> bool:
+        """The cloud leg is on but has no nightly run: started from the dashboard only."""
+        return self.enabled and not self.scheduled
 
 
 class SecretText(str):
@@ -1236,9 +1277,9 @@ class AppConfig(StrictModel):
         from core.budget import schedule_problems
 
         jobs = {}
-        if self.cloud.enabled:
+        if self.cloud.enabled and self.cloud.scheduled:
             jobs["cloud"] = (self.schedule.cloud_cron, self.budget.cloud_max_hours * 3600)
-        if self.lan.enabled:
+        if self.lan.enabled and self.lan.scheduled:
             jobs["lan"] = (self.schedule.lan_cron, self.budget.lan_max_hours * 3600)
         jobs["audit"] = (self.schedule.audit_cron, self.budget.audit_max_hours * 3600)
         problems = schedule_problems(jobs, self.schedule.timezone,

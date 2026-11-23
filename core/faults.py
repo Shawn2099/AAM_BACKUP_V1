@@ -408,6 +408,11 @@ def blocked_guard_code(guard_record: dict | None) -> str | None:
     return None
 
 
+# The NAS could not be reached or did not wake: for a manual-only NAS leg this is an expected,
+# non-blocking outcome at the 1 April rollover and the weekly audit (owner 2026-11-23).
+NAS_UNREACHABLE_CODES = frozenset({"AAM-NAS-01", "AAM-NAS-02"})
+
+
 def classify_run(leg: str, status: str, *, exc: BaseException | None = None,
                  guard_record: dict | None = None, sync_result: dict | None = None) -> str | None:
     """The one fault code of a finished run; None for a success.

@@ -17,7 +17,7 @@ from pathlib import Path
 import pendulum
 from cronsim import CronSim
 
-from core import faults, fy_rollover
+from core import faults, fy_rollover, manual_leg
 from core.cloud_sync import RCLONE_EXIT_MEANING
 from core.time_utils import IST, format_ist
 
@@ -116,6 +116,9 @@ def _facts(config) -> dict:
     # the host the backup really connects to (the UNC target), not the WoL
     # setting, which may hold a default while Wake-on-LAN is off
     dest = config.paths.lan_destination
+    if not config.lan.enabled:      # cloud-only: the NAS path is an unused placeholder, never shown
+        return {"source": config.paths.source_drive, "dest": "the NAS folder", "nas": "the NAS",
+                "leg_name": "backup"}
     nas = dest.lstrip("\\").split("\\", 1)[0] if dest.startswith("\\\\") else ""
     if not nas and config.wol.enabled:
         nas = config.wol.server_ip
@@ -151,6 +154,10 @@ def _next_text(config, event, fault, now) -> str:
                 "and we remind you while it waits.")
     if event.mode == "watchdog":
         return "We email you again when the backup program is running again."
+    if event.mode in ("lan", "cloud") and not manual_leg.is_nightly(config, event.mode):
+        # manual-only leg (owner 2026-11-23): no automatic next run to promise
+        return (f"This backup is started by hand from the dashboard; there is no automatic "
+                f"{LEG_RUN[event.mode]}. You get one email when it works again.")
     cron = {"lan": "lan_cron", "cloud": "cloud_cron", "audit": "audit_cron"}.get(event.mode)
     nxt = _next_run(config, cron, now) if cron else None
     if nxt:

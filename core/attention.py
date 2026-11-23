@@ -17,7 +17,7 @@ import json
 import pendulum
 from loguru import logger
 
-from core import fy_rollover, overdue, statuses
+from core import fy_rollover, manual_leg, overdue, statuses
 from core.time_utils import IST, format_ist
 
 RED = "red"
@@ -164,6 +164,8 @@ def leg_timing(db, config, leg: str, now=None, fy: str | None = None, role: str 
            run yet, nothing is late) | catching_up (a large upload is progressing over several nights)
     due_at / overdue_at  ISO times (None when unknown). Same rule as the banner (`_overdue_item`)."""
     now = now or pendulum.now(IST)
+    if not manual_leg.is_nightly(config, leg):      # off or manual only: no schedule to be late against
+        return {"state": manual_leg.mode(config, leg), "due_at": None, "overdue_at": None}
     sched = _schedule_in_effect(db, config)
     if not sched:
         return {"state": "on_time", "due_at": None, "overdue_at": None}
@@ -264,7 +266,9 @@ def compute_attention(db, config, now=None) -> list[dict]:
         runs: list[dict] = []
         for fy in folders:
             who = _who(leg, fy, multi)
-            if sched:
+            if not manual_leg.is_nightly(config, leg):
+                item = None     # manual only (owner 2026-11-23): never judged against a schedule
+            elif sched:
                 item = _overdue_item(db, config, leg, sched, now, fy, roles[fy], multi)
             else:       # cannot even tell when it should run: say so (red + the watchdog mails it)
                 item = _item(RED, f"stale:{fy}:{leg}",
@@ -310,6 +314,17 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                        f"The safety check of the {who} could not run "
                                        f"({audit.get('detail') or 'see the logs'})")))
 
+        if leg == "lan" and manual_leg.is_manual_only(config, "lan") and manual_leg.lan_not_final_fy(db):
+            line = manual_leg.mode_line(config, db, "lan", now)["text"]
+            items.append(_item(AMBER, "manual_not_final:lan",
+                               act("Start a LAN backup from its card when the NAS is on",
+                                   f"{line}. This is a reminder only; the cloud copy is not affected")))
+        if manual_leg.is_old(config, db, leg, now):
+            line = manual_leg.mode_line(config, db, leg, now)["text"]
+            items.append(_item(AMBER, f"manual_old:{leg}",
+                               act(f"Run the {_PHRASE[leg]} from its card when it suits you",
+                                   f"{line}. This is a reminder only; nothing is wrong with the schedule")))
+
         # clock and NAS shutdown belong to the server, not to a folder: they come from the leg's most
         # recent run of any active FY (an older FY's run says nothing about the last night)
         metrics = _metrics(max(runs, key=_started_ts)) if runs else {}
@@ -319,6 +334,13 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                act("Check the server's date, time and internet access",
                                    "The clock could not be verified on the last cloud backup "
                                    f"({clock.get('reason') or 'no time source answered'})")))
+        left_on = metrics.get("nas_left_on")
+        if isinstance(left_on, dict):
+            items.append(_item(AMBER, "nas_left_on",
+                               act("Switch the NAS off by hand, or start a LAN backup from its card "
+                                   "(it switches the NAS off when it succeeds)",
+                                   "The NAS was woken for the last LAN backup, which did not succeed, "
+                                   f"and was left on ({format_ist(left_on.get('at'))})")))
         shutdown = metrics.get("nas_shutdown")
         if isinstance(shutdown, dict) and shutdown.get("outcome") != "VERIFIED":
             items.append(_item(AMBER, "nas_shutdown",
@@ -326,6 +348,11 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                    "It was not confirmed off after the last LAN backup "
                                    f"({shutdown.get('detail') or shutdown.get('outcome')})")))
 
+
+    if manual_leg.nothing_automatic(config):
+        items.append(_item(AMBER, "manual:none_automatic",
+                           act("Start the backups yourself from the dashboard when needed",
+                               "Nothing runs automatically: every backup is started by hand")))
 
     for req in db.open_approvals():
         fy = req.get("fy") or _fy(config)       # a request without an FY (older row) is the configured FY's

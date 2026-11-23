@@ -49,7 +49,7 @@ _RISKY_KEYS = frozenset({
     # what / where is backed up
     "paths.source_drive", "paths.lan_destination", "paths.gcs_key_path",
     "cloud.enabled", "cloud.bucket", "cloud.project_number", "cloud.location",
-    "cloud.storage_class", "lan.enabled", "rollover.source_placeholder_name",
+    "cloud.storage_class", "lan.enabled", "lan.scheduled", "cloud.scheduled", "rollover.source_placeholder_name",
     "rollover.create_source_folder_early",
     # FY overlap: which folders are backed up, and when (plan 5.7)
     "rollover.overlap_enabled", "rollover.early_start_month",
@@ -67,7 +67,7 @@ _RISKY_KEYS = frozenset({
 })
 
 # Read once when the backup service starts (serve.py / launch.py), not at every run.
-_START_ONLY_KEYS = frozenset({"cloud.enabled", "lan.enabled"})
+_START_ONLY_KEYS = frozenset({"cloud.enabled", "lan.enabled", "lan.scheduled", "cloud.scheduled"})
 
 NEXT_RUN = "next_run"
 AGENT_RESTART = "agent_restart"
@@ -99,7 +99,7 @@ BASIC_KEYS = frozenset({
     "notifications.smtp_port", "notifications.smtp_username", "notifications.smtp_password",
     "notifications.smtp_security",
     "notifications.weekly_enabled", "notifications.monthly_enabled",
-    "lan.enabled", "cloud.enabled",      # the two folder paths are Advanced (owner 2026-10-22, plan FY-4)
+    "lan.enabled", "lan.scheduled", "cloud.enabled", "cloud.scheduled",      # the two folder paths are Advanced (owner 2026-10-22, plan FY-4)
     "lan.shutdown_after_backup", "wol.enabled", "wol.mac_address", "wol.server_ip",
     "budget.lan_max_hours", "budget.cloud_max_hours", "budget.audit_max_hours",
     "cloud.bandwidth_limit", "dashboard.public_url",

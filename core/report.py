@@ -14,7 +14,7 @@ import humanize
 import pendulum
 from loguru import logger
 
-from core import faults, statuses
+from core import faults, manual_leg, statuses
 from core.email_compose import LEG_LABEL
 from core.manifest import ALL_FYS, ManifestDB
 from core.notify import AUDIENCE_ALERTS, AUDIENCE_REPORTS, SENT, send_email
@@ -283,8 +283,21 @@ def report_headline(db, summaries: list[dict]) -> tuple[str, bool]:
     if fixed:
         return f"backups OK - {fixed} problem(s) this period, all resolved", False
     if summaries and all(s["total"] == 0 for s in summaries):
+        if any(s.get("manual") for s in summaries):
+            return "no backup was started in this period (manual only)", False
         return "no backup was scheduled in this period", False
     return "all backups OK", False
+
+
+def _mode_notes(config, db) -> list[dict]:
+    """The truth lines for legs that are off or manual only (core.manual_leg); [] without a config."""
+    if config is None:
+        return []
+    try:
+        return manual_leg.mode_lines(config, db)
+    except Exception as e:  # noqa: BLE001 - never stops the report
+        logger.warning(f"Manual-leg lines skipped in the report ({e})")
+        return []
 
 
 def _audit_row(db, leg: str, fy: str = ALL_FYS) -> dict:
@@ -309,7 +322,8 @@ def _audit_row(db, leg: str, fy: str = ALL_FYS) -> dict:
             "detail": detail}
 
 
-def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod, window=None) -> None:
+def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod, window=None,
+                      manual_legs=()) -> None:
     """Set `scheduled` on each leg summary: how many runs the schedule planned in the period (so an
     empty period of a weekly plan is not reported as a missing backup). No schedule = unknown, which
     keeps the old behaviour (an empty period is action needed). `window` = (start, end) of one FY
@@ -318,6 +332,9 @@ def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod, window=
 
     start, end = window if window is not None else (rp.start, rp.end)
     for s in summaries:
+        if s["leg"] in manual_legs:     # manual only: nothing is scheduled, so nothing can be "missing"
+            s["scheduled"], s["manual"] = 0, True
+            continue
         try:
             s["scheduled"] = (0 if end <= start else overdue.firings_between(
                 getattr(schedule, f"{s['leg']}_cron"), schedule.timezone, start, end))
@@ -521,10 +538,12 @@ def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, s
         sruns = [r for r in runs if (r.get("fy") == fy or fy is None)] if multi or fy else runs
         summaries = leg_summaries(db, sruns, legs, fy=fy or ALL_FYS)
         if schedule is not None:
-            _scheduled_counts(schedule, summaries, report_period, window if fy else None)
+            manual_legs = ({leg for leg in manual_leg.LEG_NAME if manual_leg.is_manual_only(config, leg)}
+                           if config is not None else set())
+            _scheduled_counts(schedule, summaries, report_period, window if fy else None, manual_legs)
             if config is not None:
                 for s in summaries:
-                    if "scheduled" in s:
+                    if "scheduled" in s and not s.get("manual"):
                         _shortfall(db, config, s, window if fy else (report_period.start, report_period.end),
                                    fy, active, _switched(db, fy) if fy else False)
         for s in summaries:
@@ -536,7 +555,13 @@ def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, s
                          "per_leg": _per_leg(sruns, legs), "summaries": summaries, "audits": audits})
     summaries = [s for sec in sections for s in sec["summaries"]]
     headline, act = report_headline(db, summaries)
-    return {"alerts_off": list(alerts_off or []),
+    # a leg that is off or manual only is stated, never silent (owner 2026-11-23); an old manual
+    # backup is a soft note (amber, no "action needed", no mail)
+    notes = _mode_notes(config, db)
+    soft = any(n["soft_warn"] for n in notes)
+    if not act and soft:
+        headline = f"note: {next(n['text'] for n in notes if n['soft_warn'])}"
+    return {"alerts_off": list(alerts_off or []), "mode_notes": notes, "soft_warn": soft and not act,
             "period": report_period, "legs": legs, "runs": runs, "totals": _totals(runs),
             "per_leg": _per_leg(runs, legs), "summaries": summaries, "headline": headline,
             "act": act, "sections": sections,
@@ -558,7 +583,9 @@ def _summary_html(model: dict) -> str:
             last_fy = s.get("fy")
             rows += (f"<tr><th colspan='3' style='{cell};text-align:left;background:#e5e7eb'>"
                      f"{html.escape(str(last_fy))}</th></tr>")
-        if s["total"] == 0 and s.get("scheduled", 1) == 0:
+        if s.get("manual") and s["total"] == 0:
+            detail = "Manual only: no backup was started in this period."
+        elif s["total"] == 0 and s.get("scheduled", 1) == 0:
             detail = "No backup was scheduled in this period."
         elif s["total"] == 0:
             detail = "No backup ran in this period."
@@ -586,12 +613,16 @@ def _summary_html(model: dict) -> str:
     act = model["act"]
     todo = ("Open the dashboard and look at the items marked 'not resolved'; forward this "
             "report to support if you are unsure." if act else "Nothing.")
-    colour = "#b91c1c" if act else "#047857"
+    colour = "#b91c1c" if act else ("#b45309" if model.get("soft_warn") else "#047857")
     headline = model["headline"]
+    notes_html = "".join(
+        f"<p style='margin:0 0 6px 0;color:{'#b45309' if n['soft_warn'] else '#374151'}'>"
+        f"{html.escape(n['text'])}</p>" for n in model.get("mode_notes", []))
     return (f"<div style='background:{colour};color:#ffffff;padding:10px 14px;border-radius:6px;"
             f"font-weight:600;margin:0 0 16px 0'>"
             f"{html.escape(headline[0].upper() + headline[1:])}</div>"
             f"<table style='width:100%;border-collapse:collapse;margin:0 0 12px 0'>{rows}</table>"
+            f"{notes_html}"
             f"<p><b>Open items:</b> {html.escape(open_items)}<br><b>What to do:</b> "
             f"{html.escape(todo)}</p>")
 

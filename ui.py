@@ -37,6 +37,7 @@ from prefect.deployments import arun_deployment
 
 from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_overlap, fy_rollover,
                   rollover_journal, statuses)
+from core import manual_leg
 from core.attention import RED, compute_attention, leg_timing
 from core.manifest import ALL_FYS, ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
@@ -524,6 +525,9 @@ async def dashboard(request: Request):
         "lan_schedule": lan_schedule,
         "cloud_enabled": cfg.cloud.enabled,
         "lan_enabled": cfg.lan.enabled,
+        # "Next scheduled backup" only for a leg that runs on a schedule (off / manual only: no such line)
+        "cloud_nightly": manual_leg.is_nightly(cfg, "cloud"),
+        "lan_nightly": manual_leg.is_nightly(cfg, "lan"),
         # the LAN confirm text says what a manual run really does (audit 2026-10-18)
         "lan_wol": getattr(getattr(cfg, "wol", None), "enabled", False),
         "lan_shutdown": getattr(cfg.lan, "shutdown_after_backup", False),
@@ -592,6 +596,7 @@ async def status(request: Request):
             "last_run": cloud_last_run,
             "last_success": _get_last_success(db, "cloud"),
             "timing": _leg_timing(db, cfg, "cloud"),
+            "mode": _mode_info(db, cfg, "cloud"),
             "last_run_formatted": format_ist(cloud_last_run["started_at"]) if cloud_last_run else "No data",
             # Integrity status is a SEPARATE fact from the backup result:
             # VERIFIED only after a passing audit; NOT_VERIFIED when no
@@ -606,6 +611,7 @@ async def status(request: Request):
             "last_run": lan_last_run,
             "last_success": _get_last_success(db, "lan"),
             "timing": _leg_timing(db, cfg, "lan"),
+            "mode": _mode_info(db, cfg, "lan"),
             "last_run_formatted": format_ist(lan_last_run["started_at"]) if lan_last_run else "No data",
             "integrity": _integrity_summary(db, "lan"),
             "nights": _nights(db, "lan", cfg),
@@ -700,6 +706,17 @@ def _nights(db, mode: str, cfg, fy: str | None = None) -> list[dict]:
     except Exception as e:  # noqa: BLE001 - the strip is decoration; never break the status call
         logger.warning(f"Night strip could not be built for {mode}: {e}")
         return []
+
+
+def _mode_info(db, cfg, leg: str) -> dict:
+    """off | nightly | manual for a leg's card, with the truth line of an off / manual-only leg
+    (core.manual_leg): reports and dashboard use the same wording."""
+    try:
+        line = manual_leg.mode_line(cfg, db, leg)
+    except Exception as e:  # noqa: BLE001 - the card is decoration; the banner has the truth
+        logger.warning(f"Mode line could not be evaluated for {leg}: {e}")
+        line = None
+    return line or {"mode": manual_leg.NIGHTLY, "text": "", "soft_warn": False}
 
 
 def _leg_timing(db, cfg, leg: str, fy: str | None = None, role: str | None = None) -> dict:
