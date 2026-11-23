@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from core import config_edit as ce
 from core.time_utils import format_ist
-from models.config import NotificationConfig, load_config
+from models.config import NotificationConfig, RolloverConfig, load_config
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -226,7 +226,9 @@ def rollover_rig(monkeypatch, tmp_path):
     cfg = SimpleNamespace(
         dashboard=SimpleNamespace(**ui_login.DASHBOARD),
         paths=SimpleNamespace(source_drive="E:\DATA\FY26-27",
-                              lan_destination="\\nas\share\FY26-27"))
+                              lan_destination="\\nas\share\FY26-27"),
+        rollover=RolloverConfig(overlap_enabled=False),
+        cloud=SimpleNamespace(enabled=True, scheduled=True), lan=SimpleNamespace(enabled=True, scheduled=True))
     calls = []
 
     async def fake_arun_deployment(name, parameters=None, timeout=None):

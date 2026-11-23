@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import ui
 from core import rollover_journal as rj
 from core.manifest import ManifestDB
+from models.config import RolloverConfig
 
 H = {}      # the TestClient is signed in already (tests/conftest.py)
 FROM, TO = "FY26-27", "FY27-28"
@@ -34,7 +35,9 @@ def rig(monkeypatch, tmp_path):
     cfg = SimpleNamespace(
         dashboard=SimpleNamespace(**ui_login.DASHBOARD),
         paths=SimpleNamespace(source_drive="E:\\DATA\\FY27-28",
-                              lan_destination="\\\\nas\\share\\FY27-28"))
+                              lan_destination="\\\\nas\\share\\FY27-28"),
+        rollover=RolloverConfig(overlap_enabled=False),
+        cloud=SimpleNamespace(enabled=True, scheduled=True), lan=SimpleNamespace(enabled=True, scheduled=True))
     calls = []
 
     async def fake_arun_deployment(name, parameters=None, timeout=None):
@@ -48,7 +51,7 @@ def rig(monkeypatch, tmp_path):
     monkeypatch.setattr(ui, "arun_deployment", fake_arun_deployment)
     monkeypatch.setattr(ui, "get_fy_prefix", lambda: TO)
     yield SimpleNamespace(client=TestClient(ui.app, raise_server_exceptions=False),
-                          calls=calls, db=db)
+                          calls=calls, db=db, cfg=cfg)
     db.close()
 
 
@@ -76,3 +79,39 @@ def test_a_finished_journal_is_not_shown(rig):
     for step in rj.STEPS:
         rig.db.rollover_step_done(FROM, TO, step, "t1")
     assert rig.client.get("/api/rollover", headers=H).json()["journal"] is None
+
+
+# ---- B4 review G1: final_copy of the April switch on the card -------------------------------------------
+
+def _overlap_open(rig):
+    """The config still points at FY26-27, the overlap that adds FY27-28 is active."""
+    rig.cfg.paths.source_drive = "E:\\DATA\\FY26-27"
+    rig.cfg.paths.lan_destination = "\\\\nas\\share\\FY26-27"
+    rig.cfg.rollover = RolloverConfig(overlap_enabled=True)
+    rig.db.set_overlap_record(TO, {"activated_at": "2026-12-31T06:00:00+05:30", "from_fy": FROM})
+
+
+def test_final_copy_is_returned_while_the_overlap_is_open(rig):
+    _overlap_open(rig)
+    body = rig.client.get("/api/rollover", headers=H).json()
+    assert set(body["final_copy"]) == {"cloud", "lan"}
+    assert body["final_copy"]["cloud"]["outstanding"] is True
+
+
+def test_final_copy_is_none_when_the_overlap_is_off(rig):
+    body = rig.client.get("/api/rollover", headers=H).json()
+    assert "final_copy" in body and body["final_copy"] is None
+
+
+def test_a_failing_final_copy_never_blanks_the_card(rig, monkeypatch):
+    _overlap_open(rig)
+
+    def boom(*a, **k):
+        raise RuntimeError("db locked")
+
+    monkeypatch.setattr(ui.fy_overlap, "final_copy_state", boom)
+    r = rig.client.get("/api/rollover", headers=H)
+    assert r.status_code == 200
+    assert r.json()["final_copy"] is None and r.json()["configured_fy"] == FROM
+    monkeypatch.setattr(ui.fy_overlap, "overlap_open", boom)
+    assert rig.client.get("/api/rollover", headers=H).json()["final_copy"] is None

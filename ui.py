@@ -1247,8 +1247,12 @@ async def rollover_status(request: Request):
     approval = next((a for a in get_db().open_approvals() if a["leg"] == "rollover"), None)
     # plan section 4 / B4: while the overlap is active, what each leg still needs for the April switch
     final_copy = None
-    if configured is not None and fy_overlap.overlap_open(cfg, get_db(), fy_overlap.next_fy(configured)):
-        final_copy = fy_overlap.final_copy_state(cfg, get_db(), configured, {})
+    try:
+        if configured is not None and fy_overlap.overlap_open(cfg, get_db(), fy_overlap.next_fy(configured)):
+            final_copy = fy_overlap.final_copy_state(cfg, get_db(), configured, {})
+    except Exception as e:  # noqa: BLE001 - an extra block never blanks the rollover card
+        logger.warning(f"Could not read the final-copy state for the rollover card: {e}")
+        final_copy = None
     return {
         "configured_fy": configured, "current_fy": current, **state, "final_copy": final_copy,
         "journal": None if journal is None else {
