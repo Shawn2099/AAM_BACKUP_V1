@@ -369,6 +369,12 @@ def _fy_seg(fy: str | None) -> str:
     return f"{fy}:" if fy else ""
 
 
+def _next_run_words(config, leg: str) -> str:
+    """"the next scheduled run" - or, for a manual-only leg (`<leg>.scheduled` false), "the next manual
+    backup": there is no scheduled run to promise (owner 2026-11-23)."""
+    return "the next scheduled run" if manual_leg.is_nightly(config, leg) else "the next manual backup"
+
+
 def _nas_alert_note(shutdown_on_fail: bool, loop_decides: bool, config) -> str:
     """What a LAN failure / partial alert says about the NAS. When the FY leg loop decides the shutdown
     (several folders in one run) this pipeline cannot know the outcome in advance, so the text only
@@ -376,18 +382,20 @@ def _nas_alert_note(shutdown_on_fail: bool, loop_decides: bool, config) -> str:
     if loop_decides:
         if getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True:
             return ("The NAS is switched off after the last folder of this run only if every folder's "
-                    "backup allows it; it stays on otherwise and the next scheduled run will re-sync.")
-        return "The NAS was NOT shut down; the next scheduled run will re-sync."
+                    f"backup allows it; it stays on otherwise and {_next_run_words(config, 'lan')} will re-sync.")
+        return f"The NAS was NOT shut down; {_next_run_words(config, 'lan')} will re-sync."
     if shutdown_on_fail:
         return "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
-    return "The NAS was NOT shut down; the next scheduled run will re-sync."
+    return f"The NAS was NOT shut down; {_next_run_words(config, 'lan')} will re-sync."
 
 
-def _failure_alert_text(leg: str, status: str, error: str | None, nas_note: str = "") -> str:
+def _failure_alert_text(leg: str, status: str, error: str | None, nas_note: str = "",
+                        config=None) -> str:
     name = "Cloud" if leg == "cloud" else "LAN"
     if status.endswith("_SUSPECT"):
+        nxt = _next_run_words(config, leg) if config is not None else "the next scheduled run"
         return (f"{name} backup SUSPECT: {error} The transfer did not terminate normally; "
-                f"completion is unproven. {nas_note or 'The next scheduled run will re-sync.'}")
+                f"completion is unproven. {nas_note or nxt[0].upper() + nxt[1:] + ' will re-sync.'}")
     return f"{name} backup {statuses.label(status)}: {error or status} {nas_note}".strip()
 
 
@@ -1860,7 +1868,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 _send_run_alert(
                     config, "cloud", status,
                     f"Cloud backup PARTIAL: rclone exit {sync_result.get('exit_code')} - some "
-                    "work did not complete. rclone sync is resumable; the next scheduled run "
+                    f"work did not complete. rclone sync is resumable; {_next_run_words(config, 'cloud')} "
                     "continues from where this one left off.",
                     sync_result.get("exit_code"), started_at,
                     run_id=run_id, sync_result=sync_result,
@@ -1888,7 +1896,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             if isinstance(e, guards.GuardBlocked):
                 guard_record = e.record   # its ACTION REQUIRED email goes out below
             elif not alert_sent:
-                alert = ((config, "cloud", status, _failure_alert_text("cloud", status, error_msg),
+                alert = ((config, "cloud", status, _failure_alert_text("cloud", status, error_msg, config=config),
                           sync_result.get("exit_code"), started_at),
                          dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
                 if isinstance(e, Exception):
@@ -2238,7 +2246,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             if not alert_sent and not isinstance(e, guards.GuardBlocked):
                 # The one alert of this run, sent BEFORE any NAS shutdown below.
                 nas_msg = _nas_alert_note(shutdown_on_fail, shutdown_votes is not None, config)
-                alert = ((config, "lan", status, _failure_alert_text("lan", status, error_msg, nas_msg),
+                alert = ((config, "lan", status, _failure_alert_text("lan", status, error_msg, nas_msg, config=config),
                           sync_result.get("exit_code"), started_at),
                          dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
                 if isinstance(e, Exception):
@@ -3421,6 +3429,28 @@ def _slot_timeout_for_folders(leg: str, runs: list, started_at: str, monotonic_s
                         None, started_at, run_id=run_id, fault_code="AAM-SYS-08" if stuck else None)
 
 
+def _flag_nas_left_on(config, votes: list, last_run_id: str | None) -> None:
+    """A manual-only LAN run ended with the NAS still on (a failed manual run does not shut it down): say
+    so on the run row, so the dashboard shows an amber 'NAS was woken and left on' item (owner
+    2026-11-23). Only when the NAS really answers on SMB now; never raises."""
+    try:
+        if (not last_run_id or not votes or not manual_leg.is_manual_only(config, "lan")
+                or not config.wol.enabled):
+            return
+        from core import wol
+
+        ip = config.wol.server_ip
+        if not wol._smb_port_open(ip, timeout=float(config.wol.smb_connect_timeout_seconds)):
+            return
+        db = ManifestDB.from_config(config)
+        try:
+            db.merge_run_metrics(last_run_id, {"nas_left_on": {"at": now_iso(), "ip": ip}})
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping only
+        logger.error(f"Could not record that the NAS was left on: {e}")
+
+
 def _lan_shutdown_decision(config, votes: list, folders: int) -> dict | None:
     """ONE NAS shutdown decision per LAN flow run (plan 5.3). Today's rule per folder (shut down only
     after a COMPLETE mirror, or after a failure when shutdown_on_all_retries_exhausted is set), applied
@@ -3534,6 +3564,8 @@ def _run_leg_folders(config, leg: str, folders: list[str], *,
             if leg == "lan" and not interrupted:
                 try:
                     result = _lan_shutdown_decision(config, votes, len(runs))
+                    if result is None:
+                        _flag_nas_left_on(config, votes, runs[-1][2] if runs else None)
                     if result is not None:
                         db = ManifestDB.from_config(config)
                         try:

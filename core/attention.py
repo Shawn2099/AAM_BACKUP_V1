@@ -334,6 +334,13 @@ def compute_attention(db, config, now=None) -> list[dict]:
                                act("Check the server's date, time and internet access",
                                    "The clock could not be verified on the last cloud backup "
                                    f"({clock.get('reason') or 'no time source answered'})")))
+        left_on = metrics.get("nas_left_on")
+        if isinstance(left_on, dict):
+            items.append(_item(AMBER, "nas_left_on",
+                               act("Switch the NAS off by hand, or start a LAN backup from its card "
+                                   "(it switches the NAS off when it succeeds)",
+                                   "The NAS was woken for the last LAN backup, which did not succeed, "
+                                   f"and was left on ({format_ist(left_on.get('at'))})")))
         shutdown = metrics.get("nas_shutdown")
         if isinstance(shutdown, dict) and shutdown.get("outcome") != "VERIFIED":
             items.append(_item(AMBER, "nas_shutdown",
