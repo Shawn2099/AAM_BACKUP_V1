@@ -390,7 +390,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   switch; Feb 29 2028 in the FY27-28 -> FY28-29 cycle; clock behind on Dec 31; server off Dec 31 (activation Jan 1);
   switch blocked 1-2 Apr by a failed LAN final, manual LAN run 2 Apr, switch 3 Apr 06:00; FY27-28 overdue counted from
   activation; an unscheduled LAN leg never overdue in the whole run.
-- [ ] **B6 Integrity audit per FY.** `tests/test_fy_overlap_audit.py`: next FY then configured FY per leg in one slot,
+- [x] **B6 Integrity audit per FY.** `tests/test_fy_overlap_audit.py`: next FY then configured FY per leg in one slot,
   suffixed audit ids, `latest_audit(leg, fy=)`, alert key `@FY27-28`, one NAS wake/shutdown, shared budget (budget
   used up -> configured FY `AUDIT_INCOMPLETE`, next FY verified), scheduled audit skips an unscheduled leg, `fy=`.
 - [ ] **B7 Attention / overdue / watchdog.** `tests/test_fy_overlap_attention.py`: per-FY items; next FY "waiting"

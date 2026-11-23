@@ -539,6 +539,19 @@ def _record_running(config, leg: str, run_id: str, started_at: str) -> None:
         logger.error(f"Could not record the RUNNING row for {leg} run {run_id}: {e}")
 
 
+def _auto_scheduled_run() -> bool:
+    """True when this flow run was started by its schedule (Prefect's `auto_scheduled` flag). A run started by
+    hand, or outside a flow run, is not: the weekly audit then covers every enabled leg (plan 2.5, section 5)."""
+    try:
+        from prefect.context import FlowRunContext
+        ctx = FlowRunContext.get()
+        run = ctx.flow_run if ctx else None
+        return bool(run is not None and getattr(run, "auto_scheduled", False))
+    except Exception as e:  # noqa: BLE001 - unknown means "started by hand": the audit covers every enabled leg
+        logger.warning(f"Could not tell whether this run was scheduled ({e}); the audit covers every enabled leg")
+        return False
+
+
 def _scheduled_lateness_seconds() -> float:
     """Plan I2: how long after its SCHEDULED time this flow run started (a reboot or a busy
     server starts a missed run late). 0 for a manual run and outside a flow run: those count
@@ -1556,14 +1569,15 @@ def _audit_settings(config) -> dict:
             "network_error_patterns": tuple(a.network_error_patterns)}
 
 
-def _pending_context(config, db, leg: str):
+def _pending_context(config, db, leg: str, fy: str | None = None):
     """What the safety check needs to tell "waiting for the next backup" from "wrong": the start
     of this leg's last SUCCESSFUL backup (the shared success definition). Unknown (no backup, an
-    unreadable time, a database error) leaves the reference empty, so every difference is real."""
+    unreadable time, a database error) leaves the reference empty, so every difference is real.
+    `fy` (plan 2.5): the reference of that FY's own passes (None = the configured FY's)."""
     from core import audit_pending
 
     try:
-        last = db.last_successful_run(leg)
+        last = db.last_successful_run(leg) if fy is None else db.last_successful_run(leg, fy=fy)
         started = last.get("started_at") if isinstance(last, dict) else None
     except Exception as e:  # noqa: BLE001 - unknown means "no reference", never a crash
         logger.warning(f"Last successful {leg} backup unknown for the safety check: {e}")
@@ -3024,7 +3038,7 @@ def _audit_alert_kind(outcomes: list[str]) -> str:
 
 
 @flow(name="integrity-audit", log_prints=True)
-def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
+def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: str | None = None):
     """Read-only weekly integrity audit: source↔backup content verification.
 
     This flow NEVER modifies source or destination and NEVER rewrites
@@ -3033,6 +3047,11 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
     divergence. Absence of an audit row means NOT_VERIFIED.
 
     Modes: cloud | lan | all (both sequentially, cloud first).
+
+    FY overlap (plan 2.5, D-13): while the overlap is active every audited leg runs a pass for the next FY first and
+    then for the configured FY, in this one slot and on this one budget; the LAN leg wakes the NAS once and shuts it
+    down after the last pass. `fy` audits one active FY only (the dashboard). A scheduled run skips a leg that is not
+    scheduled (`scheduled: false`: a manual-only NAS may be off); a run started by hand audits every enabled leg.
     """
     from core.integrity import audit_cloud, audit_lan, new_audit_id
 
@@ -3051,20 +3070,50 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
     logger.info(f"AAM integrity audit starting - mode={mode}, firm={config.firm_name}")
     # WP14: the audit's run budget counts from here, including the slot wait
     budget = RunBudget("audit", config.budget.audit_max_hours * 3600, time.monotonic())
-    db = ManifestDB.from_config(config)
-    legs = [leg for leg in ("cloud", "lan")
-            if mode in (leg, "all") and getattr(config, leg).enabled]
-    recorded: set[str] = set()
-    excs = []
-    outcomes: list[str] = []   # "<leg>=<status>" of each non-VERIFIED leg: part of the alert key
 
-    def _record(leg: str, audit_id: str, started_at: str, result: dict) -> None:
+    # FY overlap (plan 2.5, D-13): the passes of each audited leg, the next FY first (it is small), then the
+    # configured FY. Without an active overlap there is one baseline pass per leg (no suffix, the config as is).
+    overlap_error = None
+    try:
+        active = fy_overlap.active_passes(config, lambda f: _overlap_record(config, f))
+    except Exception as e:  # noqa: BLE001 - the configured FY is still audited; the flow ends FAILED (below)
+        active, overlap_error = [], e
+    if fy is not None and not any(p.fy == fy.upper() for p in active):
+        why = f" (the FY overlap records could not be read: {overlap_error})" if overlap_error else ""
+        raise ValueError(f"{fy} is not an active financial year{why}; refusing to audit it.")
+    if len(active) > 1:
+        ordered = [p for p in active if p.extra] + [p for p in active if not p.extra]
+        passes = [p for p in ordered if fy is None or p.fy == fy.upper()]
+    else:
+        passes = [None]
+
+    db = ManifestDB.from_config(config)
+    scheduled_run = _auto_scheduled_run()
+    legs = [leg for leg in ("cloud", "lan")
+            if mode in (leg, "all") and getattr(config, leg).enabled
+            and not (scheduled_run and not getattr(config, leg).scheduled)]
+    recorded: set[tuple[str, str | None]] = set()
+    excs = []
+    outcomes: list[str] = []   # "<leg>[@<FY>]=<status>" of each non-VERIFIED pass: part of the alert key
+    if overlap_error is not None:
+        excs.append(RuntimeError(f"the FY overlap records could not be read ({overlap_error}): the next FY was not "
+                                 "audited; the flow ends FAILED so it is not dropped silently"))
+
+    def _suffix_of(p) -> str | None:
+        return p.fy if p is not None and p.extra else None
+
+    def _audit_id_of(leg: str, suffix: str | None) -> str:
+        audit_id = new_audit_id(leg, "full")
+        return fy_overlap.pass_run_id(audit_id, suffix) if suffix else audit_id
+
+    def _record(leg: str, audit_id: str, started_at: str, result: dict, suffix: str | None = None) -> None:
         # A VERIFIED verdict is durable only once persisted: a failed DB
         # write must fail the audit loudly (alert + FAILED flow), never
         # silently drop a passing result or leave NOT_VERIFIED behind a
         # COMPLETED run.
-        name = "Cloud" if leg == "cloud" else "LAN"
-        recorded.add(leg)
+        name = ("Cloud" if leg == "cloud" else "LAN") + (f" {suffix}" if suffix else "")
+        key = f"{leg}@{suffix}" if suffix else leg
+        recorded.add((leg, suffix))
         try:
             db.record_audit({
                 "audit_id": audit_id, "mode": leg, "scope": result["scope"],
@@ -3077,56 +3126,76 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
             })
         except Exception as e:
             excs.append(RuntimeError(f"{name} audit persistence failed: {e}"))
-            outcomes.append(f"{leg}=NOT_RECORDED")
+            outcomes.append(f"{key}=NOT_RECORDED")
         if result["status"] not in (statuses.AuditStatus.VERIFIED, statuses.AuditStatus.PENDING_BACKUP):
             excs.append(RuntimeError(_audit_outcome_text(name, result)))
-            outcomes.append(f"{leg}={result['status']}")
+            outcomes.append(f"{key}={result['status']}")
 
-    def _audit_cloud_leg(audit_id: str) -> dict:
+    def _audit_cloud_leg(audit_id: str, pc, suffix: str | None, last: bool) -> dict:
         try:
-            cloud_timeout = int(budget.cap(config.cloud.verify_timeout_seconds))
+            cloud_timeout = int(budget.cap(pc.cloud.verify_timeout_seconds))
         except BudgetExceeded as e:
             return _audit_budget_incomplete(e)
         audit_artefacts = _open_run_artefacts(config, audit_id)
         try:
             with temp_rclone_config(
-                config.paths.gcs_key_path,
-                config.cloud.location,
-                config.cloud.project_number,
-                config.cloud.storage_class,
+                pc.paths.gcs_key_path,
+                pc.cloud.location,
+                pc.cloud.project_number,
+                pc.cloud.storage_class,
             ) as rclone_cfg:
                 return audit_cloud(
-                    config.paths.source_drive, config.cloud.bucket,
-                    _effective_fy_prefix(config), rclone_cfg,
+                    pc.paths.source_drive, pc.cloud.bucket,
+                    _effective_fy_prefix(pc), rclone_cfg,
                     timeout=cloud_timeout, artefacts=audit_artefacts,
-                    pending=_pending_context(config, db, "cloud"),
+                    pending=_pending_context(pc, db, "cloud", suffix),
                     **_audit_settings(config),
                 )
         finally:
             _finalize_run_artefacts(config, audit_artefacts)
 
-    def _audit_lan_leg(audit_id: str) -> dict:
+    # One NAS wake-up and one shutdown for every LAN pass of this run (plan D-8). A wake-up that failed is not
+    # retried for the next pass: that pass fails the same way without a second wake-up.
+    nas = {"woken": False, "wake_error": None}
+
+    def _wake_nas_once() -> None:
+        if nas["wake_error"] is not None:
+            raise nas["wake_error"]
+        if not nas["woken"]:
+            try:
+                wol_check_task(config)
+            except Exception as e:
+                nas["wake_error"] = e
+                raise
+            nas["woken"] = True
+
+    def _shut_nas_down(artefacts_dir: str | None) -> None:
+        # Only after a successful wake; a failed shutdown never replaces the verdict.
+        if nas["woken"] and config.lan.shutdown_after_backup and config.wol.enabled:
+            try:
+                lan_shutdown_task(config, artefacts_dir)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"NAS shutdown after the LAN audit failed: {e}")
+
+    def _audit_lan_leg(audit_id: str, pc, suffix: str | None, last: bool) -> dict:
         try:
-            lan_timeout = int(budget.cap(config.lan.subprocess_timeout_seconds,
+            lan_timeout = int(budget.cap(pc.lan.subprocess_timeout_seconds,
                                          config.budget.lan_post_reserve_minutes * 60))
         except BudgetExceeded as e:
-            return _audit_budget_incomplete(e)   # NAS not woken: nothing to do
-        wol_check_task(config)
+            if last:
+                _shut_nas_down(None)    # an earlier pass may have woken the NAS: this pass is its last word
+            return _audit_budget_incomplete(e)   # this pass did not wake the NAS: nothing to do
+        _wake_nas_once()
         audit_artefacts = _open_run_artefacts(config, audit_id)
         try:
             return audit_lan(
-                config.paths.source_drive, config.paths.lan_destination,
+                pc.paths.source_drive, pc.paths.lan_destination,
                 timeout=lan_timeout, artefacts=audit_artefacts,
-                pending=_pending_context(config, db, "lan"), **_audit_settings(config),
+                pending=_pending_context(pc, db, "lan", suffix), **_audit_settings(config),
             )
         finally:
-            # Only after a successful wake; a failed shutdown never replaces the verdict.
-            if config.lan.shutdown_after_backup and config.wol.enabled:
-                try:
-                    lan_shutdown_task(config, str(audit_artefacts.dir)
-                                      if audit_artefacts else None)
-                except Exception as e:  # noqa: BLE001
-                    logger.error(f"NAS shutdown after the LAN audit failed: {e}")
+            if last:
+                _shut_nas_down(str(audit_artefacts.dir) if audit_artefacts else None)
             _finalize_run_artefacts(config, audit_artefacts)
 
     try:
@@ -3135,24 +3204,29 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
                 for leg, run_leg in (("cloud", _audit_cloud_leg), ("lan", _audit_lan_leg)):
                     if leg not in legs:
                         continue
-                    audit_id, started_at = new_audit_id(leg, "full"), now_iso()
-                    try:
-                        result = run_leg(audit_id)
-                    except Exception as e:  # noqa: BLE001 - recorded + alerted, never silent
-                        logger.error(f"Integrity audit ({leg}) could not run: {e}")
-                        result = {"status": "AUDIT_INCOMPLETE", "scope": "full",
-                                  "files_checked": None, "bytes_checked": None,
-                                  "mismatches": 0,
-                                  "detail": f"could not run - {type(e).__name__}: {e}"}
-                    _record(leg, audit_id, started_at, result)
+                    for index, p in enumerate(passes):
+                        suffix = _suffix_of(p)
+                        audit_id, started_at = _audit_id_of(leg, suffix), now_iso()
+                        try:
+                            result = run_leg(audit_id, p.config if p is not None else config, suffix,
+                                             index == len(passes) - 1)
+                        except Exception as e:  # noqa: BLE001 - recorded + alerted, never silent
+                            logger.error(f"Integrity audit ({leg}{'@' + suffix if suffix else ''}) could not run: {e}")
+                            result = {"status": "AUDIT_INCOMPLETE", "scope": "full",
+                                      "files_checked": None, "bytes_checked": None,
+                                      "mismatches": 0,
+                                      "detail": f"could not run - {type(e).__name__}: {e}"}
+                        _record(leg, audit_id, started_at, result, suffix)
         except Exception as e:  # noqa: BLE001 - backup slot / lock not obtained
             logger.error(f"Integrity audit could not run: {e}")
             for leg in legs:
-                if leg not in recorded:
-                    _record(leg, new_audit_id(leg, "full"), now_iso(), {
-                        "status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
-                        "bytes_checked": None, "mismatches": 0,
-                        "detail": f"could not run - backup slot not obtained: {e}"})
+                for p in passes:
+                    suffix = _suffix_of(p)
+                    if (leg, suffix) not in recorded:
+                        _record(leg, _audit_id_of(leg, suffix), now_iso(), {
+                            "status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
+                            "bytes_checked": None, "mismatches": 0,
+                            "detail": f"could not run - backup slot not obtained: {e}"}, suffix)
 
         if excs:
             error_summary = '; '.join(str(e) for e in excs)

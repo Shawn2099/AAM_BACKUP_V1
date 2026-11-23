@@ -84,6 +84,34 @@ Check `git log --oneline` for which of these landed.
   The unscheduled leg is modelled by leaving its cron out of the simulated schedule (C1 rule).
 - Runtime of the file: about 5 min.
 
+## B6 done (integrity audit per FY)
+- `flow.integrity_audit_flow(config_path, mode, fy=None)`: per audited leg the next FY's pass first, then the configured
+  FY, in one slot (`_backup_slot` entered once), on one `RunBudget`. Next-FY rows carry the suffix (`<uuid>-cloud-full-FY27-28`);
+  the configured pass keeps today's id. Alert outcome keys `cloud@FY27-28=<status>` (baseline keys unchanged).
+- LAN leg: one `wol_check_task` per leg (the task itself does nothing while WoL is off, as before), a failed wake is not
+  retried for the second pass, one `lan_shutdown_task` after the last pass (also after a budget-exhausted last pass,
+  only when a wake happened). `_pending_context(config, db, leg, fy=None)`: each pass's safety reference is its own FY's
+  last success (`last_successful_run(leg, fy=)`).
+- `fy=` selects one active FY (inactive -> ValueError before anything runs). Overlap off or no record -> one baseline pass per leg.
+- Scheduled vs manual: `_auto_scheduled_run()` (Prefect `auto_scheduled`, same source as the I2 lateness rule). The weekly
+  cron run skips a leg with `scheduled: false`; a run started by hand (the dashboard's 'Check now', which sends mode
+  `all` too) audits every enabled leg. Outside a flow run it is "by hand" (baseline). Owner-visible decision: the schedule
+  flag, not the mode, separates the two.
+- A DB error reading the activation record: the configured FY is still audited, the flow ends FAILED (as in backup()).
+- Tests: `tests/test_fy_overlap_audit.py` (10 cases): order and single slot; suffixed rows and `latest_audit(fy=)`; mismatch key
+  `audit:all:cloud@FY27-28=VERIFICATION_FAILED`; one wake and one shutdown in the order wake/LAN/shutdown; failed wake
+  (both LAN passes AUDIT_INCOMPLETE, no second wake, no shutdown); budget used up by the next FY's cloud pass (configured
+  FY and every LAN pass AUDIT_INCOMPLETE, no wake); scheduled skip vs manual; `fy=` (one FY, inactive refused); baseline
+  without a record (unsuffixed ids, baseline key); safety reference per FY.
+- Red before the change: 9 of 10 failed (9 with the missing behaviour; the baseline test was green from the start).
+- Impact (GitNexus, before editing): `integrity_audit_flow` LOW (1 direct: `audit_lab/w22_child.py`); `_pending_context` LOW
+  (2 direct: `_audit_cloud_leg`, `_audit_lan_leg`). `detect-changes --scope all` reported "critical" for the commit: it lists
+  `backup`, `_overlap_record`, `_configured_fy_switched`, `_missed_if_no_budget`, `_nullable_audit_count` as changed, but
+  their bodies are untouched (`git diff -U0` shows the hunks: the audit flow, `_pending_context`, the new helper). The index is
+  17 commits behind HEAD, so the flag is a line-range artefact of the edit; not a real risk to those functions.
+- Existing audit tests green: test_m4_budget, test_m5_audit_alerts, test_audit_pending_verdict, test_audit_remediation,
+  test_serve, test_prefect_integration, test_chaos_harness_batch1/2 (121 passed, 2 skipped).
+
 ## Opus review findings kept as facts
 - Verified: baseline path identical with overlap off (except F2); no data-loss path found; every `config.paths.*` use in the pipelines reads the per-pass config; next-FY pass writes no `file_entries`; the refusal when the next-FY NAS folder name is not its FY is the last barrier against a mirror into `\\nas\backup` (keep it); an FY27-28 success cannot mark FY26-27 healthy or send its recovery mail.
 - NOT safe to deploy past 31 Dec until B8 and B9 are done: `report.py` (~317) and the dashboard night strip (`ui.py` ~600) still mix both FYs' rows.
