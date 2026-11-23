@@ -334,7 +334,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
 
 **Part A - building blocks (no behaviour change)**
 
-- [ ] **A1 Overlap keys.** `tests/test_fy_overlap_config.py`: defaults (on, `12-31`); a config without the keys is on;
+- [x] **A1 Overlap keys.** `tests/test_fy_overlap_config.py`: defaults (on, `12-31`); a config without the keys is on;
   `01-15`, `10-01` accepted; `02-29`, `04-01`, `13-01`, `12-32`, `1231` refused with a plain message; help + risky
   lists; `test_fallback_defaults_from_model.py`, `test_config_validation.py` green; the owner pair
   `E:\FY26-27` / `\\nas\backup\FY26-27` loads.

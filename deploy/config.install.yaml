@@ -52,3 +52,7 @@ schedule:
   cloud_cron: "0 2 * * *"                                 # 02:00 every night
   monthly_cron: "30 8 1 * *"
   audit_cron: "0 8 * * SUN"
+
+rollover:
+  overlap_enabled: true                                   # from 31 Dec the next year's folder is backed up too, until the 1 April switch
+  overlap_activate_on: "12-31"                            # MM-DD; normally 12-31

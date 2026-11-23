@@ -295,6 +295,13 @@ HELP: dict[str, tuple[str, str]] = {
     "rollover.archive_alert_after_days": (
         "Escalate a stuck archive move after",
         "Moving last year's online copy to cheaper storage is retried every morning."),
+    "rollover.overlap_enabled": (
+        "Back up the next year's folder too, before the switch",
+        "From the activation day until 1 April both this year's and next year's folders are backed up. "
+        "Off = only this year's folder is backed up."),
+    "rollover.overlap_activate_on": (
+        "Day the next year's folder is added (MM-DD)",
+        "Normally 12-31. The next year's folder is created and backed up from this day, once the clock is verified."),
     "audit.checkers": ("Files checked at the same time", ""),
     "audit.retries": ("Retries", ""),
     "audit.retries_sleep_seconds": ("Wait between retries", ""),

@@ -825,6 +825,35 @@ class RolloverConfig(StrictModel):
                     "an 'action needed' email.",
     )
 
+    overlap_enabled: bool = Field(
+        default=True,
+        description="Back up the next financial year's folder too (for example FY27-28 next to FY26-27), "
+                    "from the activation day below until the 1 April switch. Off = only the configured year "
+                    "is backed up, and a next-year folder that already exists is no longer backed up.",
+    )
+
+    overlap_activate_on: str = Field(
+        default="12-31",
+        description="Day of the year (MM-DD, Indian time) from which the next financial year is added to the "
+                    "backups. The daily check does it only once the clock is proven. Not 04-01 (that is the switch).",
+    )
+
+    @field_validator("overlap_activate_on")
+    @classmethod
+    def activation_day_is_a_real_day(cls, v: str) -> str:
+        import datetime
+
+        if not re.fullmatch(r"\d{2}-\d{2}", v):
+            raise ValueError(f"Enter the day as MM-DD, for example 12-31 (now: {v!r}).")
+        month, day = int(v[:2]), int(v[3:])
+        try:
+            datetime.date(2001, month, day)   # 2001 is not a leap year: 02-29 is refused
+        except ValueError:
+            raise ValueError(f"Enter a real day as MM-DD, for example 12-31 (now: {v!r}); 02-29 does not exist.") from None
+        if (month, day) == (4, 1):
+            raise ValueError("Enter a day as MM-DD other than 04-01: that is the switch day, not an activation day.")
+        return v
+
     @field_validator("source_placeholder_name")
     @classmethod
     def plain_file_name(cls, v: str) -> str:
