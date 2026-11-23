@@ -64,6 +64,13 @@ def ui_rig(sandbox, monkeypatch):
     ui_login.register(ui)               # the signed-in test client (plan E10)
     ui._RATE_LIMITS.clear()
     ui._config, ui._config_loaded_at = None, 0.0
+
+    # F1: a backup service polls the deployment (the refusal is exercised by
+    # test_w19_trigger_refused_when_service_silent, which restores the real check).
+    async def _serving(deployment):
+        return True
+
+    monkeypatch.setattr(ui, "_agent_serving", _serving)
     try:
         yield {"ui": ui, "cfg": cfg, "cfg_path": cfg_path, "sandbox": sandbox,
                "monkeypatch": monkeypatch}
@@ -399,6 +406,59 @@ def test_w19_trigger_cloud_branches(ui_rig):
         assert r.status_code == 429
 
 
+def test_w19_trigger_refused_when_service_silent(ui_rig):
+    """F1: no backup service polling (stale / never / missing deployment) -> 503 service_not_running and
+    nothing is started; an unreachable Prefect stays the scheduler-not-answering 503."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from prefect.exceptions import ObjectNotFound
+
+    ui = ui_rig["ui"]
+    mp = ui_rig["monkeypatch"]
+
+    def client_for(ago=None, error=None, missing=False):
+        dep = SimpleNamespace(last_polled=None if ago is None
+                              else datetime.now(timezone.utc) - timedelta(seconds=ago))
+
+        class C:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def read_deployment_by_name(self, name):
+                if error:
+                    raise error
+                if missing:
+                    raise ObjectNotFound(http_exc=Exception("x"))
+                return dep
+
+        return lambda: C()
+
+    seen = _prep_triggers(ui_rig)
+    mp.setattr(ui, "_agent_serving", ui._agent_serving_real)
+    for path in ("/trigger/cloud", "/trigger/lan"):
+        for kw in ({"ago": 100_000}, {"ago": None}, {"missing": True}):
+            seen.clear()
+            mp.setattr(ui, "get_client", client_for(**kw))
+            with TestClient(ui.app) as client:
+                r = client.post(path)
+            assert r.status_code == 503 and r.json()["status"] == "service_not_running", (path, kw)
+            assert seen == {}, "nothing may be started"
+        mp.setattr(ui, "get_client", client_for(error=OSError("down")))
+        with TestClient(ui.app) as client:
+            r = client.post(path)
+        assert r.status_code == 503 and r.json().get("status") != "service_not_running"
+        assert seen == {}
+    # a recently polling service lets the start through
+    mp.setattr(ui, "get_client", client_for(ago=10))
+    with TestClient(ui.app) as client:
+        assert client.post("/trigger/cloud").status_code == 202
+    assert seen["name"] == "aam-backup/backup-cloud"
+
+
 def test_w19_trigger_lan_branches(ui_rig):
     from fastapi.testclient import TestClient
 
@@ -421,7 +481,7 @@ def test_w19_trigger_lan_branches(ui_rig):
     with TestClient(ui.app) as client:
         r = client.post("/trigger/lan")
         assert r.status_code == 202 and seen["name"] == "aam-backup/backup-lan"
-        assert seen["timeout"] == 180
+        assert seen["timeout"] == 0   # F2: the run is created at once (timeout=0); the bounded wait is separate
 
     seen = _prep_triggers(ui_rig, raise_exc=RuntimeError("boom"))
     with TestClient(ui.app) as client:
