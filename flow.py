@@ -2442,7 +2442,7 @@ def _warn_old_year_not_copied(config, db, fy: str, to_fy: str | None, missing: l
         names = fy_overlap.not_fully_copied_text(fy, missing)
         went = f"The switch to {to_fy} went ahead, so new files are saved in {to_fy}. " if to_fy else ""
         notify(config, AlertEvent(
-            key=key, kind="WARNING", mode="rollover", fy=fy,
+            key=f"rollover:{fy}:not_fully_copied", kind="WARNING", mode="rollover", fy=fy,
             title=names[0].upper() + names[1:],
             message=(f"{names}. {went}Until a backup that started after the year ended has copied all of "
                      f"{fy}, both year folders stay in the backup: "
