@@ -2758,6 +2758,15 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     archive_ok = None
     final_copy = None      # plan section 4, only while the overlap of to_fy is active
     forced_legs: list[str] = []
+    try:    # final_backups may be finished already (a resume): what it found was saved with the overlap record
+        saved = fy_overlap.load_final_copy(db, to_fy) if rj.is_finished(journal["steps"][rj.FINAL_BACKUPS]) \
+            else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not read the saved final-copy state of {from_fy}: {e}")
+        saved = None
+    if saved:
+        final_copy, forced_legs = saved["final_copy"], saved["forced_legs"]
+        final_status = saved["final_status"]
 
     def step_final_backups():
         nonlocal final_status, guard_record, final_copy, forced_legs
@@ -2789,6 +2798,10 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
             raise
         if overlap:
             forced_legs = fy_overlap.outstanding_legs(final_copy)   # non-empty only for a forced switch
+            try:    # a resume after the switch (announce / ROLLOVER_COMPLETE row) does not repeat this step
+                fy_overlap.save_final_copy(db, to_fy, final_copy, forced_legs, final_status)
+            except Exception as e:  # noqa: BLE001 - only the wording of a later resume depends on it
+                logger.warning(f"Could not save the final-copy state of {from_fy}: {e}")
 
     def step_source_folder():
         fy_rollover.create_source_folder(

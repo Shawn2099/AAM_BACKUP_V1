@@ -437,3 +437,22 @@ def end_overlap(db, from_fy: str, to_fy: str, now: str) -> bool:
     if not record.get("ended_at"):
         db.set_overlap_record(to_fy, {**record, "ended_at": now})
     return True
+
+
+def save_final_copy(db, to_fy: str, final_copy: dict, forced_legs: list[str], final_status: dict) -> None:
+    """Keep what the final-backup step found inside the overlap record of `to_fy` (no schema change), so a
+    resume after the switch (announce retried, ROLLOVER_COMPLETE row) still names forced legs and copy times."""
+    record = db.overlap_record(to_fy)
+    if isinstance(record, dict):
+        db.set_overlap_record(to_fy, {**record, "final_copy_state": {
+            "final_copy": final_copy, "forced_legs": list(forced_legs), "final_status": dict(final_status)}})
+
+
+def load_final_copy(db, to_fy: str) -> dict | None:
+    """What `save_final_copy` kept, or None."""
+    record = db.overlap_record(to_fy)
+    saved = record.get("final_copy_state") if isinstance(record, dict) else None
+    if isinstance(saved, dict) and isinstance(saved.get("final_copy"), dict):
+        return {"final_copy": saved["final_copy"], "forced_legs": list(saved.get("forced_legs") or []),
+                "final_status": dict(saved.get("final_status") or {})}
+    return None

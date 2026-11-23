@@ -286,3 +286,53 @@ def test_final_copy_state_reports_the_source_the_hint_and_the_manual_leg(tmp_pat
         assert fo.announce_text(state, FROM, []) == ""
     finally:
         db.close()
+
+
+# ---- B4 review G3: a resume after the switch keeps the forced legs and the copy times ----------------------
+
+def _announce_fails_once(r):
+    """The switch mail cannot be sent the first time (the announce step is not blocking)."""
+    calls = {"n": 0}
+
+    def notify(config, event, *a, **k):
+        if event.kind == "INFO":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("smtp down")
+    r.m["notify"].side_effect = notify
+
+
+def _resume_next_morning(r):
+    from tests.test_a6_rollover_journal_flow import _config_now_points_at_the_new_fy
+    _config_now_points_at_the_new_fy(r)
+    r.m["update_config_yaml"].return_value = None
+    for name in ("_run_cloud_pipeline", "_run_lan_pipeline", "notify", "_record_run"):
+        r.m[name].reset_mock()
+    r.m["notify"].side_effect = None
+    return r.run()
+
+
+def test_a_resumed_announce_still_names_the_forced_legs():
+    with _OverlapRig(lan="LAN_FAILED", approved=True) as r:
+        _announce_fails_once(r)
+        assert r.run(approval_id="a1") == "ROLLOVER_COMPLETED"
+        assert _resumed_ok(r)
+        r.m["_run_lan_pipeline"].assert_not_called()           # the final backups are not repeated
+        message = _info(r).message
+        assert "Forced: NAS had no verified final copy of FY26-27" in message
+        assert r.metrics()["forced_legs"] == ["lan"]
+
+
+def test_a_resumed_announce_still_warns_about_an_earlier_copy_time():
+    with _OverlapRig(lan="LAN_FAILED") as r:
+        r.copy("lan", "2027-04-01T14:00:00+05:30", "LAN_COMPLETE")
+        _announce_fails_once(r)
+        assert r.run() == "ROLLOVER_COMPLETED"
+        assert _resumed_ok(r)
+        message = _info(r).message
+        assert "1 Apr 2027, 14:00" in message and "ended LAN_FAILED" in message
+        assert r.metrics()["final_copy"]["lan"]["source"] == "earlier"
+
+
+def _resumed_ok(r):
+    return _resume_next_morning(r) == "ROLLOVER_COMPLETED"
