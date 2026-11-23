@@ -470,3 +470,4 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   key and title (its id has no suffix).
 - Race guard: a switch noticed between passes now skips every later pass of BOTH legs (the in-memory config is stale)
   and ends the flow FAILED with a `PartialRun` naming the passes not run.
+- **Manual-only NAS leg with the overlap off (owner question, KEPT)**: with `overlap_enabled: false` and `lan.scheduled: false` the April check still runs the NAS leg itself. That is baseline behaviour and stays; the `skip_unscheduled` rule applies only while the overlap is active.

@@ -78,3 +78,11 @@ After every Part: full unit suite, then an Opus review of the diff before the ne
 (append here; also keep the plan's own section up to date)
 - Pipeline tests patch tasks instead of `fake_run_tool` (see F6).
 - The unprotected-new-FY alarm (AAM-ROL-06) still fires for office files in the next-year folder until B4 silences it while overlap is active.
+
+## B4 review fixes (Sonnet, after the Opus verifier)
+- G1 `/api/rollover`: the `final_copy` block is wrapped in try/except (log, `final_copy=None`); 6 red endpoint tests fixed through fixtures with `rollover=RolloverConfig(overlap_enabled=False)` plus cloud/lan namespaces; new tests: `final_copy` returned while open, `None` when off, a raising reader still returns the card.
+- G2 `flow.py` `step_announce`: message built into a variable before `notify(...)` (tests/test_recipients_callers.py green, test unchanged).
+- G3 resume after `config_switch` done and `announce` not: the final-backup step saves `final_copy`, `forced_legs`, `final_status` into the overlap record (`db_meta overlap:<fy>`, key `final_copy_state`, no schema change; helpers `fy_overlap.save_final_copy/load_final_copy`) and the resume reloads them when `final_backups` is finished. Two tests (forced wording, earlier-copy time).
+- G4 comment corrected. No retry added: once the journal is finished the check no longer enters the rollover resume, so a retry of `end_overlap` would need new code elsewhere. Consequence: the record can stay without `ended_at` after a DB error at that moment (harmless, config already points at the new FY).
+- G5 tests: next-FY run after 1 April is not a final copy; boundary 00:00 IST counts / 23:59 does not (and UTC spellings) through the whole check; `overlap_open` False after `ended_at`.
+- Owner question: manual-only NAS leg with overlap off is kept (plan section 12).
