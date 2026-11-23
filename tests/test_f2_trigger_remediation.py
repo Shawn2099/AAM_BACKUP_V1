@@ -302,13 +302,19 @@ def test_endpoint_default_wait_passes_180s_bound(monkeypatch):
     calls = {}
 
     async def fake_arun_deployment(name, timeout=None):
-        calls["timeout"] = timeout
+        calls["create_timeout"] = timeout
         return _mk_run(StateType.RUNNING, mode="cloud")
 
+    async def fake_wait(flow_run, timeout):
+        calls["timeout"] = timeout
+        return flow_run
+
     monkeypatch.setattr(ui, "arun_deployment", fake_arun_deployment)
+    monkeypatch.setattr(ui, "_wait_for_run", fake_wait)
     resp = asyncio.run(ui.trigger_lan(_fake_request()))
     assert resp.status_code == 202
-    assert calls["timeout"] == 180
+    assert calls["create_timeout"] == 0      # created at once under the trigger lock
+    assert calls["timeout"] == 180           # the bound applies to the wait outside the lock
 
 
 def test_endpoint_completed_run_is_200_completed(monkeypatch):

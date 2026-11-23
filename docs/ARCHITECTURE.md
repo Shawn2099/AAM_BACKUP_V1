@@ -333,6 +333,7 @@ GET  /status      last runs (status_label/category/description from core/statuse
                   last success, integrity (latest_audit), manifest counts, Prefect run state
 GET  /health      unauthenticated (always "healthy" today — WP9)
 POST /trigger/cloud | /trigger/lan | /trigger/verify/{mode}[?fy=FY27-28]   → prefect arun_deployment (fy must be active)
+  one start at a time: every manual start (backup, verify, rollover, approved re-run) holds one process-wide asyncio lock from the busy check until the run is created (`arun_deployment(timeout=0)`), so a double click or a second tab is refused with the normal 400 `already_running`; the bounded wait for the result happens after the lock is released, and the dashboard buttons also ignore a second click while the first request is in flight.
   manual-start safety (F1): the backup triggers and the approved re-run answer 503 "the backup service is not running, nothing was started"
   and create NO run when no service has polled the deployment for `dashboard.agent_max_silence_seconds` (Prefect `last_polled`; API silent = the
   usual scheduler-not-answering 503). Second layer in `flow.backup`: a manual run that begins more than `dashboard.manual_start_max_wait_minutes`

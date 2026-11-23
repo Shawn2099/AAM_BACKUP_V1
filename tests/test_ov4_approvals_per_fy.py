@@ -121,8 +121,10 @@ def test_the_approved_rerun_passes_the_fy_of_the_approval(monkeypatch):
     import ui
     run = AsyncMock(return_value=SimpleNamespace(id="fr1", state=SimpleNamespace(name="Scheduled")))
     monkeypatch.setattr(ui, "arun_deployment", run)
-    monkeypatch.setattr(ui, "_trigger_timeout", lambda request: 5)
+    monkeypatch.setattr(ui, "_trigger_timeout", lambda request: 0)
     monkeypatch.setattr(ui, "_trigger_result", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(ui, "_ensure_leg_idle", AsyncMock(return_value=None))
+    monkeypatch.setattr(ui, "_refuse_if_service_down", AsyncMock(return_value=None))
     import asyncio
     asyncio.run(ui._start_approved_run({"approval_id": "a1", "leg": "lan", "fy": NEXT}, MagicMock()))
     assert run.call_args.kwargs["parameters"] == {"approval_id": "a1", "fy": NEXT}
@@ -225,12 +227,16 @@ def test_approved_rerun_parameters_match_the_real_flow_signatures():
             _c.update(parameters)
             return SimpleNamespace(id="x", state=SimpleNamespace(name="Scheduled"))
 
-        old = (ui.arun_deployment, ui._trigger_timeout, ui._trigger_result)
+        old = (ui.arun_deployment, ui._trigger_timeout, ui._trigger_result,
+               ui._ensure_leg_idle, ui._refuse_if_service_down)
         ui.arun_deployment, ui._trigger_timeout, ui._trigger_result = (
-            fake_run, lambda request: 5, lambda *a, **k: {"ok": True})
+            fake_run, lambda request: 0, lambda *a, **k: {"ok": True})
+        ui._ensure_leg_idle = AsyncMock(return_value=None)
+        ui._refuse_if_service_down = AsyncMock(return_value=None)
         try:
             asyncio.run(ui._start_approved_run({"approval_id": "a1", "leg": leg, "fy": CFG_FY}, MagicMock()))
         finally:
-            ui.arun_deployment, ui._trigger_timeout, ui._trigger_result = old
+            (ui.arun_deployment, ui._trigger_timeout, ui._trigger_result,
+             ui._ensure_leg_idle, ui._refuse_if_service_down) = old
         flow_obj.validate_parameters(dict(captured))                       # raises on a mismatch
         assert ("fy" in captured) == (leg in ("cloud", "lan"))

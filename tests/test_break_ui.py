@@ -300,10 +300,18 @@ def test_a_valid_fy_is_canonicalised_before_it_reaches_the_deployment(rig):
 @pytest.mark.parametrize("wait,expected", [("-1", None), ("99999999999999999999", None),
                                            ("nan", None), ("%00", None), ("true;DROP", None),
                                            ("0", 0), ("false", 0)])
-def test_garbage_wait_parameter_gets_the_configured_timeout_not_the_raw_value(rig, wait, expected):
+def test_garbage_wait_parameter_gets_the_configured_timeout_not_the_raw_value(rig, wait, expected, monkeypatch):
+    waited = []
+
+    async def fake_wait(flow_run, timeout):
+        waited.append(timeout)
+        return flow_run
+
+    monkeypatch.setattr(ui, "_wait_for_run", fake_wait)
     r = _client(SIGNED).post(f"/trigger/cloud?wait={wait}")
     assert r.status_code == 202
-    timeout = rig.calls[0]["timeout"]
+    assert rig.calls[0]["timeout"] == 0                 # the run is created at once, under the lock
+    timeout = waited[0]                                  # the bound is applied to the wait outside the lock
     assert timeout == (expected if expected is not None else rig.cfg.dashboard.trigger_wait_seconds)
 
 
