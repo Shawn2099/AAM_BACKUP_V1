@@ -34,7 +34,7 @@ from prefect.client.schemas.filters import (
 from prefect.client.schemas.objects import StateType
 from prefect.deployments import arun_deployment
 
-from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_rollover, rollover_journal,
+from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_overlap, fy_rollover, rollover_journal,
                   statuses)
 from core.attention import RED, compute_attention, leg_timing
 from core.manifest import ManifestDB
@@ -1245,8 +1245,12 @@ async def rollover_status(request: Request):
         state = {**state, "can_run": True, "message": _unfinished_rollover_message(journal)}
     last = get_db().last_run("rollover")
     approval = next((a for a in get_db().open_approvals() if a["leg"] == "rollover"), None)
+    # plan section 4 / B4: while the overlap is active, what each leg still needs for the April switch
+    final_copy = None
+    if configured is not None and fy_overlap.overlap_open(cfg, get_db(), fy_overlap.next_fy(configured)):
+        final_copy = fy_overlap.final_copy_state(cfg, get_db(), configured, {})
     return {
-        "configured_fy": configured, "current_fy": current, **state,
+        "configured_fy": configured, "current_fy": current, **state, "final_copy": final_copy,
         "journal": None if journal is None else {
             "from_fy": journal["from_fy"], "to_fy": journal["to_fy"],
             "steps": rollover_journal.describe_steps(journal)},

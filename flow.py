@@ -2756,12 +2756,25 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     blocking_error: tuple[str, Exception] | None = None
     config_backup = None
     archive_ok = None
+    final_copy = None      # plan section 4, only while the overlap of to_fy is active
+    forced_legs: list[str] = []
 
     def step_final_backups():
-        nonlocal final_status, guard_record
+        nonlocal final_status, guard_record, final_copy, forced_legs
         logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
-        final_status, final_errors = _run_final_backups(config, run_id)
-        g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
+        overlap = fy_overlap.overlap_open(config, db, to_fy)
+        started: dict = {}
+        final_status, final_errors = _run_final_backups(config, run_id, skip_unscheduled=overlap,
+                                                        started=started)
+        g6_extra: dict = {}
+        if overlap:
+            # a manual-only leg is not run by the check; a verified copy from the closing moment on counts
+            final_copy = fy_overlap.final_copy_state(config, db, from_fy, {
+                leg: {"status": status, "started_at": started.get(leg)} for leg, status in final_status.items()})
+            final_status = {leg: item["status"] for leg, item in final_copy.items() if item["required"]}
+            g6_extra = {"overlap_active": True, "hints": {leg: item["hint"] for leg, item in final_copy.items()
+                                                          if item["outstanding"]}}
+        g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status, **g6_extra)
         approved, approval_record = _apply_approval(config, "rollover", approval_id, run_id, [g6])
         try:
             guard_record = guards.enforce("rollover", [g6], approved_guards=approved,
@@ -2770,9 +2783,12 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
                                           **approval_record)
         except guards.GuardBlocked as e:
             record("ROLLOVER_BLOCKED", str(e),
-                   {"guards": e.record, "final_errors": final_errors})
+                   {"guards": e.record, "final_errors": final_errors,
+                    **({"final_copy": final_copy} if overlap else {})})
             _open_block_request(config, "rollover", run_id, e.record, started_at)
             raise
+        if overlap:
+            forced_legs = fy_overlap.outstanding_legs(final_copy)   # non-empty only for a forced switch
 
     def step_source_folder():
         fy_rollover.create_source_folder(
@@ -2816,11 +2832,13 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         todo = ("" if not pending else
                 " A few follow-up steps are still being retried automatically "
                 f"({', '.join(p.replace('_', ' ') for p in pending)}); your data is safe.")
+        overlap_note = fy_overlap.announce_text(final_copy or {}, from_fy, forced_legs)
         notify(config, AlertEvent(
             key=f"rollover:done:{to_fy}", kind="INFO", mode="rollover",
             title=f"New financial year {to_fy} started",
             message=(f"From today your backups use the new folder {to_fy}. The {from_fy} "
-                     f"backups are kept unchanged.{todo or ' Nothing to do.'}"),
+                     f"backups are kept unchanged.{todo or ' Nothing to do.'}"
+                     + (f" {overlap_note}" if overlap_note else "")),
             status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at,
             audience=AUDIENCE_REPORTS))
 
@@ -2899,15 +2917,20 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
     metrics["steps"] = {name: final["steps"][name]["state"] for name in rj.STEPS}
     if rj.is_finished(final["steps"][rj.CONFIG_SWITCH]):       # the new year's files are protected from now on
         try:
+            fy_overlap.end_overlap(db, from_fy, to_fy, now_iso())    # plan 4: no-op without an overlap record
+        except Exception as e:  # noqa: BLE001 - the switch stands; the record is stamped again next morning
+            logger.warning(f"Could not end the FY overlap record of {to_fy}: {e}")
+        try:
             _resolve_unprotected_new_fy(config, db, new_fy=to_fy)
         except Exception as e:  # noqa: BLE001 - a mail problem never changes the rollover's result
             logger.warning(f"Could not send the 'files are backed up now' notice: {e}")
     if blocking_error is not None:
         fail(*blocking_error)
 
+    overlap_metrics = {"final_copy": final_copy, "forced_legs": forced_legs} if final_copy is not None else {}
     record("ROLLOVER_COMPLETE", None, {"guards": guard_record, "final_status": final_status,
                                        "archive_ok": archive_ok,
-                                       "config_backup": str(config_backup)})
+                                       "config_backup": str(config_backup), **overlap_metrics})
     logger.info(f"FY rollover {from_fy} -> {to_fy}: switched | archive_ok={archive_ok} | "
                 f"steps={metrics['steps']}")
     return "ROLLOVER_COMPLETED"
@@ -2932,20 +2955,29 @@ def _rollover_archive_alert(config, db, from_fy: str, to_fy: str, error, run_id:
         run_id=run_id))
 
 
-def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
+def _run_final_backups(config, run_id: str, *, skip_unscheduled: bool = False,
+                       started: dict | None = None) -> tuple[dict, dict]:
     """Final backup of the closing FY on every enabled leg, through the normal
     pipelines (config still points at the closing FY). Returns
-    ({leg: terminal status}, {leg: error})."""
+    ({leg: terminal status}, {leg: error}).
+
+    skip_unscheduled (plan section 4, overlap only): a manual-only leg (`scheduled: false`) is not run by the
+    check. `started` (optional dict) receives each leg's start time, so the April gate can date its run."""
     status: dict = {}
     errors: dict = {}
     for leg, enabled, pipeline in (("cloud", config.cloud.enabled, _run_cloud_pipeline),
                                    ("lan", config.lan.enabled, _run_lan_pipeline)):
         if not enabled:
             continue
+        if skip_unscheduled and not getattr(config, leg).scheduled:
+            continue
         try:
             # plan A4: the LAN final backup leaves the NAS on - its new FY folder follows
             extra = {"allow_shutdown": False} if leg == "lan" else {}
-            result = pipeline(config, f"{run_id}-final-{leg}", now_iso(), time.monotonic(),
+            started_at = now_iso()
+            if started is not None:
+                started[leg] = started_at
+            result = pipeline(config, f"{run_id}-final-{leg}", started_at, time.monotonic(),
                               **extra)
             status[leg] = result.get("status", "UNKNOWN")
         except Exception as e:  # noqa: BLE001 - recorded; G6 blocks on it

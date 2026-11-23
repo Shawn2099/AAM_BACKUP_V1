@@ -376,7 +376,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   raises; first pass fails, second still runs, flow FAILED with both; cloud OK both FYs while LAN FY27-28 fails ->
   rows/alerts only for it; shared budget, `CLOUD_MISSED` for FY27-28 with its key; one WoL, shutdown rule D-8; race
   guard; overlap inactive -> one baseline call; manual run of an unscheduled leg runs both FYs.
-- [ ] **B4 Final-copy state machine.** `tests/test_fy_overlap_rollover.py` (fixtures of
+- [x] **B4 Final-copy state machine.** `tests/test_fy_overlap_rollover.py` (fixtures of
   `test_a6_rollover_journal_flow.py`): all scheduled legs OK -> switch, FY26-27 approvals superseded, record
   `ended_at`, config now `E:\FY27-28` / `\\nas\backup\FY27-28`; LAN final fails -> blocked, both FYs still active,
   mail lists LAN; manual LAN `LAN_COMPLETE` after C -> next check switches with no approval, warning line names the
@@ -464,6 +464,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   needs its own slot acquisition and a run row for the shutdown result. The failure direction is safe (the NAS stays on
   until the next night's run; the missed/failed pass already mails). Open question for the owner: worth a
   slot-guarded "shutdown only" step?
+  **OWNER DECISION (2026-11-23): ACCEPTED.** The NAS is left on for a day in this case; no shutdown step is built.
 - **B3 review F7 (abandoned-run sweep alert had no FY)**: done. A swept next-FY pass (`-FY27-28` run id) is keyed
   `backup:<leg>:FY27-28:<status>`, titled with its FY and carries `AlertEvent.fy`. The configured pass keeps today's
   key and title (its id has no suffix).

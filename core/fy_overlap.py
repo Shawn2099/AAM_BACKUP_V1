@@ -25,6 +25,7 @@ from core.guards import MOUNT_MARKER
 from core.health import CLOCK_OK, check_clock
 from core.notify import AUDIENCE_REPORTS, AlertEvent, notify
 from core.run_artefacts import RunArtefacts
+from core.statuses import FINAL_COPY_STATUSES
 from core.time_utils import get_fy_prefix, now_iso
 
 # ensure_nas_folder() outcomes
@@ -321,3 +322,118 @@ def _not_added(config, configured: str, nxt: str, today: dt.date, activate_on: d
                  "'Run FY rollover now' on the dashboard tries again."),
         occurred_at=now_iso(), fault_code=NOT_ADDED_FAULT,
         cooldown_hours=config.alerts.stale_repeat_hours))
+
+
+# ---- the April switch: final copy of the closing FY (plan section 4, B4) ------------------------------------
+
+LEGS = ("cloud", "lan")
+LEG_NAME = {"cloud": "cloud", "lan": "NAS"}   # the words the office sees on the dashboard
+
+
+def overlap_open(config, db, to_fy: str | None) -> bool:
+    """True while the overlap that adds `to_fy` is active: enabled in the config and its activation record is
+    there without `ended_at` (plan 2.4). Read-only. A baseline config or a database without the record is False,
+    and then the rollover runs exactly as before."""
+    if to_fy is None or not config.rollover.overlap_enabled:
+        return False
+    record = db.overlap_record(to_fy)
+    return isinstance(record, dict) and not record.get("ended_at")
+
+
+def _when(iso: str | None) -> str:
+    """A stored time as the office reads it (IST, e.g. '1 Apr 2027, 14:00')."""
+    if not iso:
+        return "an unknown time"
+    try:
+        return pendulum.parse(iso).in_timezone("Asia/Kolkata").format("D MMM YYYY, HH:mm")
+    except Exception:  # noqa: BLE001 - an odd stored value is shown as it is
+        return str(iso)
+
+
+def _hint(leg: str, from_fy: str, scheduled: bool) -> str:
+    """What the office does to get this leg's final copy (dashboard card, mail)."""
+    if leg == "cloud":
+        if scheduled:
+            return (f"the daily check retries it, or press 'Run backup' on the {from_fy} cloud card")
+        return f"press 'Run backup' on the {from_fy} cloud card"
+    if scheduled:
+        return (f"switch the NAS on and press 'Run backup' on the {from_fy} NAS card, "
+                "or the daily check retries it")
+    return f"NAS (run by hand): switch the NAS on and press 'Run backup' on the {from_fy} NAS card"
+
+
+def final_copy_state(config, db, from_fy: str, fresh: dict) -> dict:
+    """Per leg, what the April switch knows about the final copy of `from_fy` (plan section 4).
+
+    `fresh` = {leg: {"status", "started_at"}} for the legs this morning's check ran (empty when none ran).
+    Each leg: required (enabled), scheduled, done (a verified copy exists), done_at, source ("check" = this
+    morning's run, "earlier" = a verified copy from an earlier run, None), status (the status that counts, or
+    the failed / missing marker), outstanding (required and not done), hint (what to do), warning (this
+    morning's run failed although an earlier copy counts). A copy counts only from the closing moment on
+    (`final_copy_since`); a manual-only leg is only ever done by such a copy.
+    """
+    since = closing_moment(from_fy).isoformat()
+    state: dict = {}
+    for leg in LEGS:
+        leg_cfg = getattr(config, leg)
+        item = {"required": bool(leg_cfg.enabled), "scheduled": bool(leg_cfg.scheduled), "done": False,
+                "done_at": None, "source": None, "status": None, "outstanding": False, "hint": None,
+                "warning": None}
+        if not item["required"]:
+            state[leg] = item
+            continue
+        result = fresh.get(leg)
+        fresh_status = result.get("status") if result else None
+        if fresh_status in FINAL_COPY_STATUSES:
+            item.update(done=True, source="check", status=fresh_status, done_at=result.get("started_at"))
+        else:
+            copy = db.final_copy_since(leg, from_fy, since)
+            if copy is not None:
+                item.update(done=True, source="earlier", status=copy["status"], done_at=copy["started_at"])
+                if fresh_status:
+                    item["warning"] = fresh_status
+        if not item["done"]:
+            item["outstanding"] = True
+            item["status"] = fresh_status or (f"{leg.upper()}_NOT_RUN" if item["scheduled"]
+                                              else f"{leg.upper()}_MANUAL_FINAL_NEEDED")
+            item["hint"] = _hint(leg, from_fy, item["scheduled"])
+        state[leg] = item
+    return state
+
+
+def outstanding_legs(state: dict) -> list[str]:
+    """The required legs that have no verified final copy (a forced switch names them)."""
+    return [leg for leg in LEGS if state.get(leg, {}).get("outstanding")]
+
+
+def announce_text(state: dict, from_fy: str, forced: list[str]) -> str:
+    """The sentences the switch mail adds: a leg counted from an earlier copy (its time, what it does not
+    hold), and the legs a forced switch went through without a copy. Empty for a clean switch."""
+    parts = []
+    for leg in LEGS:
+        item = state.get(leg) or {}
+        if not item.get("done") or item.get("source") != "earlier":
+            continue
+        name = LEG_NAME[leg]
+        if item.get("warning"):
+            parts.append(f"The {name} run of this morning ended {item['warning']}, so the {name} copy of "
+                         f"{from_fy} from {_when(item.get('done_at'))} is counted.")
+        parts.append(f"The {name} copy of {from_fy} is from {_when(item.get('done_at'))}; changes saved in "
+                     f"{from_fy} after that are not on it.")
+    if forced:
+        names = ", ".join(LEG_NAME[leg] for leg in forced)
+        parts.append(f"Forced: {names} had no verified final copy of {from_fy}; the switch was approved anyway.")
+    return " ".join(parts)
+
+
+def end_overlap(db, from_fy: str, to_fy: str, now: str) -> bool:
+    """After the April switch (plan section 4): the old year's open approvals are superseded and the overlap
+    record of `to_fy` is stamped `ended_at`. Idempotent; only acts when an overlap record exists (a baseline
+    rollover is untouched). Returns True when there was a record."""
+    record = db.overlap_record(to_fy)
+    if not isinstance(record, dict):
+        return False
+    db.supersede_approvals_of_fy(from_fy)
+    if not record.get("ended_at"):
+        db.set_overlap_record(to_fy, {**record, "ended_at": now})
+    return True

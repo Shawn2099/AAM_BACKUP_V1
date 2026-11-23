@@ -53,6 +53,18 @@ Sonnet fixer for the Opus review of B2/B3 (verdict PASS WITH FIXES), commits `fi
 - F7 abandoned-run sweep alert (`core/backup_repository.py`) carries the FY.
 Check `git log --oneline` for which of these landed.
 
+## B4 done (April 1 final-copy rule)
+- Owner decision F4 (2026-11-23): the NAS shutdown gap is ACCEPTED - the NAS stays on for a day; no shutdown step (plan section 12 says so).
+- `core/fy_overlap.py`: `overlap_open`, `final_copy_state` (per leg: required, scheduled, done, source check/earlier,
+  status, outstanding, hint, warning), `outstanding_legs`, `announce_text`, `end_overlap`.
+- `flow.py`: `_run_final_backups(skip_unscheduled=, started=)`; `step_final_backups` uses the per-leg state only while the
+  overlap is open (baseline call otherwise); forced legs named in the switch mail and the rollover row; `end_overlap`
+  after the switch.
+- `core/guards.py` `g6_fy_rollover(overlap_active=, hints=)`: text only, verdicts identical (tested).
+- `core/fy_rollover.py` `unprotected_new_fy`: silent while the overlap of the next FY is open (AAM-ROL-06).
+- `ui.py` `/api/rollover`: `final_copy` while the overlap is open.
+- Tests: `tests/test_fy_overlap_rollover.py` (23 cases).
+
 ## Opus review findings kept as facts
 - Verified: baseline path identical with overlap off (except F2); no data-loss path found; every `config.paths.*` use in the pipelines reads the per-pass config; next-FY pass writes no `file_entries`; the refusal when the next-FY NAS folder name is not its FY is the last barrier against a mirror into `\\nas\backup` (keep it); an FY27-28 success cannot mark FY26-27 healthy or send its recovery mail.
 - NOT safe to deploy past 31 Dec until B8 and B9 are done: `report.py` (~317) and the dashboard night strip (`ui.py` ~600) still mix both FYs' rows.

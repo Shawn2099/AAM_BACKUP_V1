@@ -278,6 +278,10 @@ def unprotected_new_fy(config, db, count: bool = True) -> dict | None:
         if classify_rollover(configured, current) != FORWARD:
             return None
         to_fy = current
+    # plan 2.5 / B4: while the overlap of to_fy is active its folder is backed up already - nothing to warn about
+    record = db.overlap_record(to_fy)
+    if config.rollover.overlap_enabled and isinstance(record, dict) and not record.get("ended_at"):
+        return None
     placeholder = config.rollover.source_placeholder_name
     if count:
         files = new_fy_file_count(source, to_fy, placeholder)

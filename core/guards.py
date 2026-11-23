@@ -226,11 +226,16 @@ def g5_canary(canary_present: bool | None, destination_has_files: bool | None,
 
 # ── G6: FY rollover only in the normal case (owner DEC-4) ─────────────────
 
-def g6_fy_rollover(from_fy: str, to_fy: str, kind: str, final_status: dict) -> GuardResult:
+def g6_fy_rollover(from_fy: str, to_fy: str, kind: str, final_status: dict, *,
+                   overlap_active: bool = False, hints: dict | None = None) -> GuardResult:
     """Automatic rollover only for exactly the next FY with every enabled
     leg's final backup of the closing FY complete; anything else asks a
     human. (A clock that is BEHIND is never a rollover - the caller refuses
-    it before this guard: fix the clock, there is nothing to approve.)"""
+    it before this guard: fix the clock, there is nothing to approve.)
+
+    `overlap_active` and `hints` change the TEXT only (plan section 4): while the next FY is already backed
+    up, the wording says both years are backed up every night, and each outstanding leg says what to do.
+    The verdict, the reason code and the metrics are the same with or without them."""
     from core.fy_rollover import FORWARD
     from core.statuses import is_success
 
@@ -246,6 +251,17 @@ def g6_fy_rollover(from_fy: str, to_fy: str, kind: str, final_status: dict) -> G
         )
     failed = sorted(leg for leg, status in final_status.items() if not is_success(status))
     if failed:
+        if overlap_active:
+            todo = "".join(f" To finish {leg}: {hints[leg]}." for leg in sorted(hints or {}) if hints[leg])
+            return _block(
+                name,
+                f"The final backup of {from_fy} did not complete for: {', '.join(failed)} "
+                f"({', '.join(f'{leg}={final_status[leg]}' for leg in failed)}). Rolling over now "
+                f"would leave {from_fy}'s last changes on that leg unprotected. Fix it and the "
+                f"daily check retries, or approve to roll over anyway.{todo} Until then both "
+                f"{from_fy} and {to_fy} are backed up every night.",
+                "AAM-ROL-02", **metrics,
+            )
         return _block(
             name,
             f"The final backup of {from_fy} did not complete for: {', '.join(failed)} "
