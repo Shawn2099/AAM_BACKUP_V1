@@ -24,8 +24,13 @@ function lanConfirmText(forFy, wol, shutdown) {
     return 'Start the office NAS backup' + (forFy ? ' of ' + forFy : '') + ' now? It ' + steps.join(', ') + '.';
 }
 
+// A manual start is one request at a time per page: a second click while the first request is in flight
+// sends nothing (the server also refuses a concurrent second start, this stops it at the button).
+var _triggerInFlight = false;
+
 async function triggerBackup(event, mode) {
     event.preventDefault();
+    if (_triggerInFlight) return;
     const btnInfo = document.getElementById('btn-' + mode);
     const ds = btnInfo ? btnInfo.dataset : {};
     const confirmMsg = mode === 'cloud' ? 'Start the online backup now?'
@@ -33,7 +38,8 @@ async function triggerBackup(event, mode) {
     if (!confirm(confirmMsg)) return;
     const btn = document.getElementById('btn-' + mode);
     if (!btn) return;
-    btn.style.pointerEvents = 'none'; btn.style.opacity = '0.5'; btn.innerText = 'Starting...';
+    _triggerInFlight = true;
+    btn.setAttribute('disabled', 'disabled'); btn.style.pointerEvents = 'none'; btn.style.opacity = '0.5'; btn.innerText = 'Starting...';
     try {
         const response = await fetch('/trigger/' + mode, { method: 'POST' });
         const data = await response.json();
@@ -44,6 +50,7 @@ async function triggerBackup(event, mode) {
         if (response.ok) { showToast(data.detail || 'Leave this page open to follow it. The backup started.', 'success'); }
         else { showToast(data.detail || 'Try again, and ask support if it keeps failing. The backup did not start.', 'error'); }
     } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); resetTriggerButton(btn, mode); }
+    finally { _triggerInFlight = false; }
     await updateStatus();
 }
 
@@ -275,6 +282,8 @@ async function updateStatus() {
             var m = data[l] && data[l].mode, el = document.getElementById('mode-' + l);
             if (el && m && m.text) { el.textContent = m.text; el.style.color = m.soft_warn ? '#b45309' : ''; }
         });
+        // any running backup, rollover or safety check keeps both classic start buttons disabled (the server refuses anyway)
+        const anyBusy = !!(data.verify_running || (data.cloud && data.cloud.running) || (data.lan && data.lan.running));
         const cardCloud = document.getElementById('card-cloud');
         const badgeCloud = document.getElementById('badge-cloud');
         const descCloud = document.getElementById('desc-cloud');
@@ -295,6 +304,7 @@ async function updateStatus() {
                 badgeCloud.innerText = isCloudRunning ? 'Running' : (cloudUnknown ? 'Unknown' : (data.cloud.last_run ? data.cloud.last_run.status_label : 'No backup yet'));
                 if (btnCloud) {
                     if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
+                    else if (anyBusy && btnCloud.innerText !== 'Starting...') { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Run Cloud Backup'; }
                     else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
                 }
                 if (data.cloud.last_run) { descCloud.innerText = (cloudUnknown ? 'Status unavailable — ' : '') + data.cloud.last_run.status_description; lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
@@ -326,6 +336,7 @@ async function updateStatus() {
                 badgeLan.innerText = isLanRunning ? 'Running' : (lanUnknown ? 'Unknown' : (data.lan.last_run ? data.lan.last_run.status_label : 'No backup yet'));
                 if (btnLan) {
                     if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
+                    else if (anyBusy && btnLan.innerText !== 'Starting...') { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Run LAN Backup'; }
                     else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
                 }
                 if (data.lan.last_run) { descLan.innerText = (lanUnknown ? 'Status unavailable — ' : '') + data.lan.last_run.status_description; lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
@@ -393,11 +404,13 @@ function renderLegVisuals(data) {
 // ── Safety check (read-only audit): start it by hand, show that it is running ─
 var _VERIFY_NAME = { lan: 'the office copy', cloud: 'the online copy', all: 'both copies' };
 async function triggerVerify(mode) {
+    if (_triggerInFlight) return;
     var msg = 'Run the safety check on ' + _VERIFY_NAME[mode] + ' now?\n\nIt compares every file with your original and can take several hours. '
         + 'Nothing is changed. Backups wait until it has finished.';
     if (!confirm(msg)) return;
     var btn = document.getElementById('btn-verify-' + mode);
     if (btn) { btn.disabled = true; btn.innerText = 'Starting...'; }
+    _triggerInFlight = true;
     try {
         var response = await fetch('/trigger/verify/' + mode, { method: 'POST' });
         var data = await response.json();
@@ -406,6 +419,7 @@ async function triggerVerify(mode) {
             if (!confirm(data.detail + '\n\nPress OK to check anyway (files not backed up yet are shown as waiting, not as faults). '
                 + 'Press Cancel, then use the backup button of the copy.')) {
                 if (btn) { btn.disabled = false; btn.innerText = mode === 'all' ? 'Check both copies now' : 'Check now'; }
+                _triggerInFlight = false;
                 return;
             }
             response = await fetch('/trigger/verify/' + mode + '?anyway=1', { method: 'POST' });
@@ -413,6 +427,7 @@ async function triggerVerify(mode) {
         }
         showToast(data.detail || (response.ok ? 'The result appears on each copy when it finishes. The safety check started.' : 'Try again later. The safety check did not start.'), response.ok ? 'success' : 'error');
     } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
+    finally { _triggerInFlight = false; }
     await updateStatus();
 }
 function updateVerifyUi(data) {
@@ -481,7 +496,7 @@ function renderFolders(data) {
     box.hidden = !multi;
     if (classic) classic.hidden = multi;
     if (!multi) { _fySig = ''; return; }
-    var busy = fyAnyBusy(data);
+    var busy = fyAnyBusy(data) || _triggerInFlight;
     var html = folders.map(function(f) {
         var since = f.active_since_formatted ? 'Backed up since ' + f.active_since_formatted : '';
         return '<div class="fy-card"><h3>' + escHtml(f.fy) + ' <small>' + escHtml(_FY_ROLE[f.role] || f.role) + '</small></h3>'
@@ -494,7 +509,7 @@ function renderFolders(data) {
 }
 document.addEventListener('click', function(ev) {
     var b = ev.target.closest ? ev.target.closest('#fy-card-list button') : null;
-    if (!b || b.disabled) return;
+    if (!b || b.disabled || _triggerInFlight) return;
     if (b.dataset.backup) triggerFyBackup(b.dataset.backup, b.dataset.fy, b);
     else if (b.dataset.verify) triggerFyVerify(b.dataset.verify, b.dataset.fy, b);
 });
@@ -503,12 +518,15 @@ async function triggerFyBackup(leg, fy, btn) {
     var ds = box ? box.dataset : {};
     var text = leg === 'cloud' ? 'Start the online backup of ' + fy + ' now?' : lanConfirmText(fy, ds.wol, ds.shutdown);
     if (!confirm(text)) return;
+    if (_triggerInFlight) return;
+    _triggerInFlight = true;
     btn.disabled = true; btn.innerText = 'Starting...';
     try {
         var response = await fetch('/trigger/' + leg + '?fy=' + encodeURIComponent(fy), { method: 'POST' });
         var data = await response.json();
         showToast(data.detail || (response.ok ? 'Leave this page open to follow it. The backup started.' : 'Try again, and ask support if it keeps failing. The backup did not start.'), response.ok ? 'success' : 'error');
     } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
+    finally { _triggerInFlight = false; }
     _fySig = '';
     await updateStatus();
 }
@@ -516,6 +534,8 @@ async function triggerFyVerify(leg, fy, btn) {
     var msg = 'Run the safety check on the ' + (leg === 'cloud' ? 'online' : 'office') + ' copy of ' + fy + ' now?\n\nIt compares every file with your original and can take several hours. '
         + 'Nothing is changed. Backups wait until it has finished.';
     if (!confirm(msg)) return;
+    if (_triggerInFlight) return;
+    _triggerInFlight = true;
     btn.disabled = true; btn.innerText = 'Starting...';
     var url = '/trigger/verify/' + leg + '?fy=' + encodeURIComponent(fy);
     try {
@@ -523,12 +543,13 @@ async function triggerFyVerify(leg, fy, btn) {
         var data = await response.json();
         if (response.status === 409 && data.status === 'backup_first') {
             if (!confirm(data.detail + '\n\nPress OK to check anyway (files not backed up yet are shown as waiting, not as faults). '
-                + 'Press Cancel, then use the backup button of this copy.')) { _fySig = ''; await updateStatus(); return; }
+                + 'Press Cancel, then use the backup button of this copy.')) { _triggerInFlight = false; _fySig = ''; await updateStatus(); return; }
             response = await fetch(url + '&anyway=1', { method: 'POST' });
             data = await response.json();
         }
         showToast(data.detail || (response.ok ? 'The result appears on each copy when it finishes. The safety check started.' : 'Try again later. The safety check did not start.'), response.ok ? 'success' : 'error');
     } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); }
+    finally { _triggerInFlight = false; }
     _fySig = '';
     await updateStatus();
 }

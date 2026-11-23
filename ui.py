@@ -15,6 +15,7 @@ import secrets
 import shutil
 import threading
 import time
+import weakref
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -377,6 +378,42 @@ def _trigger_timeout(request: Request) -> float:
     if wait in ("false", "0", "no", "off"):
         return 0
     return _dash("trigger_wait_seconds")
+
+
+# One process-wide lock for every manual start (the dashboard is a single process): held from the busy
+# check until the deployment run has been CREATED (arun_deployment(timeout=0) returned), so a double click or
+# two tabs cannot both pass the busy check. A freshly created run is SCHEDULED and due now, which
+# _prefect_has_active_run counts as active, so the second request is refused with the normal 400
+# already_running. It is never held while waiting for the run to finish (_wait_for_run runs outside it).
+# Different legs share it: the busy check covers every leg. One lock per event loop (tests use many loops).
+_TRIGGER_LOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _trigger_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _TRIGGER_LOCKS.get(loop)
+    if lock is None:
+        lock = _TRIGGER_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
+async def _create_run(**kwargs):
+    """Create the deployment run and return at once (timeout=0); call under _trigger_lock()."""
+    return await arun_deployment(timeout=0, **kwargs)
+
+
+async def _wait_for_run(flow_run, timeout: float):
+    """The F2 bounded wait, outside the lock. Never cancels the run; any failure returns the snapshot
+    (the answer is then the truthful 'still running' 202)."""
+    state = getattr(flow_run, "state", None)
+    if not timeout or (state is not None and state.is_final()):
+        return flow_run
+    try:
+        from prefect.flow_runs import wait_for_flow_run
+        return await asyncio.wait_for(wait_for_flow_run(flow_run.id, timeout=int(timeout)), timeout + 5)
+    except Exception as e:  # noqa: BLE001 - timeout or API error: report the run as still running
+        logger.info(f"Stopped waiting for flow run {getattr(flow_run, 'id', '?')}: {e!r}")
+        return flow_run
 
 
 def _flow_run_statuses(run_id: str) -> list[str]:
@@ -878,30 +915,26 @@ async def trigger_cloud(request: Request):
     fy = _requested_fy(request)
     # H3: fail-CLOSED. The old code treated an unreachable API as "nothing running" and queued a duplicate
     # backup. WP7: any running backup or safety check refuses (it would only queue behind the one slot).
-    busy = await _refuse_if_busy("cloud")
-    if busy is not None:
-        return busy
-    down = await _refuse_if_service_down("aam-backup/backup-cloud")
-    if down is not None:
-        return down
-    # G15: await the actual deployment run creation before answering. The
-    # old code returned 200 via background_tasks BEFORE arun_deployment
-    # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
-    # API error showed as "triggered successfully" while nothing ran.
-    # F2: bound the post-creation wait (?wait=false returns instantly).
-    try:
-        flow_run = await arun_deployment(
-            name="aam-backup/backup-cloud",
-            **({"parameters": {"fy": fy}} if fy else {}),
-            timeout=_trigger_timeout(request),
-        )
-    except Exception as e:
-        logger.error(f"Manual cloud trigger failed: {e}")
-        return JSONResponse(
-            {"status": "trigger_failed",
-             "detail": messages.could_not_start("cloud backup", e)},
-            status_code=500,
-        )
+    async with _trigger_lock():
+        busy = await _refuse_if_busy("cloud")
+        if busy is not None:
+            return busy
+        down = await _refuse_if_service_down("aam-backup/backup-cloud")
+        if down is not None:
+            return down
+        try:
+            flow_run = await _create_run(
+                name="aam-backup/backup-cloud",
+                **({"parameters": {"fy": fy}} if fy else {}),
+            )
+        except Exception as e:
+            logger.error(f"Manual cloud trigger failed: {e}")
+            return JSONResponse(
+                {"status": "trigger_failed",
+                 "detail": messages.could_not_start("cloud backup", e)},
+                status_code=500,
+            )
+    flow_run = await _wait_for_run(flow_run, _trigger_timeout(request))
     return _trigger_result("Cloud", flow_run)
 
 
@@ -914,25 +947,26 @@ async def trigger_lan(request: Request):
     if not _cfg().lan.enabled:
         return JSONResponse({"status": "disabled", "detail": messages.leg_off("lan")}, status_code=409)
     fy = _requested_fy(request)
-    busy = await _refuse_if_busy("lan")
-    if busy is not None:
-        return busy
-    down = await _refuse_if_service_down("aam-backup/backup-lan")
-    if down is not None:
-        return down
-    try:
-        flow_run = await arun_deployment(
-            name="aam-backup/backup-lan",
-            **({"parameters": {"fy": fy}} if fy else {}),
-            timeout=_trigger_timeout(request),
-        )
-    except Exception as e:
-        logger.error(f"Manual LAN trigger failed: {e}")
-        return JSONResponse(
-            {"status": "trigger_failed",
-             "detail": messages.could_not_start("LAN backup", e)},
-            status_code=500,
-        )
+    async with _trigger_lock():
+        busy = await _refuse_if_busy("lan")
+        if busy is not None:
+            return busy
+        down = await _refuse_if_service_down("aam-backup/backup-lan")
+        if down is not None:
+            return down
+        try:
+            flow_run = await _create_run(
+                name="aam-backup/backup-lan",
+                **({"parameters": {"fy": fy}} if fy else {}),
+            )
+        except Exception as e:
+            logger.error(f"Manual LAN trigger failed: {e}")
+            return JSONResponse(
+                {"status": "trigger_failed",
+                 "detail": messages.could_not_start("LAN backup", e)},
+                status_code=500,
+            )
+    flow_run = await _wait_for_run(flow_run, _trigger_timeout(request))
     return _trigger_result("LAN", flow_run)
 
 
@@ -998,25 +1032,28 @@ async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
     leg = req["leg"]
     label, deployment, _ = _APPROVAL_TARGETS[leg]
     # F1: no service to pick the run up -> start nothing; the approval stays APPROVED and /run retries it
-    down = await _refuse_if_service_down(deployment)
-    if down is not None:
-        return down
-    try:
-        flow_run = await arun_deployment(
-            name=deployment,
-            parameters={"approval_id": req["approval_id"],
-                        # only the backup flows take `fy`; rollover_check_flow does not (the rollover is
-                        # the configured FY's business anyway)
-                        **({"fy": req["fy"]} if req.get("fy") and leg in ("cloud", "lan") else {})},
-            timeout=_trigger_timeout(request),
-        )
-    except Exception as e:
-        logger.error(f"Approved {leg} re-run could not be started: {e}")
-        return JSONResponse({
-            "status": "trigger_failed",
-            "detail": messages.act("Press 'Run approved backup' to try again before the approval expires",
-                                   f"The {label} backup could not be started: {e}"),
-        }, status_code=500)
+    async with _trigger_lock():
+        # re-check inside the lock: the callers' idle check ran before it (two /run clicks at once)
+        await _ensure_leg_idle(leg)
+        down = await _refuse_if_service_down(deployment)
+        if down is not None:
+            return down
+        try:
+            flow_run = await _create_run(
+                name=deployment,
+                parameters={"approval_id": req["approval_id"],
+                            # only the backup flows take `fy`; rollover_check_flow does not (the rollover is
+                            # the configured FY's business anyway)
+                            **({"fy": req["fy"]} if req.get("fy") and leg in ("cloud", "lan") else {})},
+            )
+        except Exception as e:
+            logger.error(f"Approved {leg} re-run could not be started: {e}")
+            return JSONResponse({
+                "status": "trigger_failed",
+                "detail": messages.act("Press 'Run approved backup' to try again before the approval expires",
+                                       f"The {label} backup could not be started: {e}"),
+            }, status_code=500)
+    flow_run = await _wait_for_run(flow_run, _trigger_timeout(request))
     return _trigger_result(label, flow_run, noun="backup (approved re-run)")
 
 
@@ -1533,17 +1570,18 @@ async def run_rollover_now(request: Request):
     state = fy_rollover.manual_run_state(configured, current, _finished_journal(configured, current))
     if not state["can_run"] and _open_rollover_journal() is None:
         raise HTTPException(status_code=409, detail=state["message"])
-    running = await _is_running("rollover")
-    if running is None:
-        raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
-    if running:
-        raise HTTPException(status_code=409, detail=messages.act("Wait for the running rollover check to finish", "Only one can run at a time"))
-    try:
-        flow_run = await arun_deployment(name="rollover-check/rollover-check",
-                                         timeout=_trigger_timeout(request))
-    except Exception as e:
-        logger.error(f"Manual rollover run could not be started: {e}")
-        raise HTTPException(status_code=500, detail=messages.could_not_start("rollover check", e)) from e
+    async with _trigger_lock():
+        running = await _is_running("rollover")
+        if running is None:
+            raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
+        if running:
+            raise HTTPException(status_code=409, detail=messages.act("Wait for the running rollover check to finish", "Only one can run at a time"))
+        try:
+            flow_run = await _create_run(name="rollover-check/rollover-check")
+        except Exception as e:
+            logger.error(f"Manual rollover run could not be started: {e}")
+            raise HTTPException(status_code=500, detail=messages.could_not_start("rollover check", e)) from e
+    flow_run = await _wait_for_run(flow_run, _trigger_timeout(request))
     logger.warning(f"FY rollover check started manually by {_approval_actor(request)}")
     return _trigger_result("FY rollover", flow_run, noun="check")
 
@@ -1636,41 +1674,42 @@ async def trigger_verify(mode: str, request: Request):
     if mode == "all" and not (cfg.lan.enabled or cfg.cloud.enabled):
         return JSONResponse({"status": "disabled", "detail": messages.act("Switch on the LAN or the cloud backup in Settings, then try again", "Both are turned off, so there is nothing to check")}, status_code=409)
     fy = _requested_fy(request)
-    for leg in ("lan", "cloud", "rollover"):
-        running = await _is_running(leg)
-        if running is None:
+    async with _trigger_lock():
+        for leg in ("lan", "cloud", "rollover"):
+            running = await _is_running(leg)
+            if running is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=messages.SCHEDULER_NOT_ANSWERING,
+                )
+            if running:
+                what = "FY rollover check" if leg == "rollover" else "backup"
+                return JSONResponse({"status": "already_running", "detail": messages.act(f"Wait for the running {what} to finish, then check again", f"The safety check and the {what} cannot run at the same time")}, status_code=400)
+        verifying = await _is_verify_running()
+        if verifying is None:
             raise HTTPException(
                 status_code=503,
                 detail=messages.SCHEDULER_NOT_ANSWERING,
             )
-        if running:
-            what = "FY rollover check" if leg == "rollover" else "backup"
-            return JSONResponse({"status": "already_running", "detail": messages.act(f"Wait for the running {what} to finish, then check again", f"The safety check and the {what} cannot run at the same time")}, status_code=400)
-    verifying = await _is_verify_running()
-    if verifying is None:
-        raise HTTPException(
-            status_code=503,
-            detail=messages.SCHEDULER_NOT_ANSWERING,
-        )
-    if verifying:
-        return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running safety check to finish", "Only one can run at a time")}, status_code=400)
-    if request.query_params.get("anyway") != "1":
-        ask = _backup_first_question(cfg, mode, fy)
-        if ask:
-            return JSONResponse({"status": "backup_first", "detail": ask}, status_code=409)
-    try:
-        flow_run = await arun_deployment(
-            name="integrity-audit/integrity-audit",
-            parameters={"mode": mode, **({"fy": fy} if fy else {})},
-            timeout=_trigger_timeout(request),
-        )
-    except Exception as e:
-        logger.error(f"Manual verification trigger failed: {e}")
-        return JSONResponse(
-            {"status": "trigger_failed",
-             "detail": messages.could_not_start("safety check", e)},
-            status_code=500,
-        )
+        if verifying:
+            return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running safety check to finish", "Only one can run at a time")}, status_code=400)
+        if request.query_params.get("anyway") != "1":
+            ask = _backup_first_question(cfg, mode, fy)
+            if ask:
+                return JSONResponse({"status": "backup_first", "detail": ask}, status_code=409)
+        try:
+            flow_run = await _create_run(
+                name="integrity-audit/integrity-audit",
+                parameters={"mode": mode, **({"fy": fy} if fy else {})},
+            )
+        except Exception as e:
+            logger.error(f"Manual verification trigger failed: {e}")
+            return JSONResponse(
+                {"status": "trigger_failed",
+                 "detail": messages.could_not_start("safety check", e)},
+                status_code=500,
+            )
+    flow_run = await _wait_for_run(flow_run, _trigger_timeout(request))
     label = {"lan": "LAN", "cloud": "Cloud", "all": "Full"}[mode]
     return _trigger_result(label, flow_run, noun="verification")
 
