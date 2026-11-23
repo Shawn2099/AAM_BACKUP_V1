@@ -194,6 +194,18 @@ INSERT OR IGNORE INTO db_meta (key, value) VALUES ('schema_version', '1');
 """
 
 
+def _fy_clause(column: str, fy: str | None) -> tuple[str, tuple]:
+    """SQL condition on the FY suffix of a run / audit id (plan 2.4, D-5).
+
+    `fy=None` is the configured FY's pass: ids WITHOUT a `-FYxx-yy` suffix (every baseline id ends in
+    `-cloud` / `-lan` / `-rollover`). A value selects that FY's suffixed ids. No schema change: the suffix is
+    read from the last 8 characters of the id.
+    """
+    if fy is None:
+        return f"substr({column}, -8) NOT GLOB '-FY[0-9][0-9]-[0-9][0-9]'", ()
+    return f"substr({column}, -8) = '-' || ?", (fy,)
+
+
 class ManifestSchemaError(RuntimeError):
     """Critical-6: a schema migration could not be applied.
 
@@ -787,55 +799,56 @@ class ManifestDB:
             rows = self._get_conn().execute(sql + " ORDER BY started_at DESC", args).fetchall()
             return [dict(r) for r in rows]
 
-    def last_run(self, mode: str | None = None) -> dict | None:
+    def last_run(self, mode: str | None = None, *, fy: str | None = None) -> dict | None:
+        clause, args = _fy_clause("run_id", fy)
+        sql = f"SELECT * FROM run_history WHERE {clause}"
+        params: list = list(args)
+        if mode:
+            sql += " AND mode = ?"
+            params.append(mode)
         with self._lock:
-            conn = self._get_conn()
-            if mode:
-                row = conn.execute(
-                    "SELECT * FROM run_history WHERE mode = ? ORDER BY started_at DESC LIMIT 1",
-                    (mode,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM run_history ORDER BY started_at DESC LIMIT 1"
-                ).fetchone()
+            row = self._get_conn().execute(
+                sql + " ORDER BY started_at DESC LIMIT 1", params).fetchone()
             return dict(row) if row else None
 
-    def last_successful_run(self, mode: str) -> dict | None:
+    def last_successful_run(self, mode: str, *, fy: str | None = None) -> dict | None:
         """Return the last successful run for this mode.
 
         "Successful" is the exact set core.statuses.SUCCESS_STATUSES —
-        never a suffix match.
+        never a suffix match. `fy` selects one FY's pass (None = configured FY, plan 2.4).
         """
         from core.statuses import SUCCESS_STATUSES
 
         success = sorted(SUCCESS_STATUSES)
         placeholders = ",".join("?" for _ in success)
+        clause, args = _fy_clause("run_id", fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                f"SELECT * FROM run_history WHERE mode = ? AND status IN ({placeholders}) "
+                f"SELECT * FROM run_history WHERE mode = ? AND status IN ({placeholders}) AND {clause} "
                 "ORDER BY started_at DESC LIMIT 1",
-                (mode, *success),
+                (mode, *success, *args),
             ).fetchone()
             return dict(row) if row else None
 
-    def previous_run_status(self, mode: str, run_id: str) -> str | None:
+    def previous_run_status(self, mode: str, run_id: str, *, fy: str | None = None) -> str | None:
         """Status of the latest run of this leg other than `run_id`."""
+        clause, args = _fy_clause("run_id", fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT status FROM run_history WHERE mode = ? AND run_id != ? "
-                "ORDER BY started_at DESC LIMIT 1", (mode, run_id)).fetchone()
+                f"SELECT status FROM run_history WHERE mode = ? AND run_id != ? AND {clause} "
+                "ORDER BY started_at DESC LIMIT 1", (mode, run_id, *args)).fetchone()
         return row[0] if row else None
 
-    def previous_run_fault_code(self, mode: str, run_id: str) -> str | None:
+    def previous_run_fault_code(self, mode: str, run_id: str, *, fy: str | None = None) -> str | None:
         """core.faults code stored on the latest run of this leg other than `run_id`."""
+        clause, args = _fy_clause("run_id", fy)
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT extended_metrics FROM run_history WHERE mode = ? AND run_id != ? "
-                "ORDER BY started_at DESC LIMIT 1", (mode, run_id)).fetchone()
+                f"SELECT extended_metrics FROM run_history WHERE mode = ? AND run_id != ? AND {clause} "
+                "ORDER BY started_at DESC LIMIT 1", (mode, run_id, *args)).fetchone()
         try:
             metrics = json.loads(row[0]) if row and row[0] else {}
         except ValueError:
@@ -916,7 +929,7 @@ class ManifestDB:
             )
             conn.commit()
 
-    def latest_audit(self, mode: str, scope: str | None = None) -> dict | None:
+    def latest_audit(self, mode: str, scope: str | None = None, *, fy: str | None = None) -> dict | None:
         """Return the audit row that counts for a mode (and optional scope).
 
         Returns None when no audit has ever run — callers render that as
@@ -928,17 +941,18 @@ class ManifestDB:
         """
         with self._lock:
             conn = self._get_conn()
-            newest = self._newest_audit(conn, mode, scope)
+            newest = self._newest_audit(conn, mode, scope, fy=fy)
             if newest is None or newest["status"] != AuditStatus.AUDIT_INCOMPLETE:
                 return newest
-            verdict = self._newest_audit(conn, mode, scope, statuses.AUDIT_VERDICT_STATUSES)
+            verdict = self._newest_audit(conn, mode, scope, statuses.AUDIT_VERDICT_STATUSES, fy=fy)
             if verdict is not None and verdict["status"] == AuditStatus.VERIFICATION_FAILED:
                 return {**verdict,
                         "newer_incomplete_at": newest.get("ended_at") or newest["started_at"]}
             return newest
 
     @staticmethod
-    def _newest_audit(conn, mode: str, scope: str | None, only_statuses=None) -> dict | None:
+    def _newest_audit(conn, mode: str, scope: str | None, only_statuses=None,
+                      *, fy: str | None = None) -> dict | None:
         sql, params = "SELECT * FROM integrity_audits WHERE mode = ?", [mode]
         if scope is not None:
             sql += " AND scope = ?"
@@ -946,6 +960,9 @@ class ManifestDB:
         if only_statuses is not None:
             sql += f" AND status IN ({','.join('?' * len(only_statuses))})"
             params.extend(sorted(only_statuses))
+        clause, args = _fy_clause("audit_id", fy)
+        sql += f" AND {clause}"
+        params.extend(args)
         row = conn.execute(sql + " ORDER BY started_at DESC LIMIT 1", params).fetchone()
         return dict(row) if row else None
 
@@ -954,17 +971,20 @@ class ManifestDB:
     # ── Approvals (plan §6.2) ─────────────────────────────────────────────
 
     def open_approval_request(self, *, leg: str, blocked_run_id: str, fy: str | None,
-                              guards: list[dict], phrase: str, created_at: str) -> str:
+                              guards: list[dict], phrase: str, created_at: str,
+                              keep_fy: str | None = None) -> str:
         """Record a request for a blocked run; older PENDING ones of the leg
-        are SUPERSEDED (only the latest situation can be approved)."""
+        are SUPERSEDED (only the latest situation can be approved). `keep_fy` (overlap, plan 2.4):
+        PENDING requests of that FY are left open - the pipelines pass the other active FY. None = all."""
         from core import approvals as ap
 
         approval_id = ap.new_approval_id()
         with self._lock:
             conn = self._get_conn()
             with conn:
-                conn.execute("UPDATE approvals SET status = ? WHERE leg = ? AND status = ?",
-                             (ap.SUPERSEDED, leg, ap.PENDING))
+                conn.execute("UPDATE approvals SET status = ? WHERE leg = ? AND status = ? "
+                             "AND COALESCE(fy, '') != COALESCE(?, '#')",
+                             (ap.SUPERSEDED, leg, ap.PENDING, keep_fy))
                 conn.execute(
                     """INSERT INTO approvals (approval_id, leg, blocked_run_id, fy, guards,
                                               phrase, status, created_at)
@@ -1030,6 +1050,18 @@ class ManifestDB:
             "UPDATE approvals SET status = ?, used_at = ?, used_by_run_id = ? "
             "WHERE approval_id = ? AND status = ? AND used_at IS NULL",
             (ap.USED, used_at, run_id, approval_id, ap.APPROVED))
+
+    def supersede_approvals_of_fy(self, fy: str) -> int:
+        """Close every open (PENDING or APPROVED, unused) request of one FY - used at the April switch
+        (plan 2.4). Returns how many were superseded."""
+        from core import approvals as ap
+
+        with self._lock:
+            conn = self._get_conn()
+            with conn:
+                cur = conn.execute("UPDATE approvals SET status = ? WHERE fy = ? AND status IN (?, ?)",
+                                   (ap.SUPERSEDED, fy, ap.PENDING, ap.APPROVED))
+                return cur.rowcount
 
     def record_notification(self, data: dict) -> None:
         with self._lock:
@@ -1254,8 +1286,11 @@ class ManifestDB:
                 value = data.get(key)
                 return value if isinstance(value, str) and value else None
 
+            # plan section 5: a record written before the per-leg switch has no flags = scheduled
             return {**{k: data[k] for k in self._SCHEDULE_KEYS},
-                    "cloud_since": stamp("cloud_since"), "lan_since": stamp("lan_since")}
+                    "cloud_since": stamp("cloud_since"), "lan_since": stamp("lan_since"),
+                    "cloud_scheduled": data.get("cloud_scheduled") is not False,
+                    "lan_scheduled": data.get("lan_scheduled") is not False}
         return None
 
     def set_schedule_in_effect(self, schedule: dict, since: str | None = None) -> None:
@@ -1276,6 +1311,8 @@ class ManifestDB:
             else:
                 stamp = since or now_iso()
             record[f"{leg}_since"] = stamp
+            # the per-leg `scheduled` switch in effect (plan section 5); absent = scheduled
+            record[f"{leg}_scheduled"] = schedule.get(f"{leg}_scheduled", True) is not False
         self._set_meta("schedule_in_effect", json.dumps(record))
 
     def get_schedule_in_effect(self) -> dict | None:
@@ -1283,17 +1320,53 @@ class ManifestDB:
         to the config)."""
         return self._stored_schedule()
 
-    def first_partial_after(self, mode: str, since_iso: str | None) -> str | None:
+    def overlap_record(self, fy: str) -> dict | None:
+        """The activation record of a next FY (`db_meta['overlap:<fy>']`, plan 2.4), or None."""
+        raw = self._meta(f"overlap:{fy}")
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def set_overlap_record(self, fy: str, record: dict) -> None:
+        self._set_meta(f"overlap:{fy}", json.dumps(record, sort_keys=True))
+
+    def final_copy_since(self, leg: str, fy: str, since_iso: str) -> dict | None:
+        """The newest VERIFIED final copy of `fy` made by `leg` at or after `since_iso` (plan section 4):
+        status in statuses.FINAL_COPY_STATUSES and `guards.fy` = fy. Times compared as instants."""
+        import pendulum
+
+        marks = ",".join("?" for _ in statuses.FINAL_COPY_STATUSES)
+        with self._lock:
+            rows = self._get_conn().execute(
+                f"SELECT * FROM run_history WHERE mode = ? AND status IN ({marks}) "
+                "AND json_valid(extended_metrics) "
+                "AND json_extract(extended_metrics, '$.guards.fy') = ?",
+                (leg, *sorted(statuses.FINAL_COPY_STATUSES), fy)).fetchall()
+        floor = pendulum.parse(since_iso).timestamp()
+        best, best_ts = None, None
+        for row in rows:
+            try:
+                ts = pendulum.parse(row["started_at"]).timestamp()
+            except Exception:  # noqa: BLE001 - an unreadable row counts as nothing
+                continue
+            if ts >= floor and (best_ts is None or ts > best_ts):
+                best, best_ts = dict(row), ts
+        return best
+
+    def first_partial_after(self, mode: str, since_iso: str | None, *, fy: str | None = None) -> str | None:
         """When the earliest PARTIAL run of this leg after `since_iso` started (None if there is none):
         how long a large upload has been spread over several nights."""
         import pendulum
 
         partial = sorted(statuses.PARTIAL_STATUSES)
         marks = ",".join("?" for _ in partial)
+        clause, args = _fy_clause("run_id", fy)
         with self._lock:
             rows = self._get_conn().execute(
-                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks})",
-                (mode, *partial)).fetchall()
+                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks}) AND {clause}",
+                (mode, *partial, *args)).fetchall()
         floor = pendulum.parse(since_iso).timestamp() if since_iso else float("-inf")
         found = []
         for (started,) in rows:
@@ -1305,16 +1378,17 @@ class ManifestDB:
                 found.append((ts, started))
         return min(found)[1] if found else None
 
-    def leg_success_after(self, mode: str, after_iso: str) -> bool:
+    def leg_success_after(self, mode: str, after_iso: str, *, fy: str | None = None) -> bool:
         """Did a SUCCESSFUL run of this leg start after `after_iso`? (exact SUCCESS_STATUSES)"""
         import pendulum
         from core.statuses import SUCCESS_STATUSES
 
         marks = ",".join("?" for _ in SUCCESS_STATUSES)
+        clause, args = _fy_clause("run_id", fy)
         with self._lock:
             rows = self._get_conn().execute(
-                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks}) "
-                "ORDER BY started_at DESC LIMIT 20", (mode, *sorted(SUCCESS_STATUSES))).fetchall()
+                f"SELECT started_at FROM run_history WHERE mode = ? AND status IN ({marks}) AND {clause} "
+                "ORDER BY started_at DESC LIMIT 20", (mode, *sorted(SUCCESS_STATUSES), *args)).fetchall()
         floor = pendulum.parse(after_iso).timestamp()
         return any(pendulum.parse(r[0]).timestamp() > floor for r in rows)
 

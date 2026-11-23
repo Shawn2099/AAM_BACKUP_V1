@@ -346,7 +346,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   sections identical; `ensure_nas_folder` parent = `\\nas\backup`; `row_fy` fallbacks.
 - [x] **A3 Run-log folder names.** extend `tests/test_f1_run_artefact_names.py`: suffixed id -> `..._FY27-28` folder,
   re-open keeps the file prefix, two passes in the same minute get two folders, `purge_older_than` unaffected.
-- [ ] **A4 DB filters, final copy, approvals, records.** `tests/test_fy_overlap_db.py`: each `fy=` method with suffixed
+- [x] **A4 DB filters, final copy, approvals, records.** `tests/test_fy_overlap_db.py`: each `fy=` method with suffixed
   and unsuffixed rows; `guard_baseline` sees both passes of its FY; `final_copy_since` (status set, `guards.fy`,
   started before / at / after C, PARTIAL / VERIFY_FAILED / legacy `SUCCESS` ignored); `keep_fy` supersede;
   `supersede_approvals_of_fy`; overlap record round trip; schedule record with/without `*_scheduled`; **baseline DB

@@ -112,6 +112,15 @@ MISSED_STATUSES: frozenset[str] = frozenset({RunStatus.CLOUD_MISSED, RunStatus.L
 CLOUD_SUCCESS_STATUSES = frozenset(s for s in SUCCESS_STATUSES if s.startswith("CLOUD_"))
 LAN_SUCCESS_STATUSES = frozenset(s for s in SUCCESS_STATUSES if s.startswith("LAN_"))
 
+# A verified copy of a whole FY that the April switch may count (plan section 4): the cloud statuses only
+# after the verify evidence gate, LAN_COMPLETE only after the exit bitmask and the job summary. Legacy values
+# and PARTIAL / BLOCKED / FAILED / VERIFY_FAILED / MISSED never count.
+FINAL_COPY_STATUSES: frozenset[str] = frozenset({
+    RunStatus.CLOUD_COMPLETE,
+    RunStatus.CLOUD_NO_CHANGES_COMPLETE,
+    RunStatus.LAN_COMPLETE,
+})
+
 # Category names double as the dashboard CSS classes.
 CATEGORY_SUCCESS = "success"
 CATEGORY_NO_CHANGES = "no-changes"
