@@ -9,6 +9,7 @@ classifiers = ["Operating System :: Microsoft Windows"]
 
 dependencies = [
     "prefect==3.9.4",
+    "cronsim==2.8",
     "pydantic==2.14.4",
     "loguru==0.8.0",
     "pyyaml==6.0.3",

@@ -13,6 +13,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "certifi" },
     { name = "cron-descriptor" },
+    { name = "cronsim" },
     { name = "fastapi" },
     { name = "filelock" },
     { name = "httpx" },
@@ -47,6 +48,7 @@ dev = [
 requires-dist = [
     { name = "certifi", specifier = ">=2026.10.19" },
     { name = "cron-descriptor", specifier = "==1.4.5" },
+    { name = "cronsim", specifier = "==2.8" },
     { name = "fastapi", specifier = "==0.150.0" },
     { name = "filelock", specifier = "==4.2.12" },
     { name = "httpx", specifier = "==0.28.1" },
