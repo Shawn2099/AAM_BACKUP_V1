@@ -452,3 +452,20 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   the next-FY cards show `total_files` from their last run.
 - Note: a NAS FY folder directly at a share root (`\\nas\FY26-27`) would have no parent to create siblings in; not the
   owner's layout (`\\nas\backup\FY..`), so out of scope.
+
+## 12. Found while building
+
+- **B3 review F4 (NAS shutdown gap after the last LAN pass), NOT implemented, owner to decide.** When every earlier LAN
+  pass ended `LAN_COMPLETE` and the last pass never reaches its mirror (`LAN_MISSED` for no budget, `LAN_SLOT_TIMEOUT`,
+  or skipped by the race guard), nobody calls the NAS shutdown: the shutdown lives inside the pipeline body, in the
+  slot. Baseline has no such case (one pass: a MISSED or SLOT_TIMEOUT run never shuts the NAS down either). Calling it
+  from `backup()` is unsafe as a quick fix: it would run outside the backup slot, so it could power the NAS off under
+  a concurrent manual LAN run, and for a SLOT_TIMEOUT the slot is by definition held by someone else. A safe version
+  needs its own slot acquisition and a run row for the shutdown result. The failure direction is safe (the NAS stays on
+  until the next night's run; the missed/failed pass already mails). Open question for the owner: worth a
+  slot-guarded "shutdown only" step?
+- **B3 review F7 (abandoned-run sweep alert had no FY)**: done. A swept next-FY pass (`-FY27-28` run id) is keyed
+  `backup:<leg>:FY27-28:<status>`, titled with its FY and carries `AlertEvent.fy`. The configured pass keeps today's
+  key and title (its id has no suffix).
+- Race guard: a switch noticed between passes now skips every later pass of BOTH legs (the in-memory config is stale)
+  and ends the flow FAILED with a `PartialRun` naming the passes not run.

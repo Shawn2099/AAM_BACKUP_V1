@@ -9,6 +9,7 @@ from pathlib import PureWindowsPath
 
 from loguru import logger
 
+from core import fy_overlap
 from core.manifest import ManifestDB
 from core.notify import AlertEvent, notify
 from core.process import process_token, token_alive
@@ -146,10 +147,13 @@ def sweep_abandoned_runs(config, db: ManifestDB) -> list[dict]:
                 status=row["status"], occurred_at=row["started_at"],
                 fault_code="AAM-ROL-04", run_id=row["run_id"]), db=db)
             continue
+        # a next-FY overlap pass (run id suffix `-FY27-28`) is its own incident (plan 2.3); the
+        # configured FY's pass keeps the baseline key and title
+        fy = fy_overlap.fy_of_id(row["run_id"])
         notify(config, AlertEvent(
-            key=f"backup:{leg}:{row['status']}", kind="FAILURE", mode=leg,
-            title=f"{leg.upper()} backup abandoned",
+            key=f"backup:{leg}{f':{fy}' if fy else ''}:{row['status']}", kind="FAILURE", mode=leg,
+            title=f"{leg.upper()}{f' ({fy})' if fy else ''} backup abandoned",
             message=f"{row['error_message']} The next scheduled run copies what is missing.",
             status=row["status"], occurred_at=row["started_at"],
-            fault_code="AAM-SYS-02", run_id=row["run_id"]), db=db)
+            fault_code="AAM-SYS-02", run_id=row["run_id"], fy=fy), db=db)
     return rows

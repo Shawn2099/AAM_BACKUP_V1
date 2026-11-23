@@ -36,3 +36,27 @@ def test_sweep_covers_every_run_mode_with_its_own_key_and_wording(tmp_path):
     assert events["rollover:abandoned"].fault_code == "AAM-ROL-04"
     assert "rollover" not in events["backup:cloud:CLOUD_ABANDONED"].title.lower()
     assert "copies what is missing" in events["backup:lan:LAN_ABANDONED"].message
+
+
+def test_sweep_of_a_next_fy_run_keys_and_titles_the_alert_with_its_fy(tmp_path):
+    """Review F7 (plan 2.3): an abandoned next-FY pass has its own incident, like its other alerts."""
+    db_path = str(tmp_path / "m.db")
+    db = ManifestDB(db_path)
+    cfg = MagicMock()
+    cfg.paths.database_path = db_path
+    cfg.maintenance = MaintenanceConfig()
+    try:
+        for run_id in ("flow-1-cloud", "flow-1-cloud-FY27-28"):
+            db.insert_run({"run_id": run_id, "mode": "cloud", "started_at": now_iso(),
+                           "status": "CLOUD_RUNNING",
+                           "extended_metrics": json.dumps({"owner": _dead_token()})})
+        with patch.object(repo, "notify") as notify:
+            repo.sweep_abandoned_runs(cfg, db)
+    finally:
+        db.close()
+    events = {c.args[1].key: c.args[1] for c in notify.call_args_list}
+    assert set(events) == {"backup:cloud:CLOUD_ABANDONED", "backup:cloud:FY27-28:CLOUD_ABANDONED"}
+    nxt = events["backup:cloud:FY27-28:CLOUD_ABANDONED"]
+    assert nxt.fy == "FY27-28" and "FY27-28" in nxt.title
+    assert events["backup:cloud:CLOUD_ABANDONED"].fy is None
+    assert "FY27-28" not in events["backup:cloud:CLOUD_ABANDONED"].title
