@@ -48,3 +48,24 @@ reports/server_health/
 # Cloud restore/upload logs and reports (local evidence)
 restore_logs/
 upload_logs/
+
+# session scratch and local state (never part of the release)
+.claude/
+research_notes/
+run_logs/
+*.pem
+*.key
+*.p12
+*.pfx
+*.dpapi
+deploy/keys/*
+!deploy/keys/.gitkeep
+*.bak
+/analyze_logs.py
+/analyze_logs2.py
+/coverage_func_scan.py
+/scan_stale_imports.py
+/search_lan.py
+/test_cloud_verify_timeout.py
+/qc
+/query
