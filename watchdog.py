@@ -388,6 +388,7 @@ def _check_stale_legs(cfg=None) -> list[str]:
     already sent: it says the same thing. notify() records every outcome and repeats per
     alerts.stale_repeat_hours. Returns the stale legs; never raises."""
     try:
+        from core import fy_overlap, fy_rollover
         from core import notify as nt
         from core.attention import compute_attention
         from core.manifest import ManifestDB
@@ -397,6 +398,14 @@ def _check_stale_legs(cfg=None) -> list[str]:
         db = ManifestDB.from_config(cfg)
         try:
             stale = [i for i in compute_attention(db, cfg) if i["code"].startswith("stale:")]
+            # B7 Q8: while the overlap is active the configured FY's title names its FY too
+            try:
+                overlap = fy_overlap.active_next_fy(cfg, db) is not None
+                configured = (fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
+                              if overlap else None)
+            except Exception as e:  # noqa: BLE001 - the titles fall back to the plain ones, the mails still go
+                logger.warning(f"Stale-backup titles: the FY name could not be read ({e})")
+                configured = None
             for item in stale:
                 # `stale:<leg>` or `stale:<leg>:<FY>` for a next-FY overlap pass (plan 2.5)
                 rest = item["code"].split(":", 1)[1]
@@ -405,9 +414,11 @@ def _check_stale_legs(cfg=None) -> list[str]:
                 if item.get("due_at") and db.told_about_leg_since(rest, item["due_at"]):
                     logger.info(f"Stale {rest} backup: the missed run was already reported by email")
                     continue
+                name = fy or configured
+                title = f"{leg.upper()} backup ({name}) overdue" if name else f"{leg.upper()} backup overdue"
                 nt.notify(cfg, nt.AlertEvent(
                     key=f"stale:{rest}", kind="ACTION_REQUIRED", mode=leg, fy=fy or None,
-                    title=f"{leg.upper()} backup overdue",
+                    title=title,
                     message=(f"{item['message']} Scheduled backups are not completing - "
                              "either each run fails (see its own alert) or the runs are not "
                              "starting at all. Check the dashboard and the services."),

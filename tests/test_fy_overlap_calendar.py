@@ -361,16 +361,17 @@ def _cloud_failing_site(tmp_path):
 
 
 def test_next_fy_gets_no_overdue_item_before_its_deadline(tmp_path):
-    # Passes today because the code has no FY27-28 item at all: this keeps B7 from adding a false alarm
-    # (for example at 1 Jan 00:30, when the next year has had no run yet).
+    # B7 (plan 2.5, Q1): before its deadline the next FY is never overdue (no `stale:` code - this keeps a
+    # false alarm out, for example at 1 Jan 00:30 when the next year has had no run yet). It is waiting for
+    # its first backup instead (AMBER `first_run:`). A RED `last_run:` for the failing site is allowed.
     cfg = _cloud_failing_site(tmp_path)
     deadline = _deadline(cfg, _at(2026, 12, 31, 6))             # no success yet: counted from activation
     for when in (_at(2027, 1, 1, 0, 30), deadline.subtract(seconds=60)):
-        assert not [c for c in _codes(cfg, when) if "FY27-28" in c], when
+        codes = _codes(cfg, when)
+        assert not [c for c in codes if c.startswith("stale:") and "FY27-28" in c], when
+        assert "first_run:cloud:FY27-28" in codes, when
 
 
-@pytest.mark.xfail(strict=True, reason="B7 not built: compute_attention raises no stale item for the next FY "
-                                       "(plan 2.5 - overdue of FY27-28 counted from its activation)")
 def test_next_fy_overdue_is_counted_from_activation(tmp_path):
     cfg = _cloud_failing_site(tmp_path)
     deadline = _deadline(cfg, _at(2026, 12, 31, 6))

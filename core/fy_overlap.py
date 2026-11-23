@@ -340,6 +340,29 @@ def overlap_open(config, db, to_fy: str | None) -> bool:
     return isinstance(record, dict) and not record.get("ended_at")
 
 
+def active_next_fy(config, db) -> tuple[str, dict] | None:
+    """(next FY, its activation record) while the overlap that adds it is active (B7 K1), else None.
+
+    Active = `rollover.overlap_enabled` is true, the configured FY is known from the source folder and the
+    record of the next FY exists without `ended_at` (the rule of `active_passes`). A config without the
+    rollover / paths sections is no overlap. Database errors propagate: the caller decides."""
+    rollover = getattr(config, "rollover", None)
+    paths = getattr(config, "paths", None)
+    if getattr(rollover, "overlap_enabled", None) is not True or paths is None:
+        return None
+    source = getattr(paths, "source_drive", None)
+    if not isinstance(source, str):
+        return None
+    configured = fy_rollover.configured_fy(source, getattr(paths, "lan_destination", None))
+    if configured is None:
+        return None
+    nxt = next_fy(configured)
+    record = db.overlap_record(nxt)
+    if isinstance(record, dict) and not record.get("ended_at"):
+        return nxt, record
+    return None
+
+
 def _when(iso: str | None) -> str:
     """A stored time as the office reads it (IST, e.g. '1 Apr 2027, 14:00')."""
     if not iso:
