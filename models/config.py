@@ -627,22 +627,10 @@ class MaintenanceConfig(StrictModel):
         default=90,
         ge=35,
         le=3650,
-        description="FLOOR of the run history (35–3650 days): a run row younger than this is never "
-                    "deleted. Rows older than this are deleted only when the history is over "
-                    "db_retention_max_mb (oldest first). At least 35: the 30-day report window "
-                    "plus a week, and the safety guards read their baseline (the last "
+        description="Days of run history to keep in ManifestDB (35–3650). At least 35: the 30-day "
+                    "report window plus a week, and the safety guards read their baseline (the last "
                     "successful run of a leg) from this history - once it is purged the shrink guard "
                     "passes as a 'first run'.",
-    )
-    db_retention_max_mb: int = Field(
-        default=5,
-        ge=1,
-        le=500,
-        description="SIZE budget of the run history in ManifestDB, in MB (1–500). Old run rows are "
-                    "deleted, oldest first, only while the history is larger than this and only if "
-                    "older than db_retention_days. Under the budget nothing is deleted, however old. "
-                    "Never deleted: running rows, the newest and the last successful row per "
-                    "(leg, financial year). About 2 KB per run, so 5 MB holds several years.",
     )
     log_retention_days: int = Field(
         default=90,

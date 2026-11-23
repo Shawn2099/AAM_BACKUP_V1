@@ -346,7 +346,7 @@ class TestBackupMaintenance:
         # (ManifestDB.from_config reads busy_timeout/vacuum/synchronous).
         mock_db_cls.from_config.assert_called_with(config)
         mock_db_cls.from_config.return_value.purge_old_runs.assert_called_once_with(
-            retention_days=30, max_mb=config.maintenance.db_retention_max_mb
+            retention_days=30
         )
 
 

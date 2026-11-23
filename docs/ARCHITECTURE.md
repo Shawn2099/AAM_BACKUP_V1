@@ -84,10 +84,7 @@ backup(mode)
  │                                                  (runs even if cloud failed; ONE NAS shutdown decision)
  ├─ any errors? → send_failure_alert() (skipped for PartialRun: already alerted)
  │               → raise ExceptionGroup  ⇒ Prefect state FAILED
- └─ no errors  → ManifestDB.purge_old_runs(db_retention_days, db_retention_max_mb)  ⇒ COMPLETED
-                 (size rule: oldest run rows go only while run_history > db_retention_max_mb (default 5 MB) AND the
-                  row is older than db_retention_days (floor); never running rows, the newest and last-success row per
-                  (mode, fy); still over budget => one WARNING, no mail)
+ └─ no errors  → ManifestDB.purge_old_runs(maintenance.db_retention_days)  ⇒ COMPLETED
 ```
 
 ### 3.4 FY overlap: two year folders for three months (plan `docs/PLAN_FY_OVERLAP_2026-11-20.md`)
