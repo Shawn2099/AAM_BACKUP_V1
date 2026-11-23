@@ -65,6 +65,25 @@ Check `git log --oneline` for which of these landed.
 - `ui.py` `/api/rollover`: `final_copy` while the overlap is open.
 - Tests: `tests/test_fy_overlap_rollover.py` (23 cases).
 
+## B5 done (calendar simulation, tests only)
+- `tests/test_fy_overlap_calendar.py`: 7 passed, 2 xfail (strict). The scheduled cloud/LAN jobs call the real
+  `flow.backup()` (so the FY pass loop runs); pipelines are fakes that record `fy_pass.fy` per pass.
+- Passing: one pass per leg until 31 Dec 06:00, then two (configured FY first), back to one after the 1 Apr switch
+  (day table + all 190 runs of the window); three windows (2026-27, 2027-28 incl. 29 Feb 2028, 2028-29) each with
+  every run's passes checked; clock a day behind on 31 Dec -> WARNING mail, nothing created, activation on 1 Jan;
+  server off all of 31 Dec -> activation at the first check on 1 Jan; LAN final fails 1-2 Apr -> BLOCKED twice, manual
+  LAN run 2 Apr 14:00 counted, switch on the 3 Apr 06:00 check with no approval (the switch's own LAN final failed);
+  unscheduled LAN never run by the check, blocks the switch 1-3 Apr; FY27-28 gets no overdue item before its deadline.
+- xfail (strict), verified to fail for the stated reason with `--runxfail`:
+  - `test_next_fy_overdue_is_counted_from_activation` - B7: `compute_attention` has no `stale:cloud:FY27-28` item.
+  - `test_unscheduled_lan_leg_is_never_overdue_in_the_whole_window` - C2: the manual-only LAN leg raises
+    `first_run:lan` from 30 Dec on.
+- Bugs found in built code: none.
+- Limits: the windows use sibling folders under a temp root (`tmp/source/FY26-27`), not the drive-root layout
+  `E:\FY26-27`; the clock is faked per call (direction is not modelled: WorldClock uses abs skew).
+  The unscheduled leg is modelled by leaving its cron out of the simulated schedule (C1 rule).
+- Runtime of the file: about 5 min.
+
 ## Opus review findings kept as facts
 - Verified: baseline path identical with overlap off (except F2); no data-loss path found; every `config.paths.*` use in the pipelines reads the per-pass config; next-FY pass writes no `file_entries`; the refusal when the next-FY NAS folder name is not its FY is the last barrier against a mirror into `\\nas\backup` (keep it); an FY27-28 success cannot mark FY26-27 healthy or send its recovery mail.
 - NOT safe to deploy past 31 Dec until B8 and B9 are done: `report.py` (~317) and the dashboard night strip (`ui.py` ~600) still mix both FYs' rows.

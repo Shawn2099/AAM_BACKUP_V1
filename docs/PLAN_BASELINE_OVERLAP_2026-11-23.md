@@ -385,7 +385,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   unscheduled LAN not run by the check, outstanding until a manual copy; cloud-only (`lan.enabled false`) -> only cloud
   required; JUMP -> blocked even with copies; forced approval -> switch, forced legs named; G6 text keyword keeps
   verdicts identical; `unprotected_new_fy` silent while active; activation runs before the alarm.
-- [ ] **B5 Calendar simulation.** `tests/test_fy_overlap_calendar.py` (pattern of `test_calendar_simulation.py`):
+- [x] **B5 Calendar simulation.** `tests/test_fy_overlap_calendar.py` (pattern of `test_calendar_simulation.py`):
   2026-12-30 -> 2027-04-03 day by day, default schedule: 1 pass per leg until Dec 31 06:00, then 2, back to 1 after the
   switch; Feb 29 2028 in the FY27-28 -> FY28-29 cycle; clock behind on Dec 31; server off Dec 31 (activation Jan 1);
   switch blocked 1-2 Apr by a failed LAN final, manual LAN run 2 Apr, switch 3 Apr 06:00; FY27-28 overdue counted from
