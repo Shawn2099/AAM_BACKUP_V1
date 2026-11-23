@@ -398,13 +398,15 @@ def _check_stale_legs(cfg=None) -> list[str]:
         try:
             stale = [i for i in compute_attention(db, cfg) if i["code"].startswith("stale:")]
             for item in stale:
-                leg = item["code"].split(":", 1)[1]
+                # `stale:<leg>` or `stale:<leg>:<FY>` for a next-FY overlap pass (plan 2.5)
+                rest = item["code"].split(":", 1)[1]
+                leg, _, fy = rest.partition(":")
                 logger.error(f"Stale backup: {item['message']}")
-                if item.get("due_at") and db.told_about_leg_since(leg, item["due_at"]):
-                    logger.info(f"Stale {leg} backup: the missed run was already reported by email")
+                if item.get("due_at") and db.told_about_leg_since(rest, item["due_at"]):
+                    logger.info(f"Stale {rest} backup: the missed run was already reported by email")
                     continue
                 nt.notify(cfg, nt.AlertEvent(
-                    key=f"stale:{leg}", kind="ACTION_REQUIRED", mode=leg,
+                    key=f"stale:{rest}", kind="ACTION_REQUIRED", mode=leg, fy=fy or None,
                     title=f"{leg.upper()} backup overdue",
                     message=(f"{item['message']} Scheduled backups are not completing - "
                              "either each run fails (see its own alert) or the runs are not "
@@ -413,7 +415,7 @@ def _check_stale_legs(cfg=None) -> list[str]:
                     cooldown_hours=cfg.alerts.stale_repeat_hours), db=db)
         finally:
             db.close()
-        return [i["code"].split(":", 1)[1] for i in stale]
+        return [i["code"].split(":", 1)[1] for i in stale]   # the `<leg>[:<FY>]` part of each code
     except Exception as e:  # noqa: BLE001 - the watchdog loop must keep running
         logger.warning(f"Stale-backup check skipped: {e}")
         return []

@@ -351,7 +351,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   started before / at / after C, PARTIAL / VERIFY_FAILED / legacy `SUCCESS` ignored); `keep_fy` supersede;
   `supersede_approvals_of_fy`; overlap record round trip; schedule record with/without `*_scheduled`; **baseline DB
   compatibility** (fixture written by the base-commit DDL, user_version 5).
-- [ ] **A5 Alerts per FY.** `tests/test_fy_overlap_alerts.py`: `AlertEvent.fy=None` records today's mode; a FY27-28
+- [x] **A5 Alerts per FY.** `tests/test_fy_overlap_alerts.py`: `AlertEvent.fy=None` records today's mode; a FY27-28
   RECOVERED does not close a FY26-27 incident and vice versa; cooldown per group; watchdog parses
   `stale:cloud:FY27-28`; `test_alert_class.py` scan green; AAM-ROL-07 in the fault catalog.
 - [ ] **A6 `scheduled` keys + statuses set.** `tests/test_manual_only_leg.py` (part 1): defaults true; no enabled leg

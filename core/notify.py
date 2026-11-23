@@ -141,6 +141,7 @@ class AlertEvent:
     first_reported_at: str | None = None   # set by _notify on a reminder of an open incident
     audience: str = AUDIENCE_ALERTS    # which recipient list(s): alerts | reports | both
     cooldown_hours: float | None = None   # repeat window of THIS alert; None = alerts.repeat_cooldown_hours
+    fy: str | None = None              # the FY of a next-FY overlap pass (plan 2.3); None = configured FY
 
 
 @dataclass
@@ -569,7 +570,7 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
         if db is not None:                                # ... and the outcome recorded when the DB works
             try:
                 db.record_notification({
-                    "event_key": event.key, "kind": event.kind, "mode": event.mode,
+                    "event_key": event.key, "kind": event.kind, "mode": incident_group(event),
                     "subject": event.title, "status": result.status, "error": result.error,
                     "attempts": result.attempts, "created_at": now_iso(),
                     "fault_code": event.fault_code, "message_id": result.message_id,
@@ -586,6 +587,12 @@ def notify(config, event: AlertEvent, db=None) -> DeliveryResult:
     return result
 
 
+def incident_group(event: AlertEvent) -> str:
+    """The incident group stored in notifications.mode (plan 2.3): the leg, or `<leg>:<FY>` for a
+    next-FY pass. RECOVERED mails and repeats only see their own group, so one FY never closes the other."""
+    return event.mode if not event.fy else f"{event.mode}:{event.fy}"
+
+
 def _incident_closed(event: AlertEvent, db, config, prior: dict) -> bool:
     """Has the problem behind `prior` (the incident's last SENT mail) ended - whether or not a RESOLVED
     mail was ever sent? A later SUCCESSFUL run (cloud / lan), a later VERIFIED audit, a healthy watchdog
@@ -596,7 +603,7 @@ def _incident_closed(event: AlertEvent, db, config, prior: dict) -> bool:
     mode, since = event.mode, prior["created_at"]
     try:
         if mode in ("cloud", "lan"):
-            return db.leg_success_after(mode, since)
+            return db.leg_success_after(mode, since, fy=event.fy)
         if mode == "audit":
             return db.audit_verified_after(since)
         if mode == "watchdog":
@@ -628,14 +635,15 @@ def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | No
     the leg starts a new incident, so its first email is never suppressed. An incident also ends when
     the problem itself ended (`_incident_closed`), even if no RESOLVED mail was sent."""
     prior = db.last_notification(event.key, status=SENT)
+    group = incident_group(event)
     if event.kind == "RECOVERED":
         same = prior if prior and not db.sent_in_mode_after(
-            event.mode, prior["id"], recovered=False) else None
-        open_problem = db.last_open_incident(event.mode) or {}
+            group, prior["id"], recovered=False) else None
+        open_problem = db.last_open_incident(group) or {}
         root = open_problem.get("thread_id") or open_problem.get("message_id")
         return same, root
     unchanged = (prior is not None and prior.get("fault_code") == event.fault_code
-                 and not db.sent_in_mode_after(event.mode, prior["id"], recovered=True)
+                 and not db.sent_in_mode_after(group, prior["id"], recovered=True)
                  and not (config is not None and _incident_closed(event, db, config, prior)))
     same = prior if unchanged else None
     root = (same.get("thread_id") or same.get("message_id")) if same else None
@@ -675,7 +683,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
 
     try:
         db.record_notification({
-            "event_key": event.key, "kind": event.kind, "mode": event.mode,
+            "event_key": event.key, "kind": event.kind, "mode": incident_group(event),
             "subject": subject, "status": result.status, "error": result.error,
             "attempts": result.attempts, "created_at": now_iso(),
             "fault_code": event.fault_code, "message_id": result.message_id,

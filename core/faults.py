@@ -264,6 +264,12 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
        "old year's folder until the switch is done. Those new files exist on the server only.",
        "Open the dashboard and approve the switch, or fix the problem it shows.",
        "Do not move files out of the old year's folder until the switch is done."),
+    _f("AAM-ROL-07", "Next financial year not added yet - clock not proven", ACTION, (IT, SUPPORT),
+       "The next financial year is added to the backups only once the server clock is proven "
+       "correct. It is not yet, so the next year's folder is not created and its files are not backed up "
+       "until then. Backups of the current year are not affected.",
+       "Check the server's date and time settings and that it can reach the time service; then open the "
+       "dashboard and press 'Run FY rollover now'. The check also retries every morning."),
 
     # ── weekly safety check ───────────────────────────────────────────────
     _f("AAM-AUD-01", "Safety check found differences", ACTION, (SUPPORT,),
