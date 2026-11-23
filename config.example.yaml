@@ -312,6 +312,8 @@ dashboard:
   # The dashboard address in emails is looked up from the network at most this often,
   # seconds (0-3600; 0 = every time)
   link_cache_seconds: 60
+  # Rows per page of the read-only "Alerts history" page (10-500)
+  alerts_history_page_size: 50
   # The dashboard re-reads config.yaml at most this often, seconds (10-3600)
   config_refresh_seconds: 300
   # A manual start waits this long for the run's first result before the page
@@ -386,9 +388,9 @@ maintenance:
   # Days of run history to keep in the SQLite database (35–3650, default 730 = about 2 years so the 15-month FY cycle keeps its history; at least 35: the 30-day report
   # window plus a week, and the safety guards read their baseline from this history)
   db_retention_days: 730
-  # Days of application log files to keep (1–365). 90 = the 3-month log
-  # retention the owner asked for (R8)
-  log_retention_days: 90
+  # Days of application log files to keep (1-1825). 730 = two years (owner 2026-11-23: the
+  # deploying company reads the logs every 6 to 12 months). Check the free disk space of the server.
+  log_retention_days: 730
   # Robocopy temp logs left in %TEMP% by a killed run are deleted once older than
   # this many hours (1-720); the age gate protects a running backup's own log
   orphan_robocopy_log_max_age_hours: 24
@@ -433,16 +435,17 @@ maintenance:
 run_logs:
   # Empty = <runtime_dir>\run_logs (one folder per day and run)
   dir: ""
-  # Delete run log folders older than this many days (7–3650)
-  retention_days: 90
+  # Delete run log folders older than this many days (7-3650). 730 = two years; nothing
+  # younger is deleted. Check the free disk space of the server.
+  retention_days: 730
   # gzip log files larger than this many KB after the run (0 = compress all)
   compress_after_kb: 1024
   # Below this many GB free on that drive: warning + the run is marked
   # "logs incomplete" (the backup itself still runs)
   min_free_gb: 5
   # Delete NSSM-rotated service logs (agent_svc-*, prefect_svc-*, watchdog_svc-*)
-  # older than this many days (7–3650)
-  service_log_retention_days: 90
+  # (and watchdog_app.log) older than this many days (7-3650; 730 = two years)
+  service_log_retention_days: 730
 
 # ═══════════════════════════════════════════════════
 # ALERT EMAILS
@@ -466,7 +469,12 @@ alerts:
   send_decision_needed: true
   send_overdue: true
   send_action_needed: true
+  # send_resolved is the master switch of the "resolved" email (false = never). When true, a normal
+  # recovery is only written to the audit log (dashboard page "Alerts history", status LOGGED_ONLY); the
+  # email is sent only when the problem email was delivered AND the problem lasted at least
+  # resolved_mail_min_hours (1-720), or when the problem email never arrived (the "alert was lost" notice).
   send_resolved: true
+  resolved_mail_min_hours: 24
   send_info: true
   # An alert with no resolution signal of its own (financial year, dashboard ...) that has not
   # occurred again for this many days is over; its next occurrence is a new problem (1-90).

@@ -44,7 +44,8 @@ def test_purge_still_removes_whole_day_folders(tmp_path):
     a = RunArtefacts(tmp_path, RUN_ID, started=STARTED)
     a.new_path("robocopy", "log").write_text("x")
     old = a.dir.parent
-    os.utime(old, (0, 0))
+    for p in (*old.rglob("*"), old):      # W40: a day folder goes only when everything inside is old too
+        os.utime(p, (0, 0))
     assert purge_older_than(tmp_path, 30, glob="*") == 1 and not old.exists()
 
 

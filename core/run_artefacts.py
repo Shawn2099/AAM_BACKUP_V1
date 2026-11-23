@@ -243,6 +243,19 @@ def read_artefact_text(path: str | os.PathLike, encoding: str = "utf-8") -> str:
     return data.decode(encoding, errors="replace")
 
 
+def _newest_mtime(folder: Path) -> float:
+    """Newest modification time of the folder and everything below it (a day folder's own mtime only moves
+    when an entry is added to it, not when a log inside is appended to or compressed later)."""
+    newest = folder.stat().st_mtime
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for name in (*dirnames, *filenames):
+            try:
+                newest = max(newest, os.lstat(os.path.join(dirpath, name)).st_mtime)
+            except OSError:
+                continue
+    return newest
+
+
 def purge_older_than(
     root: str | os.PathLike,
     days: int,
@@ -285,6 +298,8 @@ def purge_older_than(
             if entry.is_dir():
                 if not _DATE_DIR.match(entry.name):
                     continue  # only ever remove our own day folders
+                if _newest_mtime(entry) >= cutoff:
+                    continue  # a file inside is younger than the retention (W40): never delete younger data
                 shutil.rmtree(entry)
             else:
                 if not files:

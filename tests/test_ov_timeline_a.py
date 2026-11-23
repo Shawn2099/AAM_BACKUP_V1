@@ -410,7 +410,10 @@ def test_a6_unproven_clock_defers_then_one_mail_after_24h_then_activates_on_3_ja
     assert [(a[0], a[1]) for a in acts] == [(B, 1)] and acts[0][2].startswith("2027-01-03T02:01")
     assert rig.runs("cloud")[-2:] == [("cloud", B, "CLOUD_COMPLETE"), ("cloud", A, "CLOUD_COMPLETE")]
     assert [n[0] for n in rig.notif("overlap:")] == [f"overlap:activation:{B}", f"overlap:start:{B}"]
-    assert len(rig.srv.messages) == 3          # + the ONE RESOLVED mail (overlap-review D3 c)
+    # W39: the ACTION mail went out at 21:01 on 2 January, 5 hours before the fix: under alerts.resolved_mail_min_hours,
+    # so no RESOLVED mail - the recovery is only written to the audit log (it was the ONE RESOLVED mail before)
+    assert len(rig.srv.messages) == 2
+    assert rig.notif("recovered:overlap:")[0][1:] == ("RECOVERED", "LOGGED_ONLY")
 
 
 def test_a6_d3_dashboard_shows_an_item_while_the_activation_is_deferred(rig):

@@ -84,5 +84,6 @@ def test_purge_removes_new_folders_by_day(tmp_path):
     a = RunArtefacts(tmp_path, f"{U}-cloud-FY99-00", started=STARTED)
     a.new_path("rclone-sync").write_text("x")
     day = a.dir.parent
-    os.utime(day, (0, 0))
+    for p in (*day.rglob("*"), day):      # W40: a day folder goes only when everything inside is old too
+        os.utime(p, (0, 0))
     assert purge_older_than(tmp_path, 30, glob="*") == 1 and not day.exists()

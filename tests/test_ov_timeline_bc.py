@@ -422,7 +422,7 @@ def seed_c(w):
                 "ended_at": iso(22), "status": "LAN_COMPLETE",
                 "extended_metrics": json.dumps({"guards": _guard_dict(fy, files, w.nas_root)})})
     # the open FY27-28 incident: the real failure alert of its last cloud night
-    w.go(at(3, 31, 2, 30))
+    w.go(at(3, 30, 20, 0))        # W39: over a day before the 1 April recovery, so the RESOLVED mail is due
     flow._send_run_alert(w.view(NEXT), CLOUD, "CLOUD_FAILED", "a file could not be read", 1,
                          at(3, 31).isoformat(), run_id=f"seed-{NEXT}-cloud-90", fault_code="AAM-CLD-01")
     w.ap_next = db.open_approval_request(
