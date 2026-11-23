@@ -86,6 +86,8 @@ def _approve_via_dashboard(sim, mp, approval_id):
     mp.setattr(ui, "get_db", lambda: db)
     mp.setattr(ui, "_cfg", lambda: sim.cfg)
     mp.setattr(ui, "arun_deployment", recording_deployment)
+    # F1: the module-scoped scenario fixture runs before the autouse stub; a backup service polls the deployment
+    mp.setattr(ui, "_agent_serving", AsyncMock(return_value=True))
     mp.setattr(ui, "_is_running", AsyncMock(return_value=False))
     mp.setattr(ui, "_is_verify_running", AsyncMock(return_value=False))
     try:
