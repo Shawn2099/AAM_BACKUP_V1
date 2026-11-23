@@ -442,6 +442,16 @@ def step_c1(w):
     w.backup(CLOUD)
 
 
+def request_next_after_c1(w):
+    """A new FY27-28 cloud approval request AFTER the 1 April cloud night (the 30 March one was superseded by
+    that night's success), so it stays PENDING until a later cloud success of FY27-28 (2 April in T-c4)."""
+    db = w.db()
+    w.ap_next = db.open_approval_request(
+        leg=CLOUD, blocked_run_id="seed-blocked-next-2", fy=NEXT, created_at=at(4, 1, 3, 0).isoformat(),
+        phrase="APPROVE", guards=[{"guard": "G3_MASS_DELETE", "reason": "r", "metrics": {}}])
+    db.close()
+
+
 def step_c2(w):
     """Rollover check 06:00 on 1 April."""
     w.go(at(4, 1, 6, 0))
@@ -470,8 +480,12 @@ def test_t_c1_both_fys_are_backed_up_on_1_april_while_the_switch_is_pending(worl
     for fy in (NEXT, CFG_FY):
         row = db.last_run(CLOUD, fy=fy)
         assert row["status"] == "CLOUD_COMPLETE" and row["started_at"].startswith("2027-04-01"), fy
-    # nothing else moved: both approvals are still PENDING, the config still says FY26-27
-    assert sorted((a["fy"], a["status"]) for a in db.open_approvals()) == [(CFG_FY, "PENDING"), (NEXT, "PENDING")]
+    # the cloud night of FY27-28 succeeded after its cloud approval was requested (30 Mar): that request is
+    # SUPERSEDED (02ddc18: the cause is fixed). The FY26-27 request is a LAN one: a cloud run does not touch it.
+    assert db.get_approval(w.ap_next)["status"] == "SUPERSEDED"
+    assert sorted((a["fy"], a["status"]) for a in db.open_approvals()) == [(CFG_FY, "PENDING")]
+    assert w.cfg.paths.source_drive.endswith(CFG_FY)
+    # nothing else moved: the config still says FY26-27
     assert w.cfg.paths.source_drive.endswith(CFG_FY)
     db.close()
     # the FY27-28 incident recovered inside its OWN thread; FY26-27 (no incident) said nothing
@@ -485,6 +499,7 @@ def test_t_c2_the_rollover_runs_final_backups_of_fy26_27_only_then_switches_and_
     w = world
     seed_c(w)
     step_c1(w)
+    request_next_after_c1(w)
     n_calls, n_mails = len(w.calls), len(w.mails())
     assert step_c2(w) == "ROLLOVER_COMPLETED"
     final = w.calls[n_calls:]
@@ -508,10 +523,11 @@ def test_t_c2_the_rollover_runs_final_backups_of_fy26_27_only_then_switches_and_
     archive = [a for a in w.rollover_cmds["argv"] if "update" in a]
     assert len(archive) == 1 and f"gs://my-bucket/{CFG_FY}/" in archive[0]
     assert not any(NEXT in part for argv in w.rollover_cmds["argv"] for part in argv)
-    # the journal is finished, and the old year is CLOSED; the new year keeps its PENDING request
+    # the journal is finished. The old year's LAN request (30 Mar) was SUPERSEDED by the final LAN backup's
+    # success (a terminal status close_fy leaves alone); the new year keeps its PENDING request
     steps = db.rollover_get(CFG_FY, NEXT)["steps"]
     assert {k: v["state"] for k, v in steps.items()} == {s: rj.DONE for s in rj.STEPS}
-    assert db.get_approval(w.ap_cfg)["status"] == "CLOSED"
+    assert db.get_approval(w.ap_cfg)["status"] == "SUPERSEDED"
     assert db.get_approval(w.ap_next)["status"] == "PENDING"
     assert [a["approval_id"] for a in db.open_approvals()] == [w.ap_next]
     db.close()
@@ -534,6 +550,7 @@ def test_t_c3_the_first_lan_night_after_the_switch_backs_up_fy27_28_with_its_own
     w = world
     seed_c(w)
     step_c1(w)
+    request_next_after_c1(w)
     step_c2(w)
     # the early folder's destination was, and the new configured one is, the same string (hand-built)
     assert w.view(NEXT).paths.lan_destination == str(w.nas_root / NEXT)   # the early view, before the switch
@@ -567,6 +584,7 @@ def test_t_c4_one_card_on_the_dashboard_and_the_weekly_report_counts_fy26_27_onl
     w = world
     seed_c(w)
     step_c1(w)
+    request_next_after_c1(w)
     step_c2(w)
     step_c3(w)
     for day in (2, 3, 4):                                                  # Fri 2 .. Sun 4 April: normal nights
@@ -619,8 +637,12 @@ def test_t_c4_one_card_on_the_dashboard_and_the_weekly_report_counts_fy26_27_onl
     assert "resolved" in new_part
     # no "nothing ran" gap is invented for FY26-27 for 2-4 April (it was closed on 1 April)
     assert "no backup ran" not in old_part.lower() and "missed" not in old_part.lower()
-    # the one open decision is FY27-28's; FY26-27's request was closed by the switch
-    assert "1 backup waiting for your decision" in head
+    # no open decision is left: FY26-27's LAN request was superseded by its final backup, and FY27-28's cloud
+    # request (1 Apr 03:00) by the successful cloud night of 2 April
+    assert "waiting for your decision" not in body
+    db = w.db()
+    assert db.get_approval(w.ap_next)["status"] == "SUPERSEDED" and db.open_approvals() == []
+    db.close()
 
 
 def _text(msg):
