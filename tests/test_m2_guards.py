@@ -153,4 +153,4 @@ def test_g5_cases():
     r = g.g5_canary(False, True, "\\\\nas\\s")
     assert not r.passed and "already holds files" in r.reason
     r = g.g5_canary(False, False, "\\\\nas\\s")
-    assert not r.passed and "initialise" in r.reason
+    assert not r.passed and "creates the marker file" in r.reason

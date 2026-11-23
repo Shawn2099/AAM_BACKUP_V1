@@ -180,8 +180,8 @@ class TestOrphanLogCleanup:
 
 class TestCanaryMessage:
     def test_missing_marker_is_reported_and_g5_message_guides_the_operator(self, tmp_path):
-        # M2 2.3: recovery is a recorded decision on the dashboard (the G5
-        # approval recreates the marker), not a hand-typed command.
+        # M2 2.3: recovery for a folder WITH files is fixing the share (the G5
+        # block is not approvable); the empty-folder case is approved.
         from core import guards
         dest = tmp_path / "FY25-26"
         dest.mkdir()
@@ -190,7 +190,7 @@ class TestCanaryMessage:
             res = lan_preflight.run_lan_dry_run(str(dest.parent), str(dest))
         assert res["canary_present"] is False
         msg = guards.g5_canary(False, True, str(dest)).reason
-        assert ".AAM_TARGET_MOUNTED" in msg and "Approve only if" in msg
+        assert ".AAM_TARGET_MOUNTED" in msg and "Do NOT approve" in msg  # owner decision B: never approvable
 
     def test_canary_script_exists(self):
         assert (Path(__file__).resolve().parent.parent / "deploy" / "10_recreate_canary.bat").exists()

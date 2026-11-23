@@ -1164,6 +1164,11 @@ def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | Non
     blocked = [r for r in results if not r.passed]
     if not blocked or not approval_id:
         return frozenset(), {}
+    if not all(r.approvable for r in blocked):
+        # defence in depth: whatever a stored request says, a target problem is never overridden
+        reason = approvals.NOT_APPROVABLE_MESSAGE
+        logger.error(f"Approval {approval_id} not applied ({leg}): {reason}")
+        return frozenset(), {"approval_id": approval_id, "approval_rejected": reason}
     db = ManifestDB.from_config(config)
     try:
         request = db.get_approval(approval_id)
@@ -1218,7 +1223,8 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
             approval_id = db.open_approval_request(
                 leg=leg, blocked_run_id=run_id,
                 fy=guard_record.get("fy") or _effective_fy_prefix(config),
-                guards=[{k: r.get(k) for k in ("guard", "reason", "metrics")} for r in blocked],
+                guards=[{**{k: r.get(k) for k in ("guard", "reason", "metrics", "fault_code")},
+                         "approvable": guards.code_approvable(r.get("fault_code"))} for r in blocked],
                 phrase=approvals.request_phrase(blocked), created_at=now_iso())
         finally:
             db.close()
@@ -1230,8 +1236,12 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
         message += f"\n\nThe approval supplied for this run was not applied: {rejected}"
     changed = (statuses.BLOCKED_AFTER_CHANGES_NOTE if sync_attempted
                else "Nothing was copied or deleted.")
-    message += (f"\n\n{changed} Open the dashboard to review the "
-                "numbers and either approve this backup once or dismiss it.")
+    if all(guards.code_approvable(r.get("fault_code")) for r in blocked):
+        message += (f"\n\n{changed} Open the dashboard to review the "
+                    "numbers and either approve this backup once or dismiss it.")
+    else:
+        message += (f"\n\n{changed} This block cannot be approved. Fix the cause (mount or "
+                    "restore the NAS share, check the path); the next backup clears it by itself.")
     # a leg's block belongs to its FY (the approval's FY); the rollover's own block is not per leg
     alert_fy = (guard_record.get("fy") or _alert_fy(config)) if leg in ("cloud", "lan") else None
     notify(config, AlertEvent(

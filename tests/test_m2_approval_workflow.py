@@ -405,7 +405,7 @@ def _g5_rig(tmp_path, canary, dest_files, approval=None):
 
 @pytest.mark.parametrize("canary,dest_files,match", [
     (False, 10, "already holds files"),
-    (False, 0, "initialise"),
+    (False, 0, "creates the marker file"),
     ("absent-key", 10, "Could not check"),
 ])
 def test_g5_blocks_missing_or_unknown_marker(tmp_path, canary, dest_files, match):
@@ -414,10 +414,10 @@ def test_g5_blocks_missing_or_unknown_marker(tmp_path, canary, dest_files, match
     assert not (dest / ".AAM_TARGET_MOUNTED").exists()
 
 
-def test_g5_approval_creates_the_marker_and_proceeds(tmp_path):
+def test_g5_approval_of_a_new_empty_folder_creates_the_marker_and_proceeds(tmp_path):
     dest = tmp_path / "nas"
-    g5 = g.g5_canary(False, True, str(dest))
-    out, dest = _g5_rig(tmp_path, False, 10, approval=_request(g5))
+    g5 = g.g5_canary(False, False, str(dest))      # new EMPTY folder: the only approvable G5 block
+    out, dest = _g5_rig(tmp_path, False, 0, approval=_request(g5))
     assert isinstance(out, dict), out
     assert out["approved_guards"] == ["G5_CANARY"] and out["marker_created"] is True
     assert (dest / ".AAM_TARGET_MOUNTED").is_file()
