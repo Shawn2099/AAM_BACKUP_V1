@@ -132,3 +132,5 @@ Stack updated to fy-overlap (merge 93036fd in C:\AAMTest\code), ended Running, /
 
 ## Skipped tests in the unit suite (21; pytest -rs)
 15 x tests/test_lan_sync.py real-robocopy-over-SMB tests (need an SMB share named 'lan_backup' at \127.0.0.1; this PC has AAMTestNAS instead; the same paths are exercised by the audit lab and the live LAN runs), 3 x chaos harness batches (tool dir C:\ChaosTest\tools absent), 1 x file symlink cannot be created here, 1 x Windows stored a folder under a different name (odd-name test), 1 more environment skip. None is a product failure.
+
+### Owner (2026-11-23): do not over-think passwords/credentials in the repo (trial values, all rotated). The repo must CLONE to a new device and WORK there; hygiene work = clone-and-run readiness, not a secrets hunt.
