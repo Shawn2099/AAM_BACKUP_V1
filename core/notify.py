@@ -43,6 +43,7 @@ SENT = "SENT"
 FAILED = "FAILED"
 SUPPRESSED = "SUPPRESSED"
 DISABLED = "DISABLED"
+LOGGED_ONLY = "LOGGED_ONLY"   # W39: a normal recovery, written to the audit log, not mailed
 
 # Which mails may be switched off is decided per alert CLASS (core/alert_class.py): problem and warning
 # emails by notifications.send_on_failure, every other class by its own alerts.send_* switch; the
@@ -144,6 +145,8 @@ class AlertEvent:
     cooldown_hours: float | None = None   # repeat window of THIS alert; None = alerts.repeat_cooldown_hours
     fy: str | None = None              # the FY folder it is about (v6); None = global / not per-FY
     lost_alert: str | None = None      # RECOVERED: "<time> (<subject>)" of a failure mail that never arrived (L1)
+    problem_since: str | None = None   # RECOVERED: ISO time the problem began, when its mail was delivered but is
+                                       # not in the notifications table (the invalid-config mail); W39
 
 
 @dataclass
@@ -690,6 +693,11 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
         lost = db.lost_problem(event.mode, fy=event.fy or ALL_FYS, keys=_incident_keys(event))
         if lost:
             event = replace(event, lost_alert=f"{lost['created_at']} ({lost.get('subject') or lost['event_key']})")
+    if (event.kind == "RECOVERED" and event.lost_alert is None and not same
+            and _switched_off_reason(config, event) is None):
+        quiet = _quiet_recovery(config, event, db)
+        if quiet:
+            return _log_only(event, db, quiet)
     if same and event.kind != "RECOVERED":
         first = (db.notification_by_message_id(root) if root else None) or same
         event = replace(event, first_reported_at=first["created_at"])
@@ -733,6 +741,59 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     log = logger.info if result.status in (SENT, SUPPRESSED) else logger.warning
     log(f"Alert {event.key}: {result.status}" + (f" ({result.error})" if result.error else ""))
     return result
+
+
+def format_duration(seconds: float) -> str:
+    """'45m', '2h 5m', '1d 6h' - how long a problem lasted (audit log, Alerts history)."""
+    minutes = max(0, int(seconds // 60))
+    days, rest = divmod(minutes, 1440)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def _quiet_recovery(config, event: AlertEvent, db) -> str | None:
+    """W39 (owner 2026-11-23): why this recovery is only written to the audit log, or None when the RESOLVED
+    mail goes out. It goes out when the problem mail was DELIVERED and the problem lasted at least
+    alerts.resolved_mail_min_hours (from its first row to now); the 'problem mail never arrived' case is the
+    caller's (`lost_alert`) and always mails. Fails open: a lookup error sends the mail."""
+    try:
+        fy = event.fy or ALL_FYS
+        keys = _incident_keys(event)
+        if event.problem_since:          # the caller knows: its problem mail was delivered at this time
+            start = {"created_at": event.problem_since}
+        else:
+            if db.last_open_incident(event.mode, fy=fy, keys=keys) is None:
+                return "recovered; no problem email of this incident was delivered, so no 'resolved' email is due"
+            start = db.incident_start(event.mode, fy=fy, keys=keys)
+        if start is None:
+            return None
+        lasted = (pendulum.now("UTC") - pendulum.parse(start["created_at"])).total_seconds()
+        minimum = config.alerts.resolved_mail_min_hours * 3600
+        if lasted >= minimum:
+            return None
+        return (f"recovered after {format_duration(lasted)} (problem first recorded {start['created_at'][:16]}); "
+                f"under {config.alerts.resolved_mail_min_hours}h, so no 'resolved' email")
+    except Exception as e:  # noqa: BLE001 - when unsure the mail goes out (the person hears about it)
+        logger.warning(f"Could not tell how long the {event.key} problem lasted ({e}); the recovery is mailed")
+        return None
+
+
+def _log_only(event: AlertEvent, db, note: str) -> DeliveryResult:
+    """Record a recovery that is not mailed: status LOGGED_ONLY, the event key, the fault code, the reason."""
+    try:
+        db.record_notification({
+            "event_key": event.key, "kind": event.kind, "mode": event.mode, "subject": event.title,
+            "status": LOGGED_ONLY, "error": note, "attempts": 0, "created_at": now_iso(),
+            "fault_code": event.fault_code, "message_id": None, "thread_id": None,
+            "attachments_rung": None, "audience": event.audience, "recipients": None, "fy": event.fy})
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not record the recovery of {event.key}: {e}")
+    logger.info(f"Alert {event.key}: {LOGGED_ONLY} ({note})")
+    return DeliveryResult(LOGGED_ONLY, note)
 
 
 DIGEST_KEY = "undelivered:digest"

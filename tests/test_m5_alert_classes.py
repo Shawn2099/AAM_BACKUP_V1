@@ -45,6 +45,10 @@ def _event(kind, key="k"):
 
 @pytest.mark.parametrize("kind", ["ACTION_REQUIRED", "RECOVERED"])
 def test_decision_and_recovered_emails_ignore_the_switch(tmp_path, db, kind):
+    if kind == "RECOVERED":      # W39: a RESOLVED mail needs a delivered problem mail that lasted long enough
+        db.record_notification({"event_key": "backup:lan:LAN_FAILED", "kind": "FAILURE", "mode": "lan",
+                                "subject": "s", "status": "SENT", "created_at": "2026-01-01T00:00:00+05:30",
+                                "audience": "alerts"})
     with smtp_server() as srv:
         cfg = _cfg(tmp_path, port=srv.server_address[1], send_on_failure=False)
         assert nt.notify(cfg, _event(kind), db=db).status == nt.SENT

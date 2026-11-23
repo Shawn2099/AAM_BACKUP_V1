@@ -92,8 +92,8 @@ def test_a_failed_row_of_another_leg_does_not_unsuppress(tmp_path, db, monkeypat
 
 def test_a_failure_that_was_delivered_does_not_get_the_lost_line(tmp_path, db, monkeypatch):
     sent = _capture(monkeypatch)
-    _row(db, "backup:lan:LAN_FAILED", "FAILURE", "FAILED", 200, subject="first, lost")
-    _row(db, "backup:lan:LAN_FAILED", "FAILURE", "SENT", 100, subject="second, delivered")
+    _row(db, "backup:lan:LAN_FAILED", "FAILURE", "FAILED", 1700, subject="first, lost")  # W39: lasted over a day
+    _row(db, "backup:lan:LAN_FAILED", "FAILURE", "SENT", 1600, subject="second, delivered")
     result = nt.notify(_cfg(tmp_path), _recovered(), db=db)
     assert result.status == nt.SENT
     assert "could not be delivered" not in sent[0][1]

@@ -15,6 +15,12 @@ from test_break_release_s1 import _config_files, _point_config_at, _StopLoop, wa
 from test_support.smtp_server import smtp_server
 
 
+def _backdate(marker, hours: float = 30) -> None:
+    """W39: a RESOLVED mail is due only when the problem lasted over a day - say the marker is that old."""
+    import pendulum
+    marker.write_text(pendulum.now().subtract(hours=hours).format("YYYY-MM-DD HH:mm:ss"), encoding="utf-8")
+
+
 def _subject(msg) -> str:
     m = email.message_from_string(msg["data"])
     return str(email.header.make_header(email.header.decode_header(m["Subject"])))
@@ -28,6 +34,7 @@ def test_fixing_the_config_sends_one_resolved_mail_and_removes_the_marker(watchd
         with pytest.raises(_StopLoop):
             watchdog_rig.main()
         assert len(srv.messages) == 1 and marker.exists()
+        _backdate(marker)
 
         _point_config_at(monkeypatch, good)
         watchdog_rig._alert_invalid_config()
@@ -53,6 +60,7 @@ def test_the_resolved_mail_is_recorded_in_the_notifications_table(watchdog_rig, 
         _point_config_at(monkeypatch, bad)
         with pytest.raises(_StopLoop):
             watchdog_rig.main()
+        _backdate(tmp_path / "rt" / "watchdog_invalid_config.sent")
         _point_config_at(monkeypatch, good)
         watchdog_rig._alert_invalid_config()
         db = ManifestDB.from_config(load_config(str(good)))
@@ -62,3 +70,26 @@ def test_the_resolved_mail_is_recorded_in_the_notifications_table(watchdog_rig, 
         finally:
             db.close()
         assert [tuple(r) for r in rows] == [("RECOVERED", "SENT")]
+
+
+def test_a_quick_fix_sends_no_resolved_mail_only_a_logged_row(watchdog_rig, monkeypatch, tmp_path):  # noqa: F811
+    """W39: the config was wrong for minutes: no 'working again' mail, the audit log still has the recovery."""
+    from core.manifest import ManifestDB
+    from models.config import load_config
+    with smtp_server() as srv:
+        good, bad = _config_files(tmp_path, srv.server_address[1])
+        marker = tmp_path / "rt" / "watchdog_invalid_config.sent"
+        _point_config_at(monkeypatch, bad)
+        with pytest.raises(_StopLoop):
+            watchdog_rig.main()
+        assert len(srv.messages) == 1
+        _point_config_at(monkeypatch, good)
+        watchdog_rig._alert_invalid_config()
+        assert len(srv.messages) == 1 and not marker.exists()
+        db = ManifestDB.from_config(load_config(str(good)))
+        try:
+            rows = db._get_conn().execute(
+                "select kind, status from notifications where kind = 'RECOVERED'").fetchall()
+        finally:
+            db.close()
+        assert [tuple(r) for r in rows] == [("RECOVERED", "LOGGED_ONLY")]

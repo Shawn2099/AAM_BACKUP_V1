@@ -603,7 +603,16 @@ class AlertsConfig(StrictModel):
         description="Email when a person must act: financial-year problems, safety-check differences, "
                     "service problems.")
     send_resolved: bool = Field(
-        default=True, description="Email 'resolved' when a reported problem is fixed.")
+        default=True,
+        description="Master switch of the 'resolved' email. Off: never any. On: a normal recovery is only "
+                    "written to the audit log (Alerts history); the email is sent when the problem lasted at "
+                    "least resolved_mail_min_hours and its problem email was delivered, or when the problem "
+                    "email never arrived.")
+    resolved_mail_min_hours: int = Field(
+        default=24, ge=1, le=720,
+        description="A 'resolved' email is sent only when the problem lasted at least this many hours "
+                    "(from its first email or record to the recovery) and the problem email was delivered. "
+                    "A shorter problem that fixed itself is only written to the audit log.")
     send_info: bool = Field(
         default=True, description="Email information notices (a new financial year started).")
     incident_quiet_days: int = Field(
@@ -1144,6 +1153,10 @@ class DashboardConfig(StrictModel):
         default=60, ge=0, le=3600,
         description="The dashboard address put into emails is looked up from the network at most "
                     "this often (0 = every time)")
+    alerts_history_page_size: int = Field(
+        default=50, ge=10, le=500,
+        description="Rows per page of the read-only 'Alerts history' page (every email the program "
+                    "sent, tried or logged instead of mailing)")
     config_refresh_seconds: int = Field(
         default=300, ge=10, le=3600,
         description="The dashboard re-reads config.yaml at most this often")

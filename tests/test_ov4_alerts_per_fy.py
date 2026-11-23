@@ -15,6 +15,7 @@ from core import notify as nt
 from core.backup_repository import sweep_abandoned_runs
 from core.manifest import ManifestDB
 from models.config import AppConfig
+from test_support.notify_aging import age_notifications
 from test_support.smtp_server import smtp_server
 
 A, B = "FY26-27", "FY27-28"
@@ -207,6 +208,7 @@ def test_fy27_success_does_not_close_or_recover_an_fy26_incident(tmp_path):
         # ... and the same happens with the RECOVERED mail of FY27-28 sent: still open for FY26-27
         _run(d, "b0", "cloud", B, "CLOUD_FAILED", "2027-04-01T01:00:00+05:30")
         assert nt.notify(cfg_b, _fail(B), db=d).status == nt.SENT
+        age_notifications(d)                       # W39: the FY27-28 problem lasted over a day
         assert nt.notify(cfg_b, _resolved(B), db=d).status == nt.SENT
         same, root = nt._incident(failed, d, cfg_a)
         assert same is not None and root == prior["message_id"]          # FY26-27 incident still unchanged
@@ -233,6 +235,7 @@ def test_recovered_threads_into_its_own_fy_incident(tmp_path, db):
         cfg = _cfg(tmp_path, srv.server_address[1], cooldown=0)
         nt.notify(cfg, _fail(A), db=db)
         nt.notify(cfg, _fail(B), db=db)
+        age_notifications(db)                      # W39: the problems lasted over a day
         nt.notify(cfg, _resolved(B), db=db)
         nt.notify(cfg, _resolved(A), db=db)
     fail_a, fail_b, rec_b, rec_a = _msgs(srv)
@@ -245,6 +248,7 @@ def test_a_recovered_of_one_fy_does_not_restart_the_other_fys_incident(tmp_path,
         cfg = _cfg(tmp_path, srv.server_address[1], cooldown=0)
         nt.notify(cfg, _fail(A), db=db)
         nt.notify(cfg, _fail(B), db=db)
+        age_notifications(db)                      # W39: the problem lasted over a day
         nt.notify(cfg, _resolved(B), db=db)
         nt.notify(cfg, _fail(A), db=db)                                  # FY A repeat, B recovered meanwhile
     first, _b, _rb, repeat = _msgs(srv)
@@ -272,6 +276,7 @@ def test_recovered_of_one_overlap_key_does_not_restart_or_thread_into_a_sibling_
         d1 = nt.notify(cfg, _sib(K1), db=db)
         d2 = nt.notify(cfg, _sib(K2), db=db)
         assert d1.status == nt.SENT and d2.status == nt.SENT
+        age_notifications(db)                      # W39: the alarms lasted over a day
         assert nt.notify(cfg, _sib(K1, "RECOVERED"), db=db).status == nt.SENT
         # K2 is still open: its repeat is the SAME incident (threaded under its own first mail)
         assert nt.notify(cfg, _sib(K2), db=db).status == nt.SENT

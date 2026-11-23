@@ -312,6 +312,8 @@ dashboard:
   # The dashboard address in emails is looked up from the network at most this often,
   # seconds (0-3600; 0 = every time)
   link_cache_seconds: 60
+  # Rows per page of the read-only "Alerts history" page (10-500)
+  alerts_history_page_size: 50
   # The dashboard re-reads config.yaml at most this often, seconds (10-3600)
   config_refresh_seconds: 300
   # A manual start waits this long for the run's first result before the page
@@ -466,7 +468,12 @@ alerts:
   send_decision_needed: true
   send_overdue: true
   send_action_needed: true
+  # send_resolved is the master switch of the "resolved" email (false = never). When true, a normal
+  # recovery is only written to the audit log (dashboard page "Alerts history", status LOGGED_ONLY); the
+  # email is sent only when the problem email was delivered AND the problem lasted at least
+  # resolved_mail_min_hours (1-720), or when the problem email never arrived (the "alert was lost" notice).
   send_resolved: true
+  resolved_mail_min_hours: 24
   send_info: true
   # An alert with no resolution signal of its own (financial year, dashboard ...) that has not
   # occurred again for this many days is over; its next occurrence is a new problem (1-90).

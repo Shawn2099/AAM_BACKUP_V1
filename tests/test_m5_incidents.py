@@ -13,6 +13,7 @@ import pytest
 from core import notify as nt
 from core.manifest import SCHEMA_VERSION, ManifestDB, ManifestSchemaError
 from models.config import AppConfig
+from test_support.notify_aging import age_notifications
 from test_support.smtp_server import smtp_server
 
 UNC = "\\\\nas\\backup\\FY26-27"
@@ -65,9 +66,11 @@ def test_failure_after_a_recovery_is_never_suppressed(tmp_path, db):
     with smtp_server() as srv:
         cfg = _cfg(tmp_path, srv.server_address[1])
         assert nt.notify(cfg, _fail(), db=db).status == nt.SENT
+        age_notifications(db)               # W39: the problem lasted over a day
         assert nt.notify(cfg, _resolved(), db=db).status == nt.SENT
         # failed again within the cooldown: the reader's last email said "resolved"
         assert nt.notify(cfg, _fail(), db=db).status == nt.SENT
+        age_notifications(db)
         assert nt.notify(cfg, _resolved(), db=db).status == nt.SENT
     assert len(srv.messages) == 4
 
@@ -77,6 +80,7 @@ def test_reminders_and_resolved_reply_to_the_first_email(tmp_path, db):
         cfg = _cfg(tmp_path, srv.server_address[1], cooldown=0)     # 0 = every repeat is sent
         nt.notify(cfg, _fail(), db=db)
         nt.notify(cfg, _fail(), db=db)
+        age_notifications(db)               # W39: the problem lasted over a day
         nt.notify(cfg, _resolved(), db=db)
         nt.notify(cfg, _fail("AAM-NAS-03"), db=db)
     first, reminder, resolved, new = _msgs(srv)

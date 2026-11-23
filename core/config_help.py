@@ -200,6 +200,7 @@ HELP: dict[str, tuple[str, str]] = {
     "dashboard.rate_limit_decisions": ("Approvals allowed", "Approve / run / dismiss of blocked backups."),
     "dashboard.session_hours": ("Stay signed in for", ""),
     "dashboard.link_cache_seconds": ("Look up the dashboard address in emails every", ""),
+    "dashboard.alerts_history_page_size": ("Rows per page of the Alerts history", ""),
     "dashboard.config_refresh_seconds": ("Dashboard re-reads settings every", ""),
     "dashboard.trigger_wait_seconds": ("Wait for a started run", "Before the page answers; the run continues."),
     "dashboard.manual_start_max_wait_minutes": ("A manual start may begin at most this late", "Later than this it is recorded as Missed and nothing is touched."),
@@ -234,7 +235,13 @@ HELP: dict[str, tuple[str, str]] = {
     "alerts.send_overdue": ("Email when a backup is overdue", "Off: no email; the dashboard still shows it."),
     "alerts.send_action_needed": ("Email when a person must act",
                                   "Financial-year problems, safety-check differences and service problems."),
-    "alerts.send_resolved": ("Email when a problem is fixed", "The 'resolved' notice."),
+    "alerts.send_resolved": ("Email when a problem is fixed",
+                             "The 'resolved' notice. Off: never. On: only for a problem that lasted long enough "
+                             "(next setting) or whose problem email never arrived; a quick recovery is only "
+                             "written to the Alerts history."),
+    "alerts.resolved_mail_min_hours": ("Send 'resolved' only for a problem that lasted at least (hours)",
+                                       "Shorter problems that fixed themselves are only written to the "
+                                       "Alerts history, without an email."),
     "alerts.send_info": ("Email information notices", "For example: a new financial year started."),
     "alerts.incident_quiet_days": ("Days of quiet after which an alert counts as over",
                                    "If the same alert does not occur again for this long, the next time it "

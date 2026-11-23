@@ -342,6 +342,16 @@ def _degraded_mail_settings(raw: dict):
     return notifications, float(hours), Path(str(runtime))
 
 
+def _marker_first_sent(marker: Path) -> str | None:
+    """ISO time (local zone) written in the invalid-config marker, or None when there is none / it is unreadable."""
+    try:
+        import pendulum
+        text = marker.read_text(encoding="utf-8").strip()
+        return pendulum.from_format(text, "YYYY-MM-DD HH:mm:ss", tz="local").isoformat()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _resolve_invalid_config(cfg) -> None:
     """opus-decision L3: config.yaml loads again after an invalid-config mail (marker file present): send ONE
     RESOLVED mail through core.notify (recorded in `notifications`, never held back by the cooldown) and
@@ -355,7 +365,8 @@ def _resolve_invalid_config(cfg) -> None:
         notify(cfg, AlertEvent(
             key="recovered:watchdog:invalid_config", kind="RECOVERED", mode="watchdog",
             title="config.yaml is valid again",
-            message="config.yaml is valid again; the agent can start.", cooldown_hours=0))
+            message="config.yaml is valid again; the agent can start.", cooldown_hours=0,
+            problem_since=_marker_first_sent(marker)))   # W39: the problem mail is not in the DB
         marker.unlink(missing_ok=True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Invalid-config RESOLVED mail skipped/failed: {e}")
@@ -393,7 +404,11 @@ def _alert_invalid_config() -> None:
                             f"<p>{html.escape(text)}</p>", audience="alerts", body_text=text)
         if result.status == "SENT":
             marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+            # the file holds the time of the FIRST mail of this problem (its mtime is the latest, for the
+            # repeat window): the RESOLVED mail is due only when the problem lasted long enough (W39)
+            first = _marker_first_sent(marker)
+            marker.write_text(first[:19].replace("T", " ") if first else time.strftime("%Y-%m-%d %H:%M:%S"),
+                              encoding="utf-8")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Invalid-config alert skipped/failed: {e}")
 
