@@ -72,6 +72,11 @@ Every change is still checked like a service start before it is saved.</div>
     <p class="fine-print">Runs the same check as the automatic 06:00
        run, with all its safety rules: the final backup of the old FY first, never more than one FY ahead
        without approval, never backwards. Use it when the automatic rollover failed or the server was off.</p>
+    <button class="btn-trigger" id="btn-early" disabled onclick="runEarlyActivation()">Create next year's folder now (force FY activation)</button>
+    <p id="early-message" class="fine-print"></p>
+    <p class="fine-print">Starts backing up next year's folder before 1 January: creates it on the NAS (with the
+       marker) and in the source folder, and from then on both years are backed up until the switch. It does
+       not switch the year and does not delete anything. Needs the NAS to be on.</p>
 </div>
 <div id="restart-overlay" role="status" aria-live="polite">
     <div id="restart-text">Restarting...</div>
