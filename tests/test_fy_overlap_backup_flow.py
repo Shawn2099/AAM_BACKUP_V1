@@ -233,7 +233,29 @@ class TestRaceGuard:
             return cfg if len(reads) == 1 else switched
 
         with backup_env(cfg, reloads=reload) as env:
-            backup.fn(CONFIG_PATH, "all")
+            with pytest.raises(ExceptionGroup) as info:   # a non-success end must raise (review F3)
+                backup.fn(CONFIG_PATH, "all")
+        # the in-memory config is stale for BOTH legs: nothing after the switch runs
+        assert order(env) == [("cloud", "FY26-27")]
+        [err] = info.value.exceptions
+        assert isinstance(err, flow.PartialRun)
+        assert "FY26-27->FY27-28" in str(err)
+        for skipped in ("cloud FY27-28", "lan FY26-27", "lan FY27-28"):
+            assert skipped in str(err)
+
+    def test_an_unreadable_config_between_passes_also_fails_the_flow(self):
+        cfg = owner_config()
+        reads = []
+
+        def reload(path):
+            reads.append(path)
+            if len(reads) == 1:
+                return cfg
+            raise OSError("config.yaml locked")
+
+        with backup_env(cfg, reloads=reload) as env:
+            with pytest.raises(ExceptionGroup):
+                backup.fn(CONFIG_PATH, "cloud")
         assert order(env) == [("cloud", "FY26-27")]
 
 

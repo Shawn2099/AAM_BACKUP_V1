@@ -3140,19 +3140,21 @@ def _overlap_record(config, fy: str):
         db.close()
 
 
-def _configured_fy_switched(config_path: str, started_fy: str) -> bool:
+def _switched_fy(config_path: str, started_fy: str) -> str | None:
     """Race guard (plan 2.2): the rollover switched the configured FY while this run was going. config.yaml is
-    read again before each later pass. An unreadable config counts as switched: the pass does not start."""
+    read again before each later pass. Returns the new configured FY, or None when it is unchanged. An
+    unreadable config counts as switched ("unreadable"): the pass does not start."""
     try:
         now = load_config(config_path)
-        changed = fy_rollover.configured_fy(now.paths.source_drive, now.paths.lan_destination) != started_fy
+        current = fy_rollover.configured_fy(now.paths.source_drive, now.paths.lan_destination)
     except Exception as e:  # noqa: BLE001 - fail closed: the remaining passes do not start
         logger.error(f"FY race guard: config.yaml could not be read ({e}) - the remaining passes do not start")
-        return True
-    if changed:
-        logger.error(f"FY race guard: the configured FY changed from {started_fy} during this run - "
-                     "the remaining passes do not start")
-    return changed
+        return "unreadable"
+    if current == started_fy:
+        return None
+    logger.error(f"FY race guard: the configured FY changed from {started_fy} during this run - "
+                 "the remaining passes do not start")
+    return str(current)
 
 
 @flow(name="aam-backup", log_prints=True)
@@ -3250,6 +3252,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     # plan I2: only the FIRST leg of this flow run is late; a second leg starts when it starts
     late_s = 0.0 if budget_hours is not None else _scheduled_lateness_seconds()
     pass_no = 0   # passes started so far in this run (the race guard applies from the second one)
+    switched_to: str | None = None   # set by the race guard: the in-memory config is stale for every later pass
+    not_run: list[str] = []          # "<leg> <FY>" of the passes the race guard stopped
 
     try:
         # ── Cloud ──
@@ -3258,8 +3262,11 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             cloud_run_id = _stable_run_id("cloud")
             leg_start = time.monotonic()
             for index, p in enumerate(runs):
-                if overlap_on and pass_no and _configured_fy_switched(config_path, started_fy):
-                    break
+                if overlap_on and pass_no and switched_to is None:
+                    switched_to = _switched_fy(config_path, started_fy)
+                if switched_to is not None:
+                    not_run.append(f"cloud {p.fy}")
+                    continue
                 pass_no += 1
                 try:
                     _run_cloud_pipeline(p.config if p is not None else config, cloud_run_id, now_iso(),
@@ -3277,8 +3284,11 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             leg_start = time.monotonic()
             earlier_completed = True   # every pass before this one ended LAN_COMPLETE (plan D-8)
             for index, p in enumerate(runs):
-                if overlap_on and pass_no and _configured_fy_switched(config_path, started_fy):
-                    break
+                if overlap_on and pass_no and switched_to is None:
+                    switched_to = _switched_fy(config_path, started_fy)
+                if switched_to is not None:
+                    not_run.append(f"lan {p.fy}")
+                    continue
                 pass_no += 1
                 last = index == len(runs) - 1
                 extra = _pass_kwargs(p, overlap_on, leg_start, index, late_s)
@@ -3298,6 +3308,11 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
                     earlier_completed = False
                     excs.append(e)
 
+        if switched_to is not None:
+            # a non-success end must raise (CLAUDE.md): the passes after the switch did not run
+            excs.append(PartialRun(
+                f"configured FY changed {started_fy}->{switched_to} while this run was going; "
+                f"passes not run: {', '.join(not_run)}. The next scheduled run backs up the new year."))
         if overlap_unchecked:
             excs.append(RuntimeError(
                 f"{overlap_unchecked} could not be checked (the FY overlap record could not be read), so "
