@@ -337,7 +337,7 @@ def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
     except Exception:  # noqa: BLE001 - the alert must still go out
         code = faults.UNKNOWN
     notify(config, AlertEvent(
-        key=f"backup:{leg}:{fy}:{status}" if fy else f"backup:{leg}:{status}",
+        key=f"backup:{leg}{_fy_key_part(fy)}:{status}",
         kind="FAILURE", mode=leg,
         title=f"{_leg_title(leg, title_fy or fy)} backup {statuses.label(status).lower()}",
         message=message, status=status,
@@ -372,7 +372,7 @@ def _send_recovery_if_needed(config, leg: str, run_id: str, *, fy: str | None = 
     if previous and statuses.category(previous) in (
             statuses.CATEGORY_FAILED, statuses.CATEGORY_PARTIAL, statuses.CATEGORY_BLOCKED):
         notify(config, AlertEvent(
-            key=f"recovered:{leg}:{fy}" if fy else f"recovered:{leg}", kind="RECOVERED", mode=leg,
+            key=f"recovered:{leg}{_fy_key_part(fy)}", kind="RECOVERED", mode=leg,
             title=f"{_leg_title(leg, title_fy or fy)} backup recovered",
             message=f"The {leg.upper()} backup completed successfully again "
                     f"(previous run: {statuses.label(previous)}).",
@@ -495,6 +495,12 @@ def _leg_title(leg: str, title_fy: str | None) -> str:
     return f"{leg.upper()} ({title_fy})" if title_fy else leg.upper()
 
 
+def _fy_key_part(fy: str | None) -> str:
+    """`:FY27-28` in an alert key of the next-FY pass, '' for the baseline (keeps the key literal, see
+    tests/test_alert_class.py which reads the key's literal prefix)."""
+    return f":{fy}" if fy else ""
+
+
 def _ensure_pass_nas_folder(config, fy: str) -> None:
     """The next-FY LAN pass's NAS folder, after WoL (plan 2.3). A refused destination or an unreachable
     share is LAN_FAILED with AAM-LAN-01: that pass fails, the other pass still runs."""
@@ -566,7 +572,7 @@ def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget:
     _record_run(config, run_id, leg, started_at, status, -1, error,
                 monotonic_start=monotonic_start)
     notify(config, AlertEvent(
-        key=f"missed:{leg}:{fy}" if fy else f"missed:{leg}", kind="WARNING", mode=leg,
+        key=f"missed:{leg}{_fy_key_part(fy)}", kind="WARNING", mode=leg,
         title=f"{_leg_title(leg, title_fy or fy)} backup night missed", message=error, status=status,
         occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id, fy=fy))
     raise PartialRun(f"{leg.upper()} run ended {status} - {error}")
@@ -1221,7 +1227,7 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
     message += (f"\n\n{changed} Open the dashboard to review the "
                 "numbers and either approve this backup once or dismiss it.")
     notify(config, AlertEvent(
-        key=f"blocked:{leg}:{fy}" if fy else f"blocked:{leg}", kind="ACTION_REQUIRED", mode=leg,
+        key=f"blocked:{leg}{_fy_key_part(fy)}", kind="ACTION_REQUIRED", mode=leg,
         title=f"{_leg_title(leg, title_fy or fy)} backup blocked - approval needed",
         message=message, status=f"{leg.upper()}_BLOCKED", fy=fy,
         fault_code=faults.blocked_guard_code(guard_record) or faults.UNKNOWN, run_id=run_id,
