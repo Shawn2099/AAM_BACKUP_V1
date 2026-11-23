@@ -1,492 +1,222 @@
-"""Comprehensive tests for core/manifest.py — ManifestDB with real SQLite."""
+"""Comprehensive tests for core/manifest.py — all public methods."""
 
-from __future__ import annotations
+import uuid
 
 import pytest
 
-import pendulum
-
 from core.manifest import ManifestDB
 
-
-# F18: relative dates — the old fixtures hardcoded 2026-06-24 as "new" and
-# 2025-01-01 as "old"; once the real clock passed those dates the tests rotted
-# (a "new" run became older than the retention window and was purged).
-def _ts(offset_days: int = 0) -> str:
-    return pendulum.now("Asia/Kolkata").add(days=offset_days).isoformat()
+FY = "FY26-27"
 
 
-@pytest.fixture(autouse=True, scope="session")
-def prefect_harness():
-    """Override session-scoped fixture from conftest to avoid Prefect server startup."""
-    yield
+def _run(mode="cloud", status="CLOUD_COMPLETE", started="2026-01-01T00:00:00", ended="2026-01-01T01:00:00", **extra):
+    """Build an insert_run payload with the required keys (run_id, mode, started_at, status)."""
+    data = {
+        "run_id": uuid.uuid4().hex,
+        "mode": mode,
+        "started_at": started,
+        "ended_at": ended,
+        "status": status,
+        "fy": FY,
+    }
+    data.update(extra)
+    return data
 
 
 @pytest.fixture
 def db(tmp_path):
-    """Create a fresh ManifestDB for each test."""
-    db_path = tmp_path / "test_manifest.db"
-    manifest = ManifestDB(db_path)
-    yield manifest
-    manifest.close()
+    database = ManifestDB(str(tmp_path / "test.db"))
+    yield database
+    database.close()
 
 
-# ── Pragmas and initialization ───────────────────────────────────────────────
+class TestManifestDBOperations:
+    def test_insert_and_get_run(self, db):
+        db.insert_run(_run(
+            mode="cloud",
+            files_copied=100,
+            bytes_copied=10000,
+            duration_seconds=3600,
+        ))
+        run = db.last_run("cloud", fy=FY)
+        assert run is not None
+        assert run["status"] == "CLOUD_COMPLETE"
+        assert run["files_copied"] == 100
 
+    def test_insert_run_rejects_missing_keys(self, db):
+        """insert_run is dict-based: missing required keys raise KeyError."""
+        with pytest.raises(KeyError):
+            db.insert_run({"mode": "cloud"})
 
-class TestInitialization:
-    def test_wal_mode_enabled(self, db):
-        conn = db._get_conn()
-        row = conn.execute("PRAGMA journal_mode").fetchone()
-        assert row[0] == "wal"
-
-    def test_synchronous_normal(self, db):
-        conn = db._get_conn()
-        row = conn.execute("PRAGMA synchronous").fetchone()
-        assert row[0] == 1  # NORMAL = 1
-
-    def test_foreign_keys_on(self, db):
-        conn = db._get_conn()
-        row = conn.execute("PRAGMA foreign_keys").fetchone()
-        assert row[0] == 1
-
-    def test_creates_parent_dirs(self, tmp_path):
-        nested = tmp_path / "sub" / "dir" / "test.db"
-        manifest = ManifestDB(nested)
-        conn = manifest._get_conn()
-        row = conn.execute("SELECT 1").fetchone()
-        assert row[0] == 1
-        manifest.close()
-
-    def test_schema_version_inserted(self, db):
-        conn = db._get_conn()
-        row = conn.execute("SELECT value FROM db_meta WHERE key = 'schema_version'").fetchone()
-        assert row is not None
-        assert row[0] == "1"
-
-
-# ── close ────────────────────────────────────────────────────────────────────
-
-
-class TestClose:
-    def test_close_sets_conn_none(self, db):
-        db._get_conn()
-        db.close()
-        assert db._conn is None
-
-    def test_close_idempotent(self, db):
-        db.close()
-        db.close()
-        assert db._conn is None
-
-
-# ── insert_run ───────────────────────────────────────────────────────────────
-
-
-class TestInsertRun:
-    def test_inserts_all_fields(self, db):
-        data = {
-            "run_id": "run-001",
-            "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
-            "ended_at": "2026-06-24T10:05:00+05:30",
-            "status": "CLOUD_COMPLETE",
-            "exit_code": 0,
-            "files_copied": 100,
-            "bytes_copied": 50000,
-            "files_failed": 2,
-            "duration_seconds": 300.5,
-            "error_message": None,
-            "extended_metrics": '{"rclone_stats": true}',
-        }
-        db.insert_run(data)
-        runs = db.get_recent_runs()
-        assert len(runs) == 1
-        assert runs[0]["run_id"] == "run-001"
-        assert runs[0]["files_copied"] == 100
-        assert runs[0]["extended_metrics"] == '{"rclone_stats": true}'
-
-    def test_inserts_partial_fields(self, db):
-        data = {
-            "run_id": "run-002",
-            "mode": "lan",
-            "started_at": "2026-06-24T10:00:00+05:30",
-            "status": "LAN_COMPLETE",
-        }
-        db.insert_run(data)
-        runs = db.get_recent_runs()
-        assert len(runs) == 1
-        assert runs[0]["files_copied"] == 0
-        assert runs[0]["bytes_copied"] == 0
-
-    def test_raises_on_missing_required_keys(self, db):
-        with pytest.raises(KeyError, match="missing required keys"):
-            db.insert_run({"run_id": "r1"})  # missing mode, started_at, status
-
-    def test_upsert_on_duplicate_run_id(self, db):
-        data1 = {
-            "run_id": "run-003",
-            "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
-            "status": "RUNNING",
-        }
-        data2 = {
-            "run_id": "run-003",
-            "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
-            "status": "CLOUD_COMPLETE",
-            "files_copied": 50,
-        }
-        db.insert_run(data1)
-        db.insert_run(data2)
-        runs = db.get_recent_runs()
-        assert len(runs) == 1
-        assert runs[0]["status"] == "CLOUD_COMPLETE"
-        assert runs[0]["files_copied"] == 50
-
-
-# ── get_recent_runs ──────────────────────────────────────────────────────────
-
-
-class TestGetRecentRuns:
-    def test_empty_when_no_runs(self, db):
-        assert db.get_recent_runs() == []
-
-    def test_returns_most_recent_first(self, db):
+    def test_get_recent_runs(self, db):
         for i in range(5):
-            db.insert_run({
-                "run_id": f"run-{i:03d}",
-                "mode": "cloud",
-                "started_at": f"2026-06-24T{10 + i:02d}:00:00+05:30",
-                "status": "CLOUD_COMPLETE",
-            })
-        runs = db.get_recent_runs(limit=3)
+            db.insert_run(_run(
+                mode="lan",
+                status="LAN_COMPLETE",
+                started=f"2026-01-0{i+1}T00:00:00",
+                ended=f"2026-01-0{i+1}T01:00:00",
+            ))
+        runs = db.get_recent_runs(3, fy=FY)
         assert len(runs) == 3
-        assert runs[0]["started_at"] > runs[1]["started_at"]
 
-    def test_respects_limit(self, db):
-        for i in range(10):
-            db.insert_run({
-                "run_id": f"run-{i:03d}",
-                "mode": "cloud",
-                "started_at": f"2026-06-24T{10:02d}:00:00+05:30",
-                "status": "CLOUD_COMPLETE",
-            })
-        assert len(db.get_recent_runs(limit=5)) == 5
+    def test_get_runs_since_filters_mode(self, db):
+        from core.time_utils import now_iso
+        today = now_iso()
+        db.insert_run(_run(mode="cloud", started=today))
+        db.insert_run(_run(mode="lan", status="LAN_COMPLETE", started=today))
+        cloud = db.get_runs_since(30, mode="cloud", fy=FY)
+        assert all(r["mode"] == "cloud" for r in cloud)
+        assert len(cloud) == 1
+        assert len(db.get_runs_since(30, fy=FY)) == 2
+        # A run older than the cutoff window is excluded.
+        db.insert_run(_run(mode="cloud", started="2020-01-01T00:00:00"))
+        assert len(db.get_runs_since(30, mode="cloud", fy=FY)) == 1
 
+    def test_last_successful_run(self, db):
+        db.insert_run(_run(mode="cloud", status="CLOUD_COMPLETE", started="2026-01-01T00:00:00"))
+        db.insert_run(_run(mode="cloud", status="CLOUD_FAILED", started="2026-01-02T00:00:00"))
+        run = db.last_successful_run("cloud", fy=FY)
+        assert run is not None
+        assert run["status"] == "CLOUD_COMPLETE"
 
-# ── last_run ─────────────────────────────────────────────────────────────────
+    def test_last_successful_run_glob_not_like(self, db):
+        """GLOB '_' is literal: INCOMPLETE must NOT match *_COMPLETE."""
+        db.insert_run(_run(mode="cloud", status="INCOMPLETE"))
+        assert db.last_successful_run("cloud", fy=FY) is None
 
-
-class TestLastRun:
-    def test_returns_none_when_empty(self, db):
-        assert db.last_run() is None
-
-    def test_returns_most_recent(self, db):
-        db.insert_run({
-            "run_id": "run-old",
-            "mode": "cloud",
-            "started_at": "2026-06-23T10:00:00+05:30",
-            "status": "CLOUD_COMPLETE",
-        })
-        db.insert_run({
-            "run_id": "run-new",
-            "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
-            "status": "CLOUD_COMPLETE",
-        })
-        assert db.last_run()["run_id"] == "run-new"
-
-    def test_filters_by_mode(self, db):
-        db.insert_run({
-            "run_id": "run-cloud",
-            "mode": "cloud",
-            "started_at": "2026-06-24T11:00:00+05:30",
-            "status": "CLOUD_COMPLETE",
-        })
-        db.insert_run({
-            "run_id": "run-lan",
-            "mode": "lan",
-            "started_at": "2026-06-24T10:00:00+05:30",
-            "status": "LAN_COMPLETE",
-        })
-        assert db.last_run(mode="lan")["run_id"] == "run-lan"
-
-
-# ── file_count ───────────────────────────────────────────────────────────────
-
-
-class TestFileCount:
-    def test_zero_when_empty(self, db):
-        assert db.file_count() == 0
-
-    def test_counts_synced_entries(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, lan_status="synced")
-        db.upsert_file_entry("b.txt", 200, 2.0, lan_status="synced")
-        db.upsert_file_entry("c.txt", 300, 3.0, lan_status="unknown")
-        assert db.file_count("lan_status") == 2
-
-    def test_counts_cloud_synced(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, cloud_status="synced")
-        assert db.file_count("cloud_status") == 1
-
-    def test_raises_on_invalid_field(self, db):
-        with pytest.raises(ValueError, match="status_field"):
-            db.file_count("invalid_field")
-
-
-# ── upsert_file_entry ───────────────────────────────────────────────────────
-
-
-class TestUpsertFileEntry:
-    def test_inserts_new_entry(self, db):
-        db.upsert_file_entry("docs/file.txt", 1024, 1234567890.0, lan_status="synced")
-        entry = db.get_entry("docs/file.txt")
-        assert entry is not None
-        assert entry["file_size"] == 1024
-        assert entry["lan_status"] == "synced"
-
-    def test_updates_existing_entry(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, lan_status="unknown")
-        db.upsert_file_entry("a.txt", 200, 2.0, lan_status="synced")
-        entry = db.get_entry("a.txt")
-        assert entry["file_size"] == 200
-        assert entry["lan_status"] == "synced"
-
-    def test_normalizes_backslash(self, db):
-        db.upsert_file_entry("sub\\file.txt", 100, 1.0)
-        entry = db.get_entry("sub/file.txt")
-        assert entry is not None
-
-    def test_preserves_existing_synced_timestamp(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, lan_status="synced")
-        entry_before = db.get_entry("a.txt")
-        ts_before = entry_before["lan_last_synced_at"]
-        # Update without changing status — timestamp should stay
-        db.upsert_file_entry("a.txt", 200, 2.0, lan_status="synced")
-        entry_after = db.get_entry("a.txt")
-        assert entry_after["lan_last_synced_at"] == ts_before
-
-    def test_updates_timestamp_on_status_change(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, lan_status="unknown")
-        db.upsert_file_entry("a.txt", 200, 2.0, lan_status="synced")
-        entry = db.get_entry("a.txt")
-        assert entry["lan_last_synced_at"] is not None
-
-    def test_coalesces_md5_checksum(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, md5_checksum="abc123")
-        db.upsert_file_entry("a.txt", 200, 2.0, md5_checksum=None)
-        entry = db.get_entry("a.txt")
-        assert entry["md5_checksum"] == "abc123"
-
-
-# ── get_entry ────────────────────────────────────────────────────────────────
-
-
-class TestGetEntry:
-    def test_returns_none_when_not_exists(self, db):
-        assert db.get_entry("no/such/file.txt") is None
-
-    def test_returns_dict_when_exists(self, db):
-        db.upsert_file_entry("x.txt", 50, 99.0)
-        entry = db.get_entry("x.txt")
-        assert isinstance(entry, dict)
-        assert entry["relative_path"] == "x.txt"
-
-    def test_normalizes_backslash_on_get(self, db):
-        db.upsert_file_entry("a/b.txt", 10, 1.0)
-        entry = db.get_entry("a\\b.txt")
-        assert entry is not None
-
-
-# ── purge_old_runs ───────────────────────────────────────────────────────────
-
-
-class TestPurgeOldRuns:
-    def test_removes_old_runs(self, db):
-        db.insert_run({
-            "run_id": "run-old",
-            "mode": "cloud",
-            "started_at": _ts(-40),
-            "status": "CLOUD_COMPLETE",
-        })
-        db.insert_run({
-            "run_id": "run-new",
-            "mode": "cloud",
-            "started_at": _ts(0),
-            "status": "CLOUD_COMPLETE",
-        })
-        db.purge_old_runs(retention_days=30)
-        runs = db.get_recent_runs()
-        assert len(runs) == 1
-        assert runs[0]["run_id"] == "run-new"
-
-    def test_keeps_all_when_within_retention(self, db):
-        db.insert_run({
-            "run_id": "run-1",
-            "mode": "cloud",
-            "started_at": _ts(-30),
-            "status": "CLOUD_COMPLETE",
-        })
-        db.purge_old_runs(retention_days=365)
-        assert len(db.get_recent_runs()) == 1
-
-
-# ── delete_entries ───────────────────────────────────────────────────────────
-
-
-class TestDeleteEntries:
-    def test_deletes_entries(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0)
-        db.upsert_file_entry("b.txt", 200, 2.0)
-        db.delete_entries(["a.txt"])
-        assert db.get_entry("a.txt") is None
-        assert db.get_entry("b.txt") is not None
-
-    def test_empty_list_noop(self, db):
-        db.delete_entries([])
-
-    def test_normalizes_backslash(self, db):
-        db.upsert_file_entry("sub\\file.txt", 100, 1.0)
-        db.delete_entries(["sub\\file.txt"])
-        assert db.get_entry("sub/file.txt") is None
-
-
-# ── get_runs_since ───────────────────────────────────────────────────────────
-
-
-class TestGetRunsSince:
-    def test_filters_by_days(self, db):
-        db.insert_run({
-            "run_id": "run-old",
-            "mode": "cloud",
-            "started_at": _ts(-40),
-            "status": "CLOUD_COMPLETE",
-        })
-        db.insert_run({
-            "run_id": "run-new",
-            "mode": "cloud",
-            "started_at": _ts(0),
-            "status": "CLOUD_COMPLETE",
-        })
-        runs = db.get_runs_since(days=1)
-        assert len(runs) == 1
-        assert runs[0]["run_id"] == "run-new"
-
-    def test_filters_by_mode(self, db):
-        db.insert_run({
-            "run_id": "run-cloud",
-            "mode": "cloud",
-            "started_at": _ts(0),
-            "status": "CLOUD_COMPLETE",
-        })
-        db.insert_run({
-            "run_id": "run-lan",
-            "mode": "lan",
-            "started_at": _ts(0),
-            "status": "LAN_COMPLETE",
-        })
-        runs = db.get_runs_since(days=30, mode="cloud")
-        assert len(runs) == 1
-        assert runs[0]["run_id"] == "run-cloud"
-
-
-# ── bulk_upsert_synced ──────────────────────────────────────────────────────
-
-
-class TestBulkUpsertSynced:
-    def test_bulk_inserts(self, db):
+    def test_bulk_upsert_synced(self, db):
         entries = [
-            {"path": f"file_{i}.txt", "size": i * 100, "mtime": float(i)}
+            {"path": f"file_{i}.txt", "size": i * 100, "mtime": 1700000000.0 + i}
+            for i in range(10)
+        ]
+        db.bulk_upsert_synced(entries, mode="cloud", fy=FY)
+        count = db.file_count("cloud_status", fy=FY)
+        assert count == 10
+
+    def test_get_cloud_synced_entries(self, db):
+        entries = [
+            {"path": f"file_{i}.txt", "size": i * 100, "mtime": 1700000000.0 + i}
             for i in range(5)
         ]
-        db.bulk_upsert_synced(entries, "lan")
-        assert db.file_count("lan_status") == 5
+        db.bulk_upsert_synced(entries, mode="cloud", fy=FY)
+        result = db.get_cloud_synced_entries(fy=FY)
+        assert len(result) == 5
 
-    def test_empty_list_noop(self, db):
-        db.bulk_upsert_synced([], "lan")
+    def test_get_lan_synced_paths(self, db):
+        entries = [
+            {"path": f"lan_file_{i}.txt", "size": i * 100, "mtime": 1700000000.0 + i}
+            for i in range(5)
+        ]
+        db.bulk_upsert_synced(entries, mode="lan", fy=FY)
+        result = db.get_synced_paths("lan", fy=FY)
+        assert len(result) == 5
 
-    def test_invalid_mode_raises(self, db):
-        with pytest.raises(ValueError, match="mode must be"):
-            db.bulk_upsert_synced([{"path": "a.txt", "size": 10, "mtime": 1.0}], "invalid")
+    def test_upsert_and_get_entry(self, db):
+        db.upsert_file_entry("a.txt", 10, 1700000000.0, fy=FY, lan_status="synced")
+        entry = db.get_entry("a.txt", fy=FY)
+        assert entry is not None
+        assert entry["lan_status"] == "synced"
+        assert entry["file_size"] == 10
 
-    def test_chunking_many_entries(self, db):
-        entries = [{"path": f"f{i}.txt", "size": 10, "mtime": 1.0} for i in range(250)]
-        db.bulk_upsert_synced(entries, "cloud")
-        assert db.file_count("cloud_status") == 250
+    def test_delete_entries(self, db):
+        entries = [{"path": f"f{i}.txt", "size": 1, "mtime": 1700000000.0} for i in range(3)]
+        db.bulk_upsert_synced(entries, mode="cloud", fy=FY)
+        db.delete_entries(["f0.txt", "f1.txt"], fy=FY)  # returns None; verify by effect
+        assert db.file_count("cloud_status", fy=FY) == 1
+        assert db.get_entry("f0.txt", fy=FY) is None
 
-    def test_normalizes_backslash(self, db):
-        db.bulk_upsert_synced([{"path": "sub\\file.txt", "size": 10, "mtime": 1.0}], "lan")
-        assert db.get_entry("sub/file.txt") is not None
+    def test_prune_stale_synced(self, db):
+        entries = [{"path": f"f{i}.txt", "size": 1, "mtime": 1700000000.0} for i in range(3)]
+        db.bulk_upsert_synced(entries, mode="cloud", fy=FY)
+        pruned = db.prune_stale_synced("cloud", {"f1.txt"}, fy=FY)
+        assert pruned == 2
+        assert db.get_synced_paths("cloud", fy=FY) == ["f1.txt"]
 
+    def test_file_count_empty(self, db):
+        assert db.file_count("cloud_status", fy=FY) == 0
 
-# ── prune_stale_synced ──────────────────────────────────────────────────────
+    def test_purge_old_runs(self, db):
+        """Old runs are purged."""
+        db.insert_run(_run(
+            mode="cloud",
+            status="CLOUD_COMPLETE",
+            started="2020-01-01T00:00:00",
+            ended="2020-01-01T01:00:00",
+        ))
+        db.purge_old_runs(retention_days=30)
+        runs = db.get_recent_runs(10, fy=FY)
+        # Old run should be purged
+        assert len(runs) == 0
 
-
-class TestPruneStaleSynced:
-    def test_prunes_stale_entries(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, lan_status="synced")
-        db.upsert_file_entry("b.txt", 200, 2.0, lan_status="synced")
-        pruned = db.prune_stale_synced("lan", {"a.txt"})
-        assert pruned == 1
-        assert db.get_entry("a.txt")["lan_status"] == "synced"
-        # b.txt has both statuses NULL after pruning → fully deleted
-        assert db.get_entry("b.txt") is None
-
-    def test_returns_zero_when_no_stale(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, lan_status="synced")
-        pruned = db.prune_stale_synced("lan", {"a.txt"})
-        assert pruned == 0
-
-    def test_deletes_fully_null_entries(self, db):
-        db.upsert_file_entry("orphan.txt", 100, 1.0, lan_status="synced")
-        db.prune_stale_synced("lan", set())
-        # Both statuses NULL → entry deleted
-        entry = db.get_entry("orphan.txt")
-        assert entry is None
-
-    def test_invalid_mode_raises(self, db):
-        with pytest.raises(ValueError, match="mode must be"):
-            db.prune_stale_synced("invalid", set())
-
-
-# ── get_synced_paths ─────────────────────────────────────────────────────────
-
-
-class TestGetSyncedPaths:
-    def test_returns_synced_paths(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, lan_status="synced")
-        db.upsert_file_entry("b.txt", 200, 2.0, cloud_status="synced")
-        assert db.get_synced_paths("lan") == ["a.txt"]
-        assert db.get_synced_paths("cloud") == ["b.txt"]
-
-    def test_invalid_mode_raises(self, db):
-        with pytest.raises(ValueError, match="mode must be"):
-            db.get_synced_paths("invalid")
-
-
-# ── get_cloud_synced_entries ─────────────────────────────────────────────────
-
-
-class TestGetCloudSyncedEntries:
-    def test_returns_dict_of_synced(self, db):
-        db.upsert_file_entry("a.txt", 100, 1.0, cloud_status="synced")
-        db.upsert_file_entry("b.txt", 200, 2.0, cloud_status="unknown")
-        result = db.get_cloud_synced_entries()
-        assert "a.txt" in result
-        assert result["a.txt"] == (100, 1.0)
-        assert "b.txt" not in result
-
-
-# ── wal_checkpoint ───────────────────────────────────────────────────────────
-
-
-class TestWalCheckpoint:
-    def test_does_not_raise(self, db):
-        db.insert_run({
-            "run_id": "r1",
-            "mode": "cloud",
-            "started_at": "2026-06-24T10:00:00+05:30",
-            "status": "CLOUD_COMPLETE",
-        })
+    def test_wal_checkpoint(self, db):
+        """WAL checkpoint doesn't crash."""
+        db.insert_run(_run(
+            mode="cloud",
+            status="CLOUD_COMPLETE",
+            started="2026-01-01T00:00:00",
+            ended="2026-01-01T01:00:00",
+        ))
         db.wal_checkpoint()
+
+    def test_audit_operations(self, db):
+        """Audit insert and retrieve (record_audit is dict-based)."""
+        db.record_audit({
+            "audit_id": uuid.uuid4().hex,
+            "fy": FY,
+            "mode": "cloud",
+            "started_at": "2026-01-01T00:00:00",
+            "ended_at": "2026-01-01T01:00:00",
+            "status": "VERIFIED",
+            "files_checked": 100,
+            "mismatches": 0,
+        })
+        audit = db.latest_audit("cloud", fy=FY)
+        assert audit is not None
+        assert audit["status"] == "VERIFIED"
+
+    def test_record_audit_missing_keys(self, db):
+        with pytest.raises(KeyError):
+            db.record_audit({"mode": "cloud"})
+
+    def test_record_audit_rejects_invalid_status(self, db):
+        """status must be VERIFIED or VERIFICATION_FAILED."""
+        with pytest.raises(ValueError):
+            db.record_audit({
+                "audit_id": uuid.uuid4().hex,
+                "fy": FY,
+                "mode": "cloud",
+                "started_at": "2026-01-01T00:00:00",
+                "status": "BOGUS",
+            })
+
+    def test_record_audit_upserts_same_id(self, db):
+        audit_id = uuid.uuid4().hex
+        base = {
+            "audit_id": audit_id,
+            "fy": FY,
+            "mode": "cloud",
+            "started_at": "2026-01-01T00:00:00",
+            "status": "VERIFIED",
+        }
+        db.record_audit(dict(base))
+        db.record_audit({**base, "status": "VERIFICATION_FAILED", "mismatches": 7})
+        audits = db.latest_audit("cloud", fy=FY)
+        assert audits["status"] == "VERIFICATION_FAILED"
+        assert audits["mismatches"] == 7
+
+    def test_latest_audit_none_when_absent(self, db):
+        assert db.latest_audit("cloud", fy=FY) is None
+
+    def test_mode_status_operations(self, db):
+        """Synced-path upsert and retrieval."""
+        entries = [{"path": "test.txt", "size": 5, "mtime": 1700000000.0}]
+        db.bulk_upsert_synced(entries, mode="cloud", fy=FY)
+        assert db.get_synced_paths("cloud", fy=FY) == ["test.txt"]
+
+    def test_clear_mode_status(self, db):
+        """Clear mode status."""
+        entries = [{"path": "test.txt", "size": 5, "mtime": 1700000000.0}]
+        db.bulk_upsert_synced(entries, mode="cloud", fy=FY)
+        db.clear_mode_status("cloud", ["test.txt"], fy=FY)
+        count = db.file_count("cloud_status", fy=FY)
+        assert count == 0

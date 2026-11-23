@@ -4,16 +4,18 @@ Reference: AAM_BACKUP_V2/core/robocopy.py — proven bitmask logic and flag set.
 Exit code reference: https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy
 """
 
-import os
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 
 from loguru import logger
 
+from core.guards import require_source_files
+from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
-from models.config import LanConfig
+from core.run_artefacts import RunArtefacts
+from core.tool_runner import run_tool
+from models.config import LanConfig, MaintenanceConfig, model_default
 
 # ═══════════════════════════════════════════════════════════════
 # Flag validation — /NC is FORBIDDEN
@@ -22,12 +24,6 @@ from models.config import LanConfig
 # the downstream log parser relies on to categorise per-file outcomes.
 # ═══════════════════════════════════════════════════════════════
 
-# Tail sizes for log capture — enough for full context, bounded to prevent
-# oversized payloads in the result dict.
-_ERROR_LOG_TAIL = 100_000   # bytes — full error context for real failures (codes 8-15, 16+)
-_ANOMALY_LOG_TAIL = 100_000 # bytes — full context for anomalies (codes 4-7); no alert, but complete forensics
-
-
 def _validate_required_flags(flags: list[str]) -> None:
     for f in flags:
         if f.upper() in ("/NC", "-NC"):
@@ -35,6 +31,41 @@ def _validate_required_flags(flags: list[str]) -> None:
 
 
 _FAILED_LINE = re.compile(r"^\s*\*\*\s*FAILED:", re.MULTILINE)
+# One "*EXTRA File" line per destination file /MIR deletes (nested files in
+# extra folders included). /XF-excluded files (the mount marker) are NOT
+# listed although the summary Extras column counts them - verified on
+# robocopy 10.0, 2026-10-14.
+_EXTRA_FILE_LINE = re.compile(r"^\s*\*EXTRA File\b", re.MULTILINE)
+
+
+def is_extra_file_line(line: str) -> bool:
+    """One destination file `robocopy /MIR` deletes (streaming form)."""
+    return bool(_EXTRA_FILE_LINE.match(line))
+
+
+def scan_robocopy_log(log_path) -> tuple[int | None, str]:
+    """Stream a /UNILOG log: (*EXTRA File line count, final summary block).
+
+    Streaming keeps memory flat even when a mass deletion lists every file;
+    only the block after the last "-----" separator (the job summary) is
+    kept. Unreadable log -> (None, "") so callers record "unknown".
+    """
+    extra = 0
+    summary: list[str] = []
+    in_summary = False
+    try:
+        with open(log_path, encoding="utf-16", errors="replace") as f:
+            for line in f:
+                if line.lstrip().startswith("-----"):
+                    summary, in_summary = [], True
+                elif in_summary:
+                    summary.append(line)
+                elif is_extra_file_line(line):
+                    extra += 1
+    except OSError as e:
+        logger.error(f"robocopy log unreadable ({log_path}): {e}")
+        return None, ""
+    return extra, "".join(summary)
 
 # Integrity-verification contract: a robocopy run that terminated normally
 # ALWAYS ends its /LOG with the job-summary table ("Files :" row + "Ended :"
@@ -55,6 +86,9 @@ _SUMMARY_COLUMN_NAMES = ("total", "copied", "skipped", "mismatch", "failed", "ex
 _SUMMARY_FILES_ROW = re.compile(r"^\s*Files\s*:", re.MULTILINE)
 
 
+_SUMMARY_BYTES_ROW = re.compile(r"^\s*Bytes\s*:", re.MULTILINE)
+
+
 def _summary_files_row_values(log_text: str) -> list[int] | None:
     """Return the numeric columns of the job-summary Files row, or None.
 
@@ -62,7 +96,11 @@ def _summary_files_row_values(log_text: str) -> list[int] | None:
     letters or missing columns abort parsing) so callers can fall back to the
     exit-bitmask floor instead of reporting a false 0.
     """
-    match = _SUMMARY_FILES_ROW.search(log_text or "")
+    return _summary_row_values(log_text, _SUMMARY_FILES_ROW)
+
+
+def _summary_row_values(log_text: str, row: re.Pattern) -> list[int] | None:
+    match = row.search(log_text or "")
     if not match:
         return None
     line_end = log_text.find("\n", match.start())
@@ -106,29 +144,35 @@ def count_failed_lines(log_text: str) -> int:
     return len(_FAILED_LINE.findall(log_text))
 
 
-def _read_log_tail(log_path: Path, max_bytes: int) -> str:
+def _read_log_tail(log_path: Path, max_bytes: int, encoding: str = "utf-8") -> str:
     """Read the tail of a robocopy log file, bounded to max_bytes.
 
-    Robocopy writes summary and error details at the end of the log.
-    Reading the tail rather than the head ensures we always get the
-    most actionable diagnostic data regardless of log file size.
+    Robocopy writes summary and error details at the end of the log, so the
+    tail always holds the most actionable diagnostics. F15: seek from the
+    end instead of loading a multi-hundred-MB log into RAM.
 
-    F15: seek from the end instead of reading the whole file. At 1M+ files
-    with /V /TS /FP the log can be several hundred MB; the old
-    read-entire-then-slice path loaded all of it into RAM for a 100KB tail.
+    `encoding="utf-16"` reads robocopy /UNILOG output (UTF-16LE with BOM,
+    verified on the target Windows build): the seek offset is aligned to a
+    2-byte code unit and the tail is decoded as UTF-16LE.
 
-    Returns the raw text tail or a fallback message if the file is unreadable.
+    Returns the text tail, or a fallback message if the file is unreadable.
     """
+    utf16 = encoding.lower().replace("_", "-") in ("utf-16", "utf-16le", "utf-16-le")
     try:
         size = log_path.stat().st_size
         if size <= max_bytes:
-            return log_path.read_text(encoding="utf-8", errors="replace")
+            text = log_path.read_bytes().decode(encoding, errors="replace").lstrip("﻿")
+            return text.replace("\r\n", "\n")
+        start = size - max_bytes
+        if utf16 and start % 2:
+            start += 1
         with open(log_path, "rb") as f:
-            f.seek(size - max_bytes)
+            f.seek(start)
             data = f.read()
-        # The cut point can land mid UTF-8 sequence; errors=replace yields a
-        # leading U+FFFD which we strip so the tail starts on a clean char.
-        return data.decode("utf-8", errors="replace").lstrip("\ufffd")
+        text = data.decode("utf-16-le" if utf16 else encoding, errors="replace")
+        # The cut point can land mid-sequence; drop the replacement char(s).
+        # Newlines normalised to "\n" on both paths (robocopy writes CRLF).
+        return text.lstrip("�﻿").replace("\r\n", "\n")
     except OSError as exc:
         return f"robocopy log unreadable: {exc}"
 
@@ -151,6 +195,18 @@ def summarize_log_counts(log_text: str) -> dict | None:
     None when the summary is absent/unparseable (killed or corrupt log).
     """
     values = _summary_files_row_values(log_text)
+    if not values or len(values) < len(_SUMMARY_COLUMN_NAMES):
+        return None
+    return dict(zip(_SUMMARY_COLUMN_NAMES, values[:len(_SUMMARY_COLUMN_NAMES)]))
+
+
+def summarize_log_bytes(log_text: str) -> dict | None:
+    """Parse the job-summary "Bytes :" row (needs robocopy /BYTES), or None.
+
+    Without /BYTES robocopy rounds ("3.33 m") - that fails closed to None
+    (verified on robocopy 10.0, 2026-10-15). "copied" = bytes the run writes.
+    """
+    values = _summary_row_values(log_text, _SUMMARY_BYTES_ROW)
     if not values or len(values) < len(_SUMMARY_COLUMN_NAMES):
         return None
     return dict(zip(_SUMMARY_COLUMN_NAMES, values[:len(_SUMMARY_COLUMN_NAMES)]))
@@ -181,7 +237,10 @@ def decide_lan_result(exit_code: int, log_text: str) -> dict:
     counts = summarize_log_counts(text)
     failed_markers = count_failed_lines(text)
 
-    if exit_code is None or not isinstance(exit_code, int) or exit_code < 0:
+    # type() is not isinstance(): bool is an int subclass, and True must never
+    # be read as robocopy exit code 1 (W13.exit_code_bool). Same guard as
+    # core/cloud_verify.decide_cloud_verify_result.
+    if exit_code is None or type(exit_code) is not int or exit_code < 0:
         return {
             "status": "LAN_FAILED", "termination": "abnormal",
             "log_complete": log_complete, "counts": counts,
@@ -266,29 +325,28 @@ def classify_exit_code(code: int) -> str:
         Bit 4 (16): Serious error. Robocopy did not copy any files. Usage error
                     or insufficient access privileges on source/destination.
 
-    Classification mapping:
-        Codes 0–3   → LAN_COMPLETE  (bits 0–1 only: success, extras — no anomaly)
-        Codes 4–7   → LAN_PARTIAL   (bit 2 set: mismatches/extras — sync completed,
-                                     but anomalies present. Non-fatal. Investigate later.)
-        Codes 8–15  → LAN_PARTIAL   (bit 3 set: copy errors — sync incomplete. Fatal
-                                     for affected files. Needs immediate attention.)
+    Classification mapping (aligned with decide_lan_result, which is
+    authoritative wherever a job log exists — this helper is only a
+    no-log fallback, e.g. FY rollover when run_lan_sync yields no status):
+        Codes 0–7   → LAN_COMPLETE  (no copy errors; bit-2 mismatches/extras
+                                     with a finished pass are not failures)
+        Codes 8–15  → LAN_PARTIAL   (bit 3 set: copy errors — sync incomplete.
+                                     Fatal for affected files. Needs attention.)
         Code 16+    → LAN_FAILED    (bit 4 set: fatal process error — nothing copied.)
 
-    Note: Codes 4–7 and 8–15 both map to LAN_PARTIAL but have different severity.
     Callers MUST use `result.returncode & 8` (not `status`) to distinguish between
     anomalies and copy errors. See run_lan_sync() for the enforcement of this contract.
 
     Returns: LAN_COMPLETE | LAN_PARTIAL | LAN_FAILED
     """
+    if type(code) is not int or code < 0:
+        return "LAN_FAILED"  # bool / None / sentinel: never a usable exit code
     if code & 16:
         return "LAN_FAILED"
     if code & 8:
         return "LAN_PARTIAL"
-    if code in (0, 1, 2, 3):
+    if 0 <= code <= 7:
         return "LAN_COMPLETE"
-    if 4 <= code <= 7:
-        # Bit 2 set: mismatches or extras flagged — sync completed with anomalies
-        return "LAN_PARTIAL"
     # Negative codes (-1 timeout sentinel) and any unexpected values → failed
     return "LAN_FAILED"
 
@@ -300,7 +358,7 @@ def classify_exit_code(code: int) -> str:
 ROBOCOPY_LOG_PREFIX = "robocopy_sync_"
 
 
-def cleanup_orphaned_robocopy_logs(max_age_hours: int = 24) -> int:
+def cleanup_orphaned_robocopy_logs(max_age_hours: int = model_default(MaintenanceConfig, "orphan_robocopy_log_max_age_hours")) -> int:
     """Delete orphaned robocopy temp logs older than max_age_hours.
 
     Returns the number of files removed. Never raises — cleanup is
@@ -326,14 +384,6 @@ def cleanup_orphaned_robocopy_logs(max_age_hours: int = 24) -> int:
     return removed
 
 
-def _assert_source_not_empty(source: str) -> None:
-    from pathlib import Path as _Path
-    from core.health import check_source_drive as _check_src
-    ok, reason = _check_src(source)
-    if not ok and "appears empty" in reason:
-        raise ValueError(reason)
-
-
 def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> list[str]:
     """Build robocopy /MIR command with production-verified flags.
 
@@ -342,8 +392,9 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
                   dest is an exact replica; orphaned destination files are pruned.
         /Z      — Restartable mode. Partially-copied files resume on retry instead
                   of starting over (important for large files over unstable LAN).
-        /ZB     — Falls back to Backup mode if a file is access-denied. Requires
-                  SeBackupPrivilege on the service account for full effectiveness.
+        /ZB     — Falls back to Backup mode if a file is access-denied. Only when
+                  lan.use_backup_mode (DEC-8); needs SeBackupPrivilege, which the
+                  preflight checks (permissions.check_backup_privilege).
         /XJ     — Exclude junction points (both files and dirs). Prevents infinite
                   recursion through Windows symlinks / volume mount points.
         /MT:n   — Multi-threaded copy. Tuned via config; default 4 matches the
@@ -364,209 +415,154 @@ def build_robocopy_command(source: str, dest: str, lan_config: LanConfig) -> lis
     flags = [
         "/MIR",
         "/Z",
-        "/ZB",
+        *(["/ZB"] if lan_config.use_backup_mode else []),
         "/XJ",
         f"/MT:{lan_config.mt_threads}",
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
-        "/V", "/TS", "/FP",
+        "/V", "/TS", "/FP", "/BYTES",
         "/NJH", "/NDL", "/NP",
-        "/XF", ".AAM_TARGET_MOUNTED",
+        "/XF", ".AAM_TARGET_MOUNTED", PROBE_PATTERN,
         "/XD", "System Volume Information", "$RECYCLE.BIN",
     ]
 
     _validate_required_flags(flags)
-    _assert_source_not_empty(source)
+    require_source_files(source)  # G1 backstop (M2 2.2)
     robocopy_exe = resolve_binary("robocopy") or "robocopy"
     return [robocopy_exe, source, dest, *flags]
 
 
-def run_lan_sync(source: str, dest: str, lan_config: LanConfig) -> dict:
+def run_lan_sync(
+    source: str,
+    dest: str,
+    lan_config: LanConfig,
+    artefacts: RunArtefacts | None = None,
+    timeout_s: float | None = None,
+) -> dict:
     """Execute robocopy /MIR mirror sync and return a structured result dict.
 
-    Robocopy writes all output to the /LOG:path file when that flag is set.
-    stdout/stderr from the subprocess are empty and are discarded via DEVNULL.
-    Exit code and diagnostic details are read from the log file.
+    `timeout_s` overrides lan.subprocess_timeout_seconds (the caller passes
+    what is left of the run budget, plan WP14).
+
+    The FULL robocopy log is written with /UNILOG (UTF-16, so non-ASCII
+    file names survive) into the run's artefact folder and kept (plan WP2);
+    only a bounded tail (`lan.log_tail_kb`) is carried in the result for
+    decisions, alerts and the database.
 
     Return dict schema:
         {
-            "status":          str        — "LAN_COMPLETE" | "LAN_PARTIAL" |
-                                            "LAN_SUSPECT" | "LAN_FAILED"
-            "exit_code":       int        — Raw robocopy exit code (or -1 for exceptions)
-            "error":           str|None   — Log tail (up to 100KB) for genuine failures
-                                           (exit codes 8–15 and 16+) and for SUSPECT
-                                           runs (truncated-log explanation + tail).
-                                           None otherwise.
-            "anomaly_details": str|None   — Log tail (up to 5KB) for anomaly-only runs
-                                           (exit codes 4–7: mismatches/extras, no copy
-                                           failure). None on clean success or real errors
-                                           (real errors are captured in `error` instead).
-            "termination":     str        — "normal" | "abnormal" (process-lifetime
-                                           signal; abnormal = killed/timed out/spawn
-                                           failure, or success-band exit with a
-                                           truncated log — T04/A1).
-            "log_complete":    bool       — completed job summary present in the log.
-            "counts":          dict|None  — parsed Files-row counters when available.
-            "log_retained":    str|None   — path of the retained forensic log on
-                                           SUSPECT runs (reaped by G8 cleanup).
+            "status":          "LAN_COMPLETE" | "LAN_PARTIAL" |
+                               "LAN_SUSPECT" | "LAN_FAILED"
+            "exit_code":       raw robocopy exit code (-1 when the process
+                               never produced one: timeout / spawn failure)
+            "error":           log tail for genuine failures (8-15, 16+) and
+                               SUSPECT runs; None otherwise
+            "anomaly_details": log tail for anomaly-only runs (4-7); None
+                               otherwise
+            "files_failed":    robocopy per-file failure count
+            "termination":     "normal" | "abnormal"
+            "log_complete":    completed job summary present in the log
+            "counts":          parsed Files-row counters when available
+            "log_retained":    path of the full robocopy log (always kept)
         }
 
-    COMPLETE here means "transfer terminated normally and its own evidence
-    says the scheduled work finished" — it does NOT mean independently or
-    cryptographically verified (see the weekly integrity audit).
-
-    Severity contract:
-        - `error` populated      → alert system MUST notify. Backup is incomplete.
-        - `anomaly_details` set  → log a warning, investigate later. Backup is complete.
-        - Both None              → clean success.
-
-    Args:
-        source:     Source drive path (e.g. "D:\\").
-        dest:       LAN UNC destination (e.g. "\\\\10.0.0.5\\Backups").
-        lan_config: LAN configuration with retry/timeout/thread settings.
+    COMPLETE means "transfer terminated normally and its own evidence says
+    the scheduled work finished" — it does NOT mean independently verified
+    (see the weekly integrity audit).
     """
+    artefacts = artefacts or RunArtefacts.ephemeral("lan-sync")
+    tail_bytes = int(lan_config.log_tail_kb) * 1024
     cmd = build_robocopy_command(source, dest, lan_config)
-    log_path = None
-    log_retained = None
+    log_path = artefacts.new_path("robocopy", "log")
+    cmd.append(f"/UNILOG:{log_path}")
 
-    try:
-        log_fd, log_path_str = tempfile.mkstemp(suffix=".log", prefix="robocopy_sync_")
-        os.close(log_fd)  # Release handle so robocopy can open and write the file
-        log_path = Path(log_path_str)
+    logger.info(f"LAN sync: {' '.join(cmd[:4])}... (full log: {log_path})")
+    timeout = lan_config.subprocess_timeout_seconds if timeout_s is None else timeout_s
+    result = run_tool(
+        "robocopy", cmd,
+        timeout_s=timeout,
+        artefacts=artefacts, log_path=log_path,
+    )
 
-        cmd.extend([f"/LOG:{log_path}"])
+    def _no_exit(error: str) -> dict:
+        return {
+            "status": "LAN_FAILED", "exit_code": -1, "error": error,
+            "anomaly_details": None, "files_failed": 0,
+            "termination": "abnormal", "log_complete": False,
+            "counts": None, "log_retained": str(log_path),
+            "bytes": None, "files_deleted": None,
+        }
 
-        logger.info(f"LAN sync: {' '.join(cmd[:4])}... (log: {log_path})")
+    if result.spawn_error:
+        if "FileNotFoundError" in result.spawn_error:
+            logger.error("robocopy.exe not found - is this running on Windows Server?")
+            return _no_exit(f"robocopy.exe not found: {result.spawn_error}")
+        logger.error(f"LAN sync OS error: {result.spawn_error}")
+        return _no_exit(result.spawn_error)
+    if result.timed_out:
+        logger.error(f"LAN sync timed out after {timeout:.0f}s")
+        return {**_no_exit(
+            f"Timeout after {timeout:.0f}s — robocopy "
+            f"process killed (full log kept: {log_path})"
+        ), "timed_out": True}
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,  # Robocopy writes all output via /LOG:path
-            stderr=subprocess.DEVNULL,  # stderr is also empty when /LOG: is used
-            timeout=lan_config.subprocess_timeout_seconds,
+    code = result.exit_code
+    # Integrity contract: the exit code is only interpreted together with
+    # the log's own completion evidence (decide_lan_result). A killed
+    # process can inherit exit 0-3 with a truncated log — that is SUSPECT,
+    # never COMPLETE (T04/A1).
+    decision_tail = _read_log_tail(log_path, tail_bytes, encoding="utf-16")
+    decision = decide_lan_result(code, decision_tail)
+    status = decision["status"]
+    logger.info(
+        f"LAN sync exit {code} → {status} "
+        f"(termination={decision['termination']}, "
+        f"log_complete={decision['log_complete']})"
+    )
+
+    error_msg = None
+    anomaly_details = None
+    files_failed = 0
+
+    if status == "LAN_SUSPECT":
+        error_msg = (
+            f"{decision['reason']}\n"
+            f"--- robocopy log tail ({len(decision_tail)} chars; full log: {log_path}) ---\n"
+            f"{decision_tail}"
+        )
+        files_failed = failed_file_count(decision_tail, code)
+        logger.error(f"LAN sync SUSPECT (exit {code}) - {decision['reason']}")
+    elif status == "LAN_FAILED" or (code & 8):
+        # Real failure: bit 4 (fatal) or bit 3 (copy errors) set.
+        error_msg = decision_tail
+        # P1-COUNT (A-prime): positional summary parse + bit-3 floor.
+        files_failed = failed_file_count(decision_tail, code)
+        marker_count = count_failed_lines(decision_tail)
+        logger.error(
+            f"LAN sync FAILED (exit {code}) - files_failed={files_failed} "
+            f"({marker_count} '** FAILED:' marker(s) visible in tail); "
+            f"full log: {log_path}"
+        )
+    elif 4 <= code <= 7:
+        # Anomaly only: bit 2 set (mismatches/extras), no copy errors.
+        anomaly_details = decision_tail
+        logger.warning(
+            f"LAN sync anomalies detected (exit {code}) - mismatches or extra "
+            f"destination files found. Backup is complete. Full log: {log_path}"
         )
 
-        # Integrity contract: the exit code is only interpreted together
-        # with the log's own completion evidence (decide_lan_result). A
-        # killed process can inherit exit 0-3 with a truncated log — that
-        # is SUSPECT, never COMPLETE (T04/A1).
-        decision_tail = _read_log_tail(log_path, _ERROR_LOG_TAIL)
-        decision = decide_lan_result(result.returncode, decision_tail)
-        status = decision["status"]
-        logger.info(
-            f"LAN sync exit {result.returncode} → {status} "
-            f"(termination={decision['termination']}, "
-            f"log_complete={decision['log_complete']})"
-        )
-
-        error_msg = None
-        anomaly_details = None
-        files_failed = 0
-        log_retained = None
-
-        if status == "LAN_SUSPECT":
-            # Abnormal termination: keep the (truncated) log for forensics
-            # instead of deleting it; the 24h G8 cleanup reaps it later.
-            error_msg = (
-                f"{decision['reason']}\n"
-                f"--- robocopy log tail ({len(decision_tail)} bytes retained) ---\n"
-                f"{decision_tail}"
-            )
-            files_failed = failed_file_count(decision_tail, result.returncode)
-            log_retained = str(log_path)
-            logger.error(f"LAN sync SUSPECT (exit {result.returncode}) - {decision['reason']}")
-
-        elif status == "LAN_FAILED" or (result.returncode & 8):
-            # Real failure: bit 4 (fatal) or bit 3 (copy errors) set.
-            # Capture full log tail for alert system and operator triage.
-            error_msg = _read_log_tail(log_path, _ERROR_LOG_TAIL)
-            # P1-COUNT (A-prime): positional summary parse + bit-3 floor.
-            # The old per-marker count reported 0 under /NJS because the
-            # "** FAILED:" lines and summary never reached the tail.
-            files_failed = failed_file_count(error_msg, result.returncode)
-            marker_count = count_failed_lines(error_msg)
-            logger.error(
-                f"LAN sync FAILED (exit {result.returncode}) - "
-                f"{len(error_msg)} bytes of log captured in result['error'], "
-                f"files_failed={files_failed} "
-                f"({marker_count} '** FAILED:' marker(s) visible in tail)"
-            )
-
-        elif 4 <= result.returncode <= 7:
-            # Anomaly only: bit 2 set (mismatches/extras), no copy errors.
-            # Sync completed. Capture a short log tail so operators can diagnose
-            # the anomaly if the warning is investigated — but do NOT set `error`
-            # so alert systems are not triggered.
-            anomaly_details = _read_log_tail(log_path, _ANOMALY_LOG_TAIL)
-            logger.warning(
-                f"LAN sync anomalies detected (exit {result.returncode}) - "
-                f"mismatches or extra destination files found. "
-                f"Backup is complete. Check result['anomaly_details'] for context."
-            )
-
-        return {
-            "status": status,
-            "exit_code": result.returncode,
-            "error": error_msg,
-            "anomaly_details": anomaly_details,
-            # F12: failed-file count from the tail (0 on clean/anomaly runs);
-            # persisted to run_history for reports and the dashboard.
-            "files_failed": files_failed,
-            # Integrity-verification contract fields (additive; existing
-            # consumers ignore them).
-            "termination": decision["termination"],
-            "log_complete": decision["log_complete"],
-            "counts": decision["counts"],
-            "log_retained": log_retained,
-        }
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"LAN sync timed out after {lan_config.subprocess_timeout_seconds}s")
-        return {
-            "status": "LAN_FAILED",
-            "exit_code": -1,
-            "error": f"Timeout after {lan_config.subprocess_timeout_seconds}s — robocopy process killed",
-            "anomaly_details": None,
-            "files_failed": 0,
-            "termination": "abnormal",
-            "log_complete": False,
-            "counts": None,
-            "log_retained": None,
-        }
-    except FileNotFoundError as exc:
-        logger.error("robocopy.exe not found - is this running on Windows Server?")
-        return {
-            "status": "LAN_FAILED",
-            "exit_code": -1,
-            "error": f"robocopy.exe not found: {exc}",
-            "anomaly_details": None,
-            "files_failed": 0,
-            "termination": "abnormal",
-            "log_complete": False,
-            "counts": None,
-            "log_retained": None,
-        }
-    except OSError as exc:
-        logger.error(f"LAN sync OS error: {exc}")
-        return {
-            "status": "LAN_FAILED",
-            "exit_code": -1,
-            "error": str(exc),
-            "anomaly_details": None,
-            "files_failed": 0,
-            "termination": "abnormal",
-            "log_complete": False,
-            "counts": None,
-            "log_retained": None,
-        }
-    finally:
-        # SUSPECT runs retain their (truncated) log for forensics; the
-        # 24h G8 orphaned-log cleanup reaps it later. All other runs
-        # delete their log as before.
-        if log_path and log_path.exists():
-            try:
-                if log_retained and str(log_path) == log_retained:
-                    logger.warning(f"Retaining suspect robocopy log for forensics: {log_path}")
-                else:
-                    log_path.unlink()
-            except OSError:
-                pass  # Temp file cleanup is best-effort; OS will eventually reclaim it
+    return {
+        "status": status,
+        "exit_code": code,
+        "error": error_msg,
+        "anomaly_details": anomaly_details,
+        "files_failed": files_failed,
+        "termination": decision["termination"],
+        "log_complete": decision["log_complete"],
+        "counts": decision["counts"],
+        "log_retained": str(log_path),
+        # WP6: the tool's own accounting (bytes need /BYTES; deletions are the
+        # *EXTRA File lines - streamed over the FULL log, not the tail).
+        "bytes": summarize_log_bytes(decision_tail),
+        "files_deleted": scan_robocopy_log(log_path)[0],
+    }

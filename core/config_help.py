@@ -1,0 +1,383 @@
+"""Plain-language names and help for every setting (owner 2026-10-15:
+"make it easy to understand for the user too").
+
+The technical key stays visible in small print for the support team; these
+texts are what a person at the firm reads. Keep them short, concrete, and
+free of tool jargon. A key without an entry falls back to the model's
+technical description (a test checks every key has one).
+"""
+
+from __future__ import annotations
+
+SECTION_TITLES = {
+    "general": "Firm",
+    "schedule": "Backup timetable",
+    "notifications": "Emails",
+    "paths": "Folders",
+    "lan": "Backup to the NAS (office network)",
+    "wol": "Switching the NAS on and off",
+    "cloud": "Backup to Google Cloud",
+    "budget": "Maximum running time",
+    "dashboard": "Dashboard",
+    "alerts": "Alert emails",
+    "maintenance": "Housekeeping",
+    "health": "Checks before each backup",
+    "run_logs": "Detailed logs",
+    "guards": "Protection against accidental deletion",
+    "approvals": "Approvals",
+    "rollover": "New financial year",
+    "audit": "Weekly safety check",
+    "watchdog": "Self-repair (watchdog)",
+}
+
+# key: (label, help)
+HELP: dict[str, tuple[str, str]] = {
+    "firm_name": ("Firm name", "Shown in emails and reports."),
+
+    # ── timetable ──
+    "schedule.lan_cron": ("LAN backup (copy to the NAS)",
+                          "When the files are copied to the NAS in the office."),
+    "schedule.cloud_cron": ("Cloud backup (copy to Google Cloud)",
+                            "When the files are copied to Google Cloud."),
+    "schedule.weekly_cron": ("Weekly report email", "When the weekly summary email is sent."),
+    "schedule.monthly_cron": ("Monthly report email", "When the monthly summary email is sent."),
+    "schedule.audit_cron": ("Weekly safety check",
+                            "When the backups are compared file by file with the originals. "
+                            "It only reads, it never changes anything."),
+    "schedule.rollover_cron": ("New-financial-year check",
+                               "Daily check that switches the backups to the new financial year "
+                               "on 1 April. On other days it does nothing."),
+    "schedule.timezone": ("Time zone", "Time zone of the timetable. India = Asia/Kolkata (IST)."),
+
+    # ── emails ──
+    "notifications.recipients": ("Who gets problem alerts",
+                                 "Everyone who should be told when something needs attention "
+                                 "(problems, action needed, warnings, resolved). One address per box. "
+                                 "If this list is empty, alerts go to the reports list."),
+    "notifications.report_recipients": ("Who gets reports",
+                                        "Everyone who should get the weekly and monthly reports. "
+                                        "One address per box. An address may also be in the alerts "
+                                        "list. If this list is empty, reports go to the alerts list."),
+    "notifications.sender": ("Sent from (address)", "The address the emails come from."),
+    "notifications.smtp_host": ("Mail server", "Address of the mail server, e.g. smtp.gmail.com."),
+    "notifications.smtp_port": ("Mail server port", "Usually 587 (or 465)."),
+    "notifications.smtp_username": ("Mail login name", "Name used to log in to the mail server."),
+    "notifications.smtp_password": ("Mail login password",
+                                    "Password for the mail server. Leave empty to keep the current one."),
+    "notifications.smtp_security": ("Mail connection security",
+                                    "Leave on 'auto' unless your mail provider says otherwise."),
+    "notifications.smtp_auth": ("Mail server needs a login", "Off only for an internal mail relay."),
+    "notifications.send_on_failure": ("Email me when a backup fails",
+                                      "Routine failure and warning emails. Emails that need your "
+                                      "decision, overdue backups, safety-check differences and a "
+                                      "stopped backup program are always sent."),
+    "notifications.weekly_enabled": ("Send the weekly report", ""),
+    "notifications.monthly_enabled": ("Send the monthly report", ""),
+    "notifications.smtp_timeout_seconds": ("Mail server time-out", "How long to wait for the mail server."),
+    "notifications.retry_attempts": ("Mail send attempts", "How often to try again when the mail server is busy."),
+    "notifications.retry_base_seconds": ("Wait between mail attempts", "Pause before trying again (grows each time)."),
+
+    # ── folders ──
+    "paths.source_drive": ("Folder to back up",
+                           "The firm's data folder for the current financial year, e.g. E:\\DATA\\FY26-27."),
+    "paths.lan_destination": ("Backup folder on the NAS",
+                              "Where the copy is kept on the NAS, e.g. \\\\NAS\\backup\\FY26-27."),
+    "paths.gcs_key_path": ("Google Cloud key file", "The key file that lets this server use Google Cloud."),
+    "paths.runtime_dir": ("Program data folder", "Where the program keeps its database and logs."),
+    "paths.database_path": ("Database file", "Leave empty."),
+    "paths.log_directory": ("Log folder", "Leave empty."),
+
+    # ── LAN ──
+    "lan.enabled": ("Back up to the NAS", "Copy the files to the NAS in the office."),
+    "lan.scheduled": ("Back up to the NAS every night",
+                      "Off = the NAS is backed up only when someone presses the button on the dashboard."),
+    "lan.on_demand_warn_after_days": ("Days before an old NAS backup is flagged",
+                                      "Manual NAS backups only: a yellow note shows when the last NAS backup is older than this."),
+    "lan.shutdown_after_backup": ("Switch the NAS off after the backup",
+                                  "Saves power: the NAS is switched on for the backup and off again."),
+    "lan.shutdown_on_all_retries_exhausted": ("Switch the NAS off even if the backup failed", ""),
+    "lan.use_backup_mode": ("Copy files that are locked or restricted",
+                            "Lets the backup copy files the account could not open otherwise."),
+    "lan.min_free_dest_gb": ("Free space to keep on the NAS", "The backup stops if the NAS would get fuller than this."),
+    "lan.retry_count": ("Retries per file", "How often to retry a file that could not be copied."),
+    "lan.retry_wait_seconds": ("Wait between file retries", ""),
+    "lan.subprocess_timeout_seconds": ("Longest copy run", "The copy is stopped after this long."),
+    "lan.max_attempts": ("Attempts per night", "How often the whole NAS backup is tried if it fails."),
+    "lan.retry_delay_seconds": ("Wait between attempts", ""),
+    "lan.preflight_retries": ("Pre-check retries", "How often the check before copying is repeated if it fails."),
+    "lan.preflight_retry_delay_seconds": ("Wait between pre-check retries", ""),
+    "lan.mt_threads": ("Files copied at the same time", "More is faster but busier for the NAS."),
+    "lan.log_tail_kb": ("Log excerpt size", "How much of the copy log is shown in alerts."),
+    "lan.dry_run_timeout_seconds": ("Time for the pre-check", "Before copying, the program checks what would change."),
+    "lan.preflight_smb_attempts": ("NAS reachability checks", "How often to check the NAS answers before giving up."),
+    "lan.preflight_smb_wait_seconds": ("Wait between NAS checks", ""),
+    "lan.privilege_check_timeout_seconds": ("Time for the rights check", ""),
+
+    # ── WoL ──
+    "wol.enabled": ("Switch the NAS on automatically", "Wake the NAS over the network before the backup."),
+    "wol.mac_address": ("NAS network card address (MAC)", "Looks like AA:BB:CC:DD:EE:FF. Found in the NAS settings."),
+    "wol.server_ip": ("NAS address (IP)", "e.g. 192.168.1.100."),
+    "wol.broadcast_address": ("Wake-up broadcast address", "Leave empty unless the NAS is on a different network."),
+    "wol.wake_timeout_seconds": ("How long the NAS may take to start", "Set to about twice its real start-up time."),
+    "wol.ping_interval_seconds": ("Check every", "How often to check whether the NAS is up."),
+    "wol.stability_wait_seconds": ("Settle time after start-up", "Extra wait after the NAS answers, before copying."),
+    "wol.smb_connect_timeout_seconds": ("Time per NAS check", ""),
+    "wol.wake_retry_count": ("Wake-up signals sent", ""),
+    "wol.wake_retry_interval_seconds": ("Pause between wake-up signals", ""),
+    "wol.shutdown_delay_seconds": ("Delay before the NAS switches off",
+                                   "Time in which someone can still cancel the switch-off on the NAS."),
+    "wol.shutdown_command_timeout_seconds": ("Time for the switch-off command", ""),
+    "wol.shutdown_verify_timeout_seconds": ("Time to confirm the NAS is off",
+                                            "If the NAS is still on after this, you get a warning."),
+    "wol.shutdown_verify_closed_probes": ("Checks that confirm it is off", ""),
+
+    # ── cloud ──
+    "cloud.enabled": ("Back up to Google Cloud", "Copy the files to Google Cloud."),
+    "cloud.scheduled": ("Back up to Google Cloud every night",
+                        "Off = the cloud backup runs only when someone presses the button on the dashboard."),
+    "cloud.on_demand_warn_after_days": ("Days before an old cloud backup is flagged",
+                                        "Manual cloud backups only: a yellow note shows when the last cloud backup is older than this."),
+    "cloud.bandwidth_limit": ("Upload speed limit", "Keeps the office internet usable during the upload."),
+    "cloud.bucket": ("Cloud storage name (bucket)", "Set up once by the support team."),
+    "cloud.project_number": ("Google project number", "Set up once by the support team."),
+    "cloud.location": ("Cloud region", "Where Google keeps the data, e.g. asia-south1 (Mumbai)."),
+    "cloud.storage_class": ("Storage type", "STANDARD for daily backups."),
+    "cloud.write_probe_enabled": ("Test cloud access before each backup", ""),
+    "cloud.retry_count": ("Retries per file", ""),
+    "cloud.subprocess_timeout_seconds": ("Longest upload run", "The upload is stopped after this long."),
+    "cloud.max_attempts": ("Attempts per night", "How often the upload is tried if it fails."),
+    "cloud.retry_delay_seconds": ("Wait between attempts", ""),
+    "cloud.preflight_retries": ("Cloud access check retries", "How often the check before uploading is repeated if it fails."),
+    "cloud.preflight_retry_delay_seconds": ("Wait between access check retries", ""),
+    "cloud.verify_retries": ("After-upload check retries", "How often the check after uploading is repeated if it fails."),
+    "cloud.verify_retry_delay_seconds": ("Wait between after-upload check retries", ""),
+    "cloud.max_duration_seconds": ("Stop uploading after", "Empty = automatic."),
+    "cloud.verify_timeout_seconds": ("Time for the after-upload check", ""),
+    "cloud.preflight_timeout_seconds": ("Time for the cloud access check", ""),
+    "cloud.probe_retries": ("Network retries in the access check", ""),
+    "cloud.probe_retries_sleep_seconds": ("Wait between access check network retries", ""),
+    "cloud.dry_run_timeout_seconds": ("Time for the pre-check", ""),
+    "cloud.diff_timeout_seconds": ("Time for the difference report", ""),
+    "cloud.manifest_timeout_seconds": ("Time for the cloud file list", ""),
+    "cloud.cloud_size_timeout_seconds": ("Time for the cloud size check", ""),
+    "cloud.transfers": ("Files uploaded at the same time", ""),
+    "cloud.checkers": ("Files compared at the same time", ""),
+    "cloud.modify_window_seconds": ("Time difference treated as equal",
+                                    "File times closer than this count as the same."),
+    "cloud.retries_sleep_seconds": ("Wait between network retries in the difference report", ""),
+    "cloud.sync_retries_sleep_seconds": ("Wait between network retries in the upload", ""),
+    "cloud.stats_interval_seconds": ("Progress line in the upload log every", ""),
+    "cloud.buffer_size": ("Memory per upload", ""),
+    "cloud.error_tail_lines": ("Error lines in alerts", ""),
+
+    # ── budgets ──
+    "budget.lan_max_hours": ("NAS backup may run for at most",
+                             "After this it stops and continues the next night. The timetable must leave this much time."),
+    "budget.cloud_max_hours": ("Cloud backup may run for at most",
+                               "After this it stops and continues the next night (a first full upload takes several nights)."),
+    "budget.audit_max_hours": ("Weekly safety check may run for at most", ""),
+    "budget.cloud_verify_reserve_minutes": ("Time kept for the after-upload check", ""),
+    "budget.lan_post_reserve_minutes": ("Time kept for switching the NAS off", ""),
+
+    # ── dashboard ──
+    "dashboard.public_url": ("Dashboard address in emails",
+                             "The link people click in alert emails, e.g. http://backup-server:8080."),
+    "dashboard.catching_up_max_days": ("Days a big upload may keep catching up before it is a problem",
+                                       "A large first upload or big change is copied over several nights. "
+                                       "After this many days without finishing, it is reported as overdue."),
+    "dashboard.stale_grace_hours": ("Extra time before a backup counts as overdue",
+                                    "A backup is overdue when its next scheduled run, the time that run "
+                                    "may take and this many extra hours have all passed."),
+    "dashboard.alert_failure_window_days": ("Warn about failed emails from the last", ""),
+    "dashboard.login_password_hash": ("Dashboard password (stored)",
+                                      "Change it in Advanced > Passwords."),
+    "dashboard.bind_address": ("Who can open the dashboard", "Changed only on the server."),
+    "dashboard.rate_limit_window_seconds": ("Rate-limit window", "How long each limit below counts."),
+    "dashboard.rate_limit_triggers": ("Manual starts allowed", "Backup / check starts per window."),
+    "dashboard.rate_limit_logins": ("Sign-in attempts allowed", ""),
+    "dashboard.rate_limit_reports": ("Report downloads allowed", ""),
+    "dashboard.rate_limit_settings": ("Settings saves allowed", "Also test emails and password changes."),
+    "dashboard.rate_limit_decisions": ("Approvals allowed", "Approve / run / dismiss of blocked backups."),
+    "dashboard.session_hours": ("Stay signed in for", ""),
+    "dashboard.link_cache_seconds": ("Look up the dashboard address in emails every", ""),
+    "dashboard.config_refresh_seconds": ("Dashboard re-reads settings every", ""),
+    "dashboard.trigger_wait_seconds": ("Wait for a started run", "Before the page answers; the run continues."),
+    "dashboard.manual_start_max_wait_minutes": ("A manual start may begin at most this late", "Later than this it is recorded as Missed and nothing is touched."),
+    "dashboard.agent_max_silence_seconds": ("Backup service counts as stopped after being silent for", "A manual start is refused then."),
+    "dashboard.history_nights": ("Nights shown on the dashboard strip", ""),
+    "dashboard.apply_delay_seconds": ("Restart this long after pressing Apply", ""),
+    "dashboard.apply_force_exit_seconds": ("Force the restart if the service has not stopped after", ""),
+    "dashboard.apply_block_before_run_seconds": ("Refuse Apply when a run is due within", ""),
+    "dashboard.apply_reconnect_timeout_seconds": ("Wait for the restart for up to", ""),
+    "dashboard.apply_poll_seconds": ("Check whether the service is back every", ""),
+    "dashboard.firewall_remote_addresses": ("Office PCs allowed to open the dashboard",
+                                            "Windows Firewall addresses (LocalSubnet = the "
+                                            "office network). Changed only on the server."),
+    "dashboard.port": ("Dashboard port", "Changed only on the server."),
+    "dashboard.admin_session_minutes": ("Advanced login locks after", ""),
+    "dashboard.admin_password_min_length": ("Shortest admin password", ""),
+
+    # ── alerts / housekeeping / health ──
+    "alerts.repeat_cooldown_hours": ("Repeat the same alert at most every",
+                                     "Stops your inbox filling with the same alert."),
+    "alerts.undelivered_digest_max_age_hours": (
+        "Mail the alerts that could not be delivered, if newer than (hours)",
+        "After a mail outage ONE email lists the alerts that never arrived. Older ones are left out. "
+        "0 = no such email."),
+    "alerts.undelivered_digest_retry_minutes": (
+        "Retry that email at most every", "While it cannot be delivered either (minutes)."),
+    "alerts.stale_repeat_hours": ("Repeat the 'backup overdue' email at most every",
+                                  "While a backup stays overdue the reminder is sent this often (hours)."),
+    "watchdog.healthy_mark_seconds": ("How often the watchdog records that all is well", ""),
+    "alerts.send_decision_needed": ("Email when a backup waits for your decision",
+                                    "Off: no email, but the dashboard still shows it in red with its approval card."),
+    "alerts.send_overdue": ("Email when a backup is overdue", "Off: no email; the dashboard still shows it."),
+    "alerts.send_action_needed": ("Email when a person must act",
+                                  "Financial-year problems, safety-check differences and service problems."),
+    "alerts.send_resolved": ("Email when a problem is fixed", "The 'resolved' notice."),
+    "alerts.send_info": ("Email information notices", "For example: a new financial year started."),
+    "alerts.incident_quiet_days": ("Days of quiet after which an alert counts as over",
+                                   "If the same alert does not occur again for this long, the next time it "
+                                   "appears it is treated as a new problem and mailed in full."),
+    "alerts.body_max_chars": ("Alert text length", "Longer details are attached as a file."),
+    "alerts.attachments_max_total_kb": ("Largest email attachments (KB)",
+                                        "Support report + logs together; a logs zip that "
+                                        "does not fit is left out."),
+    "alerts.attach_file_names": ("Attach full logs to problem emails",
+                                 "The logs contain client file and folder names."),
+    "alerts.support_log_tail_lines": ("Log lines in the support report", ""),
+    "maintenance.concurrency_wait_seconds": ("How long a backup waits for the previous one", ""),
+    "maintenance.sqlite_synchronous": ("Database safety level", ""),
+    "maintenance.db_retention_days": ("Keep backup history for",
+                                      "At least 35 days: the monthly report and the safety checks read it."),
+    "maintenance.log_retention_days": ("Keep program logs for", ""),
+    "maintenance.orphan_robocopy_log_max_age_hours": ("Delete leftover copy logs after",
+                                                      "Logs left behind by a stopped copy."),
+    "maintenance.lock_release_retries": ("Retries when the 'backup running' marker cannot be removed",
+                                         "The marker file is removed when a backup ends; a virus scanner can "
+                                         "briefly block that."),
+    "maintenance.lock_release_delay_ms": ("Wait between those retries", ""),
+    "maintenance.tool_poll_seconds": ("How quickly a stopped backup is noticed",
+                                      "While a copy runs, the program checks this often whether the backup "
+                                      "was stopped, and then stops the copy."),
+    "maintenance.sqlite_busy_timeout_ms": ("Database wait time", ""),
+    "maintenance.sqlite_vacuum_freelist_threshold": ("Database clean-up threshold", ""),
+    "maintenance.config_backups_keep": ("Settings backups to keep", "A copy of the settings is saved before every change."),
+    "maintenance.config_lock_timeout_seconds": (
+        "Wait for another settings change",
+        "If two changes to the settings happen at once, the second waits this long."),
+    "maintenance.config_replace_retries": ("Settings file retries", "Used when Windows has the settings file open."),
+    "maintenance.config_replace_delay_ms": ("Pause between retries", ""),
+    "maintenance.abandon_running_after_hours": (
+        "Mark a stuck backup as abandoned after",
+        "A backup whose process has stopped is marked abandoned (with an email) at once; this "
+        "limit only applies when that cannot be checked."),
+    "health.max_clock_skew_seconds": ("Allowed clock difference", "Google refuses uploads if the server clock is far off."),
+    "health.clock_check_timeout_seconds": ("Time for the clock check", ""),
+    "health.clock_unverified_policy": ("If the clock cannot be checked",
+                                       "'warn' = back up anyway and show a warning; 'block' = stop the cloud backup."),
+    "health.ntp_server": ("Time server", ""),
+    "health.w32tm_timeout_seconds": ("Time for the time-server check", ""),
+    "health.min_free_source_gb": ("Free space needed on the data drive", ""),
+    "health.rollover_auth_timeout_seconds": ("Time for cloud sign-in at year end", ""),
+    "health.rollover_archive_timeout_seconds": ("Time to archive last year's cloud data", ""),
+    "run_logs.dir": ("Detailed log folder", "Leave empty."),
+    "run_logs.retention_days": ("Keep detailed logs for", ""),
+    "run_logs.compress_after_kb": ("Compress logs larger than", ""),
+    "run_logs.min_free_gb": ("Warn when free space for logs is below", ""),
+    "run_logs.service_log_retention_days": ("Keep service logs for", ""),
+
+    # ── safety ──
+    "guards.max_delete_files": (
+        "Stop if a backup would delete more than",
+        "Above this the backup waits for your approval on the dashboard. Applies to the Cloud and the "
+        "Office copy. Together with the percentage below, the stricter limit applies: with 20,000 files "
+        "already backed up and the limits 500 files / 10 %, at most 500 files may be deleted. "
+        "0 = never delete."),
+    "guards.max_delete_percent": (
+        "...or more than this share of the files already backed up",
+        "Counted against the files already in the backup, not against the folder being copied. "
+        "0 = never delete."),
+    "guards.max_source_shrink_percent": ("Stop if the data folder suddenly shrinks by more than",
+                                         "Protects against an empty or wrong drive being mirrored."),
+    "guards.small_folder_files": (
+        "A folder with fewer files than this counts as a small (new) folder",
+        "A new year's folder starts with a handful of files, where one renamed file is a large "
+        "percentage. Below this size the percentage limits are replaced by the number below. "
+        "0 = always use the percentages."),
+    "guards.small_folder_max_deletes": (
+        "In a small folder, stop if more than this many files would be removed",
+        "G3: replaces the percentage limits for a small folder (never more than the file limit above). "
+        "G2: how many files the folder may shrink by."),
+    "guards.forbid_local_destination": ("Never back up onto this same server", ""),
+    "approvals.expiry_hours": ("An approval is valid for", ""),
+    "approvals.tolerance_percent": ("Allowed change after approval", ""),
+    "rollover.source_placeholder_name": ("Note file placed in a new year folder", ""),
+    "rollover.create_source_folder_early": (
+        "Create the new year's folder before the old year's final backup",
+        "So the office can save into it on 1 April even if that backup fails. From the start month "
+        "the next year's folder is backed up every night as well (see 'Also back up next year's "
+        "folder from January'); before that, or with that switched off, files saved there are not "
+        "backed up until the switch is done, and the dashboard and an email say so."),
+    "rollover.overlap_enabled": (
+        "Also back up next year's folder from January",
+        "From the start month until the April switch both the current and the next financial year's "
+        "folder are backed up (cloud and office copy). Off: only the current year is backed up."),
+    "rollover.early_start_month": (
+        "First month the next year's folder is backed up", "1 = January ... 3 = March."),
+    "rollover.activation_alert_after_hours": (
+        "Warn if next year's folder is not set up for backup after",
+        "If next year's folder cannot be set up for backup (the server clock is not proven, the parent "
+        "folder is missing, no right to create folders...), you get an action-needed email after this many hours."),
+    "rollover.sibling_ignore": (
+        "Folders to ignore that look like a year folder",
+        "Names of folders next to the year folders that are not a financial year (never backed up, "
+        "never warned about)."),
+    "rollover.final_backup_wait_retries": (
+        "Mornings to wait when the last backup of the old year could not start",
+        "If the final backup of the old year only waited for the busy backup slot, the switch tries "
+        "again on the next mornings before asking you to approve 'roll over anyway'. 0 = ask at once."),
+    "rollover.archive_alert_after_days": (
+        "Escalate a stuck archive move after",
+        "Moving last year's online copy to cheaper storage is retried every morning."),
+    "audit.checkers": ("Files checked at the same time", ""),
+    "audit.retries": ("Retries", ""),
+    "audit.retries_sleep_seconds": ("Wait between retries", ""),
+    "audit.modify_window_seconds": ("Time difference treated as equal",
+                                    "File times closer than this count as the same."),
+    "audit.backup_first_prompt_minutes": (
+        "Offer a backup before 'Check now' when the last backup is older than",
+        "Files changed since then are reported as waiting for the next backup, not as faults."),
+    "audit.detail_max_paths": ("File names listed in a result", ""),
+    "audit.network_error_patterns": ("Extra 'could not run' messages", "For the support team."),
+
+    # ── watchdog ──
+    "watchdog.prefect_health_url": ("Scheduler health address", ""),
+    "watchdog.check_interval_seconds": ("Check the scheduler every", ""),
+    "watchdog.failure_threshold": ("Restart after failed checks in a row", ""),
+    "watchdog.request_timeout_seconds": ("Time per check", ""),
+    "watchdog.backup_wait_interval_seconds": ("Re-check during a backup every", ""),
+    "watchdog.max_deferrals": ("Waits before alerting (no copy running)", ""),
+    "watchdog.max_transfer_deferrals": ("Waits before alerting (copy running)", ""),
+    "watchdog.restart_cooldown_seconds": ("Pause after a restart", ""),
+    "watchdog.max_starts_per_window": ("Automatic starts allowed per hour", ""),
+    "watchdog.start_window_seconds": ("Counting window for starts", ""),
+    "watchdog.stop_pending_timeout_seconds": ("Force-stop a stuck service after", ""),
+    "watchdog.kill_wait_seconds": ("Wait after force-stop", ""),
+    "watchdog.api_ready_timeout_seconds": ("Time for the scheduler to start", ""),
+    "watchdog.service_poll_seconds": ("Service check interval", ""),
+    "watchdog.sc_timeout_seconds": ("Time per service command", ""),
+    "watchdog.log_rotation_mb": ("Start a new watchdog log at", ""),
+    "watchdog.stale_check_interval_seconds": (
+        "Check for overdue backups every",
+        "An email is sent when a backup has not succeeded for longer than the "
+        "'last good backup' limit."),
+}
+
+
+def label_and_help(key: str, technical: str) -> tuple[str, str]:
+    """(plain label, plain help) - falls back to the technical description."""
+    if key in HELP:
+        label, help_text = HELP[key]
+        return label, help_text
+    return key, technical

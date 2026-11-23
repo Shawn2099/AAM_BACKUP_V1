@@ -13,6 +13,8 @@ import pytest
 
 import flow
 
+_REAL_SHUTDOWN_TASK_FN = flow.lan_shutdown_task.fn
+
 
 def _make_lan_config(
     shutdown_after_backup: bool = True,
@@ -44,11 +46,13 @@ def _make_lan_config(
 
 class TestLanShutdownPolicy:
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -71,17 +75,19 @@ class TestLanShutdownPolicy:
 
         # Alert fired
         mock_alert.assert_called_once()
-        alert_msg = mock_alert.call_args.args[2]
+        alert_msg = mock_alert.call_args.args[1].message
         assert "NOT shut down" in alert_msg
 
         # Shutdown must NOT be called
         mock_shutdown.assert_not_called()
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -104,17 +110,20 @@ class TestLanShutdownPolicy:
 
         # Alert fired first
         mock_alert.assert_called_once()
-        alert_msg = mock_alert.call_args.args[2]
+        alert_msg = mock_alert.call_args.args[1].message
         assert "scheduled for shutdown" in alert_msg
 
         # Shutdown IS called
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value=None)
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -133,13 +142,16 @@ class TestLanShutdownPolicy:
             flow._run_lan_pipeline(cfg, "run-option-b-failed", "2026-09-07T01:00:00")
 
         # Shutdown IS called
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -158,14 +170,20 @@ class TestLanShutdownPolicy:
 
         res = flow._run_lan_pipeline(cfg, "run-complete", "2026-09-07T01:00:00")
         assert res["status"] == "LAN_COMPLETE"
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
         mock_alert.assert_not_called()
 
-    @patch("flow.send_failure_alert", return_value=True)
-    @patch("flow.shutdown_server")
+    @patch("flow.notify")
+    @patch("flow.shutdown_from_config")
+    # The real lan_shutdown_task, run as a plain function: as a Prefect task outside a flow it
+    # needs a running API, so the test only passed when an earlier test had left one behind.
+    @patch("flow.lan_shutdown_task", new=lambda *a, **k: _REAL_SHUTDOWN_TASK_FN(*a, **k))
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -176,7 +194,7 @@ class TestLanShutdownPolicy:
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
         mock_before, mock_after, mock_record_task, mock_artifact, mock_server_shutdown, mock_alert,
     ):
-        """If shutdown_after_backup=False, shutdown_server is never called even if Option B is on."""
+        """If shutdown_after_backup=False, the shutdown is never called even if Option B is on."""
         mock_sync.with_options.return_value.return_value = {
             "status": "LAN_PARTIAL", "exit_code": 9,
             "error": "robocopy tail: 1 file FAILED",
@@ -189,5 +207,5 @@ class TestLanShutdownPolicy:
         with pytest.raises(flow.PartialRun):
             flow._run_lan_pipeline(cfg, "run-disabled-override", "2026-09-07T01:00:00")
 
-        # shutdown_server must not be invoked because lan_shutdown_task honors global toggle
+        # the shutdown must not be invoked because lan_shutdown_task honors global toggle
         mock_server_shutdown.assert_not_called()

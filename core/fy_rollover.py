@@ -1,27 +1,50 @@
-"""Fiscal year rollover — detects FY boundary, runs final backup of closing FY,
-creates new FY folders, and atomically updates config.yaml.
+"""Fiscal year rollover building blocks (plan WP11, owner DEC-4).
 
-Called by launch.py at startup before normal backup processing.
+The orchestration lives in flow.rollover_check_flow (daily schedule): the
+final backup of the closing FY runs through the NORMAL pipelines (backup
+slot, guards, permission checks, run rows, alerts); then, inside the backup
+slot, the new FY folders are created, config.yaml is backed up and updated
+atomically, and the closing FY is moved to the ARCHIVE storage class.
+
+This module holds the pieces: FY parsing, the forward-only classifier,
+folder creation (+ placeholder), config backup/update, archive transition.
 """
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import shutil
-import subprocess
-import tempfile
+import sys
 from pathlib import Path
 
 from loguru import logger
 
-from core.cloud_sync import run_cloud_sync
-from core.lan_sync import classify_exit_code as classify_lan_exit
-from core.lan_sync import run_lan_sync
+from core.config_file import (  # noqa: F401 - backup_config_file is part of this module's API
+    backup_config_file,
+    config_transaction,
+    load_round_trip,
+    write_atomic,
+)
+from core.guards import MOUNT_MARKER, first_regular_file
+from core.run_artefacts import RunArtefacts
 from core.time_utils import get_fy_prefix
+from core.tool_runner import run_tool
+from models.config import HealthConfig, model_default
 
 FY_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
+
+# classify_rollover() verdicts
+NONE = "NONE"                  # configured FY is today's FY
+FORWARD = "FORWARD"            # exactly the next FY -> automatic (DEC-4)
+JUMP = "JUMP"                  # more than one FY ahead -> human approval
+CLOCK_BEHIND = "CLOCK_BEHIND"  # today's FY is EARLIER -> never roll back (probe P4)
+
+_PLACEHOLDER_TEXT = (
+    "This folder holds the {fy} accounting files that are backed up every night.\n"
+    "This note was created automatically at the start of {fy} so the backup can tell\n"
+    "a new, empty financial year from a missing or unmounted drive. It is safe to keep.\n"
+)
 
 # Project root (two levels up from this file: core/ → project root)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -77,12 +100,10 @@ def _fy_name(path_str: str) -> str | None:
 def _parent_path(path_str: str) -> str:
     """Get parent directory preserving separator style."""
     from pathlib import PurePosixPath, PureWindowsPath
-    if path_str.startswith("\\\\"):
-        p = PureWindowsPath(path_str)
-        return str(p.parent).rstrip("\\")
-    elif "\\" in path_str:
-        p = PureWindowsPath(path_str)
-        return str(p.parent).rstrip("\\")
+    if path_str.startswith("\\\\") or "\\" in path_str:
+        parent = str(PureWindowsPath(path_str).parent).rstrip("\\")
+        # a drive root keeps its backslash ("D:\"), otherwise _child_path would join with "/" ("D:/FY26-27")
+        return parent + "\\" if re.fullmatch(r"[A-Za-z]:", parent) else parent
     else:
         p = PurePosixPath(path_str)
         return str(p.parent).rstrip("/")
@@ -94,9 +115,81 @@ def _child_path(root: str, fy: str) -> str:
     return f"{root.rstrip(sep)}{sep}{fy}"
 
 
+def _fy_start(fy: str) -> int:
+    return int(fy[2:4])
+
+
+def classify_rollover(configured_fy: str, computed_fy: str) -> str:
+    """Forward-only rollover decision (plan WP11, G6).
+
+    2-digit FY start years are compared modulo 100, so FY99-00 -> FY00-01 is
+    FORWARD. A difference in the "upper half" means the clock is behind the
+    configured FY - that is never a rollover (the old `!=` test rolled
+    backwards, probe P4).
+    """
+    diff = (_fy_start(computed_fy) - _fy_start(configured_fy)) % 100
+    if diff == 0:
+        return NONE
+    if diff == 1:
+        return FORWARD
+    return JUMP if diff < 50 else CLOCK_BEHIND
+
+
+def reentered_message(from_fy: str, to_fy: str) -> str:
+    """Why a rollover whose journal is already finished is not run again (plan FY-2)."""
+    return (f"The switch from {from_fy} to {to_fy} was already finished, but the settings now point at "
+            f"{from_fy} again (they were put back by hand or from an old copy). Nothing was backed up, "
+            f"switched or archived. Ask support to change source_drive and lan_destination in config.yaml on "
+            f"the server back to {to_fy} (Settings no longer changes the financial year). Starting that "
+            "switch again is also a support action.")
+
+
+def manual_run_state(configured: str | None, current: str, finished_journal: bool = False) -> dict:
+    """What the dashboard's "Run FY rollover now" button may do (owner 2026-10-15).
+
+    The button never bypasses a rule: it starts the same rollover check the
+    06:00 schedule runs. It is offered only when a rollover is due; a blocked
+    rollover is forced only through its approval (typed phrase); a clock that
+    is behind is never forceable - that would roll the backups backwards.
+    """
+    if configured is None:
+        return {"kind": None, "can_run": False,
+                "message": "The source / NAS folders do not end in an FY folder (e.g. FY26-27), "
+                           "so there is no automatic FY rollover."}
+    kind = classify_rollover(configured, current)
+    if finished_journal and kind in (FORWARD, JUMP):
+        return {"kind": kind, "can_run": False, "message": reentered_message(configured, current)}
+    messages = {
+        NONE: f"Not due: the backups already use {configured}, which is the current FY.",
+        FORWARD: f"Due: the backups still use {configured}, but the current FY is {current}. "
+                 "Running it does the final backup of the old FY, then switches to the new one.",
+        JUMP: f"Due, but unusual: {configured} to {current} skips at least one FY. Running it "
+              "will stop and ask for your approval on the dashboard.",
+        CLOCK_BEHIND: f"Refused: the server clock says {current}, which is EARLIER than {configured}. "
+                      "Correct the server date/time - a rollover never goes backwards.",
+    }
+    return {"kind": kind, "can_run": kind in (FORWARD, JUMP), "message": messages[kind]}
+
+
+def effective_fy_prefix(source_drive: str) -> str:
+    """The FY the backups use: the source folder's FY leaf when it is one,
+    else the calendar FY. Shared by the cloud prefix and the dashboard so the
+    page never shows a different FY than the backups use (plan WP9)."""
+    return _fy_name(source_drive) or get_fy_prefix()
+
+
+def configured_fy(source_drive: str, lan_destination: str) -> str | None:
+    """FY the backups are configured for: the SOURCE folder's FY leaf, or None (plan FY-9).
+
+    The NAS path never decides: with the NAS leg on, the config validator forces it to match the source;
+    with the NAS off (cloud-only) it is an unused placeholder, and reading its leaf would make the rollover
+    rewrite a source folder that has no FY folder. `lan_destination` is kept for the callers' signature."""
+    return _fy_name(source_drive)
+
+
 def detect_rollover(source_drive: str, lan_destination: str) -> bool:
     """Return True if the configured FY suffix doesn't match the computed FY prefix."""
-    current_fy = _fy_name(source_drive) or _fy_name(lan_destination)
+    current_fy = configured_fy(source_drive, lan_destination)
     if current_fy is None:
         # G2: explicit opt-out signal. No FY suffix in either path means the
         # operator is not using FY folders, so rollover is intentionally a
@@ -114,88 +207,77 @@ def detect_rollover(source_drive: str, lan_destination: str) -> bool:
     return current_fy != computed
 
 
-def run_final_backup(source_drive: str, lan_destination: str,
-                     lan_config, cloud_config, paths_config,
-                     config, old_fy: str) -> tuple[bool, bool]:
-    """Run one final backup of the closing FY to both destinations.
+def new_fy_file_count(source_drive: str, to_fy: str, placeholder_name: str | None) -> int | None:
+    """Real files in the new FY folder next to the configured source, or None when it does not exist
+    (missing / a link) OR cannot be read (the folder itself cannot be scanned, or a sub-folder could not be
+    read and no file was seen: 'zero' would then prove nothing). Use `new_fy_root_exists` to tell them apart.
 
-    Returns (cloud_ok, lan_ok). Only the cloud pipeline uses old_fy
-    GCS prefix; LAN uses lan_destination directly."""
-    cloud_ok = lan_ok = False
-
-    if cloud_config.enabled:
+    The placeholder and the entries G1 never counts (desktop.ini, Thumbs.db, ...) are not files of the
+    office. Never follows links (robocopy /XJ would not either). Plan FY-6."""
+    root = _new_fy_root(source_drive, to_fy)
+    if root is None:
+        return None
+    ignore = _ignore_names(placeholder_name)
+    count, stack, unreadable = 0, [root], False
+    while stack:               # scandir, not os.walk: os.walk follows junctions on Windows
         try:
-            logger.info(f"FY rollover: running final cloud backup to GCS FY {old_fy}")
-            result = run_cloud_sync(
-                source=source_drive,
-                bucket=cloud_config.bucket,
-                fy_prefix=old_fy,
-                gcs_key_path=paths_config.gcs_key_path,
-                project_number=cloud_config.project_number,
-                storage_class=cloud_config.storage_class,
-                location=cloud_config.location,
-                bwlimit=cloud_config.bandwidth_limit,
-                retries=cloud_config.retry_count,
-                transfers=cloud_config.transfers,
-                checkers=cloud_config.checkers,
-                buffer_size=cloud_config.buffer_size,
-                timeout=cloud_config.subprocess_timeout_seconds,
-            )
-            status = result.get("status", "")
-            exit_code = result.get("exit_code", -1)
-            if status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE") or (not status and exit_code in (0, 9)):
-                cloud_ok = True
-                logger.info(f"FY rollover: final cloud backup OK (exit {exit_code} → {status})")
-            else:
-                logger.error(f"FY rollover: final cloud backup failed (exit {exit_code} → {status})")
-        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
-            # Narrow to runtime/IO errors only.  Config typos (AttributeError,
-            # TypeError) should propagate loudly so operators fix them.
-            logger.error(f"FY rollover: final cloud backup error: {e}")
-
-    if lan_config.enabled:
-        try:
-            from core.wol import ensure_server_online
-
-            if config.wol.enabled:
-                logger.info("FY rollover: waking LAN server before final backup")
-                ensure_server_online(config)
-
-            logger.info(f"FY rollover: running final LAN backup to {lan_destination}")
-            result = run_lan_sync(
-                source=source_drive,
-                dest=lan_destination,
-                lan_config=lan_config,
-            )
-            exit_code = result.get("exit_code", -1)
-            # T04/A1: never re-derive success from the killable exit code
-            # alone — run_lan_sync already applied the log-completion
-            # contract (decide_lan_result); its status is authoritative.
-            lan_status = result.get("status") or classify_lan_exit(exit_code)
-            if lan_status == "LAN_COMPLETE" or (lan_status == "LAN_PARTIAL" and not (exit_code & 8)):
-                lan_ok = True
-                logger.info(f"FY rollover: final LAN backup OK (exit {exit_code} → {lan_status})")
-            else:
-                logger.error(f"FY rollover: final LAN backup failed (exit {exit_code} → {lan_status})")
-
-            if config.wol.enabled and config.lan.shutdown_after_backup:
-                try:
-                    from core.shutdown import shutdown_server
-
-                    logger.info(f"FY rollover: shutting down backup server {config.wol.server_ip}")
-                    shutdown_server(config.wol.server_ip)
-                except (OSError, RuntimeError) as e:
-                    logger.warning(f"FY rollover: server shutdown failed (non-critical): {e}")
-        except (OSError, subprocess.SubprocessError, RuntimeError) as e:
-            # Narrow to runtime/IO errors only.  Config typos (AttributeError,
-            # TypeError) should propagate loudly so operators fix them.
-            logger.error(f"FY rollover: final LAN backup error: {e}")
-
-    return cloud_ok, lan_ok
+            with os.scandir(stack.pop()) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        if not os.path.isjunction(entry.path):
+                            stack.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False) and entry.name.lower() not in ignore:
+                        count += 1
+        except OSError:
+            unreadable = True  # an unreadable sub-folder does not hide the rest
+            continue
+    if unreadable and count == 0:
+        return None            # nothing seen and something not readable: unknown, not "empty"
+    return count
 
 
-def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str) -> dict[str, Path]:
-    """Create new FY folders on source and LAN. Returns dict of created Paths.
+def new_fy_root_exists(source_drive: str, to_fy: str) -> bool:
+    """Is the new FY folder next to the configured source a real folder (not missing, not a link)?"""
+    return _new_fy_root(source_drive, to_fy) is not None
+
+
+def _new_fy_root(source_drive: str, to_fy: str) -> str | None:
+    """The new FY folder next to the configured source if it is a real folder (not a link), else None."""
+    root = _child_path(_parent_path(source_drive), to_fy)
+    if not os.path.isdir(root) or os.path.islink(root) or os.path.isjunction(root):
+        return None
+    return root
+
+
+def _ignore_names(placeholder_name: str | None) -> frozenset[str]:
+    from core.guards import SOURCE_IGNORE_NAMES
+
+    return frozenset(SOURCE_IGNORE_NAMES | ({placeholder_name.lower()} if placeholder_name else set()))
+
+
+def new_fy_has_files(source_drive: str, to_fy: str, placeholder_name: str | None) -> bool | None:
+    """Is there at least one real file in the new FY folder? Stops at the first one and skips junctions, so
+    the dashboard can ask on every refresh without walking a big tree. Plan FY-14.
+    False when the folder does not exist; None when it exists but cannot be read (unknown)."""
+    from core.guards import first_regular_file
+
+    root = _new_fy_root(source_drive, to_fy)
+    if root is None:
+        return False
+    try:
+        return first_regular_file(root, _ignore_names(placeholder_name)) is not None
+    except OSError:
+        return None
+
+
+def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str,
+                          placeholder_name: str | None = None) -> dict[str, Path]:
+    """LEGACY (no production caller since the rollover became a step journal: use create_source_folder / create_nas_folder).
+    Create new FY folders on source and LAN. Returns dict of created Paths.
+
+    placeholder_name (rollover.source_placeholder_name): a short note written
+    into the NEW source folder - never overwritten - so the first nights of
+    the new FY back up a real file instead of being blocked by guard G1.
 
     Source folder creation is mandatory — raises on failure (local disk problem).
     LAN folder creation is best-effort — logs a clear error if NAS is offline
@@ -210,6 +292,15 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str) -> dict[
     new_source.mkdir(parents=True, exist_ok=True)
     created["source"] = new_source
     logger.info(f"FY rollover: created source folder {new_source}")
+    if placeholder_name:
+        placeholder = new_source / placeholder_name
+        try:
+            with open(placeholder, "x", encoding="utf-8") as f:
+                f.write(_PLACEHOLDER_TEXT.format(fy=new_fy))
+            logger.info(f"FY rollover: wrote placeholder {placeholder}")
+        except FileExistsError:
+            logger.info(f"FY rollover: placeholder {placeholder} already exists - kept")
+        created["placeholder"] = placeholder
 
     # LAN folder: network path — may fail if NAS is offline at rollover time
     try:
@@ -231,237 +322,183 @@ def create_new_fy_folders(source_root: str, lan_root: str, new_fy: str) -> dict[
     return created
 
 
-def update_config_yaml(config_path: str, source_root: str, lan_root: str,
-                       new_fy: str) -> None:
-    """Atomically update source_drive and lan_destination in config.yaml.
+def create_source_folder(source_root: str, new_fy: str,
+                         placeholder_name: str | None = None) -> Path:
+    """Step `source_folder`: the new source FY folder (+ placeholder). Idempotent: an
+    existing folder is kept and a placeholder file is never overwritten.
 
-    Uses ruamel.yaml round-trip mode to preserve comments and formatting.
+    placeholder_name (rollover.source_placeholder_name): a short note written into the NEW
+    source folder so the first nights of the new FY back up a real file instead of being
+    blocked by guard G1. Raises on failure (local disk problem).
     """
-    from ruamel.yaml import YAML
+    new_source = Path(_child_path(source_root, new_fy))
+    new_source.mkdir(parents=True, exist_ok=True)
+    logger.info(f"FY rollover: source folder {new_source} ready")
+    write_placeholder_if_empty(new_source, new_fy, placeholder_name)
+    return new_source
 
-    path = Path(config_path)
 
-    yaml = YAML()
-    yaml.preserve_quotes = True
+def folder_entry_names(folder: Path, ignore_name: str | None = None) -> list[str]:
+    """Names inside `folder`, leaving out `ignore_name` (compared case-insensitively)."""
+    ignore = ignore_name.lower() if ignore_name else None
+    return [e.name for e in folder.iterdir() if e.name.lower() != ignore]
 
-    with open(path, encoding="utf-8") as f:
-        cfg = yaml.load(f)
 
+def write_placeholder_if_empty(folder: Path, fy: str, placeholder_name: str | None) -> bool:
+    """Write the placeholder note into `folder` - never overwritten, and never into a folder that
+    already holds a real file by guard G1's rule (an adopted folder with the office's own files stays untouched).
+    Returns True when the file was written."""
+    if not placeholder_name:
+        return False
+    placeholder = folder / placeholder_name
+    # The SAME rule as guard G1 (plan 5.1): "nothing real here" = G1 would find no regular file. A folder with only
+    # empty sub-folders, desktop.ini, Thumbs.db or the marker still needs the placeholder, or G1 blocks every night.
+    if first_regular_file(str(folder), _ignore_names(placeholder_name)) is not None:
+        logger.info(f"FY rollover: {folder} already holds files - placeholder not written")
+        return False
+    try:
+        with open(placeholder, "x", encoding="utf-8") as f:
+            f.write(_PLACEHOLDER_TEXT.format(fy=fy))
+    except FileExistsError:
+        logger.info(f"FY rollover: placeholder {placeholder} already exists - kept")
+        return False
+    logger.info(f"FY rollover: wrote placeholder {placeholder}")
+    return True
+
+
+def create_nas_folder(lan_root: str, new_fy: str) -> Path:
+    """Step `nas_folder`: the new NAS FY folder + the mount marker. Idempotent.
+
+    Raises OSError when the share root is not reachable: the folder is only ever created
+    inside an existing share (never invented on a wrong or offline path, F-9), and the
+    caller records the failure instead of swallowing it.
+
+    An existing, non-empty folder WITHOUT the marker is left untouched (the step is done; guard G5
+    asks the owner whether it really is the backup target).
+    """
+    root = Path(lan_root)
+    if not root.is_dir():
+        raise OSError(f"NAS share {lan_root} is not reachable - the new folder was not created")
+    new_lan = Path(_child_path(lan_root, new_fy))
+    new_lan.mkdir(exist_ok=True)
+    names = [n.lower() for n in folder_entry_names(new_lan)]
+    if MOUNT_MARKER.lower() not in names:
+        if names:
+            logger.warning(f"FY rollover: NAS folder {new_lan} already holds files and has no marker - "
+                           "left untouched (guard G5 decides)")
+            return new_lan
+        (new_lan / MOUNT_MARKER).touch(exist_ok=True)
+    logger.info(f"FY rollover: NAS folder {new_lan} ready")
+    return new_lan
+
+
+def update_config_yaml(config_path: str, source_root: str, lan_root: str,
+                       new_fy: str, *, expect_fy: str | None = None) -> Path | None:
+    """Step `config_switch`: point source_drive and lan_destination at `new_fy`.
+
+    Returns the config backup. With `expect_fy` this is compare-and-set, decided inside the
+    config lock: config at `expect_fy` -> switch; already at `new_fy` -> nothing is written
+    and None is returned (a crash after the write, R3); anything else -> RolloverError,
+    nothing written.
+
+    Uses the shared config writer (core.config_file): ruamel round-trip, so
+    comments and formatting survive; atomic replace.
+    """
     new_source = _child_path(source_root, new_fy)
     new_lan = _child_path(lan_root, new_fy)
-
-    old_source = cfg["paths"]["source_drive"]
-    old_lan = cfg["paths"]["lan_destination"]
-
-    cfg["paths"]["source_drive"] = new_source
-    cfg["paths"]["lan_destination"] = new_lan
-
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".yaml", prefix=".config_rollover_"
+    with config_transaction(config_path, tmp_prefix=".config_rollover_") as txn:
+        old_source = txn.doc["paths"]["source_drive"]
+        old_lan = txn.doc["paths"]["lan_destination"]
+        lan_has_fy = _fy_name(str(old_lan)) is not None      # decided inside the lock, from the file itself
+        if expect_fy is not None:
+            current = configured_fy(str(old_source), str(old_lan))
+            if current == new_fy:
+                logger.info(f"FY rollover: config.yaml already points at {new_fy} - kept")
+                txn.unchanged = True
+                return None
+            if current != expect_fy:
+                raise RolloverError(
+                    f"config.yaml points at {current or 'no FY folder'}, not {expect_fy} - "
+                    f"the switch to {new_fy} was not made. Nothing was written.")
+        txn.doc["paths"]["source_drive"] = new_source
+        if lan_has_fy:      # an unused NAS placeholder without an FY folder (cloud-only) stays as it is
+            txn.doc["paths"]["lan_destination"] = new_lan
+    logger.info(
+        f"FY rollover: config.yaml updated\n"
+        f"  source:  {old_source} → {new_source}\n"
+        f"  LAN:     {old_lan} → {new_lan}"
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(cfg, f)
-        os.replace(tmp_path, str(path))
-        logger.info(
-            f"FY rollover: config.yaml updated\n"
-            f"  source:  {old_source} → {new_source}\n"
-            f"  LAN:     {old_lan} → {new_lan}"
-        )
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+    return txn.backup
 
 
 def run_archive_transition(
     bucket: str,
     old_fy: str,
     gcs_key_path: str,
-    auth_timeout: int = 30,       # override via config.health.rollover_auth_timeout_seconds
-    archive_timeout: int = 600,   # override via config.health.rollover_archive_timeout_seconds
+    auth_timeout: int = model_default(HealthConfig, "rollover_auth_timeout_seconds"),       # config.health.rollover_auth_timeout_seconds
+    archive_timeout: int = model_default(HealthConfig, "rollover_archive_timeout_seconds"),   # config.health.rollover_archive_timeout_seconds
+    artefacts: RunArtefacts | None = None,
+    config_dir: str | None = None,
 ) -> bool:
     """Transition all GCS objects under old_fy/ to ARCHIVE storage class.
 
-    Executes the official ``gcloud storage objects update --recursive`` command
-    using stateless service-account authentication injected via the
-    GOOGLE_APPLICATION_CREDENTIALS environment variable.  No data is
-    downloaded or re-uploaded; only object metadata is rewritten server-side.
+    ``gcloud storage objects update gs://<bucket>/<old_fy>/ --recursive
+    --storage-class=ARCHIVE`` - the objects are rewritten inside Google, nothing is downloaded.
+    Runs through run_tool (full output kept, process tree killed on timeout).
 
-    This function is intentionally **non-blocking**: any failure is logged as
-    a WARNING so the FY rollover can complete regardless.  The IT admin can
-    retry the transition manually from the Google Cloud Console if needed.
+    The key is handed to gcloud as a file (``CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE``), never
+    activated: ``activate-service-account`` would store a second copy of the key in gcloud's
+    ``credentials.db``. ``config_dir`` (a folder in the runtime directory) keeps gcloud's own
+    settings out of a user profile the service account may not have.
 
-    Args:
-        bucket:       GCS bucket name (e.g. ``"aam-backup-bucket"``).
-        old_fy:       Closing FY prefix (e.g. ``"FY25-26"``).
-        gcs_key_path: Absolute path to the service account JSON key file.
-
-    Returns:
-        ``True`` on success, ``False`` on any failure.
+    Non-blocking by design: any failure is logged as a WARNING and returns
+    False; the rollover itself is already complete and the transition can be
+    re-run (it is idempotent).
     """
     logger.info(
         f"FY rollover: transitioning GCS objects under gs://{bucket}/{old_fy}/ "
         "to ARCHIVE storage class"
     )
-
-    # Stateless auth: inject the service-account key path into the subprocess
-    # environment.  gcloud honours this variable on every invocation, so no
-    # persistent ``gcloud auth`` login is required on the server.
-    env = os.environ.copy()
-    env["GOOGLE_APPLICATION_CREDENTIALS"] = str(gcs_key_path)
-
-    try:
-        # Resolve gcloud via multi-path fallback (deploy/bin → known SDK paths → system PATH)
-        gcloud_exe = _resolve_gcloud()
-        if not gcloud_exe:
-            raise FileNotFoundError("gcloud")
-        logger.debug(f"FY rollover: using gcloud at {gcloud_exe}")
-
-        # Explicitly authenticate the service account if a key file is provided.
-        # If no key file exists (e.g. using Windows Credential Manager or
-        # persistent ambient authentication), skip this and rely on active session.
-        if Path(gcs_key_path).is_file():
-            auth_cmd = [
-                gcloud_exe, "auth", "activate-service-account",
-                f"--key-file={gcs_key_path}"
-            ]
-            auth_result = subprocess.run(
-                auth_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=auth_timeout,
-                env=env,
-            )
-            if auth_result.returncode != 0:
-                logger.warning(
-                    f"FY rollover: gcloud authentication failed (exit {auth_result.returncode}). "
-                    f"Stderr: {(auth_result.stderr or '').strip()}"
-                )
-                return False
-        else:
-            logger.info("FY rollover: No GCS key file found, assuming ambient/Windows authentication for gcloud.")
-
-        # Use --recursive on the bare prefix — no ** glob — to avoid shell
-        # wildcard expansion on Windows PowerShell / cmd.exe environments.
-        cmd: list[str] = [
-            gcloud_exe, "storage", "objects", "update",
-            f"gs://{bucket}/{old_fy}/",
-            "--storage-class=ARCHIVE",
-            "--recursive",
-        ]
-
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=archive_timeout,   # metadata-only rewrite; no data transfer
-            env=env,
-        )
-        if result.returncode == 0:
-            logger.info(
-                f"FY rollover: archive transition succeeded for gs://{bucket}/{old_fy}/"
-            )
-            return True
-
-        stderr_output = (result.stderr or "").strip()
-        logger.warning(
-            f"FY rollover: archive transition failed "
-            f"(exit {result.returncode}) for gs://{bucket}/{old_fy}/. "
-            f"Stderr: {stderr_output}"
-        )
-        return False
-
-    except FileNotFoundError:
+    gcloud_exe = _resolve_gcloud()
+    if not gcloud_exe:
         logger.warning(
             "FY rollover: 'gcloud' CLI not found - archive transition skipped. "
             "Searched: deploy/bin/, Program Files, LOCALAPPDATA, and system PATH. "
-            "Run setup_system.bat to install the Google Cloud SDK, then place nssm.exe in deploy\\bin\\."
+            "Install the Google Cloud SDK (setup_system.bat), then re-run the transition."
         )
         return False
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            f"FY rollover: archive transition timed out after {archive_timeout} s "
-            f"for gs://{bucket}/{old_fy}/"
-        )
+    from core import gcs_key
+    if gcs_key.is_protected(gcs_key_path):
+        logger.error("FY rollover: the Google key is stored DPAPI-protected, but the archive step "
+                     "still needs the key as a file for gcloud (plan S4 is not done) - archive "
+                     "transition NOT run")
         return False
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            f"FY rollover: unexpected error during archive transition: {exc}"
-        )
-        return False
+    artefacts = artefacts or RunArtefacts.ephemeral("fy-archive")
+    # Stateless: everything gcloud needs is injected per call; nothing is installed or stored.
+    env = os.environ.copy()
+    env["CLOUDSDK_PYTHON"] = env.get("CLOUDSDK_PYTHON") or sys.executable   # the SDK ships without one
+    env["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "1"
+    if config_dir:
+        Path(config_dir).mkdir(parents=True, exist_ok=True)
+        env["CLOUDSDK_CONFIG"] = str(config_dir)
+    if Path(gcs_key_path).is_file():
+        env["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"] = str(gcs_key_path)
+    else:
+        logger.info("FY rollover: no GCS key file found, using ambient gcloud authentication")
 
-
-def rollover(config_path: str = "config.yaml") -> bool:
-    """Detect FY boundary and execute rollover if needed.
-
-    Returns True if rollover was performed, False if no rollover needed.
-    Raises RolloverError if final backup fails (config unchanged, retry next run).
-    """
-    from models.config import load_config
-
-    config = load_config(config_path)
-    source_drive = config.paths.source_drive
-    lan_destination = config.paths.lan_destination
-
-    if not detect_rollover(source_drive, lan_destination):
-        return False
-
-    src_fy = _fy_name(source_drive)
-    lan_fy = _fy_name(lan_destination)
-
-    old_fy = src_fy or lan_fy
-    if old_fy is None:
-        return False
-
-    new_fy = get_fy_prefix()
-    src_root = _parent_path(source_drive)
-    lan_root = _parent_path(lan_destination)
-
-    logger.info(f"FY rollover: {old_fy} → {new_fy}")
-    logger.info(f"  Source root: {src_root}")
-    logger.info(f"  LAN root:    {lan_root}")
-
-    cloud_ok, lan_ok = run_final_backup(
-        source_drive=source_drive,
-        lan_destination=lan_destination,
-        lan_config=config.lan,
-        cloud_config=config.cloud,
-        paths_config=config.paths,
-        config=config,
-        old_fy=old_fy,
-    )
-
-    required = []
-    if config.cloud.enabled and not cloud_ok:
-        required.append("cloud")
-    if config.lan.enabled and not lan_ok:
-        required.append("LAN")
-
-    if required:
-        msg = f"FY rollover blocked: final backup failed for {', '.join(required)}"
-        logger.error(msg)
-        raise RolloverError(msg)
-
-    # Attempt to move the entire closing-year GCS folder to Archive tier.
-    # Non-blocking: rollover proceeds even if this step fails.
-    archive_ok = False
-    if config.cloud.enabled:
-        archive_ok = run_archive_transition(
-            bucket=config.cloud.bucket,
-            old_fy=old_fy,
-            gcs_key_path=config.paths.gcs_key_path,
-            auth_timeout=config.health.rollover_auth_timeout_seconds,
-            archive_timeout=config.health.rollover_archive_timeout_seconds,
-        )
-
-    create_new_fy_folders(src_root, lan_root, new_fy)
-
-    update_config_yaml(config_path, src_root, lan_root, new_fy)
-
-    logger.info(
-        f"FY rollover complete: {old_fy} → {new_fy} | archive_ok={archive_ok}"
-    )
+    # First prove gcloud starts at all (a missing Python made every transition a silent no-op).
+    # --recursive on the bare prefix (no ** glob) - no shell wildcard expansion.
+    steps = [("gcloud-check", [gcloud_exe, "--version"], auth_timeout),
+             ("gcloud-archive", [gcloud_exe, "storage", "objects", "update",
+                                 f"gs://{bucket}/{old_fy}/", "--storage-class=ARCHIVE",
+                                 "--recursive"], archive_timeout)]
+    for name, argv, timeout in steps:
+        result = run_tool(name, argv, timeout_s=timeout, artefacts=artefacts, env=env)
+        if not result.completed or result.exit_code != 0:
+            detail = result.describe_failure() or (
+                f"exit {result.exit_code}: {result.stderr_text().strip() or 'no output'}")
+            logger.warning(f"FY rollover: {name} failed for gs://{bucket}/{old_fy}/ ({detail}); "
+                           f"full output in {artefacts.dir}")
+            return False
+    logger.info(f"FY rollover: archive transition succeeded for gs://{bucket}/{old_fy}/")
     return True

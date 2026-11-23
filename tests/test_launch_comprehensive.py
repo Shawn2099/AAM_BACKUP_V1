@@ -18,7 +18,7 @@ def prefect_harness():
 class TestCheckPrefectApi:
     def test_success_returns_true(self):
         from launch import _check_prefect_api
-        with patch("httpx.get") as mock_get:
+        with patch("httpx2.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_get.return_value = mock_resp
@@ -26,17 +26,17 @@ class TestCheckPrefectApi:
 
     def test_connect_error_returns_false(self):
         from launch import _check_prefect_api
-        with patch("httpx.get", side_effect=Exception("connection refused")):
+        with patch("httpx2.get", side_effect=Exception("connection refused")):
             assert _check_prefect_api() is False
 
     def test_timeout_returns_false(self):
         from launch import _check_prefect_api
-        with patch("httpx.get", side_effect=Exception("timeout")):
+        with patch("httpx2.get", side_effect=Exception("timeout")):
             assert _check_prefect_api() is False
 
     def test_non_200_returns_false(self):
         from launch import _check_prefect_api
-        with patch("httpx.get") as mock_get:
+        with patch("httpx2.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.status_code = 503
             mock_get.return_value = mock_resp
@@ -44,7 +44,7 @@ class TestCheckPrefectApi:
 
     def test_custom_url(self):
         from launch import _check_prefect_api
-        with patch("httpx.get") as mock_get:
+        with patch("httpx2.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_get.return_value = mock_resp
@@ -105,8 +105,9 @@ class TestCancelOrphanedRuns:
     def test_cancels_pending_and_running(self):
         from launch import _cancel_orphaned_runs
         mock_client = AsyncMock()
-        mock_run_pending = MagicMock(id="p-123", name="pending-run")
-        mock_run_running = MagicMock(id="r-456", name="running-run")
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        mock_run_pending = MagicMock(id="p-123", name="pending-run", flow_id="aam-flow")
+        mock_run_running = MagicMock(id="r-456", name="running-run", flow_id="aam-flow")
         mock_client.read_flow_runs.side_effect = [[mock_run_pending], [mock_run_running]]
         with patch("prefect.client.orchestration.get_client") as mock_get_client, \
              patch("core.process.read_lock_alive", return_value=(False, None)):
@@ -117,7 +118,8 @@ class TestCancelOrphanedRuns:
     def test_backup_active_skips_running(self):
         from launch import _cancel_orphaned_runs
         mock_client = AsyncMock()
-        mock_run_pending = MagicMock(id="p-123", name="pending-run")
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        mock_run_pending = MagicMock(id="p-123", name="pending-run", flow_id="aam-flow")
         mock_client.read_flow_runs.return_value = [mock_run_pending]
         # F18: the config load must be patched — without a root config.yaml
         # _cancel_orphaned_runs falls back to lock_path=None and never reads
@@ -130,6 +132,19 @@ class TestCancelOrphanedRuns:
             mock_get_client.return_value.__aenter__.return_value = mock_client
             _cancel_orphaned_runs()
             assert mock_client.set_flow_run_state.call_count == 1
+
+    def test_non_aam_flow_runs_are_not_cancelled(self):
+        # Orphan cleanup is scoped to AAM flows: a RUNNING/PENDING run of any
+        # other flow on the same Prefect server must never be cancelled.
+        from launch import _cancel_orphaned_runs
+        mock_client = AsyncMock()
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        foreign = MagicMock(id="x-1", name="foreign-run", flow_id="other-flow")
+        mock_client.read_flow_runs.side_effect = [[foreign], [foreign]]
+        with patch("prefect.client.orchestration.get_client") as mock_get_client,              patch("core.process.read_lock_alive", return_value=(False, None)):
+            mock_get_client.return_value.__aenter__.return_value = mock_client
+            _cancel_orphaned_runs()
+            assert mock_client.set_flow_run_state.call_count == 0
 
     def test_stale_lock_cleaned_up(self):
         from pathlib import Path
@@ -153,7 +168,8 @@ class TestCancelOrphanedRuns:
     def test_live_lock_with_backup_active(self):
         from launch import _cancel_orphaned_runs
         mock_client = AsyncMock()
-        mock_run_pending = MagicMock(id="p-123", name="pending-run")
+        mock_client.read_flows.return_value = [MagicMock(id="aam-flow")]
+        mock_run_pending = MagicMock(id="p-123", name="pending-run", flow_id="aam-flow")
         mock_client.read_flow_runs.return_value = [mock_run_pending]
         # F18: config load patched (see test_backup_active_skips_running).
         with patch("prefect.client.orchestration.get_client") as mock_get_client,              patch("core.process.read_lock_alive", return_value=(True, 12345)),              patch("models.config.CONFIG_PATH", "/tmp/test_config.yaml"),              patch("models.config.load_config") as mock_config:
@@ -214,7 +230,6 @@ class TestMainPrefectApiReady:
             "launch.time.sleep": patch("launch.time.sleep"),
             "launch.threading.Thread": patch("launch.threading.Thread"),
             "models.config.load_config": patch("models.config.load_config", return_value=mock_cfg),
-            "core.fy_rollover.rollover": patch("core.fy_rollover.rollover", return_value=False),
             "serve.deployments": patch("serve.deployments", return_value=mock_deployments),
         }
 
@@ -229,7 +244,6 @@ class TestMainPrefectApiReady:
              patches["launch.time.sleep"], \
              patches["launch.threading.Thread"], \
              patches["models.config.load_config"], \
-             patches["core.fy_rollover.rollover"], \
              patches["serve.deployments"]:
             try:
                 main()
@@ -253,7 +267,6 @@ class TestMainPrefectApiReady:
              patches["launch.time.sleep"], \
              patches["launch.threading.Thread"], \
              patches["models.config.load_config"], \
-             patches["core.fy_rollover.rollover"], \
              patches["serve.deployments"]:
             try:
                 main()
@@ -281,17 +294,16 @@ class TestMainPrefectApiReady:
 
 
 class TestMainFyRollover:
-    def _run_main(self, rollover_return=None, rollover_side_effect=None):
+    """Plan WP11: the agent no longer rolls the FY over at boot (it ran
+    synchronously before the scheduler, outside the backup slot). The daily
+    rollover-check deployment is the single entry point."""
+
+    def test_main_never_touches_the_rollover(self):
         from launch import main
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
         mock_deployments = tuple(MagicMock() for _ in range(5))  # G10: 5 deployments
-        rollover_kwargs = {}
-        if rollover_return is not None:
-            rollover_kwargs["return_value"] = rollover_return
-        if rollover_side_effect is not None:
-            rollover_kwargs["side_effect"] = rollover_side_effect
         with patch("launch._check_prefect_api", return_value=True), \
              patch("launch._run_dashboard"), \
              patch("launch._ensure_concurrency_limit"), \
@@ -300,22 +312,15 @@ class TestMainFyRollover:
              patch("launch.time.sleep"), \
              patch("launch.threading.Thread"), \
              patch("models.config.load_config", return_value=mock_cfg), \
-             patch("core.fy_rollover.rollover", **rollover_kwargs), \
+             patch("core.fy_rollover.create_new_fy_folders") as folders, \
+             patch("core.fy_rollover.update_config_yaml") as update, \
              patch("serve.deployments", return_value=mock_deployments):
             try:
                 main()
             except Exception:
                 pass
-
-    def test_rollover_success(self):
-        self._run_main(rollover_return=True)
-
-    def test_rollover_failure_non_fatal(self):
-        from core.fy_rollover import RolloverError
-        self._run_main(rollover_side_effect=RolloverError("blocked"))
-
-    def test_rollover_exception_non_fatal(self):
-        self._run_main(rollover_side_effect=Exception("unexpected"))
+        folders.assert_not_called()
+        update.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -338,6 +343,5 @@ class TestMainShutdown:
              patch("launch.time.sleep"), \
              patch("launch.threading.Thread"), \
              patch("models.config.load_config", return_value=mock_cfg), \
-             patch("core.fy_rollover.rollover", return_value=False), \
              patch("serve.deployments", return_value=mock_deployments):
             main()

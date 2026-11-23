@@ -33,66 +33,46 @@ class TestFilesFailed:
     def lan_cfg(self):
         return LanConfig()
 
-    @patch("core.lan_sync.subprocess.run")
-    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
-    def test_partial_with_copy_errors_counts_failed_lines(self, mock_resolve, mock_run, tmp_path, lan_cfg):
-        """Exit 9 (bit 3 = copy errors) with summary FAILED=2 -> files_failed=2.
+    def test_partial_with_copy_errors_counts_failed_lines(self, tmp_path, lan_cfg):
+        """Exit 9 (bit 3) with summary FAILED=2 -> files_failed=2 (P1-COUNT)."""
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool, robocopy_log
 
-        P1-COUNT: the count now comes from the positional Files-summary row;
-        the log must carry one for an exact count (bit-3 floor applies when
-        the summary is absent)."""
-        log_file = tmp_path / "robocopy_sync_test.log"
-        # Completed job summary (Files row + Ended line): proves normal
-        # termination, so the bit-3 exit is PARTIAL rather than SUSPECT.
-        log_file.write_text(
+        log = robocopy_log(total=3, copied=1, failed=2, body=(
             "      New File:            1 C:\\a\\ok.txt\n"
             "          ** FAILED: \\\\nas\\FY25-26\\big.iso\n"
-            "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"
-            "\n"
-            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-            "    Dirs :         1         1         0         0         0         0\n"
-            "    Files :         3         1         0         0         2         0\n"
-            "    Bytes :       100        50        50         0         0         0\n"
-            "    Times :   0:00:01   0:00:00                       0:00:00   0:00:00\n"
-            "    Ended : Tuesday, September 01, 2026 1:00:01 AM\n"
-        )
-        mock_run.return_value = MagicMock(returncode=9)
-        # point the (mocked) run at our prepared log
-        with patch.object(lan_sync, "tempfile") as mock_tf:
-            fd = os.open(str(log_file), os.O_RDWR)
-            mock_tf.mkstemp.return_value = (fd, str(log_file))
-            with patch("core.lan_sync._assert_source_not_empty"):
-                result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
-
+            "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"))
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with fake_run_tool("core.lan_sync", exit_code=9, log=log, log_encoding="utf-16"), \
+             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync.require_source_files"):
+            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_PARTIAL"
         assert result["files_failed"] == 2
+    def test_clean_run_files_failed_zero(self, tmp_path, lan_cfg):
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool, robocopy_log
 
-    @patch("core.lan_sync.subprocess.run")
-    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
-    def test_clean_run_files_failed_zero(self, mock_resolve, mock_run, lan_cfg):
-        # A mocked process writes no /LOG; feed the completed summary the
-        # real process would have written — COMPLETE requires log evidence.
-        completed_log = (
-            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-            "    Files :         2         2         0         0         0         0\n"
-            "    Ended : Tuesday, September 01, 2026 1:00:01 AM\n"
-        )
-        mock_run.return_value = MagicMock(returncode=1)
-        with patch("core.lan_sync._read_log_tail", return_value=completed_log):
-            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with fake_run_tool("core.lan_sync", exit_code=1, log=robocopy_log(total=2, copied=2),
+                           log_encoding="utf-16"), \
+             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync.require_source_files"):
+            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_COMPLETE"
         assert result["termination"] == "normal"
         assert result["files_failed"] == 0
+    def test_timeout_files_failed_zero(self, tmp_path, lan_cfg):
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool
 
-    @patch("core.lan_sync.subprocess.run")
-    @patch("core.lan_sync.resolve_binary", return_value="robocopy")
-    def test_timeout_files_failed_zero(self, mock_resolve, mock_run, lan_cfg):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="robocopy", timeout=5)
-        result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg)
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with fake_run_tool("core.lan_sync", timed_out=True), \
+             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync.require_source_files"):
+            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
         assert result["status"] == "LAN_FAILED"
         assert result["files_failed"] == 0
-
-
 class TestCountFailedLines:
     def test_counts_only_robocopy_failure_lines(self):
         log = """x
@@ -199,15 +179,18 @@ class TestOrphanLogCleanup:
 # ═══════════════════════════════════════════════════════════════
 
 class TestCanaryMessage:
-    def test_message_contains_recovery_command(self, tmp_path):
+    def test_missing_marker_is_reported_and_g5_message_guides_the_operator(self, tmp_path):
+        # M2 2.3: recovery for a folder WITH files is fixing the share (the G5
+        # block is not approvable); the empty-folder case is approved.
+        from core import guards
         dest = tmp_path / "FY25-26"
         dest.mkdir()
-        with pytest.raises(lan_preflight.HealthError) as ei:
-            lan_preflight.run_lan_dry_run(str(dest.parent), str(dest))
-        msg = str(ei.value)
-        assert ".AAM_TARGET_MOUNTED" in msg
-        assert "type nul >" in msg
-        assert "10_recreate_canary.bat" in msg
+        from test_support.fake_tools import fake_run_tool
+        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0):
+            res = lan_preflight.run_lan_dry_run(str(dest.parent), str(dest))
+        assert res["canary_present"] is False
+        msg = guards.g5_canary(False, True, str(dest)).reason
+        assert ".AAM_TARGET_MOUNTED" in msg and "Do NOT approve" in msg  # owner decision B: never approvable
 
     def test_canary_script_exists(self):
         assert (Path(__file__).resolve().parent.parent / "deploy" / "10_recreate_canary.bat").exists()
@@ -219,12 +202,11 @@ class TestCanaryMessage:
 
 def _base_config(**path_overrides):
     paths = dict(
-        source_drive="D:\\\\FY25-26\\\\data",
-        lan_destination="\\\\\\\\nas\\\\FY25-26\\\\data",
+        source_drive="D:\\\\FY25-26",
+        lan_destination="\\\\\\\\nas\\\\share\\\\FY25-26",     # OV-10.3: not directly at a share root
         gcs_key_path="keys/gcs.json",
         database_path="db/m.db",
         log_directory="logs",
-        backup_lock_path="db/lock",
     )
     paths.update(path_overrides)
     return dict(
@@ -232,7 +214,6 @@ def _base_config(**path_overrides):
         cloud=dict(enabled=True, bucket="aam-backup-test", project_number="123"),
         wol=dict(enabled=False),
         lan=dict(enabled=True),
-        dashboard=dict(api_key="testkey12345"),
     )
 
 
@@ -259,7 +240,7 @@ class TestFourDigitFY:
 class TestConditionalValidation:
     def test_enabled_cloud_requires_bucket(self):
         from pydantic import ValidationError
-        with pytest.raises(ValidationError, match="cloud.bucket"):
+        with pytest.raises(ValidationError, match="Google Cloud bucket name"):
             CloudConfig(enabled=True)
 
     def test_disabled_cloud_allows_empty_bucket(self):
@@ -267,7 +248,7 @@ class TestConditionalValidation:
 
     def test_enabled_wol_requires_mac(self):
         from pydantic import ValidationError
-        with pytest.raises(ValidationError, match="wol.mac_address"):
+        with pytest.raises(ValidationError, match="MAC"):
             WolConfig(enabled=True)
 
     def test_disabled_wol_allows_empty_mac(self):
@@ -285,10 +266,16 @@ class TestConditionalValidation:
 
 class TestScaleDefaults:
     def test_cloud_listing_timeouts(self):
+        """F7: listing timeouts sized for the target scale.
+
+        v1.1.3 raised manifest/diff from 900/1800 to the 5h policy (18000)
+        after the 15m/30m values proved too tight for the 1M-object bucket
+        (lsjson ~2-5 min, diff ~3-8 min at scale, growing to ~2.5M objects by
+        yr-5); cloud_size stays at 300 (rclone size returns in ~40-150s)."""
         c = CloudConfig(enabled=False)
         assert c.cloud_size_timeout_seconds == 300
-        assert c.manifest_timeout_seconds == 900
-        assert c.diff_timeout_seconds == 1800
+        assert c.manifest_timeout_seconds == 18000
+        assert c.diff_timeout_seconds == 18000
 
     def test_lan_dry_run_timeout(self):
         assert LanConfig().dry_run_timeout_seconds == 900
@@ -313,8 +300,8 @@ class TestDeployArtifacts:
     def test_setup_script_sets_active_hours(self):
         bat = (Path(__file__).resolve().parent.parent / "deploy" / "03_setup_system.bat").read_text()
         assert "ActiveHours" in bat
-        assert re.search(r"/v Start /t REG_DWORD /d 12", bat)
-        assert re.search(r"/v End /t REG_DWORD /d 6", bat)
+        assert re.search(r"/v ActiveHoursStart /t REG_DWORD /d 20", bat)   # plan H2: 12 h max on Server 2016
+        assert re.search(r"/v ActiveHoursEnd /t REG_DWORD /d 8", bat)
 
     def test_readiness_checks_active_hours(self):
         ps1 = (Path(__file__).resolve().parent.parent / "deploy" / "04_check_readiness.ps1").read_text()
@@ -356,7 +343,7 @@ class TestFilesFailedWiring:
             ok = record_run_history(
                 db, run_id="r1", mode="lan", started_at="2026-08-01T01:00:00",
                 ended_at="2026-08-01T02:00:00", status="LAN_PARTIAL",
-                exit_code=9, duration_seconds=3600.0, files_failed=7,
+                exit_code=9, duration_seconds=3600.0, files_failed=7, fy="FY26-27",
             )
             assert ok
             row = db._conn.execute(
@@ -375,7 +362,7 @@ class TestFilesFailedWiring:
             ok = record_run_history(
                 db, run_id="r2", mode="cloud", started_at="2026-08-01T01:00:00",
                 ended_at="2026-08-01T02:00:00", status="CLOUD_COMPLETE",
-                exit_code=0, duration_seconds=3600.0,
+                exit_code=0, duration_seconds=3600.0, fy="FY26-27",
             )
             assert ok
             row = db._conn.execute(

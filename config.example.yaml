@@ -11,28 +11,43 @@ firm_name: "YourFirmName"
 
 # ═══════════════════════════════════════════════════
 # FILE SYSTEM PATHS
-# IMPORTANT: Both source_drive and lan_destination MUST end with the
-# current Fiscal Year folder (e.g. \FY25-26). The system uses this
-# suffix for GCS prefix routing and FY rollover detection.
+# IMPORTANT (mandatory, whichever backup is on): source_drive MUST end with the current Fiscal
+# Year folder (e.g. D:\FY26-27), and lan_destination too while the NAS backup is on. The system
+# uses this suffix for the cloud folder name, the safety checks and the yearly switch; a config
+# without it does not load. Only the CURRENT year is backed up: older year folders
+# (D:\FY24-25, D:\archives\FY10-11) are uploaded once at deployment by a separate tool.
 # ═══════════════════════════════════════════════════
 paths:
-  source_drive: "D:\\YOUR_DATA\\FY25-26"
-  lan_destination: "\\\\NAS_IP\\share\\FY25-26"
+  source_drive: "D:\\FY26-27"
+  lan_destination: "\\\\NAS_IP\\share\\FY26-27"
   # Runtime directory — all logs, database, lock file, and Prefect home live here.
   # Separate from code installation so updates don't delete runtime data.
   runtime_dir: "C:\\BackupAgent"
   gcs_key_path: "C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json"
+  # Leave empty: derived from runtime_dir (<runtime_dir>\manifest.db and <runtime_dir>\logs).
+  # Only set them to put the database / logs somewhere else.
+  database_path: ""
+  log_directory: ""
 
 # ═══════════════════════════════════════════════════
 # LAN BACKUP (Robocopy /MIR to NAS)
 # ═══════════════════════════════════════════════════
 lan:
   enabled: true
+  # true = the NAS backup runs every night (schedule.lan_cron). false = manual only: no nightly
+  # NAS run and no schedule-based NAS alarms; the dashboard button still wakes the NAS, backs
+  # up, verifies and shuts it down. The 1 April rollover and the Sunday audit still try the NAS;
+  # an unreachable NAS there is a warning, not a block.
+  scheduled: true
+  # Manual-only NAS (scheduled false): soft amber note, no email, when the last successful NAS
+  # backup is older than this many days (1-365).
+  on_demand_warn_after_days: 30
   # Robocopy /R — retries per failed file
   retry_count: 3
   # Robocopy /W — seconds to wait between retries
   retry_wait_seconds: 10
-  # Hard timeout for the entire robocopy process (seconds). 14400 = 4 hours
+  # Hard timeout for the entire robocopy process (seconds). 14400 = 4 hours.
+  # The LAN run budget (budget.lan_max_hours) is usually the tighter limit.
   subprocess_timeout_seconds: 14400
   # Shut down the NAS server after a successful LAN sync
   shutdown_after_backup: true
@@ -43,8 +58,31 @@ lan:
   max_attempts: 2
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 600
+  # Extra tries of the LAN preflight (robocopy /L dry-run) after a failure (0-5)
+  preflight_retries: 1
+  # Seconds between LAN preflight tries (5-3600)
+  preflight_retry_delay_seconds: 30
   # Robocopy /MT — parallel copy threads
   mt_threads: 4
+  # Robocopy /ZB backup mode: also copies files the account cannot open normally.
+  # Needs the "Back up files and directories" right (SeBackupPrivilege) for the
+  # backup service account; every LAN run checks it first. false = no /ZB.
+  use_backup_mode: true
+  # The NAS must have the size of this backup's new/changed files PLUS this many GB
+  # free before copying starts (0–100000)
+  min_free_dest_gb: 5
+  # Timeout for the SeBackupPrivilege check (seconds, 5–600)
+  privilege_check_timeout_seconds: 60
+  # Timeout for the robocopy /L dry run that counts planned deletions before the
+  # mirror (seconds, 60–7200)
+  dry_run_timeout_seconds: 900
+  # Before the dry run: how many times to try the NAS on port 445, and the pause
+  # between tries (each try waits up to wol.smb_connect_timeout_seconds)
+  preflight_smb_attempts: 8
+  preflight_smb_wait_seconds: 15
+  # KB of the robocopy log's end used for the result and put into alerts/DB
+  # (the FULL log is always kept in run_logs). 4–10240
+  log_tail_kb: 100
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
@@ -54,23 +92,50 @@ wol:
   # MAC address of the NAS server (colons or hyphens accepted)
   mac_address: "AA:BB:CC:DD:EE:FF"
   # IP of the NAS server — used for SMB port reachability check
-  server_ip: "192.168.1.100"
+  server_ip: "192.0.2.10"   # example value (documentation address): use the NAS address, the same host as in lan_destination
   # Subnet-directed broadcast address for the Magic Packet.
-  # Leave empty to auto-derive from server_ip (e.g. 192.168.1.100 → 10.10.186.255).
+  # Leave empty to auto-derive from server_ip (e.g. 192.168.1.100 → 192.168.1.255).
   # Set explicitly if the NAS is on a different VLAN or managed switch
   # that blocks the global 255.255.255.255 broadcast.
   broadcast_address: ""
-  # Max seconds to wait for the NAS to respond on SMB port 445 after WoL
-  wake_timeout_seconds: 300
+  # Max seconds to wait for the NAS to be usable over SMB after WoL (60–3600).
+  # A cold boot (POST + disks + OS + SMB) takes minutes: set this to about 2x the
+  # cold-boot time measured on site.
+  wake_timeout_seconds: 900
   # Seconds between SMB reachability polls during wake wait
   ping_interval_seconds: 15
-  # Extra seconds to wait after SMB responds (allows services to fully start)
-  stability_wait_seconds: 30
+  # Extra seconds to wait after SMB first answers, then re-check (0–900)
+  stability_wait_seconds: 90
+  # TCP connect timeout of each port-445 probe (seconds, 1–120)
+  smb_connect_timeout_seconds: 15
+  # Magic packets: rounds per wake attempt, and seconds between rounds
+  wake_retry_count: 5
+  wake_retry_interval_seconds: 10
+  # NAS shutdown after a complete LAN backup (shutdown /s /m \\<server_ip> /t <delay> /f).
+  # Staff can cancel during the delay with `shutdown /a` on the NAS.
+  shutdown_delay_seconds: 300
+  # Max seconds for shutdown.exe itself to return
+  shutdown_command_timeout_seconds: 120
+  # The NAS must stop answering on port 445 within this many seconds of the command
+  # (must be longer than shutdown_delay_seconds). Otherwise the shutdown is reported
+  # NOT_VERIFIED (WARNING email + dashboard flag). The backup slot is held meanwhile.
+  # Measured 2026-10-15 on Windows Server 2016: port closed ~47 s after the delay ended.
+  shutdown_verify_timeout_seconds: 600
+  # Consecutive closed-port probes (ping_interval_seconds apart) that count as "off"
+  shutdown_verify_closed_probes: 2
 
 # ═══════════════════════════════════════════════════
 # CLOUD BACKUP (rclone sync → Google Cloud Storage)
 # ═══════════════════════════════════════════════════
 cloud:
+  # true = the cloud backup runs every night (schedule.cloud_cron). false = manual only: no
+  # nightly cloud run and no schedule-based cloud alarms; the dashboard button still backs up and
+  # verifies. The 1 April rollover and the Sunday audit still run the cloud leg; a real failure
+  # there still blocks.
+  scheduled: true
+  # Manual-only cloud (scheduled false): soft amber note, no email, when the last successful
+  # cloud backup is older than this many days (1-365).
+  on_demand_warn_after_days: 30
   enabled: true
   bucket: "your-gcs-bucket-name"
   project_number: "YOUR_GCP_PROJECT_NUMBER"
@@ -84,56 +149,194 @@ cloud:
   bandwidth_limit: "10M"
   # rclone --retries per failed file transfer
   retry_count: 3
-  # Hard timeout for the entire rclone sync process (seconds). 21600 = 6 hours
-  subprocess_timeout_seconds: 21600
+  # Hard timeout for the entire rclone sync process (seconds). 18000 = 5 hours (conservative initial limit).
+  # The cloud run budget (budget.cloud_max_hours) is usually the tighter limit.
+  subprocess_timeout_seconds: 18000
+  # rclone --max-duration (seconds): rclone stops itself cleanly before the hard
+  # timeout. null = automatic (timeout minus 5 min); 0 = off; a number = that cap.
+  max_duration_seconds: null
   # Flow-level retry attempts (full rclone re-runs on failure)
   max_attempts: 3
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 300
-  # Timeout for post-sync rclone check/verify step (seconds)
-  verify_timeout_seconds: 14400
+  # Extra tries of the cloud preflight (source + GCS access probe) after a failure (0-5)
+  preflight_retries: 1
+  # Seconds between cloud preflight tries (5-3600)
+  preflight_retry_delay_seconds: 30
+  # Extra tries of the after-upload check + report step after a failure (0-5)
+  verify_retries: 1
+  # Seconds between after-upload check tries (5-3600)
+  verify_retry_delay_seconds: 60
+  # Timeout for post-sync rclone check/verify step (seconds). 18000 = 5 hours (conservative initial limit)
+  verify_timeout_seconds: 18000
   # Timeout for pre-sync rclone check dry-run (seconds)
   preflight_timeout_seconds: 300
-  # Timeout for rclone check --combined diff report (seconds)
-  diff_timeout_seconds: 600
-  # Timeout for rclone lsjson manifest listing (seconds)
-  manifest_timeout_seconds: 300
+  # rclone --retries / --retries-sleep (seconds) for the preflight GCS access probe
+  probe_retries: 2
+  probe_retries_sleep_seconds: 5
+  # Timeout for each guard measurement before the sync: `rclone sync --dry-run`
+  # (planned deletions) and `rclone size` of the source (seconds, 60–86400)
+  dry_run_timeout_seconds: 1800
+  # Timeout for rclone check --combined diff report (seconds). 18000 = 5 hours (conservative initial limit)
+  diff_timeout_seconds: 18000
+  # Timeout for rclone lsjson manifest listing (seconds). 18000 = 5 hours (conservative initial limit)
+  manifest_timeout_seconds: 18000
   # Timeout for rclone size GCS object count query (seconds)
-  cloud_size_timeout_seconds: 30
+  cloud_size_timeout_seconds: 300
   # rclone --transfers: concurrent file uploads
   transfers: 2
   # rclone --checkers: concurrent file comparison workers
   checkers: 4
+  # rclone --modify-window (seconds) for the upload, the after-upload check and the
+  # difference report: file times closer than this count as equal (2 = NTFS granularity;
+  # 0-10 - a wider window would make the upload skip same-size edits)
+  modify_window_seconds: 2
+  # rclone --retries-sleep (seconds) for the upload and its dry-run (1-600)
+  sync_retries_sleep_seconds: 30
+  # rclone --stats: a progress line in the upload log every N seconds (1-3600)
+  stats_interval_seconds: 60
+  # rclone --retries-sleep (seconds) for the difference report; its --retries is retry_count
+  retries_sleep_seconds: 10
   # rclone --buffer-size: upload read buffer per transfer slot
   # 2 transfers × 64M = 128M total. Matches GCS multipart chunk sizing.
   buffer_size: "64M"
+  # Before each sync, create and delete a tiny test object under
+  # <bucket>/_aam_preflight/ (outside every FY folder) to prove write and delete
+  # rights. Leaves one tiny old version in a versioned bucket; the lifecycle rule
+  # removes it. Uses preflight_timeout_seconds.
+  write_probe_enabled: true
+  # rclone error lines carried into alerts/DB/dashboard (the FULL log is always
+  # kept in run_logs). 1–10000
+  error_tail_lines: 100
 
 # ═══════════════════════════════════════════════════
 # SCHEDULES (cron, all times in timezone below)
 # ═══════════════════════════════════════════════════
+# Only one backup job (LAN, cloud, audit) runs at a time. The config is
+# REFUSED at start-up if a job could still be running, within its run budget
+# (see `budget:` below), when the next one would give up waiting for it -
+# the error message shows the arithmetic. Reports never wait for backups.
 schedule:
-  # Cloud backup: daily at 10:00 PM
-  cloud_cron: "0 22 * * *"
-  # LAN backup: daily at 9:00 PM
+  # LAN backup: daily at 9:00 PM (budget 4 h -> done by 1:00 AM)
   lan_cron: "0 21 * * *"
+  # Cloud backup: daily at 2:00 AM (5 h after LAN; budget 6 h -> done by 8:00 AM)
+  cloud_cron: "0 2 * * *"
   # Weekly email report: every Monday at 8:00 AM
   weekly_cron: "0 8 * * MON"
-  # Monthly email report: 1st of every month at 8:00 AM
-  monthly_cron: "0 8 1 * *"
-  # Weekly read-only integrity audit: Sunday 3:00 AM low-load window
-  audit_cron: "0 3 * * SUN"
+  # Monthly email report: 1st of every month at 8:30 AM (never the same minute as the weekly one)
+  monthly_cron: "30 8 1 * *"
+  # Weekly read-only integrity audit: Sunday 10:00 AM (after the Sunday cloud
+  # backup's budget; budget 8 h -> done by 6:00 PM, before the 9:00 PM LAN run)
+  audit_cron: "0 10 * * SUN"
+  # Daily FY rollover check: does nothing except on the fiscal-year boundary
+  # (April 1), where it runs the final backups under their own run budgets.
+  rollover_cron: "0 6 * * *"
   timezone: "Asia/Kolkata"
+
+# ═══════════════════════════════════════════════════
+# RUN BUDGETS (how long each job may hold the backup slot)
+# ═══════════════════════════════════════════════════
+# Counted from the scheduled start, including any wait for the slot. A job
+# that reaches its budget stops cleanly as PARTIAL ("continues next run",
+# one alert) - it is never a success and never blocks the next job.
+# A first full upload therefore spreads over several nights; or run it once
+# by hand with a larger budget (Prefect run parameter `budget_hours`).
+# Starting values - tune them from the durations recorded for real runs.
+budget:
+  lan_max_hours: 4
+  cloud_max_hours: 6
+  audit_max_hours: 8
+  # Of the cloud budget, kept for the size check after the upload (minutes)
+  cloud_verify_reserve_minutes: 60
+  # Of the LAN budget, kept for the destination walk + verified NAS shutdown (minutes)
+  lan_post_reserve_minutes: 30
 
 # ═══════════════════════════════════════════════════
 # DASHBOARD UI
 # ═══════════════════════════════════════════════════
 dashboard:
-  auth_enabled: true
-  # API key required when auth_enabled is true — change before production
-  api_key: "CHANGE_THIS_STRONG_KEY"
   # Bind address: 127.0.0.1 = localhost only. 0.0.0.0 = all interfaces (LAN accessible)
   bind_address: "127.0.0.1"
   port: 8080
+  # Banner, /health and the overdue email turn red when a leg has had no successful backup by
+  # its next scheduled run + its run budget (budget.*_max_hours) + this many hours of grace
+  # (0-168). Follows the schedule: a daily plan is about 26 h, a weekly plan about a week.
+  stale_grace_hours: 2
+  # A leg that is overdue but is copying a large amount over several nights (budget-stopped PARTIAL
+  # runs that make progress) shows amber "catching up" for this many days (1-365), then red.
+  catching_up_max_days: 14
+  # ...or when an alert/report email failed to send within this many days (1–90)
+  alert_failure_window_days: 7
+  # Advanced settings have their own login (a second password). A salted hash, written by
+  # the installer, by Settings > Advanced > Passwords, or by
+  # deploy/11_reset_dashboard_passwords.ps1 - never the password itself. Empty = nobody can
+  # open Advanced.
+  admin_password_hash: ""
+  # Dashboard sign-in password: a salted hash, written by the installer, by Settings >
+  # Advanced > Passwords, or by deploy/11_reset_dashboard_passwords.ps1. Empty = nobody can
+  # sign in (the dashboard shows 'not set up').
+  login_password_hash: ""
+  # The Advanced login locks itself after this many minutes (5–480)
+  admin_session_minutes: 30
+  # Minimum length of a new admin password (8–128)
+  admin_password_min_length: 10
+  # Dashboard address written into "open the dashboard" emails, as the office PCs
+  # reach it (e.g. http://backup-server:8080). Empty = automatic: with bind_address
+  # 0.0.0.0 the server's office address is detected for every email (default route,
+  # else the route to the NAS) and shown with the server name as the alternative.
+  # With bind_address 127.0.0.1 the link opens only on the server itself (the
+  # dashboard shows an amber warning and 04_check_readiness.ps1 fails). A manual
+  # value that is not an address of this server is reported amber.
+  public_url: ""
+  # Office network only (never public). When bind_address is not 127.0.0.1, the
+  # installer opens the dashboard port in Windows Firewall to these addresses only:
+  # LocalSubnet (the server's office subnet), an IP, a CIDR or a range.
+  firewall_remote_addresses:
+    - "LocalSubnet"
+  # Rate limits per address, each kind of action counted separately, so a few
+  # settings saves never use up the right to approve a blocked backup.
+  # Window in seconds (10-3600):
+  rate_limit_window_seconds: 300
+  # Manual backup / verification / FY-check starts per window (1-100)
+  rate_limit_triggers: 5
+  # Sign-in attempts per window, dashboard and Advanced (1-100)
+  rate_limit_logins: 10
+  # Report downloads / report emails per window (1-100)
+  rate_limit_reports: 10
+  # Settings saves, admin-password changes and test emails per window (1-200)
+  rate_limit_settings: 20
+  # Approve / run / dismiss of blocked backups per window (1-100)
+  rate_limit_decisions: 10
+  # A dashboard sign-in lasts this many hours (1-168)
+  session_hours: 24
+  # The dashboard address in emails is looked up from the network at most this often,
+  # seconds (0-3600; 0 = every time)
+  link_cache_seconds: 60
+  # The dashboard re-reads config.yaml at most this often, seconds (10-3600)
+  config_refresh_seconds: 300
+  # A manual start waits this long for the run's first result before the page
+  # answers; the run continues afterwards (0-600 seconds)
+  trigger_wait_seconds: 180
+  # A manual start that begins later than this many minutes after the button was pressed
+  # is not run; it is recorded as Missed and the NAS is never woken for it (5-1440)
+  manual_start_max_wait_minutes: 30
+  # A manual start is refused when the backup service has not asked for work for this long,
+  # seconds (30-3600)
+  agent_max_silence_seconds: 120
+  # The dashboard shows one mark per night for this many nights (7-90)
+  history_nights: 30
+  # "Apply changes" on the Settings page restarts the backup service this long after
+  # the page has been answered (1-30 seconds)
+  apply_delay_seconds: 2
+  # If the service has not stopped this long after "Apply changes" it is ended; the
+  # service manager then starts it again (30-600 seconds)
+  apply_force_exit_seconds: 120
+  # "Apply changes" is refused when a scheduled run is due within this time (0-3600 seconds)
+  apply_block_before_run_seconds: 120
+  # The Settings page waits this long for the restarted service (60-1800 seconds)
+  apply_reconnect_timeout_seconds: 300
+  # ...and asks every this often whether it is back (1-30 seconds)
+  apply_poll_seconds: 3
 
 # ═══════════════════════════════════════════════════
 # EMAIL NOTIFICATIONS
@@ -142,10 +345,29 @@ notifications:
   smtp_host: "smtp.gmail.com"
   smtp_port: 587
   smtp_username: "your-smtp-user@gmail.com"
+  # Stored encrypted ("dpapi:...", Windows DPAPI, bound to THIS server) once you save it in
+  # Settings or the installer writes it; a plain value still works but the dashboard shows amber.
+  # Copied to another server it cannot be decrypted: enter it again there.
   smtp_password: "YOUR_APP_PASSWORD"
   sender: "your-smtp-user@gmail.com"
+  # The ALERTS list: problems, action needed, warnings, resolved notices.
+  # Empty = alerts go to report_recipients. An address may be in both lists, never twice in one.
   recipients:
     - "admin@yourcompany.com"
+  # The REPORTS list: weekly and monthly reports, new-financial-year notice.
+  # Empty = reports go to recipients (the alerts list).
+  report_recipients: []
+  # auto = SSL on port 465, STARTTLS otherwise; starttls | ssl; none = plain text
+  # (internal relay only)
+  smtp_security: auto
+  # Log in with smtp_username/smtp_password. false = unauthenticated internal relay.
+  # When true, missing credentials are a recorded delivery FAILURE, never skipped.
+  smtp_auth: true
+  # Seconds per SMTP connection; attempts for temporary (4xx) errors, with an
+  # exponential back-off starting at retry_base_seconds
+  smtp_timeout_seconds: 30
+  retry_attempts: 3
+  retry_base_seconds: 10
   # Send an immediate alert email when a backup fails
   send_on_failure: true
   # NOTE: there is deliberately no send_on_success switch. Per-run success
@@ -161,16 +383,106 @@ notifications:
 # MAINTENANCE
 # ═══════════════════════════════════════════════════
 maintenance:
-  # Days of run history to keep in the SQLite database (7–3650)
-  db_retention_days: 90
-  # Days of log files to keep before Loguru auto-deletion (1–365)
-  log_retention_days: 30
+  # Days of run history to keep in the SQLite database (35–3650, default 730 = about 2 years so the 15-month FY cycle keeps its history; at least 35: the 30-day report
+  # window plus a week, and the safety guards read their baseline from this history)
+  db_retention_days: 730
+  # Days of application log files to keep (1–365). 90 = the 3-month log
+  # retention the owner asked for (R8)
+  log_retention_days: 90
+  # Robocopy temp logs left in %TEMP% by a killed run are deleted once older than
+  # this many hours (1-720); the age gate protects a running backup's own log
+  orphan_robocopy_log_max_age_hours: 24
+  # How long a backup waits for another backup job to finish before it gives up
+  # as *_SLOT_TIMEOUT (seconds). The schedule check (see `schedule:`) uses it.
+  concurrency_wait_seconds: 3600
+  # When a backup ends its backup.lock file is deleted; if that fails (antivirus, watchdog read) it is
+  # retried this many times (0-50), waiting this many milliseconds between attempts (10-5000) (A7)
+  lock_release_retries: 5
+  lock_release_delay_ms: 200
+  # While rclone/robocopy runs, the agent checks this often (seconds, 0.1-30) whether the
+  # flow was cancelled or interrupted; it then kills the tool and records the run (A6)
+  tool_poll_seconds: 1.0
+  # SQLite durability: normal = safe (a power cut may lose the last commit);
+  # full = flush every commit (slower)
+  sqlite_synchronous: normal
   # SQLite PRAGMA busy_timeout in milliseconds (1000–120000)
   # Higher values prevent "database is locked" errors under concurrent access
   sqlite_busy_timeout_ms: 30000
   # VACUUM triggers when SQLite freelist page count exceeds this value
   # 10000 pages ≈ 40 MB. Higher threshold reduces HDD I/O overhead from frequent DB rewrites.
   sqlite_vacuum_freelist_threshold: 10000
+  # config.yaml.bak-* copies kept next to config.yaml (one is made before every
+  # settings change on the dashboard and every FY rollover). 5–1000
+  config_backups_keep: 50
+  # config.yaml has one locked writer (a lock file beside it). How long a settings
+  # save / password change / FY rollover waits for another writer. 1–600 seconds
+  config_lock_timeout_seconds: 30
+  # Windows refuses to swap in the new config.yaml while another process has it open;
+  # the swap is retried this many extra times, with this pause between tries. 0–200 / 10–5000 ms
+  config_replace_retries: 20
+  config_replace_delay_ms: 50
+  # A backup whose process is gone (service stop, reboot, crash) is recorded as
+  # ABANDONED - with a failure email - at the next agent start or backup start.
+  # Only when that cannot be determined (process not readable) does a run still
+  # marked RUNNING after this many hours count as ABANDONED. 1–168
+  abandon_running_after_hours: 24
+
+# ═══════════════════════════════════════════════════
+# FULL TOOL LOGS (every rclone / robocopy log of every run)
+# ═══════════════════════════════════════════════════
+run_logs:
+  # Empty = <runtime_dir>\run_logs (one folder per day and run)
+  dir: ""
+  # Delete run log folders older than this many days (7–3650)
+  retention_days: 90
+  # gzip log files larger than this many KB after the run (0 = compress all)
+  compress_after_kb: 1024
+  # Below this many GB free on that drive: warning + the run is marked
+  # "logs incomplete" (the backup itself still runs)
+  min_free_gb: 5
+  # Delete NSSM-rotated service logs (agent_svc-*, prefect_svc-*, watchdog_svc-*)
+  # older than this many days (7–3650)
+  service_log_retention_days: 90
+
+# ═══════════════════════════════════════════════════
+# ALERT EMAILS
+# ═══════════════════════════════════════════════════
+alerts:
+  # The same alert is re-sent at most once per this many hours while the problem
+  # lasts (repeats are recorded as SUPPRESSED). 0 = never suppress.
+  repeat_cooldown_hours: 12
+  # The "backup overdue" email for a leg is repeated at most once per this many hours while the leg
+  # stays overdue (1-720). It is not sent at all while a failure email about the missed run was sent.
+  stale_repeat_hours: 24
+  # After a mail outage, ONE digest email lists the alerts of the last this many hours that could not
+  # be delivered (0-336; 0 = no digest; older alerts are not sent again), and while the digest itself
+  # cannot be delivered the watchdog retries at most once per this many minutes (5-1440).
+  undelivered_digest_max_age_hours: 72
+  undelivered_digest_retry_minutes: 30
+  # One switch per kind of email (all on = the default). A kind that is off is not mailed; the
+  # dashboard still shows the problem and says which emails are off. Problem and warning emails
+  # are switched by notifications.send_on_failure; the password-changed notice and the test
+  # email cannot be switched off.
+  send_decision_needed: true
+  send_overdue: true
+  send_action_needed: true
+  send_resolved: true
+  send_info: true
+  # An alert with no resolution signal of its own (financial year, dashboard ...) that has not
+  # occurred again for this many days is over; its next occurrence is a new problem (1-90).
+  incident_quiet_days: 7
+  # Characters of the technical message shown in the email's support block; the
+  # full text is in the attached support report
+  body_max_chars: 1000
+  # Every problem email carries a support report (.txt) and the run's full logs
+  # (.zip). All attachments together at most this many KB (100-20480); a logs zip
+  # that does not fit is left out and the report says where the logs are.
+  attachments_max_total_kb: 5120
+  # Attach the run's full logs - they contain client file and folder names
+  # (owner decision D1, 2026-10-18). false = support report only.
+  attach_file_names: true
+  # Lines of each tool log in the support report, error lines first (20-5000)
+  support_log_tail_lines: 200
 
 # ═══════════════════════════════════════════════════
 # HEALTH CHECKS
@@ -181,6 +493,16 @@ health:
   max_clock_skew_seconds: 600
   # Timeout for HTTPS connection to googleapis.com during clock check (seconds)
   clock_check_timeout_seconds: 10
+  # If Google's time cannot be read (Sophos TLS inspection, DNS), one sample is
+  # taken with `w32tm /stripchart` from this NTP server instead.
+  ntp_server: "time.windows.com"
+  # Max seconds for that w32tm sample
+  w32tm_timeout_seconds: 30
+  # When neither source answers, the clock is UNVERIFIED:
+  #   warn  = the cloud backup runs; the run and the dashboard show "clock unverified"
+  #   block = the cloud backup fails with the reason
+  # (a clock that IS measured and off by more than max_clock_skew_seconds always fails)
+  clock_unverified_policy: warn
   # Minimum free space required on source drive before backup starts (GB)
   min_free_source_gb: 1
   # Timeout for gcloud auth activate-service-account during FY rollover (seconds)
@@ -189,3 +511,145 @@ health:
   # HDD NOTE: metadata-only op — no data transfer, 600s is normally sufficient
   rollover_archive_timeout_seconds: 600
 
+
+# ═══════════════════════════════════════════════════
+# DATA-SAFETY GUARDS
+# ═══════════════════════════════════════════════════
+# Checked before every backup, before anything is copied or deleted. If one
+# trips, the run stops as CLOUD_BLOCKED / LAN_BLOCKED and waits for a person
+# to approve it on the dashboard. Source-shrink and destination checks compare
+# with the last successful backup of the same leg in the same FY.
+guards:
+  # Block if a backup would delete more than this many backup files (0–100000000).
+  # Also passed to rclone as --max-delete, so the cloud sync itself stops there.
+  max_delete_files: 500
+  # Block if a backup would delete more than this % of the backup files (0–100)
+  max_delete_percent: 10
+  # Block if the source has this % fewer files than at the last successful backup (0–100)
+  max_source_shrink_percent: 20
+  # Small folders (a new year's folder that has just been started): below this many files the
+  # percentage limits above are replaced by small_folder_max_deletes (0 = off, 0-10000000)
+  small_folder_files: 100
+  # In a small folder, block when a backup would delete more than this many files (G3, never more
+  # than max_delete_files) or the folder shrank by more than this many files (G2); 0-100000
+  small_folder_max_deletes: 10
+  # Block a LAN destination that points back at this server (true/false)
+  forbid_local_destination: true
+
+# ═══════════════════════════════════════════════════
+# APPROVALS (for blocked backups)
+# ═══════════════════════════════════════════════════
+# A blocked backup emails everyone "open the dashboard". On the dashboard a
+# person reviews the numbers, types the confirmation phrase, and approves the
+# backup ONCE; it then re-runs, re-measures, and goes ahead only if nothing
+# got worse. Scheduled runs never use an approval.
+approvals:
+  # Hours an approval stays valid after it is given (1–168)
+  expiry_hours: 12
+  # How much worse the re-measured numbers may be than approved, in % (0–100).
+  # 0 = not worse at all.
+  tolerance_percent: 0
+
+# ═══════════════════════════════════════════════════
+# FY ROLLOVER (checked daily by the rollover-check schedule)
+# ═══════════════════════════════════════════════════
+# Automatic only when the date has moved to exactly the NEXT financial year and
+# the final backup of the closing year completed on every enabled leg. Anything
+# else (a final backup failed, more than one year ahead) waits for approval on
+# the dashboard. A clock that is BEHIND never rolls back.
+rollover:
+  # Small note written into the NEW source FY folder (never overwritten), so the
+  # new, still-empty year is not mistaken for a missing drive by the backup.
+  source_placeholder_name: README_FY.txt
+  # Create the new year's folder as soon as the rollover starts, before the old year's final
+  # backup, so the office can save into it on 1 April even if that backup fails and the switch
+  # waits for your approval. Files saved there are NOT backed up until the switch is done (the
+  # dashboard and an email say so). Only for the normal next year on a proven clock.
+  create_source_folder_early: true
+  # FY overlap: from early_start_month until the April switch, ALSO back up the NEXT financial
+  # year's folder (US clients work in it from January), cloud and office copy. Off = only the
+  # current year; the daily check then warns if next year's folder holds files.
+  overlap_enabled: true
+  # Month from which the next year's folder is backed up: 1 = January ... 3 = March
+  early_start_month: 1
+  # If next year's folder cannot be set up for backup (clock not proven, parent folder missing,
+  # no right to create folders), you get an action-needed email after this many hours. 1-168
+  activation_alert_after_hours: 24
+  # Folder names next to the year folders that look like a year folder but are not one (never
+  # backed up, never warned about). Plain names, no slashes.
+  sibling_ignore: []
+  # If the old year's final backup only could not get the backup slot (busy) or had no time left,
+  # the switch waits and retries on the next mornings (warning email, no approval needed). After
+  # this many mornings the "roll over anyway" approval is asked as usual. 0 = ask at once. 0-7
+  final_backup_wait_retries: 2
+  # The old year's online copy is moved to the cheaper ARCHIVE storage class after the
+  # switch; if that fails it is retried every morning. After this many days of failing
+  # the warning email becomes "action needed". 1–365
+  archive_alert_after_days: 3
+
+# ═══════════════════════════════════════════════════
+# WEEKLY INTEGRITY AUDIT (read-only content comparison)
+# ═══════════════════════════════════════════════════
+# If the audit cannot run (no internet, firewall/TLS interception, DNS, NAS
+# unreachable) it is recorded as "AUDIT COULD NOT RUN" - never as missing data.
+audit:
+  # rclone check --checkers (1 = gentle on the source disk; 1–16)
+  checkers: 1
+  # rclone check --retries / --retries-sleep (seconds)
+  retries: 3
+  retries_sleep_seconds: 10
+  # rclone check --modify-window (seconds): file times closer than this count as
+  # equal (2 = NTFS granularity; 0-10)
+  modify_window_seconds: 2
+  # Most file paths listed in an audit result (the counts are always complete)
+  detail_max_paths: 100
+  # 'Check now' offers a backup first when the last good backup of a copy started more than
+  # this many minutes ago (0 = always ask). The check never starts a backup by itself.
+  backup_first_prompt_minutes: 60
+  # Extra error texts (regular expressions) that mean "the audit could not run",
+  # added to the built-in network/TLS/DNS/auth/listing signatures. Example:
+  #   - "SOPHOS BLOCKPAGE"
+  network_error_patterns: []
+
+# ═══════════════════════════════════════════════════
+# WATCHDOG (AamWatchdog service)
+# ═══════════════════════════════════════════════════
+# Watches the Prefect API and both services. A hung API is fixed by an ordered
+# restart (stop agent -> stop server -> start server -> API healthy -> start
+# agent). It never restarts or kills anything while a backup holds the lock.
+# Every CRITICAL is emailed ("open the dashboard"); a RECOVERED email follows.
+watchdog:
+  prefect_health_url: "http://127.0.0.1:4200/api/health"
+  # Normal poll interval and HTTP timeout per check (seconds)
+  check_interval_seconds: 60
+  request_timeout_seconds: 30
+  # Consecutive failed checks before acting
+  failure_threshold: 5
+  # While a backup runs: re-check interval, and how many re-checks before the
+  # CRITICAL alert (lock but no rclone/robocopy: 15 x 120 s = 30 min;
+  # rclone/robocopy running: 240 x 120 s = 8 h)
+  backup_wait_interval_seconds: 120
+  max_deferrals: 15
+  max_transfer_deferrals: 240
+  # Pause after a restart before checking again (seconds)
+  restart_cooldown_seconds: 120
+  # Circuit breaker: at most this many automatic starts per service per window
+  max_starts_per_window: 3
+  start_window_seconds: 3600
+  # A service still "stopping" after this long is killed - only when no backup
+  # holds the lock (the agent stops gracefully within 180 s)
+  stop_pending_timeout_seconds: 600
+  kill_wait_seconds: 60
+  # Restart: wait this long for the Prefect API before starting the agent
+  api_ready_timeout_seconds: 300
+  service_poll_seconds: 5
+  sc_timeout_seconds: 30
+  # The watchdog's own log: logs\watchdog_app.log (NSSM keeps watchdog_svc.log)
+  log_rotation_mb: 10
+  # How often a fully healthy check is recorded in the database (60-3600): a watchdog alert
+  # is over once a healthy mark follows its email
+  healthy_mark_seconds: 300
+  # Every this many seconds the watchdog checks that each enabled leg had a
+  # successful backup by its next scheduled run + run budget + dashboard.stale_grace_hours; an
+  # overdue leg is emailed (again every alerts.stale_repeat_hours). 60–86400
+  stale_check_interval_seconds: 1800

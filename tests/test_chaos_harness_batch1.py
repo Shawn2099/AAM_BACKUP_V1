@@ -29,6 +29,13 @@ def scratch():
         SCRATCH.rmdir()
 
 
+_CHAOS_TOOLS_PRESENT = Path(r"C:\ChaosTest\tools").exists()
+_needs_chaos_tools = pytest.mark.skipif(
+    not _CHAOS_TOOLS_PRESENT,
+    reason="chaos-test tool directory C:\ChaosTest\tools not present on this machine",
+)
+
+
 class TestSafety:
     def test_chaos_paths_accepted(self):
         for p in (r"C:\ChaosTest\source", r"C:\ChaosRuntime\manifest.db",
@@ -128,6 +135,7 @@ class TestFaultsOnScratch:
             faults.same_size_corrupt(r"C:\AAMBackup\f", r"C:\ChaosTest\x",
                                      r"C:\ChaosTest\harness_scratch\r.json")
 
+    @_needs_chaos_tools
     def test_tool_wrappers_target_existing_tools(self):
         assert Path(faults._tool("killrcl.py")).exists()
         assert Path(faults._tool("killrob.py")).exists()

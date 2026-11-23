@@ -8,6 +8,7 @@ and Backup-vs-Integrity reporting.
 
 import shutil
 
+import pendulum
 import pytest
 
 from core.integrity import (
@@ -113,15 +114,16 @@ class TestLanAuditRclone:
     def test_unavailable_source_fails_closed(self, tmp_path):
         result = audit_lan(
             str(tmp_path / "no-such-src"), str(tmp_path / "no-such-dst"), timeout=60)
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
 
 
 class TestAuditManifest:
     def test_record_and_latest_audit(self, tmp_path):
         db = ManifestDB(tmp_path / "m.db")
         try:
-            assert db.latest_audit("lan") is None  # NOT_VERIFIED default
+            assert db.latest_audit("lan", fy="FY26-27") is None  # NOT_VERIFIED default
             db.record_audit({
+                "fy": "FY26-27",
                 "audit_id": "a1", "mode": "lan", "scope": "full",
                 "started_at": "2026-09-06T03:00:00",
                 "ended_at": "2026-09-06T03:10:00",
@@ -130,10 +132,11 @@ class TestAuditManifest:
                 "detail": "capability=HASH_MD5_RCLONE_LOCAL clean",
                 "created_at": "2026-09-06T03:10:00",
             })
-            row = db.latest_audit("lan")
+            row = db.latest_audit("lan", fy="FY26-27")
             assert row["status"] == "VERIFIED"
             # A later failure stays authoritative until a later pass.
             db.record_audit({
+                "fy": "FY26-27",
                 "audit_id": "a2", "mode": "lan", "scope": "full",
                 "started_at": "2026-09-13T03:00:00",
                 "ended_at": "2026-09-13T03:10:00",
@@ -141,9 +144,9 @@ class TestAuditManifest:
                 "bytes_checked": 1000, "mismatches": 2,
                 "detail": "diverged", "created_at": "2026-09-13T03:10:00",
             })
-            assert db.latest_audit("lan")["status"] == "VERIFICATION_FAILED"
+            assert db.latest_audit("lan", fy="FY26-27")["status"] == "VERIFICATION_FAILED"
             # Backup rows untouched by audits.
-            assert db.last_run("lan") is None
+            assert db.last_run("lan", fy="FY26-27") is None
         finally:
             db.close()
 
@@ -152,6 +155,7 @@ class TestAuditManifest:
         try:
             with pytest.raises(ValueError):
                 db.record_audit({
+                    "fy": "FY26-27",
                     "audit_id": "bad", "mode": "lan",
                     "started_at": "2026-09-06T03:00:00", "status": "COMPLETE",
                 })
@@ -163,21 +167,25 @@ class TestIntegrityReporting:
     def test_report_distinguishes_backup_from_integrity(self, tmp_path):
         db = ManifestDB(tmp_path / "m.db")
         try:
+            recent = pendulum.now("Asia/Kolkata").isoformat()
             db.insert_run({
+                "fy": "FY26-27",
                 "run_id": "r1", "mode": "cloud",
-                "started_at": "2026-09-06T18:00:00",
-                "ended_at": "2026-09-06T18:10:00",
+                "started_at": recent,
+                "ended_at": recent,
                 "status": "CLOUD_COMPLETE", "exit_code": 0,
             })
             db.record_audit({
+                "fy": "FY26-27",
                 "audit_id": "r1", "mode": "cloud", "scope": "full",
-                "started_at": "2026-09-06T03:00:00",
-                "ended_at": "2026-09-06T03:10:00",
+                "started_at": recent,
+                "ended_at": recent,
                 "status": "VERIFIED", "files_checked": 3,
                 "bytes_checked": 300, "mismatches": 0,
-                "detail": "clean", "created_at": "2026-09-06T03:10:00",
+                "detail": "clean", "created_at": recent,
             })
-            html_body = report_mod.generate_report_html(db, "TestCA", 7, "Weekly", is_email=False)
+            html_body = report_mod.generate_report_html(db, "TestCA", 7, "Weekly", is_email=False,
+                                                    legs=("cloud", "lan"))
             assert "Integrity Verification" in html_body
             assert "VERIFIED" in html_body
             assert "NOT VERIFIED" in html_body  # lan leg has no audit yet

@@ -12,34 +12,52 @@ Two deployments from one codebase:
 
 import json
 import os
+import re
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import pendulum
-
 from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core.backup_repository import record_run_history, record_sync_results
+from core import (alert_class, approvals, faults, fy_overlap, fy_rollover, guards, manual_leg, permissions,
+                  report, statuses)
+from core.rclone_errors import find_transport_failure
+from core.backup_repository import (
+    record_run_history,
+    record_sync_results,
+    start_run_row,
+    sweep_abandoned_runs,
+)
 from core.cloud_preflight import run_cloud_dry_run
-from core.cloud_reporter import get_cloud_diff, get_cloud_manifest, get_cloud_size
-from core.cloud_sync import run_cloud_sync
+from core.cloud_reporter import (
+    CloudReporterError,
+    count_objects,
+    get_cloud_diff,
+    get_cloud_manifest,
+    get_cloud_size,
+)
+from core.budget import BudgetExceeded, RunBudget, late_seconds as seconds_late
+from core.cloud_sync import resolve_max_duration_seconds, run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
-from core.time_utils import get_fy_prefix
-from core.health import pre_backup_health
+from core.health import CLOCK_OK, check_clock, pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 from core.lan_preflight import run_lan_dry_run
 from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
-from core.process import acquire_lock, read_lock_alive, write_lock
+from core.notify import (AUDIENCE_REPORTS, SENT, AlertEvent, attachment_ladder, notify,
+                         send_email)
+from core.process import acquire_lock, read_lock_alive
 from core.rclone_config import temp_rclone_config
-from core.report import send_failure_alert
-from core.shutdown import shutdown_server
-from core.time_utils import now_iso
+from core.run_artefacts import RunArtefacts
+from core.shutdown import FAILED as SHUTDOWN_FAILED
+from core.shutdown import ShutdownResult, shutdown_from_config
+from core.report_period import ReportPeriod
+from core.time_utils import IST, format_ist, get_fy_prefix, now_iso
 from core.wol import ensure_server_online
 from models.config import CONFIG_PATH, load_config
 
@@ -54,26 +72,130 @@ class PartialRun(RuntimeError):
     """
 
 
+class SyncFailed(RuntimeError):
+    """A sync attempt ended FAILED / SUSPECT; `result` is the tool's result.
+
+    Carries the verdict (exit code, status, deletions) to the attempt loop
+    and the run row - a bare RuntimeError lost it (the row said exit -1).
+    """
+
+    def __init__(self, message: str, result: dict):
+        super().__init__(message, result)
+        self.result = result
+
+    def __str__(self) -> str:
+        return str(self.args[0])
+
+
 # Terminal-status policy: Prefect COMPLETED is allowed ONLY for these row
 # statuses. Every other terminal status raises before the pipeline returns,
 # so a non-success backup can never hide behind a successful orchestration
 # result. COMPLETE means "transfer evidence says the scheduled work
 # finished" — it does NOT mean independently/cryptographically verified
 # (see the weekly integrity audit).
-_CLOUD_OK_STATUSES = frozenset({"CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"})
-_LAN_OK_STATUSES = frozenset({"LAN_COMPLETE"})
+_CLOUD_OK_STATUSES = statuses.CLOUD_SUCCESS_STATUSES
+_LAN_OK_STATUSES = statuses.LAN_SUCCESS_STATUSES
 
 
-def _stable_run_id(mode: str) -> str:
-    """Generate a run_id stable across Prefect task retries."""
+_FY_LEAF_PATTERN = re.compile(r"^FY\d{2}-\d{2}$", re.IGNORECASE)
+
+
+def _effective_fy_prefix(config) -> str:
+    """Cloud FY scope: configured source leaf when it is a valid FY dir.
+
+    Normal days the leaf equals the date-derived prefix (no behavior
+    change). Around FY rollover the configured leaf is authoritative: it
+    matches the LAN destination leaf and the final-backup prefix, so a
+    daily run can never sync old-FY data into the new-FY cloud prefix
+    before the rollover executes. Non-FY sources fall back to the date.
+    Enumeration scope is unchanged (source_drive is still the root).
+    """
+    return fy_rollover.effective_fy_prefix(config.paths.source_drive)
+
+
+def _failure_telemetry(stage_seconds: dict, phase: str, verified: bool = False) -> str | None:
+    """Build failure-path extended_metrics from stages actually measured.
+
+    Supplementary evidence only: unexecuted stages stay absent (never
+    fabricated); business state is decided elsewhere and untouched.
+    """
+    try:
+        payload: dict = {"stage_seconds": dict(stage_seconds), "failure_phase": phase}
+        if verified:
+            payload["verified"] = True
+        return json.dumps(payload)
+    except Exception:
+        return None
+
+
+def _flow_run_prefix() -> str:
+    """The id of this Prefect flow run (stable across task retries), or a fresh uuid outside a flow run."""
     try:
         from prefect.context import FlowRunContext
         ctx = FlowRunContext.get()
         if ctx:
-            return f"{ctx.flow_run.id}-{mode}"
+            return str(ctx.flow_run.id)
     except Exception:
         pass
-    return f"{uuid.uuid4()}-{mode}"
+    return str(uuid.uuid4())
+
+
+def _stable_run_id(mode: str, fy: str | None = None) -> str:
+    """run_id stable across Prefect task retries: `<flow run>-<leg>` or, for one FY folder of a leg
+    (plan 5.3), `<flow run>-<leg>-<fy>`."""
+    base = f"{_flow_run_prefix()}-{mode}"
+    return f"{base}-{fy}" if fy else base
+
+
+def _open_run_artefacts(config, run_id: str, started_at: str | None = None) -> RunArtefacts | None:
+    """Create the run's full-log folder (plan WP2); its name carries the run's start time (IST)
+    and leg (plan F2). Never blocks a backup: on failure the tools fall back to a temp folder and
+    the reason is logged."""
+    try:
+        started = pendulum.parse(started_at).in_timezone(IST) if started_at else None
+        return RunArtefacts.for_config(config, run_id, started=started)
+    except Exception as e:  # noqa: BLE001 - evidence storage must never block a backup
+        logger.error(f"Run log folder could not be created ({e}) - full logs for "
+                     "this run go to a temporary folder")
+        return None
+
+
+def _finalize_run_artefacts(config, artefacts: RunArtefacts | None) -> None:
+    if artefacts is None:
+        return
+    try:
+        artefacts.finalize(config.run_logs.compress_after_kb)
+    except Exception as e:  # noqa: BLE001 - evidence handling must not fail a run
+        logger.warning(f"Run log finalisation failed ({artefacts.dir}): {e}")
+
+
+def _with_artefacts(extended_metrics: str | None, artefacts: RunArtefacts | None) -> str | None:
+    """Add the run's log folder to extended_metrics (JSON) for the dashboard."""
+    if artefacts is None:
+        return extended_metrics
+    try:
+        payload = json.loads(extended_metrics) if extended_metrics else {}
+    except ValueError:
+        payload = {"unparsed_metrics": extended_metrics}
+    payload["artefacts_dir"] = str(artefacts.dir)
+    payload["artefacts_degraded"] = artefacts.degraded
+    return json.dumps(payload)
+
+
+def _with_guards(extended_metrics: str | None, guard_record: dict | None) -> str | None:
+    """Add the run's guard record to extended_metrics (JSON).
+
+    Kept on every row (pass or block): it is the G2/G4 baseline of the next
+    run (ManifestDB.guard_baseline) and the evidence a BLOCKED row shows.
+    """
+    if not isinstance(guard_record, dict):
+        return extended_metrics
+    try:
+        payload = json.loads(extended_metrics) if extended_metrics else {}
+    except ValueError:
+        payload = {"unparsed_metrics": extended_metrics}
+    payload["guards"] = guard_record
+    return json.dumps(payload)
 
 
 @contextmanager
@@ -97,60 +219,412 @@ def _backup_slot(config):
             3600,
         )
     )
-    lock_path = config.paths.backup_lock_path
-
     if os.environ.get("PREFECT_TEST_MODE") == "1":
         # Unit-test mode (tests/conftest forces this env): occupancy requires
-        # an orchestration API which these tests deliberately do not provide.
-        # Keep the watchdog-lock lifecycle so its semantics stay testable;
-        # production never sets PREFECT_TEST_MODE.
-        try:
-            write_lock(lock_path)
-            logger.info(f"Backup lock acquired (PID={os.getpid()}) - test mode")
-        except OSError as e:
-            logger.warning(f"Could not write backup lock file: {e}")
-        try:
+        # an orchestration API which these tests deliberately do not provide, and
+        # their mock configs have no real lock path (so a lock that cannot be
+        # written is tolerated here, and only here). The lock lifecycle is the
+        # SAME shared helper as in production; production never sets
+        # PREFECT_TEST_MODE.
+        with _hold_backup_lock(config, required=False):
             yield
-        finally:
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
         return
 
     with concurrency("aam-backup", occupy=1, timeout_seconds=wait_seconds):
-        # Exclusive acquisition: a live lock owned by another pipeline aborts
-        # this one BEFORE any transfer starts (slot is released by the raise).
-        # The finally below only removes the lock if it is still ours, so a
-        # successor's lock can never be deleted by a finishing predecessor.
-        acquired = False
-        try:
-            acquired = acquire_lock(lock_path)
-            if not acquired:
+        with _hold_backup_lock(config, required=True):
+            yield
+
+
+@contextmanager
+def _hold_backup_lock(config, *, required: bool):
+    """The watchdog lock of one pipeline (A7), shared by the production and the test branch.
+
+    Exclusive: a live lock of another process aborts this pipeline BEFORE any transfer.
+    A lock holding THIS process's own live PID is the leftover of an earlier pipeline of the same
+    flow process (a release that failed) and is taken over - the slot guarantees pipelines of one
+    process never overlap. `required`: a lock that cannot be written stops the run (the watchdog
+    could not see it and could restart the agent mid-transfer); never run without it."""
+    lock_path = config.paths.backup_lock_path
+    held = False
+    try:
+        held = acquire_lock(lock_path)
+        if not held:
+            alive, owner_pid = read_lock_alive(lock_path)
+            if alive and owner_pid == os.getpid():
+                held = True
+                logger.warning("Backup lock of an earlier pipeline of this process taken over")
+            else:
                 raise RuntimeError(
                     "Backup lock is held by a live process - refusing to "
                     "overwrite it or run without it"
                 )
-            logger.info(
-                f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts"
-            )
-        except OSError as e:
-            logger.warning(f"Could not write backup lock file: {e}")
+        logger.info(f"Backup lock acquired (PID={os.getpid()}) - watchdog will defer restarts")
+    except OSError as e:
+        if required:
+            raise RuntimeError(
+                f"Backup lock could not be written ({e}) - refusing to run without it: the "
+                "watchdog could not see this backup") from e
+        logger.warning(f"Could not write backup lock file: {e}")
+    try:
+        yield
+    finally:
+        if held:
+            _release_backup_lock(
+                lock_path, int(config.maintenance.lock_release_retries),
+                float(config.maintenance.lock_release_delay_ms) / 1000)
+
+
+def _release_backup_lock(lock_path, retries: int, delay_s: float) -> None:
+    """Remove the lock if it is still ours, retrying while the file is busy (an antivirus scan or
+    the watchdog reading it makes the delete fail on Windows). A lock of another owner is left."""
+    for attempt in range(retries + 1):
+        _, owner_pid = read_lock_alive(lock_path)
+        if owner_pid is None and not lock_path.exists():
+            return                                     # already gone
+        if owner_pid == os.getpid():
+            try:
+                lock_path.unlink(missing_ok=True)
+                logger.info("Backup lock released")
+                return
+            except OSError:
+                pass
+        elif owner_pid is not None and owner_pid != -1:
+            logger.warning("Backup lock changed during run - leaving it in place")
+            return
+        if attempt < retries:                          # busy (-1) / unreadable / delete failed
+            time.sleep(delay_s)
+    logger.error(f"Backup lock {lock_path} could not be released after {retries + 1} attempts; "
+                 "the next pipeline of this process takes it over, a later process sees a dead PID")
+
+
+def _cloud_diff_count(manifest: list, before: dict) -> int:
+    """Files whose bucket entry differs from the cloud leg's last recorded
+    state (new, other size, mtime off by > 1.1 s, or baseline unknown).
+    Metrics CROSS-CHECK only (plan WP6) - never the reported count."""
+    if not isinstance(before, dict):     # no usable baseline: everything differs
+        before = {}
+    changed = 0
+    for item in manifest:
+        path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
+        size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
+        mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
+        old_size, old_mtime = before.get(path, (None, None))
+        if old_size is None or old_mtime is None:
+            changed += 1
+            continue
+        # 0.01-byte threshold: float representation noise in reported sizes.
+        if abs(float(size) - float(old_size)) > 0.01:
+            changed += 1
+            continue
         try:
-            yield
+            if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
+                t1, t2 = float(mtime), float(old_mtime)
+            else:
+                t1 = pendulum.parse(str(mtime)).timestamp()
+                t2 = pendulum.parse(str(old_mtime)).timestamp()
+            if abs(t1 - t2) > 1.1:
+                changed += 1
+        except Exception:  # noqa: BLE001 - unparsable = compare as text
+            if str(mtime) != str(old_mtime):
+                changed += 1
+    return changed
+
+
+def _send_run_alert(config, leg: str, status: str, message: str, exit_code,
+                    occurred_at: str, *, run_id: str | None = None,
+                    sync_result: dict | None = None, fault_code: str | None = None,
+                    artefacts_dir: str | None = None) -> None:
+    """THE failure alert of one run (plan WP8): one per failed run, at the
+    terminal decision, through core.notify (delivery recorded, cooldown per
+    leg+status, dashboard link). Never raises. The fault code is the one the
+    pipeline classified, else derived from the status + tool evidence."""
+    try:
+        code = fault_code or faults.classify_run(leg, status, sync_result=sync_result)
+    except Exception:  # noqa: BLE001 - the alert must still go out
+        code = faults.UNKNOWN
+    fy = _alert_fy(config)
+    notify(config, AlertEvent(
+        key=f"backup:{_fy_seg(fy)}{leg}:{status}", kind="FAILURE", mode=leg,
+        title=f"{leg.upper()} backup {statuses.label(status).lower()}",
+        message=message, status=status,
+        exit_code=exit_code if type(exit_code) is int else None,
+        occurred_at=occurred_at, fault_code=code, run_id=run_id,
+        artefacts_dir=artefacts_dir, fy=fy,
+    ))
+
+
+def _alert_fy(config) -> str | None:
+    """The FY of the pipeline whose config this is: it scopes the key, the incident and the subject of a
+    per-leg alert (OV-4.1). Never raises: if it cannot be read the alert still goes out, FY-less."""
+    try:
+        return _effective_fy_prefix(config) or None
+    except Exception as e:  # noqa: BLE001 - the alert must still go out
+        logger.warning(f"Alert FY unknown ({e}); the alert is sent without an FY")
+        return None
+
+
+def _fy_seg(fy: str | None) -> str:
+    """The `<fy>:` segment of a per-leg alert key (OV-4.1) - empty without an FY. Used inside f-strings
+    that keep a literal prefix (`backup:`...), which tests/test_alert_class.py scans for."""
+    return f"{fy}:" if fy else ""
+
+
+def _next_run_words(config, leg: str) -> str:
+    """"the next scheduled run" - or, for a manual-only leg (`<leg>.scheduled` false), "the next manual
+    backup": there is no scheduled run to promise (owner 2026-11-23)."""
+    return "the next scheduled run" if manual_leg.is_nightly(config, leg) else "the next manual backup"
+
+
+def _nas_alert_note(shutdown_on_fail: bool, loop_decides: bool, config) -> str:
+    """What a LAN failure / partial alert says about the NAS. When the FY leg loop decides the shutdown
+    (several folders in one run) this pipeline cannot know the outcome in advance, so the text only
+    states the rule - never a promise or a denial that may turn out false."""
+    if loop_decides:
+        if getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True:
+            return ("The NAS is switched off after the last folder of this run only if every folder's "
+                    f"backup allows it; it stays on otherwise and {_next_run_words(config, 'lan')} will re-sync.")
+        return f"The NAS was NOT shut down; {_next_run_words(config, 'lan')} will re-sync."
+    if shutdown_on_fail:
+        return "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
+    return f"The NAS was NOT shut down; {_next_run_words(config, 'lan')} will re-sync."
+
+
+def _failure_alert_text(leg: str, status: str, error: str | None, nas_note: str = "",
+                        config=None) -> str:
+    name = "Cloud" if leg == "cloud" else "LAN"
+    if status.endswith("_SUSPECT"):
+        nxt = _next_run_words(config, leg) if config is not None else "the next scheduled run"
+        return (f"{name} backup SUSPECT: {error} The transfer did not terminate normally; "
+                f"completion is unproven. {nas_note or nxt[0].upper() + nxt[1:] + ' will re-sync.'}")
+    return f"{name} backup {statuses.label(status)}: {error or status} {nas_note}".strip()
+
+
+def _send_recovery_if_needed(config, leg: str, run_id: str) -> None:
+    """RECOVERED email on the first success after a failure (plan WP8)."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            fy = _effective_fy_prefix(config)
+            previous = db.previous_run_status(leg, run_id, fy=fy)
+            previous_code = db.previous_run_fault_code(leg, run_id, fy=fy)
         finally:
-            if acquired:
-                try:
-                    _, owner_pid = read_lock_alive(lock_path)
-                    if owner_pid == os.getpid():
-                        lock_path.unlink(missing_ok=True)
-                        logger.info("Backup lock released")
-                    else:
-                        logger.warning(
-                            "Backup lock changed during run - leaving it in place"
-                        )
-                except OSError:
-                    pass
+            db.close()
+    except Exception as e:  # noqa: BLE001 - never affects the run
+        logger.warning(f"Recovery check skipped ({leg}): {e}")
+        return
+    if previous and statuses.category(previous) in (
+            statuses.CATEGORY_FAILED, statuses.CATEGORY_PARTIAL, statuses.CATEGORY_BLOCKED):
+        fy = _alert_fy(config)
+        notify(config, AlertEvent(
+            key=f"recovered:{_fy_seg(fy)}{leg}", kind="RECOVERED", mode=leg,
+            title=f"{leg.upper()} backup recovered",
+            message=f"The {leg.upper()} backup completed successfully again "
+                    f"(previous run: {statuses.label(previous)}).",
+            status="RECOVERED", run_id=run_id,
+            resolved_code=previous_code or faults.classify_run(leg, previous), fy=fy))
+
+
+def _exception_kind(exc: BaseException) -> str:
+    """Map a pipeline exception onto statuses.decide_terminal_status kinds."""
+    if isinstance(exc, guards.GuardBlocked):
+        return statuses.EXC_BLOCKED
+    if isinstance(exc, PartialRun):
+        return statuses.EXC_PARTIAL
+    if not isinstance(exc, Exception):   # KeyboardInterrupt, SystemExit, Prefect's TerminationSignal
+        return statuses.EXC_INTERRUPTED
+    return statuses.EXC_ERROR
+
+
+def _error_text(exc: BaseException) -> str:
+    """The run row's error text: an interrupt has no message of its own."""
+    if isinstance(exc, Exception):
+        return str(exc)
+    return (f"The run was interrupted ({type(exc).__name__}: service stop, cancel or Ctrl+C) "
+            "before it finished.")
+
+
+def _budget_metrics(budget: RunBudget, sync_result: dict) -> dict:
+    """WP14 evidence on every run row: the budget and whether this run hit it."""
+    return {"hours": round(budget.seconds / 3600, 2),
+            "used_hours": round((budget.seconds - budget.remaining()) / 3600, 2),
+            "stopped": bool(sync_result.get("budget_stopped"))}
+
+
+def _merge_metrics(extended_metrics: str | None, **fields) -> str | None:
+    """Add fields to the extended_metrics JSON (never drops existing data)."""
+    try:
+        payload = json.loads(extended_metrics) if extended_metrics else {}
+    except ValueError:
+        payload = {"unparsed_metrics": extended_metrics}
+    payload.update(fields)
+    return json.dumps(payload, default=str)
+
+
+def _record_running(config, leg: str, run_id: str, started_at: str) -> None:
+    """Write the *_RUNNING row BEFORE the slot is requested (plan WP5), so a
+    run that never gets the slot - or dies - is still visible. First records
+    earlier runs whose process died meanwhile as ABANDONED (a flow-run crash
+    while the agent kept running is otherwise never swept). Never blocks
+    the backup."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            try:
+                sweep_abandoned_runs(config, db)
+            except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup
+                logger.error(f"Could not check for abandoned runs before {leg} run {run_id}: {e}")
+            start_run_row(db, run_id=run_id, mode=leg, fy=_effective_fy_prefix(config),
+                          started_at=started_at)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping must not stop a backup
+        logger.error(f"Could not record the RUNNING row for {leg} run {run_id}: {e}")
+
+
+def _scheduled_lateness_seconds() -> float:
+    """Plan I2: how long after its SCHEDULED time this flow run started (a reboot or a busy
+    server starts a missed run late). 0 for a manual run and outside a flow run: those count
+    their run budget from the actual start."""
+    try:
+        from prefect.context import FlowRunContext
+        ctx = FlowRunContext.get()
+        run = ctx.flow_run if ctx else None
+        if run is None or not getattr(run, "auto_scheduled", False) or run.expected_start_time is None:
+            return 0.0
+        return seconds_late(run.expected_start_time.timestamp(), time.time())
+    except Exception as e:  # noqa: BLE001 - a lateness we cannot read means "on time", never a block
+        logger.warning(f"Scheduled start time unknown ({e}); the run budget counts from now")
+        return 0.0
+
+
+def _manual_start_delay_seconds() -> float:
+    """F1: how long ago a MANUAL (button) flow run was requested when it actually begins. A run queued while
+    the backup service was down would otherwise start whenever the service returns, at an unplanned time.
+    0 for scheduled runs (plan I2 handles those), outside a flow run, and when the time is unreadable."""
+    try:
+        from prefect.context import FlowRunContext
+        ctx = FlowRunContext.get()
+        run = ctx.flow_run if ctx else None
+        if run is None or getattr(run, "auto_scheduled", None) is not False or run.expected_start_time is None:
+            return 0.0
+        return max(0.0, time.time() - run.expected_start_time.timestamp())
+    except Exception as e:  # noqa: BLE001 - unreadable means "on time" here (the endpoint guard is layer 1)
+        logger.warning(f"Manual request time unknown ({e}); not checking how late the start is")
+        return 0.0
+
+
+def _refuse_stale_manual_start(config, mode: str, folders: list[str]) -> None:
+    """F1 layer 2: a manual run that begins later than dashboard.manual_start_max_wait_minutes after the
+    button was pressed is NOT executed: one <LEG>_MISSED row per leg and folder, no slot, no NAS wake, no
+    copy; the flow fails (PartialRun) so Prefect never shows it as completed."""
+    delay = _manual_start_delay_seconds()
+    if delay <= 0:
+        return
+    limit = config.dashboard.manual_start_max_wait_minutes * 60
+    if delay <= limit:
+        return
+    minutes = int(delay // 60)
+    error = (f"This manual backup was requested {minutes} minutes before it could start (the backup service "
+             f"was not running), which is more than the {config.dashboard.manual_start_max_wait_minutes} minutes "
+             "allowed. Nothing was changed and the NAS was not woken. Press the button again when you want it.")
+    logger.warning(error)
+    started_at = now_iso()
+    legs = [leg for leg, on in (("cloud", mode in ("cloud", "all") and config.cloud.enabled),
+                                ("lan", mode in ("lan", "all") and config.lan.enabled)) if on]
+    for leg in legs:
+        for fy in folders:
+            _record_run(fy_overlap.folder_view(config, fy), _stable_run_id(leg, fy), leg, started_at,
+                        f"{leg.upper()}_MISSED", -1, error)
+    raise PartialRun(f"Manual run not started: {error}")
+
+
+def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget: RunBudget,
+                         reserve_s: float, late_s: float, monotonic_start: float | None,
+                         shared_budget: bool = False) -> None:
+    """Plan I2: a run that starts with no budget left (less than the time its last steps need)
+    would run into office hours. Record <LEG>_MISSED and send ONE warning per leg (the stable
+    key `missed:<leg>` keeps several missed nights at boot from sending one email each), then
+    raise PartialRun so Prefect never shows this run as completed. Takes no backup slot."""
+    if (late_s <= 0 and not shared_budget) or budget.remaining() > reserve_s:
+        return
+    status = f"{leg.upper()}_MISSED"
+    late_h = late_s / 3600
+    if late_s > 0:
+        error = (f"The {leg.upper()} backup was scheduled for {late_h:.1f} h before it could start "
+                 f"(the server was off or busy), so its {budget.describe()} run budget was already "
+                 "used up. Nothing was changed; the next scheduled run continues.")
+    else:
+        # the second folder of one leg run: both folders share the leg's budget (plan 5.3)
+        error = (f"The {leg.upper()} backup of {_effective_fy_prefix(config)} could not start: the "
+                 f"{budget.describe()} run budget of this {leg.upper()} backup was used up by the "
+                 "folder before it. Nothing was changed for this folder; the next scheduled run continues.")
+    logger.warning(error)
+    _record_run(config, run_id, leg, started_at, status, -1, error,
+                monotonic_start=monotonic_start)
+    fy = _alert_fy(config)
+    notify(config, AlertEvent(
+        key=f"missed:{_fy_seg(fy)}{leg}", kind="WARNING", mode=leg,
+        title=f"{leg.upper()} backup night missed", message=error, status=status,
+        occurred_at=started_at, fault_code="AAM-SYS-07", run_id=run_id, fy=fy))
+    raise PartialRun(f"{leg.upper()} run ended {status} - {error}")
+
+
+STUCK_SLOT_NOTE = (" - the backup slot is taken but no backup is running (an earlier backup was "
+                   "cut off, e.g. the backup service was restarted while it ran); support: reset the "
+                   "'aam-backup' concurrency limit in Prefect or restart AamPrefectServer")
+
+
+def _slot_stuck(config, exc: BaseException) -> bool:
+    """AAM-SYS-08: the slot wait ran out while no live process holds the backup lock.
+
+    A real holder writes backup.lock right after taking the slot and keeps it until it releases
+    both, so a timed-out wait with a dead or absent lock means the slot belongs to nobody. Unsure
+    (lock unreadable, any error) = the ordinary AAM-SYS-01 text; this never changes what is done."""
+    if not isinstance(exc, TimeoutError):
+        return False
+    try:
+        alive, _pid = read_lock_alive(config.paths.backup_lock_path)
+    except Exception:  # noqa: BLE001 - only picks the wording of the message
+        return False
+    return alive is False
+
+
+@contextmanager
+def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
+                   monotonic_start: float | None = None, slot_held: bool = False):
+    """RUNNING row, then the backup slot. If the slot (or the watchdog lock)
+    cannot be obtained, the row becomes *_SLOT_TIMEOUT ("could not start")
+    and the error is re-raised - previously no row was written at all.
+
+    slot_held=True: the leg loop (`_run_leg_folders`) already holds the slot and the backup.lock for
+    every folder of this leg - taking the limit-1 slot again here would deadlock - so only the RUNNING
+    row of THIS folder is written (the card shows 'running' only for the folder that really is)."""
+    _record_running(config, leg, run_id, started_at)
+    if slot_held:
+        yield
+        return
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_backup_slot(config))
+        except Exception as e:
+            status = f"{leg.upper()}_SLOT_TIMEOUT"
+            stuck = _slot_stuck(config, e)
+            detail = f"{e}{STUCK_SLOT_NOTE}" if stuck else str(e)
+            logger.error(f"{leg} run {run_id} could not start: {detail}")
+            try:
+                _record_run(
+                    config, run_id, leg, started_at, status, -1,
+                    f"Backup could not start: {detail}",
+                    monotonic_start=monotonic_start,
+                )
+            except Exception as rec_err:  # noqa: BLE001
+                logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
+            _send_run_alert(config, leg, status,
+                            f"The {leg.upper()} backup could not start: {detail}",
+                            None, started_at, run_id=run_id,
+                            fault_code="AAM-SYS-08" if stuck else None)
+            raise
+        yield
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -158,17 +632,32 @@ def _backup_slot(config):
 # ═══════════════════════════════════════════════════════════════
 
 @task(name="health-check")
-def health_check_task(config, mode: str):
-    """Run pre-backup health checks. Fail fast — won't fix itself."""
+def health_check_task(config, mode: str, artefacts_dir: str | None = None):
+    """Run pre-backup health checks. Fail fast — won't fix itself.
+
+    LAN with /ZB (lan.use_backup_mode): SeBackupPrivilege is checked here,
+    before the slow dry-run (plan WP4, DEC-8).
+    """
     logger.info(f"Running health checks (mode={mode})")
-    pre_backup_health(
+    artefacts = RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("health")
+    clock = pre_backup_health(
         config.paths.source_drive,
         mode,
         config.paths.gcs_key_path,
         min_free_source_gb=config.health.min_free_source_gb,
         max_clock_skew_seconds=config.health.max_clock_skew_seconds,
         clock_check_timeout_seconds=config.health.clock_check_timeout_seconds,
+        clock_unverified_policy=config.health.clock_unverified_policy,
+        ntp_server=config.health.ntp_server,
+        w32tm_timeout_seconds=config.health.w32tm_timeout_seconds,
+        artefacts=artefacts,
     )
+    if mode == "lan" and config.lan.use_backup_mode:
+        permissions.check_backup_privilege(
+            artefacts, timeout_s=config.lan.privilege_check_timeout_seconds,
+        )
+    # WP12: the clock verdict goes on the run row (dashboard: "clock unverified")
+    return clock.to_metrics() if clock is not None else None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -176,7 +665,7 @@ def health_check_task(config, mode: str):
 # ═══════════════════════════════════════════════════════════════
 
 @task(name="cloud-preflight")
-def cloud_preflight_task(config, fy_prefix: str):
+def cloud_preflight_task(config, fy_prefix: str, artefacts_dir: str | None = None):
     """Two-probe preflight: source drive alive + GCS auth/bucket probe.
 
     Probe A (Python): confirms source drive is mounted and readable.
@@ -195,15 +684,246 @@ def cloud_preflight_task(config, fy_prefix: str):
         storage_class=config.cloud.storage_class,
         location=config.cloud.location,
         timeout=config.cloud.preflight_timeout_seconds,
+        retries=config.cloud.probe_retries,
+        retries_sleep_seconds=config.cloud.probe_retries_sleep_seconds,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
     )
     if not result["ok"]:
-        raise RuntimeError(f"Cloud preflight failed: {result['error']}")
+        raise faults.coded(RuntimeError(f"Cloud preflight failed: {result['error']}"),
+                           _cloud_preflight_fault(result))
     return result
 
 
+def _cloud_preflight_fault(result: dict) -> str:
+    """Fault code of a failed GCS probe: tool missing, transport cause, else CLD-10."""
+    if result.get("error") == "rclone not found":
+        return "AAM-SYS-04"
+    cause = find_transport_failure(result.get("error") or "")
+    return faults.TRANSPORT_CODES.get(cause.category, "AAM-CLD-10") if cause else "AAM-CLD-10"
+
+
+@task(name="cloud-guards")
+def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
+                      approval_id: str | None = None, run_id: str | None = None,
+                      already_deleted: int = 0) -> dict:
+    """Data-safety guards G1-G4 before rclone sync (plan WP3, M2 2.2).
+
+    Measures with rclone itself: `rclone size` of source and destination,
+    `rclone sync --dry-run` for planned deletions (same command as the
+    real sync). A measurement that could not be taken FAILS the run
+    (retried next night); a guard verdict BLOCKs it for a human. The
+    record's "max_delete" is the --max-delete backstop for the real sync.
+    already_deleted (XR-1): deletions of earlier attempts of this run - G3
+    and the backstop cover the whole run, not each attempt.
+    """
+    source = config.paths.source_drive
+    bucket = config.cloud.bucket
+    remote = f"aam_gcs:{bucket}/{fy_prefix}"
+    destination = f"gs://{bucket}/{fy_prefix}"
+    limits = config.guards
+    artefacts = RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-guards")
+
+    first_file = guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES)
+    try:
+        with temp_rclone_config(
+            config.paths.gcs_key_path, config.cloud.location,
+            config.cloud.project_number, config.cloud.storage_class,
+        ) as rclone_conf:
+            source_files = count_objects(source, rclone_conf,
+                                         config.cloud.dry_run_timeout_seconds, artefacts)
+            destination_files = count_objects(remote, rclone_conf,
+                                              config.cloud.cloud_size_timeout_seconds, artefacts)
+    except CloudReporterError as e:
+        raise RuntimeError(f"Cloud guard measurement failed: {e}") from e
+
+    db = ManifestDB.from_config(config)
+    try:
+        baseline = db.guard_baseline("cloud", fy_prefix) or {}
+    finally:
+        db.close()
+
+    results = [
+        guards.g1_source_has_files(first_file, source),
+        guards.g2_source_shrink(source_files, baseline.get("source_file_count"),
+                                limits.max_source_shrink_percent,
+                                small_folder_files=limits.small_folder_files,
+                                small_folder_max_deletes=limits.small_folder_max_deletes),
+        # Not a host path: the "is this machine" check does not apply.
+        guards.g4_destination_identity(destination, baseline.get("destination"),
+                                       None, set(), forbid_local=False),
+    ]
+    if first_file:
+        # A source without files is already blocked by G1; its dry-run would
+        # only plan the deletion of everything.
+        dry = run_cloud_sync(
+            source=source, bucket=bucket, fy_prefix=fy_prefix,
+            gcs_key_path=config.paths.gcs_key_path, location=config.cloud.location,
+            project_number=config.cloud.project_number,
+            bwlimit=config.cloud.bandwidth_limit, retries=config.cloud.retry_count,
+            storage_class=config.cloud.storage_class, transfers=config.cloud.transfers,
+            checkers=config.cloud.checkers, buffer_size=config.cloud.buffer_size,
+            modify_window_seconds=config.cloud.modify_window_seconds,
+            retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds,
+            stats_interval_seconds=config.cloud.stats_interval_seconds,
+            timeout=config.cloud.dry_run_timeout_seconds, max_duration_seconds=0,
+            artefacts=artefacts, error_tail_lines=config.cloud.error_tail_lines,
+            dry_run=True,
+        )
+        if dry.get("planned_deletes") is None:
+            raise RuntimeError(
+                f"Cloud guard measurement failed: rclone sync --dry-run did not complete "
+                f"cleanly ({dry.get('status')}): {dry.get('error')}")
+        results.append(guards.g3_mass_delete(
+            dry["planned_deletes"], destination_files,
+            limits.max_delete_files, limits.max_delete_percent,
+            already_deleted=already_deleted,
+            small_folder_files=limits.small_folder_files,
+            small_folder_max_deletes=limits.small_folder_max_deletes,
+            first_run=not baseline))
+
+    approved, approval_record = _apply_approval(config, "cloud", approval_id, run_id, results)
+    if "G3_MASS_DELETE" in approved:
+        # Approved mass deletion: the backstop is the re-measured count the
+        # approval was just checked against - nothing beyond it.
+        max_delete = dry["planned_deletes"]
+    else:
+        max_delete = guards.remaining_delete_allowance(
+            destination_files, already_deleted,
+            limits.max_delete_files, limits.max_delete_percent,
+            limits.small_folder_files, limits.small_folder_max_deletes)
+    return guards.enforce(
+        "cloud", results, approved_guards=approved, fy=fy_prefix,
+        source_file_count=source_files, destination=destination,
+        destination_files=destination_files, max_delete=max_delete, **approval_record,
+        **({"already_deleted": already_deleted} if already_deleted else {}),
+    )
+
+
+@task(name="cloud-access")
+def cloud_access_task(config, run_id: str, artefacts_dir: str | None = None):
+    """Prove the rights the sync uses (plan WP4, CL3/CL13): read a real source
+    file; create + delete a probe object outside every FY prefix (DEC-5).
+    Runs after the guards; a missing right FAILS the run."""
+    permissions.probe_source_read(config.paths.source_drive)
+    if not config.cloud.write_probe_enabled:
+        logger.info("Cloud write probe disabled (cloud.write_probe_enabled: false)")
+        return
+    with temp_rclone_config(
+        config.paths.gcs_key_path, config.cloud.location,
+        config.cloud.project_number, config.cloud.storage_class,
+    ) as rclone_conf:
+        permissions.probe_cloud_write(
+            config.cloud.bucket, run_id, rclone_conf, config.cloud.preflight_timeout_seconds,
+            RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-access"),
+            error_tail_lines=config.cloud.error_tail_lines,
+        )
+
+
+def _sync_with_retries(leg: str, *, run_once, remeasure, deletes_of, retryable,
+                       max_attempts: int, delay_s: int, budget: RunBudget | None,
+                       reserve_s: float, state: dict) -> dict:
+    """XR-1 / XR-2 / XR-6: the ONE retry policy for a mirror (both legs).
+
+    Replaces Prefect task retries, which re-ran the mirror with the same
+    arguments: a fresh --max-delete each time (up to max_attempts x the G3
+    limit deleted) and a robocopy /MIR repeat without re-checking anything.
+
+    run_once() runs one attempt; it returns the result or
+    raises SyncFailed (anything else is not retried). A failed attempt is
+    retried only when
+      * its deletions are known (deletes_of -> int; unknown = fail closed),
+      * the tool did not stop at its delete backstop (-> BLOCKED, a human),
+      * retryable(result) - a repeat can change it,
+      * attempts are left and the delay fits the run budget,
+      * and remeasure(already_deleted) - the same guards as before attempt 1,
+        counting this run's deletions - passes (it raises GuardBlocked or
+        RuntimeError otherwise).
+    state["result"] always holds the latest attempt's result (the run row's
+    exit code / status); state["attempts"] the per-attempt evidence.
+    """
+    attempts = state.setdefault("attempts", [])
+    deleted = 0
+    max_attempts = max(1, int(max_attempts))   # the mirror always runs once
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result, failure = run_once(), None
+        except SyncFailed as e:
+            result, failure = e.result, e
+        state["result"] = result
+        done = deletes_of(result)
+        attempts.append({"attempt": attempt, "status": result.get("status"),
+                         "exit_code": result.get("exit_code"), "deleted": done})
+        if failure is None:
+            return result
+        label = (f"{leg.upper()} sync attempt {attempt}/{max_attempts} ended "
+                 f"{result.get('status')} (exit {result.get('exit_code')})")
+        if result.get("max_delete_reached"):
+            deleted += done or 0
+            logger.error(f"{label} at the delete backstop after {deleted} deletion(s) in "
+                         "this run - not retried; re-measuring for the approval request")
+            try:
+                record = remeasure(deleted)
+            except guards.GuardBlocked:
+                raise
+            except Exception as e:  # noqa: BLE001 - the stop must still reach a human
+                logger.error(f"Re-measure after the delete backstop failed ({e}) - "
+                             "blocking with the known deletions only")
+                record = {"results": []}
+            raise guards.backstop_blocked(leg, record, deleted)
+        if done is None:
+            logger.error(f"{label}; its deletions are unknown - not retried (a repeat "
+                         "could not be bounded)")
+            raise failure
+        deleted += done
+        if not retryable(result):
+            logger.error(f"{label} - not a failure a repeat can change; not retried")
+            raise failure
+        if attempt == max_attempts:
+            logger.error(f"{label} - no attempts left")
+            raise failure
+        if budget is not None and budget.remaining() <= delay_s + reserve_s:
+            logger.error(f"{label} - the {delay_s}s retry delay does not fit the run "
+                         f"budget ({budget.describe()}); not retried")
+            raise failure
+        logger.warning(f"{label}; retrying in {delay_s}s after re-checking the guards "
+                       f"({deleted} file(s) deleted so far in this run)")
+        time.sleep(delay_s)
+        remeasure(deleted)
+    raise AssertionError("unreachable: the loop returns or raises")
+
+
+def _budget_stop_text(budget: RunBudget, what: str) -> str:
+    return (f"Stopped at the run budget of {budget.describe()}: {what}. This is not a "
+            "complete backup; the next run continues where this one stopped.")
+
+
 @task(name="cloud-sync")
-def cloud_sync_task(config, fy_prefix: str):
-    """Run rclone sync to mirror source → GCS."""
+def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
+                    max_delete: int | None = None, budget: RunBudget | None = None):
+    """Run rclone sync to mirror source → GCS (max_delete: G3 backstop).
+
+    WP14: with a run budget the upload gets what is left of it (minus the
+    verify reserve) as rclone's own --max-duration; stopping there is
+    CLOUD_PARTIAL with `budget_stopped` - resumable, never a retry.
+    """
+    timeout = config.cloud.subprocess_timeout_seconds
+    max_duration = config.cloud.max_duration_seconds
+    limited = False
+    if budget is not None:
+        reserve = config.budget.cloud_verify_reserve_minutes * 60
+        try:
+            limited = budget.binding(timeout, reserve)
+            timeout = int(budget.cap(timeout, reserve))
+        except BudgetExceeded as e:
+            logger.error(str(e))
+            return {"status": "CLOUD_PARTIAL", "exit_code": -1, "budget_stopped": True,
+                    "stats": None, "error": _budget_stop_text(
+                        budget, "no time was left for the upload")}
+        if limited:
+            # rclone stops itself (exit 10) before the hard kill at `timeout`
+            max_duration = resolve_max_duration_seconds(timeout, None)
+            logger.info(f"Cloud upload limited by the run budget: --max-duration "
+                        f"{max_duration}s, hard stop {timeout}s")
     logger.info(f"Cloud sync: {config.paths.source_drive} → {config.cloud.bucket}/{fy_prefix}")
     result = run_cloud_sync(
         source=config.paths.source_drive,
@@ -218,17 +938,52 @@ def cloud_sync_task(config, fy_prefix: str):
         transfers=config.cloud.transfers,
         checkers=config.cloud.checkers,
         buffer_size=config.cloud.buffer_size,
-        timeout=config.cloud.subprocess_timeout_seconds,
-        max_duration_seconds=config.cloud.max_duration_seconds,
+        modify_window_seconds=config.cloud.modify_window_seconds,
+        retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds,
+        stats_interval_seconds=config.cloud.stats_interval_seconds,
+        timeout=timeout,
+        max_duration_seconds=max_duration,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
+        error_tail_lines=config.cloud.error_tail_lines,
+        max_delete=max_delete,
     )
+    stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
+    if stopped:
+        stats = result.get("stats") or {}
+        done = (f"{stats.get('transfers', 'unknown')} file(s), "
+                f"{(stats.get('bytes') or 0) / 1024 ** 3:.2f} GB uploaded in this run"
+                if stats else "upload progress unknown (no rclone stats)")
+        if limited:
+            logger.warning(f"Cloud upload stopped at the run budget - {done}")
+            return {**result, "status": "CLOUD_PARTIAL", "budget_stopped": True,
+                    "error": _budget_stop_text(budget, done)}
+        # XR-5: rclone's own --max-duration (cloud.max_duration_seconds, or the
+        # subprocess timeout minus its margin) - the same knowingly incomplete
+        # bucket as a budget stop, so the same truthful PARTIAL, never a verify.
+        cap_s = resolve_max_duration_seconds(timeout, max_duration)
+        logger.warning(f"Cloud upload stopped at rclone's --max-duration of {cap_s}s - {done}")
+        return {**result, "status": "CLOUD_PARTIAL", "time_limit_stopped": True, "error": (
+            f"Stopped at rclone's time limit (--max-duration {cap_s}s; config "
+            f"cloud.max_duration_seconds / cloud.subprocess_timeout_seconds): {done}. This is "
+            "not a complete backup; the next run continues where this one stopped.")}
     if result["status"] in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
-        raise RuntimeError(result.get("error", "Cloud sync failed"))
+        raise SyncFailed(result.get("error") or "Cloud sync failed", result)
     return result
 
 
 @task(name="cloud-verify-and-report")
-def cloud_verify_and_report_task(config, fy_prefix: str):
-    """Verify integrity + gather size/manifest/diff for reporting."""
+def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | None = None,
+                                 artefacts_dir: str | None = None):
+    """Verify integrity + gather size/manifest/diff for reporting.
+
+    WP14: each check's timeout is capped by what is left of the run budget.
+    """
+    def limit(timeout_s):
+        return int(budget.cap(timeout_s)) if budget is not None else timeout_s
+
+    artefacts = (RunArtefacts.open(artefacts_dir) if artefacts_dir
+                 else RunArtefacts.ephemeral("cloud-verify-report"))
+
     with temp_rclone_config(
         config.paths.gcs_key_path,
         config.cloud.location,
@@ -236,39 +991,64 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
         config.cloud.storage_class,
     ) as rclone_cfg:
         logger.info("Verifying cloud integrity")
+        _t_verify = time.monotonic()
         verify_result = verify_cloud_integrity(
             source=config.paths.source_drive,
             bucket=config.cloud.bucket,
             fy_prefix=fy_prefix,
             config_path=rclone_cfg,
-            timeout=config.cloud.verify_timeout_seconds,
+            timeout=limit(config.cloud.verify_timeout_seconds),
+            checkers=config.cloud.checkers,
+            modify_window_seconds=config.cloud.modify_window_seconds,
+            artefacts=artefacts,
         )
+        verify_s = time.monotonic() - _t_verify
 
         logger.info("Gathering cloud report data")
+        _t_size = time.monotonic()
         size = get_cloud_size(
             config.cloud.bucket, fy_prefix, rclone_cfg,
-            timeout=config.cloud.cloud_size_timeout_seconds,
+            timeout=limit(config.cloud.cloud_size_timeout_seconds),
+            artefacts=artefacts,
         )
+        size_s = time.monotonic() - _t_size
         # M6: a failed manifest query must never look like an empty bucket.
         # Catch and carry the failure as data; the pipeline decides policy.
         manifest_error = None
+        _t_manifest = time.monotonic()
         try:
             manifest = get_cloud_manifest(
                 config.cloud.bucket, fy_prefix, rclone_cfg,
-                timeout=config.cloud.manifest_timeout_seconds,
+                timeout=limit(config.cloud.manifest_timeout_seconds),
+                artefacts=artefacts,
             )
         except Exception as e:
             logger.warning(
                 f"Cloud manifest query failed - metrics degraded this run: {e}"
             )
             manifest, manifest_error = [], str(e)
+        manifest_s = time.monotonic() - _t_manifest
+        _t_diff = time.monotonic()
         cloud_diff = get_cloud_diff(
             config.paths.source_drive,
             config.cloud.bucket,
             fy_prefix,
             rclone_cfg,
-            timeout=config.cloud.diff_timeout_seconds,
+            timeout=limit(config.cloud.diff_timeout_seconds),
+            checkers=config.cloud.checkers,
+            modify_window_seconds=config.cloud.modify_window_seconds,
+            retries=config.cloud.retry_count,
+            retries_sleep_seconds=config.cloud.retries_sleep_seconds,
+            artefacts=artefacts,
         )
+        diff_s = time.monotonic() - _t_diff
+        stage_seconds = {
+            "verify_s": round(verify_s, 1),
+            "size_s": round(size_s, 1),
+            "manifest_s": round(manifest_s, 1),
+            "diff_s": round(diff_s, 1),
+        }
+        logger.info(f"Cloud stage timings (s): {stage_seconds}")
 
         if "_error" in size:
             logger.warning(f"Cloud size query degraded this run: {size['_error']}")
@@ -295,29 +1075,22 @@ def cloud_verify_and_report_task(config, fy_prefix: str):
             "manifest": manifest,
             "diff": cloud_diff,
             "manifest_error": manifest_error,
+            "stage_seconds": stage_seconds,
         }
 
 
 @task(name="cloud-record")
 def cloud_record_task(
-    db_path: str,
+    config,
     verify_data: dict,
     sync_result: dict,
-    busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 10000,
-    synchronous: str = "normal",
 ):
     """Record cloud sync results to ManifestDB."""
-    db = ManifestDB(
-        db_path,
-        busy_timeout_ms=busy_timeout_ms,
-        vacuum_freelist_threshold=vacuum_freelist_threshold,
-        synchronous=synchronous,
-    )
+    db = ManifestDB.from_config(config)
     try:
         manifest = verify_data.get("manifest", [])
         removed = verify_data.get("diff", {}).get("removed", [])
-        record_sync_results(db, "cloud", manifest, removed)
+        record_sync_results(db, "cloud", manifest, removed, fy=_effective_fy_prefix(config))
         logger.info(f"Recorded {len(manifest)} cloud entries to database")
     finally:
         db.close()
@@ -338,8 +1111,8 @@ def wol_check_task(config):
 
 
 @task(name="lan-preflight")
-def lan_preflight_task(config):
-    """Run robocopy /L dry-run before real sync."""
+def lan_preflight_task(config, artefacts_dir: str | None = None):
+    """Run robocopy /L dry-run before real sync (full listing kept in run_logs)."""
     logger.info(f"LAN preflight: validating {config.paths.source_drive} → {config.paths.lan_destination}")
     result = run_lan_dry_run(
         source=config.paths.source_drive,
@@ -348,19 +1121,238 @@ def lan_preflight_task(config):
         # over SMB); the old hardcoded 300s failed at the scale this deployment
         # targets. Config-driven so the operator can tune per environment.
         timeout=config.lan.dry_run_timeout_seconds,
+        smb_attempts=config.lan.preflight_smb_attempts,
+        smb_wait_seconds=config.lan.preflight_smb_wait_seconds,
+        smb_connect_timeout_seconds=config.wol.smb_connect_timeout_seconds,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
+        log_tail_kb=config.lan.log_tail_kb,
     )
     if not result["ok"]:
-        raise RuntimeError(f"LAN preflight failed: {result['error']}")
+        raise faults.coded(RuntimeError(f"LAN preflight failed: {result['error']}"),
+                           "AAM-LAN-01")
     return result
 
 
 @task(name="lan-snapshot-before")
 def lan_snapshot_before_task(config):
-    """Snapshot LAN destination before sync for diff comparison."""
+    """Snapshot LAN destination before sync for diff comparison.
+
+    Returns None when the walk fails: the destination file count is then
+    UNKNOWN, and the guards fail the run (M2 2.2, G3 needs it). An empty
+    dict would be indistinguishable from a genuinely empty destination.
+    """
     logger.info("Taking LAN snapshot (before sync)")
-    before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
-    logger.info(f"LAN snapshot: {len(before)} files before sync")
-    return before
+    try:
+        before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
+        logger.info(f"LAN snapshot: {len(before)} files before sync")
+        return before
+    except Exception as e:
+        logger.error(f"Pre-sync destination walk failed: {e} - destination file count unknown")
+        return None
+
+
+def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | None,
+                    results: list) -> tuple[frozenset, dict]:
+    """Which blocked guards a human approved for THIS run (plan §6.2).
+
+    Returns (approved guard names, record additions). The approval is
+    consumed atomically here - before any transfer - so it can never cover
+    a second run. No approval_id (every scheduled run) -> nothing approved.
+    XR-1/XR-2: a retry of the SAME run re-checks the approval it already used
+    (same numbers rule, cumulative deletions) without consuming it again.
+    """
+    blocked = [r for r in results if not r.passed]
+    if not blocked or not approval_id:
+        return frozenset(), {}
+    if not all(r.approvable for r in blocked):
+        # defence in depth: whatever a stored request says, a target problem is never overridden
+        reason = approvals.NOT_APPROVABLE_MESSAGE
+        logger.error(f"Approval {approval_id} not applied ({leg}): {reason}")
+        return frozenset(), {"approval_id": approval_id, "approval_rejected": reason}
+    db = ManifestDB.from_config(config)
+    try:
+        request = db.get_approval(approval_id)
+        if request is not None and request.get("leg") != leg:
+            logger.info(f"Approval {approval_id} is for the {request.get('leg')} leg - "
+                        f"not applied to {leg}")
+            return frozenset(), {}
+        run_fy = _effective_fy_prefix(config)
+        if request is not None and request.get("fy") != run_fy:
+            # an approval is for ONE FY folder (plan R-1): never applied to - nor consumed by - another
+            reason = (f"approval is for the {request.get('fy') or 'unknown'} folder, not {run_fy}")
+            logger.error(f"Approval {approval_id} not applied ({leg}, {run_fy}): {reason}")
+            return frozenset(), {"approval_id": approval_id, "approval_rejected": reason}
+        own_retry = (request is not None and run_id is not None
+                     and request.get("used_by_run_id") == run_id)
+        decision = approvals.evaluate_request(
+            {**request, "used_at": None} if own_retry else request,
+            leg=leg, blocked=blocked, fy=run_fy, now_iso=now_iso(),
+            tolerance_percent=config.approvals.tolerance_percent)
+        if decision.allowed and not own_retry and not db.mark_approval_used(
+                approval_id, run_id=run_id, used_at=now_iso()):
+            decision = approvals.ApprovalDecision(
+                False, "approval already used by another run")
+    finally:
+        db.close()
+    if not decision.allowed:
+        logger.error(f"Approval {approval_id} not applied ({leg}): {decision.reason}")
+        return frozenset(), {"approval_id": approval_id, "approval_rejected": decision.reason}
+    logger.warning(f"Approval {approval_id} used by run {run_id} ({leg}): "
+                   f"{', '.join(r.guard for r in blocked)} overridden once")
+    return frozenset(r.guard for r in blocked), {"approval_id": approval_id}
+
+
+def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
+                        occurred_at: str, artefacts_dir: str | None = None,
+                        sync_attempted: bool = False) -> None:
+    """BLOCKED run -> one approval request + ONE attention email (DEC-3).
+
+    sync_attempted (A3): a sync attempt ran before the block (delete backstop, re-measure
+    between retries), so the text must not say nothing was changed.
+
+    Never raises: the run row is already written, and the human must be
+    told even when the request could not be stored.
+    """
+    blocked = [r for r in guard_record.get("results", [])
+               if r.get("verdict") == guards.BLOCK
+               and r.get("guard") not in guard_record.get("approved_guards", [])]
+    approval_id = None
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            approval_id = db.open_approval_request(
+                leg=leg, blocked_run_id=run_id,
+                fy=guard_record.get("fy") or _effective_fy_prefix(config),
+                guards=[{**{k: r.get(k) for k in ("guard", "reason", "metrics", "fault_code")},
+                         "approvable": guards.code_approvable(r.get("fault_code"))} for r in blocked],
+                phrase=approvals.request_phrase(blocked), created_at=now_iso())
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - the alert below must still go out
+        logger.error(f"Could not record the approval request for blocked run {run_id}: {e}")
+    rejected = guard_record.get("approval_rejected")
+    message = "\n".join(r.get("reason", "") for r in blocked)
+    if rejected:
+        message += f"\n\nThe approval supplied for this run was not applied: {rejected}"
+    changed = (statuses.BLOCKED_AFTER_CHANGES_NOTE if sync_attempted
+               else "Nothing was copied or deleted.")
+    if all(guards.code_approvable(r.get("fault_code")) for r in blocked):
+        message += (f"\n\n{changed} Open the dashboard to review the "
+                    "numbers and either approve this backup once or dismiss it.")
+    else:
+        message += (f"\n\n{changed} This block cannot be approved. Fix the cause (mount or "
+                    "restore the NAS share, check the path); the next backup clears it by itself.")
+    # a leg's block belongs to its FY (the approval's FY); the rollover's own block is not per leg
+    alert_fy = (guard_record.get("fy") or _alert_fy(config)) if leg in ("cloud", "lan") else None
+    notify(config, AlertEvent(
+        key=f"blocked:{_fy_seg(alert_fy)}{leg}", kind="ACTION_REQUIRED", mode=leg, fy=alert_fy,
+        title=f"{leg.upper()} backup blocked - approval needed",
+        message=message, status=f"{leg.upper()}_BLOCKED",
+        fault_code=faults.blocked_guard_code(guard_record) or faults.UNKNOWN, run_id=run_id,
+        artefacts_dir=artefacts_dir,
+        details={"Blocked by": ", ".join(r.get("guard", "?") for r in blocked),
+                 "Run": run_id,
+                 "Approval request": approval_id or "could not be recorded - see the logs"},
+        occurred_at=occurred_at,
+    ))
+
+
+@task(name="lan-guards")
+def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: int | None,
+                    approval_id: str | None = None, run_id: str | None = None,
+                    already_deleted: int = 0) -> dict:
+    """Data-safety guards G1-G4 before robocopy /MIR (plan WP3, M2 2.2).
+
+    approval_id: dashboard re-run of a blocked run (plan §6.2); used up here
+    if it validly covers every guard that blocks again. An approved G5
+    (missing mount marker) creates the marker before the mirror runs.
+
+    A measurement that could not be taken FAILS the run (retried next
+    night); a guard verdict BLOCKs it for a human (GuardBlocked). No Prefect
+    retries: re-measuring the same state gives the same verdict.
+    already_deleted (XR-2): robocopy deletions of earlier attempts of this
+    run - G3 covers the whole run, not each attempt.
+    """
+    source = config.paths.source_drive
+    dest = config.paths.lan_destination
+    counts = (dry_run or {}).get("counts")
+    planned_deletes = (dry_run or {}).get("planned_deletes")
+    if not counts or planned_deletes is None:
+        raise RuntimeError(
+            "LAN guard measurement failed: the robocopy /L job summary is missing or "
+            "unreadable, so planned deletions cannot be counted - refusing to mirror")
+    if planned_deletes > counts["extras"]:
+        # Every listed *EXTRA File is also in the Extras column; more lines
+        # than the column means the listing cannot be trusted.
+        raise RuntimeError(
+            f"LAN guard measurement failed: robocopy /L listing is inconsistent "
+            f"({planned_deletes} '*EXTRA File' lines but Extras column = "
+            f"{counts['extras']}) - refusing to mirror")
+    if destination_files is None:
+        raise RuntimeError(
+            f"LAN guard measurement failed: the destination could not be listed ({dest}), "
+            "so the share of files a mirror would delete is unknown - refusing to mirror")
+
+    db = ManifestDB.from_config(config)
+    try:
+        baseline = db.guard_baseline("lan", fy_prefix) or {}
+    finally:
+        db.close()
+
+    limits = config.guards
+    results = [
+        guards.g1_source_has_files(
+            guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES), source),
+        guards.g2_source_shrink(counts["total"], baseline.get("source_file_count"),
+                                limits.max_source_shrink_percent,
+                                small_folder_files=limits.small_folder_files,
+                                small_folder_max_deletes=limits.small_folder_max_deletes),
+        guards.g4_destination_identity(
+            dest, baseline.get("destination"),
+            guards.resolve_host(guards.unc_host(dest)), guards.local_addresses(),
+            limits.forbid_local_destination),
+        guards.g3_mass_delete(planned_deletes, destination_files,
+                              limits.max_delete_files, limits.max_delete_percent,
+                              already_deleted=already_deleted,
+                              small_folder_files=limits.small_folder_files,
+                              small_folder_max_deletes=limits.small_folder_max_deletes,
+                              first_run=not baseline),
+        guards.g5_canary(dry_run.get("canary_present"), destination_files > 0, dest),
+    ]
+    approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)
+    record = guards.enforce(
+        "lan", results, approved_guards=approved, fy=fy_prefix,
+        source_file_count=counts["total"], destination=dest,
+        destination_files=destination_files, **approval_record,
+        **({"already_deleted": already_deleted} if already_deleted else {}),
+    )
+    if "G5_CANARY" in approved:
+        marker = os.path.join(dest, guards.MOUNT_MARKER)
+        try:
+            with open(marker, "a", encoding="utf-8"):
+                pass
+        except OSError as e:
+            raise RuntimeError(
+                f"Approved, but the mount marker {marker} could not be created: {e} - "
+                "nothing was copied or deleted") from e
+        logger.warning(f"Mount marker {marker} created on human approval {approval_id}")
+        record["marker_created"] = True
+    return record
+
+
+@task(name="lan-access")
+def lan_access_task(config, dry_run: dict, run_id: str):
+    """Prove the rights the mirror uses (plan WP4, CL3/LA7/LA9): read a real
+    source file; create/read/delete a probe at the destination; NAS free
+    space for the bytes /L says will be copied. Runs AFTER the guards, so
+    nothing is ever written to a destination whose mount marker is not
+    confirmed. A missing right FAILS the run."""
+    dest = config.paths.lan_destination
+    permissions.probe_source_read(config.paths.source_drive)
+    permissions.probe_destination_write(dest, run_id)
+    permissions.check_destination_free_space(
+        dest, bytes_needed=((dry_run or {}).get("bytes") or {}).get("copied"),
+        min_free_gb=config.lan.min_free_dest_gb)
 
 
 @task(name="lan-snapshot-after")
@@ -388,43 +1380,60 @@ def lan_snapshot_after_task(config):
 
 
 @task(name="lan-sync")
-def lan_sync_task(config):
-    """Run robocopy /MIR mirror sync."""
+def lan_sync_task(config, artefacts_dir: str | None = None, budget: RunBudget | None = None):
+    """Run robocopy /MIR mirror sync.
+
+    WP14: with a run budget robocopy gets what is left of it (minus the
+    post-sync reserve); being stopped there is LAN_PARTIAL with
+    `budget_stopped` - the next run continues the mirror, never a retry.
+    """
     logger.info(f"LAN sync: {config.paths.source_drive} → {config.paths.lan_destination}")
+    timeout = config.lan.subprocess_timeout_seconds
+    limited = False
+    if budget is not None:
+        reserve = config.budget.lan_post_reserve_minutes * 60
+        try:
+            limited = budget.binding(timeout, reserve)
+            timeout = int(budget.cap(timeout, reserve))
+        except BudgetExceeded as e:
+            logger.error(str(e))
+            return {"status": "LAN_PARTIAL", "exit_code": -1, "budget_stopped": True,
+                    "files_failed": 0, "counts": None, "bytes": None, "files_deleted": None,
+                    "error": _budget_stop_text(budget, "no time was left for the mirror")}
     result = run_lan_sync(
         source=config.paths.source_drive,
         dest=config.paths.lan_destination,
         lan_config=config.lan,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
+        timeout_s=timeout,
     )
+    if limited and result.get("timed_out"):
+        logger.warning("LAN mirror stopped at the run budget")
+        return {**result, "status": "LAN_PARTIAL", "budget_stopped": True,
+                "error": _budget_stop_text(budget, "robocopy was stopped before the mirror "
+                                                   "finished (full log kept)")}
     if result["status"] in ("LAN_FAILED", "LAN_SUSPECT"):
-        raise RuntimeError(result.get("error", "LAN sync failed"))
+        raise SyncFailed(result.get("error") or "LAN sync failed", result)
     return result
 
 
 @task(name="lan-record")
 def lan_record_task(
-    db_path: str,
+    config,
     sync_result: dict,
     before_dict: dict,
     after_dict: dict,
-    busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 10000,
-    synchronous: str = "normal",
 ):
     """Compute diff from before/after snapshots, record to ManifestDB."""
     diff = diff_snapshots(before_dict, after_dict)
 
-    db = ManifestDB(
-        db_path,
-        busy_timeout_ms=busy_timeout_ms,
-        vacuum_freelist_threshold=vacuum_freelist_threshold,
-        synchronous=synchronous,
-    )
+    db = ManifestDB.from_config(config)
     try:
         # snapshot_to_dict returns {path: (size, mtime)} tuples
         files_list = [{"path": k, "size": v[0], "mtime": v[1]}
                       for k, v in after_dict.items()]
-        record_sync_results(db, "lan", files_list, diff.get("removed"))
+        record_sync_results(db, "lan", files_list, diff.get("removed"),
+                            fy=_effective_fy_prefix(config))
         logger.info(
             f"LAN recorded: {len(after_dict)} files, "
             f"+{len(diff['added'])} -{len(diff['removed'])} "
@@ -435,45 +1444,81 @@ def lan_record_task(
 
 
 @task(name="lan-shutdown")
-def lan_shutdown_task(config):
-    """Shut down backup server after successful LAN sync."""
+def lan_shutdown_task(config, artefacts_dir: str | None = None) -> dict | None:
+    """Shut the NAS down and verify it went down (WP10).
+
+    Returns the result as metrics (None when shutdown is disabled). Never
+    raises: the backup's own status stays truthful and separate; a shutdown
+    that is not verified is a WARNING email + a dashboard flag.
+    """
     if not config.lan.shutdown_after_backup or not config.wol.enabled:
         logger.info("LAN shutdown disabled, skipping")
-        return
-    logger.info(f"Shutting down backup server {config.wol.server_ip}")
+        return None
+    server_ip = config.wol.server_ip
+    logger.info(f"Shutting down backup server {server_ip}")
     try:
-        shutdown_server(config.wol.server_ip)
-    except Exception as e:
-        logger.warning(f"Server shutdown failed (non-critical): {e}")
+        artefacts = (RunArtefacts.open(artefacts_dir) if artefacts_dir
+                     else RunArtefacts.ephemeral("nas-shutdown"))
+        result = shutdown_from_config(config, artefacts)
+    except Exception as e:  # noqa: BLE001 - recorded, never raised
+        logger.error(f"NAS shutdown could not be carried out: {e}")
+        result = ShutdownResult(SHUTDOWN_FAILED, server_ip, None,
+                                f"shutdown could not be carried out: {e}", 0.0)
+    if not result.verified:
+        notify(config, AlertEvent(
+            key=f"nas_shutdown:{server_ip}", kind="WARNING", mode="lan",
+            title=f"NAS shutdown {result.outcome.replace('_', ' ').lower()}",
+            message=(f"The NAS {server_ip} was not confirmed powered off after the backup: "
+                     f"{result.detail}. The backup result itself is unaffected."),
+            status=f"NAS_SHUTDOWN_{result.outcome}", exit_code=result.exit_code,
+            fault_code="AAM-NAS-06",
+        ))
+    return result.to_metrics()
+
+
+def _summary_counts(files_copied: int | None, bytes_copied: int | None) -> tuple[str, str]:
+    """Run-summary text for tool counts; None (counts unavailable) reads 'unknown'."""
+    files = "unknown" if files_copied is None else str(files_copied)
+    if bytes_copied is None:
+        return files, "unknown"
+    return files, f"{bytes_copied / (1024 * 1024):.2f} MB` (`{bytes_copied}` bytes)"
+
+
+def _artifact_key(base: str, fy: str | None) -> str:
+    """Prefect artifact keys allow lower-case letters, digits and dashes: `cloud-backup-summary-fy27-28`."""
+    return f"{base}-{fy.lower()}" if fy else base
 
 
 @task(name="cloud-publish-artifact")
-def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copied: int, bytes_copied: int):
+def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
+                                files_copied: int | None, bytes_copied: int | None,
+                                fy: str | None = None):
     """Publish a beautiful Markdown summary of the Cloud Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
         status = sync_result.get("status", "UNKNOWN")
         exit_code = sync_result.get("exit_code", -1)
-        size_mb = bytes_copied / (1024 * 1024)
+        files_text, volume_text = _summary_counts(files_copied, bytes_copied)
         total_files = verify_data.get('size', {}).get('count', 0)
         total_space_gb = verify_data.get('size', {}).get('bytes', 0) / (1024 * 1024 * 1024)
-        verified_str = "✅ Passed" if verify_data.get("verified") else "❌ Failed/Skipped"
+        size_check_str = "✅ Passed" if verify_data.get("verified") else "❌ Failed/Skipped"
         
         markdown_content = (
             f"# ☁️ AAM Cloud Backup Run Summary\n\n"
             f"## 📊 Performance & Execution Metrics\n"
             f"* **Status:** `{status}` (Exit Code: `{exit_code}`)\n"
-            f"* **Files Transferred:** `{files_copied}` files\n"
-            f"* **Volume Transferred:** `{size_mb:.2f} MB` (`{bytes_copied}` bytes)\n\n"
+            f"* **Files Transferred:** `{files_text}` files\n"
+            f"* **Volume Transferred:** `{volume_text}`\n\n"
             f"## 📁 Storage Metrics (GCS Bucket)\n"
             f"* **Total Tracked Files:** `{total_files}` files\n"
             f"* **Total Space Consumed:** `{total_space_gb:.3f} GB`\n\n"
-            f"## 🔒 Integrity Verification\n"
-            f"* **Cryptographic Checks:** {verified_str}\n"
+            f"## 📏 Size check\n"
+            f"* **Size check (file sizes only, not content):** {size_check_str}\n"
+            f"* Content is compared by the weekly integrity audit.\n"
         )
         create_markdown_artifact(
             markdown=markdown_content,
-            key="cloud-backup-summary"
+            key=_artifact_key("cloud-backup-summary", fy)
         )
         logger.info("Published Cloud Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
@@ -481,7 +1526,8 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict, files_copi
 
 
 @task(name="lan-publish-artifact")
-def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, bytes_copied: int, total_files: int):
+def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int | None,
+                              bytes_copied: int | None, total_files: int, fy: str | None = None):
     """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
     try:
         from prefect.artifacts import create_markdown_artifact
@@ -491,14 +1537,14 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
         added = len(diff.get("added", []))
         modified = len(diff.get("modified", []))
         removed = len(diff.get("removed", []))
-        size_mb = bytes_copied / (1024 * 1024)
+        files_text, volume_text = _summary_counts(files_copied, bytes_copied)
         
         markdown_content = (
             f"# 🖥️ AAM LAN Backup Run Summary\n\n"
             f"## 📊 Robocopy Differential Metrics\n"
             f"* **Status:** `{status}` (Exit Code: `{exit_code}`)\n"
-            f"* **Total Differential Changes:** `{files_copied}` files\n"
-            f"* **Volume Transferred:** `{size_mb:.2f} MB` (`{bytes_copied}` bytes)\n\n"
+            f"* **Total Differential Changes:** `{files_text}` files\n"
+            f"* **Volume Transferred:** `{volume_text}`\n\n"
             f"## 📁 File Alterations Detail\n"
             f"* **➕ Files Added:** `{added}` files\n"
             f"* **✏️ Files Modified:** `{modified}` files\n"
@@ -508,7 +1554,7 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
         )
         create_markdown_artifact(
             markdown=markdown_content,
-            key="lan-backup-summary"
+            key=_artifact_key("lan-backup-summary", fy)
         )
         logger.info("Published LAN Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
@@ -518,6 +1564,45 @@ def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int, 
 # ═══════════════════════════════════════════════════════════════
 # Cloud pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
+
+def _audit_settings(config) -> dict:
+    """rclone check tuning for the integrity audit (config.audit, WP7)."""
+    a = config.audit
+    return {"checkers": a.checkers, "retries": a.retries,
+            "retries_sleep_seconds": a.retries_sleep_seconds,
+            "modify_window_seconds": a.modify_window_seconds,
+            "detail_max_paths": a.detail_max_paths,
+            "network_error_patterns": tuple(a.network_error_patterns)}
+
+
+def _pending_context(config, db, leg: str):
+    """What the safety check needs to tell "waiting for the next backup" from "wrong": the start
+    of this leg's last SUCCESSFUL backup (the shared success definition). Unknown (no backup, an
+    unreadable time, a database error) leaves the reference empty, so every difference is real."""
+    from core import audit_pending
+
+    try:
+        last = db.last_successful_run(leg, fy=_effective_fy_prefix(config))
+        started = last.get("started_at") if isinstance(last, dict) else None
+    except Exception as e:  # noqa: BLE001 - unknown means "no reference", never a crash
+        logger.warning(f"Last successful {leg} backup unknown for the safety check: {e}")
+        started = None
+    return audit_pending.PendingContext(
+        source_root=config.paths.source_drive,
+        dest_root=config.paths.lan_destination if leg == "lan" else None,
+        reference=audit_pending.reference_epoch(started), now=time.time(),
+        modify_window_seconds=config.audit.modify_window_seconds,
+        max_delete_files=config.guards.max_delete_files,
+        max_delete_percent=config.guards.max_delete_percent, files_checked=None)
+
+
+def _audit_outcome_text(leg: str, result: dict) -> str:
+    """Truthful audit outcome: 'could not run' is never called divergence."""
+    if result.get("status") == "AUDIT_INCOMPLETE":
+        return (f"{leg} integrity audit COULD NOT RUN (no verdict - this is not a data "
+                f"difference): {result.get('detail')}")
+    return f"{leg} integrity audit FOUND DIFFERENCES: {result.get('detail')}"
+
 
 def _nullable_audit_count(value):
     """Pass through a populated audit counter; preserve unknown as NULL.
@@ -591,34 +1676,47 @@ def _cloud_gate_failure_message(verify_data: dict, diff: dict, size: dict) -> st
     )
 
 
-def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
-    """Execute cloud backup tasks sequentially. Each task is independently tracked."""
-    with _backup_slot(config):
-        db_path = config.paths.database_path
-        fy_prefix = get_fy_prefix()
+def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
+                        budget_hours: float | None = None,
+                        approval_id: str | None = None, late_seconds: float = 0.0,
+                        slot_held: bool = False, shared_budget: bool = False,
+                        budget_monotonic_start: float | None = None):
+    """Execute cloud backup tasks sequentially. Each task is independently tracked.
+
+    late_seconds: how long after its scheduled time the run started (plan I2); the budget
+    counts from the scheduled time, so a late start gets only what is left of it."""
+    # WP14: the run budget counts from the job's start (I2: its scheduled start), including
+    # the slot wait
+    budget = RunBudget(
+        "cloud",
+        (budget_hours if budget_hours is not None else config.budget.cloud_max_hours) * 3600,
+        (budget_monotonic_start if budget_monotonic_start is not None else
+         (monotonic_start if monotonic_start is not None else time.monotonic())) - late_seconds)
+    _missed_if_no_budget(config, "cloud", run_id, started_at, budget,
+                         config.budget.cloud_verify_reserve_minutes * 60, late_seconds,
+                         monotonic_start, shared_budget=shared_budget)
+    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start, slot_held=slot_held):
+        fy_prefix = _effective_fy_prefix(config)
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = cloud_preflight_task.with_options(
-            retries=1, retry_delay_seconds=30,
+            retries=config.cloud.preflight_retries,
+            retry_delay_seconds=config.cloud.preflight_retry_delay_seconds,
         )
-        sync = cloud_sync_task.with_options(
-            retries=config.cloud.max_attempts - 1,
-            retry_delay_seconds=config.cloud.retry_delay_seconds,
-        )
+        # XR-1/XR-6: no Prefect retries for the mirror - _sync_with_retries
+        # decides (cloud.max_attempts / retry_delay_seconds), re-measuring the
+        # guards and lowering --max-delete by what earlier attempts deleted.
+        sync = cloud_sync_task.with_options(retries=0)
         verify_report = cloud_verify_and_report_task.with_options(
-            retries=1, retry_delay_seconds=60,
+            retries=config.cloud.verify_retries,
+            retry_delay_seconds=config.cloud.verify_retry_delay_seconds,
         )
 
         # Fetch database state before sync to calculate differential transfers
-        db = ManifestDB(
-            db_path,
-            busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-            vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-            synchronous=config.maintenance.sqlite_synchronous,
-        )
+        db = ManifestDB.from_config(config)
         before_dict = {}
         try:
-            before_dict = db.get_cloud_synced_entries()
+            before_dict = db.get_cloud_synced_entries(fy=fy_prefix)
         except Exception as e:
             logger.warning(f"Could not fetch database state before cloud sync: {e}")
         finally:
@@ -626,20 +1724,98 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
 
         status = "CLOUD_SKIPPED"
         sync_result = {"exit_code": -1}
+        sync_state: dict = {}   # XR: the latest attempt's result + per-attempt evidence
         error_msg = None
+        fault_code: str | None = None   # core.faults code of a non-success run
         files_copied = 0
         bytes_copied = 0
         extended_metrics = None
+        artefacts = _open_run_artefacts(config, run_id, started_at)
+        artefacts_dir = str(artefacts.dir) if artefacts else None
+        # Failure-path telemetry: accumulate per-stage durations as stages
+        # complete so a failed run still records what was measured. Stages
+        # that never execute stay absent (never fabricated).
+        stage_seconds: dict = {}
+        sync_seconds: float | None = None
+        verify_report_seconds: float | None = None
         phase = "pre"
+        guard_record = None
+        alert_sent = False   # WP8: exactly one alert per failed run
+        deferred_alert = None   # A2: an interrupted run records itself first, alerts second
+        clock = None         # WP12: clock verdict from the health check
 
         try:
-            health_check_task(config, "cloud")
-            preflight(config, fy_prefix)
+            clock = health_check_task(config, "cloud", artefacts_dir)
+            preflight(config, fy_prefix, artefacts_dir)
+            guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
+                                             approval_id=approval_id, run_id=run_id)
+            cloud_access_task(config, run_id, artefacts_dir)
             phase = "sync"
-            sync_result = sync(config, fy_prefix)
+            _t_sync = time.monotonic()
+            caps = {"max_delete": guard_record["max_delete"]}
+
+            def remeasure(already_deleted: int) -> dict:
+                nonlocal guard_record
+                guard_record = cloud_guards_task(
+                    config, fy_prefix, artefacts_dir, approval_id=approval_id,
+                    run_id=run_id, already_deleted=already_deleted)
+                cloud_access_task(config, run_id, artefacts_dir)
+                caps["max_delete"] = guard_record["max_delete"]
+                return guard_record
+
+            def deletes_of(result: dict) -> int | None:
+                stats = result.get("stats")
+                if isinstance(stats, dict) and type(stats.get("deletes")) is int:
+                    return stats["deletes"]
+                # rclone deletes exactly --max-delete files before it stops (F2)
+                return caps["max_delete"] if result.get("max_delete_reached") else None
+
+            sync_result = _sync_with_retries(
+                "cloud",
+                run_once=lambda: sync(config, fy_prefix, artefacts_dir,
+                                      max_delete=caps["max_delete"], budget=budget),
+                remeasure=remeasure, deletes_of=deletes_of,
+                retryable=lambda r: r.get("retryable") is True,
+                max_attempts=config.cloud.max_attempts,
+                delay_s=config.cloud.retry_delay_seconds, budget=budget,
+                reserve_s=config.budget.cloud_verify_reserve_minutes * 60, state=sync_state)
+            sync_seconds = round(time.monotonic() - _t_sync, 1)
+            stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
+            if sync_result.get("budget_stopped") or sync_result.get("time_limit_stopped"):
+                # WP14 / XR-5: the upload stopped at the run budget or at rclone's
+                # own --max-duration. Not verified (the bucket is knowingly
+                # incomplete) and not recorded as bucket state; the next run
+                # continues. One PARTIAL alert.
+                phase = "post"
+                error_msg = sync_result["error"]
+                stats = sync_result.get("stats")
+                if isinstance(stats, dict):
+                    files_copied, bytes_copied = stats.get("transfers"), stats.get("bytes")
+                else:
+                    files_copied = bytes_copied = None
+                which = "run budget" if sync_result.get("budget_stopped") else "rclone time limit"
+                extended_metrics = json.dumps({
+                    "stage_seconds": dict(stage_seconds),
+                    "verify": f"skipped - the upload stopped at the {which}",
+                    "counts_source": "rclone" if isinstance(stats, dict) else "unavailable",
+                    "tool_counts": {k: stats.get(k) for k in ("transfers", "bytes", "deletes",
+                                                              "errors", "checks")}
+                    if isinstance(stats, dict) else None,
+                })
+                _send_run_alert(config, "cloud", status, error_msg,
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
+                alert_sent = True
+                raise PartialRun(f"Cloud run ended {status} - {error_msg}")
             phase = "verify"
-            verify_data = verify_report(config, fy_prefix)
+            _t_verify_report = time.monotonic()
+            verify_data = verify_report(config, fy_prefix, budget=budget,
+                                        artefacts_dir=artefacts_dir)
+            verify_report_seconds = round(time.monotonic() - _t_verify_report, 1)
+            stage_seconds.update(verify_data.get("stage_seconds") or {})
+            stage_seconds["verify_report_s"] = verify_report_seconds
             diff = verify_data.get("diff") or {}
             size = verify_data.get("size") or {}
             evidence_ok = (
@@ -661,15 +1837,11 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 status = "CLOUD_VERIFY_FAILED"
                 error_msg = verify_err
                 logger.error(verify_err)
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name, verify_err,
-                        {"mode": "cloud", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send verify-failure alert: {alert_err}")
+                _send_run_alert(config, "cloud", status, verify_err,
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
+                alert_sent = True
                 raise RuntimeError(verify_err)
 
             phase = "post"
@@ -685,48 +1857,32 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 )
             else:
                 cloud_record_task(
-                    db_path, verify_data, sync_result,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
+                    config, verify_data, sync_result,
                 )
 
-            # Calculate files and bytes copied by comparing old database state with new live GCS manifest
-            manifest = verify_data.get("manifest", [])
-            copied_files_list = []
-            for item in manifest:
-                path = item.get("Path") if item.get("Path") is not None else item.get("path", "")
-                size = item.get("Size") if item.get("Size") is not None else item.get("size", 0)
-                mtime = item.get("ModTime") if item.get("ModTime") is not None else item.get("mtime", 0)
-            
-                if path not in before_dict:
-                    copied_files_list.append((path, size))
-                else:
-                    old_size, old_mtime = before_dict[path]
-                    # 0.01-byte threshold: guards against float representation noise
-                    # in rclone's size reporting. Accurate for all real file sizes
-                    # since actual byte counts are always whole numbers.
-                    if abs(float(size) - float(old_size)) > 0.01:
-                        copied_files_list.append((path, size))
-                    else:
-                        try:
-                            if isinstance(mtime, (int, float)) and isinstance(old_mtime, (int, float)):
-                                # Numeric Unix timestamps — compare directly
-                                t1, t2 = float(mtime), float(old_mtime)
-                            else:
-                                t1 = pendulum.parse(str(mtime)).timestamp()
-                                t2 = pendulum.parse(str(old_mtime)).timestamp()
-                            if abs(t1 - t2) > 1.1:
-                                copied_files_list.append((path, size))
-                        except Exception:
-                            if str(mtime) != str(old_mtime):
-                                copied_files_list.append((path, size))
-
-            files_copied = len(copied_files_list)
-            bytes_copied = sum(round(float(size)) for _, size in copied_files_list)
+            # WP6: the numbers are rclone's OWN accounting (final stats line).
+            # The bucket-vs-DB diff is only a cross-check (it re-derived "579
+            # files copied" on no-change nights when the baseline was wrong).
+            diff_copied = _cloud_diff_count(verify_data.get("manifest", []), before_dict)
+            stats = sync_result.get("stats")
+            if isinstance(stats, dict):
+                files_copied, bytes_copied = stats.get("transfers"), stats.get("bytes")
+                counts_source = "rclone"
+            else:
+                files_copied = bytes_copied = None
+                counts_source = "unavailable"
+                logger.warning("rclone final stats missing - files/bytes copied recorded as unknown")
+            metrics_consistent = files_copied is not None and diff_copied == files_copied
+            if files_copied is not None and not metrics_consistent:
+                logger.warning(f"Cloud metrics cross-check: rclone uploaded {files_copied} file(s), "
+                               f"the bucket-vs-DB diff shows {diff_copied} - the tool count is "
+                               "recorded; the DB baseline was stale")
 
             extended_metrics = json.dumps({
-                "verified": verify_data.get("verified", False),
+                "stage_seconds": dict(stage_seconds),
+                "verified": verify_data.get("verified", False),     # old key, kept for readers
+                # WP7: the daily check compares sizes only - named for what it is
+                "size_check_passed": verify_data.get("verified", False),
                 # F-08: liveness is the check process's own completion
                 # evidence, never the killable exit code. A killed check
                 # (TerminateProcess with exit 0) reports abnormal
@@ -740,32 +1896,35 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 "manifest_ok": manifest_error is None,
                 "size_ok": "_error" not in (verify_data.get("size") or {}),
                 "diff_partial": bool((verify_data.get("diff") or {}).get("_partial")),
+                "counts_source": counts_source,
+                "tool_counts": {k: stats.get(k) for k in ("transfers", "bytes", "deletes",
+                                                          "errors", "checks")}
+                if isinstance(stats, dict) else None,
+                "diff_copied": diff_copied,
+                "metrics_consistent": metrics_consistent,
             })
             try:
-                cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied)
-            except Exception:
-                pass
+                cloud_publish_artifact_task(verify_data, sync_result, files_copied, bytes_copied,
+                                            fy=_effective_fy_prefix(config))
+            except Exception as e:
+                # The Prefect summary is cosmetic; the run row is the record.
+                logger.warning(f"Cloud run summary not published to Prefect: {e}")
 
             logger.info(f"Cloud pipeline completed successfully: {files_copied} files, {bytes_copied} bytes copied")
             if status == "CLOUD_PARTIAL":
                 # Transient rclone outcome (rc 4/5/10) over a destination the
                 # evidence gate just approved: data-true, but incomplete work
-                # remains. Alert specifically (LAN F3 equivalent — cloud had
-                # no partial alert), then fail via the terminal policy below.
-                # The backup() tail skips its generic alert for PartialRun.
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        f"Cloud backup PARTIAL: rclone exit "
-                        f"{sync_result.get('exit_code')} — some work did not "
-                        "complete. rclone sync is resumable; the next scheduled "
-                        "run continues from where this one left off.",
-                        {"mode": "cloud", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send partial-backup alert: {alert_err}")
+                # remains. Alert specifically, then fail via the terminal
+                # policy below.
+                _send_run_alert(
+                    config, "cloud", status,
+                    f"Cloud backup PARTIAL: rclone exit {sync_result.get('exit_code')} - some "
+                    f"work did not complete. rclone sync is resumable; {_next_run_words(config, 'cloud')} "
+                    "continues from where this one left off.",
+                    sync_result.get("exit_code"), started_at,
+                    run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
+                alert_sent = True
             # Terminal-state policy (single authoritative decision point):
             # a non-success status must never return normally (which the
             # engine would record as Prefect COMPLETED).
@@ -776,120 +1935,288 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 )
             return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
-        except Exception as e:
-            error_msg = str(e)
-            if phase == "sync":
-                # Preserve the sync task's own verdict (FAILED/SUSPECT);
-                # only default to FAILED when it carries no usable status.
-                if sync_result.get("status") not in ("CLOUD_FAILED", "CLOUD_SUSPECT"):
-                    status = "CLOUD_FAILED"
+        except BaseException as e:   # A2: a cancel / stop is also decided here, then re-raised
+            error_msg = _error_text(e)
+            # XR: a failed attempt's own verdict (exit code, FAILED / SUSPECT)
+            sync_result = sync_state.get("result", sync_result)
+            current = sync_result.get("status", status) if phase == "sync" else status
+            status = statuses.decide_terminal_status("cloud", phase, current, _exception_kind(e))
+            fault_code = faults.classify_run(
+                "cloud", status, exc=e, sync_result=sync_result,
+                guard_record=e.record if isinstance(e, guards.GuardBlocked) else guard_record)
+            if isinstance(e, guards.GuardBlocked):
+                guard_record = e.record   # its ACTION REQUIRED email goes out below
+            elif not alert_sent:
+                alert = ((config, "cloud", status, _failure_alert_text("cloud", status, error_msg, config=config),
+                          sync_result.get("exit_code"), started_at),
+                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
+                if isinstance(e, Exception):
+                    _send_run_alert(*alert[0], **alert[1])
                 else:
-                    status = sync_result["status"]
-            elif phase == "verify" and status == "CLOUD_COMPLETE":
-                status = "CLOUD_VERIFY_FAILED"
-            elif phase == "pre":
-                status = "CLOUD_FAILED"
-            if status == "CLOUD_SUSPECT":
-                # Abnormal transfer termination (killed/timeout-ambiguous):
-                # alert specifically — the backup() tail skips its generic
-                # alert for PartialRun-wrapped legs, and SUSPECT must never
-                # be silent.
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        f"Cloud backup SUSPECT: {error_msg} The transfer did not "
-                        "terminate normally; completion is unproven. The next "
-                        "scheduled run will re-sync.",
-                        {"mode": "cloud", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send suspect-backup alert: {alert_err}")
+                    # A cancel gives the process only Prefect's grace (30 s) before a forced kill; the
+                    # email (SMTP retries, minutes when the mail server is down) must not delay the
+                    # run row - it is sent right after the record below.
+                    deferred_alert = alert
+                alert_sent = True
+            if extended_metrics is None:
+                # Failure-path telemetry: persist whatever stages were
+                # actually measured (possibly none). Business state above
+                # is unchanged; this only preserves evidence for tuning.
+                extended_metrics = _failure_telemetry(stage_seconds, phase)
+            if phase in ("verify", "post"):
+                # WP5: the transfer's own verdict survives a later failure.
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_status=sync_result.get("status"))
             raise
         finally:
+            _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _merge_metrics(extended_metrics, budget=_budget_metrics(
+                budget, sync_result))
+            if sync_state.get("attempts"):
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_attempts=sync_state["attempts"])
+            if clock is not None:
+                extended_metrics = _merge_metrics(extended_metrics, clock=clock)
+            extended_metrics = _with_guards(extended_metrics, guard_record)
+            extended_metrics = _with_artefacts(extended_metrics, artefacts)
+            if fault_code:
+                extended_metrics = _merge_metrics(extended_metrics, fault_code=fault_code)
             try:
                 _record_run(
-                    db_path, run_id, "cloud", started_at, status,
+                    config, run_id, "cloud", started_at, status,
                     sync_result.get("exit_code", -1), error_msg,
                     files_copied=files_copied,
                     bytes_copied=bytes_copied,
                     files_failed=0,
                     extended_metrics=extended_metrics,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
                     monotonic_start=monotonic_start,
                 )
             except Exception as rec_err:
                 logger.critical(f"Failed to record cloud run {run_id}: {rec_err}")
+            if deferred_alert is not None:
+                _send_run_alert(*deferred_alert[0], **deferred_alert[1])
+            if status == "CLOUD_BLOCKED" and guard_record:
+                _open_block_request(config, "cloud", run_id, guard_record, started_at,
+                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
+            elif statuses.is_success(status):
+                _send_recovery_if_needed(config, "cloud", run_id)
 
 
 # ═══════════════════════════════════════════════════════════════
 # LAN pipeline orchestrator
 # ═══════════════════════════════════════════════════════════════
 
-def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None):
-    """Execute LAN backup tasks sequentially. Each task is independently tracked."""
-    with _backup_slot(config):
-        db_path = config.paths.database_path
+def _complete_pending_rollover_nas_folder(config) -> None:
+    """Plan A7 (+ F-9): finish a rollover's `nas_folder` step from the journal.
+
+    Only when the config switch is done, `paths.lan_destination` IS the journal's new FY
+    folder and the share root exists (create_nas_folder refuses otherwise). Never raises and
+    never blocks the backup: on failure the step stays failed and G5 behaves as before.
+    """
+    from core import rollover_journal as rj
+
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            journal = db.rollover_incomplete()
+            if journal is None:
+                return
+            steps = journal["steps"]
+            if (rj.is_finished(steps[rj.NAS_FOLDER])
+                    or steps[rj.CONFIG_SWITCH]["state"] != rj.DONE
+                    or fy_rollover._fy_name(config.paths.lan_destination) != journal["to_fy"]):
+                return
+            from_fy, to_fy = journal["from_fy"], journal["to_fy"]
+            db.rollover_step_start(from_fy, to_fy, rj.NAS_FOLDER, now_iso())
+            try:
+                fy_rollover.create_nas_folder(
+                    fy_rollover._parent_path(config.paths.lan_destination), to_fy)
+            except OSError as e:
+                logger.warning(f"FY rollover: NAS folder for {to_fy} still not possible: {e}")
+                db.rollover_step_failed(from_fy, to_fy, rj.NAS_FOLDER, now_iso(), error=str(e))
+                return
+            db.rollover_step_done(from_fy, to_fy, rj.NAS_FOLDER, now_iso())
+            if not rj.is_finished(steps[rj.NAS_SHUTDOWN]):
+                db.rollover_step_skipped(from_fy, to_fy, rj.NAS_SHUTDOWN, now_iso(),
+                                         reason="this LAN run's own shutdown follows")
+            logger.info(f"FY rollover: NAS folder for {to_fy} completed by the LAN run")
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping must never stop a backup
+        logger.error(f"FY rollover: pending NAS folder step not completed: {e}")
+
+
+def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
+                       budget_hours: float | None = None,
+                      approval_id: str | None = None, allow_shutdown: bool = True,
+                      late_seconds: float = 0.0, slot_held: bool = False, shared_budget: bool = False,
+                      budget_monotonic_start: float | None = None,
+                      shutdown_votes: list | None = None, early_nas_folder: bool = False,
+                      nas_offline_expected: bool = False):
+    """Execute LAN backup tasks sequentially. Each task is independently tracked.
+
+    allow_shutdown=False (the final backup of an FY rollover, plan A4): the NAS is NOT powered
+    off at any call site - the new NAS FY folder is created after this run.
+    late_seconds: see _run_cloud_pipeline (plan I2).
+    shutdown_votes (the FY leg loop, plan 5.3): a list; instead of powering the NAS off itself this
+    pipeline appends (own_rule_says_shut_down, artefacts_dir) - the loop makes ONE shutdown decision
+    over all folders. early_nas_folder: this is the early FY folder - create / check its NAS folder
+    (after the NAS is awake, before the guards look for the mount marker).
+    nas_offline_expected (manual-only NAS at the rollover final backup, owner 2026-11-23): a NAS that
+    cannot be reached or woken is recorded truthfully (run row, `nas_offline_expected` metric) but sends
+    no failure mail; the caller decides what that means. Guard blocks and every other failure alert as
+    always."""
+    # WP14: the run budget counts from the job's start (I2: its scheduled start), including
+    # the slot wait
+    budget = RunBudget(
+        "lan",
+        (budget_hours if budget_hours is not None else config.budget.lan_max_hours) * 3600,
+        (budget_monotonic_start if budget_monotonic_start is not None else
+         (monotonic_start if monotonic_start is not None else time.monotonic())) - late_seconds)
+    _missed_if_no_budget(config, "lan", run_id, started_at, budget,
+                         config.budget.lan_post_reserve_minutes * 60, late_seconds,
+                         monotonic_start, shared_budget=shared_budget)
+    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start, slot_held=slot_held):
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = lan_preflight_task.with_options(
-            retries=1, retry_delay_seconds=30,
+            retries=config.lan.preflight_retries,
+            retry_delay_seconds=config.lan.preflight_retry_delay_seconds,
         )
-        sync = lan_sync_task.with_options(
-            retries=config.lan.max_attempts - 1,
-            retry_delay_seconds=config.lan.retry_delay_seconds,
-        )
+        # XR-2/XR-6: no Prefect retries for the mirror - _sync_with_retries
+        # decides (lan.max_attempts / retry_delay_seconds) and re-runs the
+        # robocopy /L measurement + guards before any repeat of /MIR.
+        sync = lan_sync_task.with_options(retries=0)
 
         status = "LAN_SKIPPED"
         sync_result = {"exit_code": -1}
+        sync_state: dict = {}   # XR: the latest attempt's result + per-attempt evidence
         error_msg = None
+        fault_code: str | None = None   # core.faults code of a non-success run
         files_copied = 0
         bytes_copied = 0
         files_failed = 0
         extended_metrics = None
+        artefacts = _open_run_artefacts(config, run_id, started_at)
+        artefacts_dir = str(artefacts.dir) if artefacts else None
+        # Failure-path telemetry (same contract as cloud): measured stages
+        # persist even when the run fails; unexecuted stages stay absent.
+        stage_seconds: dict = {}
         phase = "pre"
+        guard_record = None
+        alert_sent = False   # WP8: exactly one alert per failed run
+        deferred_alert = None   # A2: an interrupted run records itself first, alerts second
+        nas_shutdown = None  # WP10: verified shutdown result, if one was attempted
+        voted: list[bool] = []
+
+        def _vote(own_rule_shuts_down: bool) -> None:
+            """The FY leg loop decides the shutdown: this folder only says what today's rule says."""
+            if shutdown_votes is not None and not voted:
+                voted.append(True)
+                shutdown_votes.append((bool(own_rule_shuts_down), artefacts_dir))
 
         try:
-            health_check_task(config, "lan")
+            health_check_task(config, "lan", artefacts_dir)
             wol_check_task(config)
-            preflight(config)
+            if early_nas_folder:
+                early_fy = _effective_fy_prefix(config)
+                try:   # D5: a year with a LAN success must not have its folder/marker silently re-made
+                    _db = ManifestDB.from_config(config)
+                    try:
+                        established = _db.last_successful_run("lan", fy=early_fy) is not None
+                    finally:
+                        _db.close()
+                except Exception as e:  # noqa: BLE001 - fail closed: let G5 ask
+                    logger.warning(f"Early FY established check failed ({e}); treating as established")
+                    established = True
+                nas_folder = fy_overlap.ensure_overlap_nas_folder(config, early_fy, established=established)
+                logger.info(f"Early FY NAS folder: {nas_folder['state']} ({nas_folder['reason']})")
+            # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
+            # completed now that the NAS is awake - before G5 looks for the mount marker
+            _complete_pending_rollover_nas_folder(config)
+            dry_run = preflight(config, artefacts_dir)
             before_dict = lan_snapshot_before_task(config)
+            guard_record = lan_guards_task(
+                config, _effective_fy_prefix(config), dry_run,
+                None if before_dict is None else guards.count_backup_files(before_dict),
+                approval_id=approval_id, run_id=run_id,
+            )
+            lan_access_task(config, dry_run, run_id)
             phase = "sync"
-            sync_result = sync(config)
+            _t_sync = time.monotonic()
+
+            def remeasure(already_deleted: int) -> dict:
+                nonlocal guard_record
+                fresh = preflight(config, artefacts_dir)
+                listing = lan_snapshot_before_task(config)
+                guard_record = lan_guards_task(
+                    config, _effective_fy_prefix(config), fresh,
+                    None if listing is None else guards.count_backup_files(listing),
+                    approval_id=approval_id, run_id=run_id, already_deleted=already_deleted,
+                )
+                lan_access_task(config, fresh, run_id)
+                return guard_record
+
+            sync_result = _sync_with_retries(
+                "lan",
+                run_once=lambda: sync(config, artefacts_dir, budget=budget),
+                remeasure=remeasure,
+                deletes_of=lambda r: (r.get("files_deleted")
+                                      if type(r.get("files_deleted")) is int else None),
+                retryable=lambda r: (r.get("status") == "LAN_FAILED"
+                                     and not r.get("timed_out")),
+                max_attempts=config.lan.max_attempts,
+                delay_s=config.lan.retry_delay_seconds, budget=budget,
+                reserve_s=config.budget.lan_post_reserve_minutes * 60, state=sync_state)
+            sync_seconds = round(time.monotonic() - _t_sync, 1)
+            stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
             phase = "post"
             # F12: robocopy per-file failure count (0 on clean/anomaly runs)
             files_failed = int(sync_result.get("files_failed", 0))
+            # WP6: the numbers are robocopy's OWN summary (Files / Bytes
+            # "Copied"); unknown when the summary is missing.
+            tool_files = (sync_result.get("counts") or {}).get("copied")
+            tool_bytes = (sync_result.get("bytes") or {}).get("copied")
+            files_copied, bytes_copied = tool_files, tool_bytes
+            tool_metrics = {
+                "counts_source": "robocopy" if tool_files is not None else "unavailable",
+                "files_deleted": sync_result.get("files_deleted"),
+            }
             after_dict = lan_snapshot_after_task(config)
             if after_dict is not None:
                 lan_record_task(
-                    db_path, sync_result, before_dict, after_dict,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
+                    config, sync_result, before_dict, after_dict,
                 )
 
-                # Calculate files and bytes copied
+                # Cross-check only: the before/after walk diff vs the tool count.
                 diff = diff_snapshots(before_dict, after_dict)
-                copied_paths = diff.get("added", []) + diff.get("modified", [])
-                files_copied = len(copied_paths)
-                bytes_copied = sum(after_dict[path][0] for path in copied_paths if path in after_dict)
-
+                diff_copied = len(diff.get("added", [])) + len(diff.get("modified", []))
+                metrics_consistent = tool_files is not None and diff_copied == tool_files
+                if tool_files is not None and not metrics_consistent:
+                    logger.warning(f"LAN metrics cross-check: robocopy copied {tool_files} file(s), "
+                                   f"the destination walk diff shows {diff_copied} - the tool "
+                                   "count is recorded")
                 extended_metrics = json.dumps({
                     "added": len(diff.get("added", [])),
                     "modified": len(diff.get("modified", [])),
                     "removed": len(diff.get("removed", [])),
-                    "total_files": len(after_dict)
+                    "total_files": len(after_dict),
+                    "stage_seconds": dict(stage_seconds),
+                    **tool_metrics,
+                    "diff_copied": diff_copied,
+                    "metrics_consistent": metrics_consistent,
                 })
                 try:
-                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict))
-                except Exception:
-                    pass
+                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict),
+                                              fy=_effective_fy_prefix(config))
+                except Exception as e:
+                    # The Prefect summary is cosmetic; the run row is the record.
+                    logger.warning(f"LAN run summary not published to Prefect: {e}")
             else:
-                # G14: metrics unavailable this run — record the sync outcome only
+                # G14: walk unavailable - the tool counts are still recorded.
+                extended_metrics = json.dumps({"stage_seconds": dict(stage_seconds),
+                                               **tool_metrics})
                 logger.error(
                     "Post-sync snapshot unavailable - diff metrics and file-level "
                     "DB record skipped for this run; the sync outcome is recorded "
@@ -902,38 +2229,40 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             # powering off the NAS now strands them until the next WoL, and the
             # partial state must be reported, not silent.
             if status == "LAN_COMPLETE":
-                lan_shutdown_task(config)
+                if allow_shutdown:
+                    nas_shutdown = lan_shutdown_task(config, artefacts_dir)
+                else:
+                    _vote(True)
             elif status == "LAN_PARTIAL":
-                shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
-                nas_msg = (
-                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
-                    if shutdown_on_fail
-                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
-                )
+                shutdown_on_fail = (allow_shutdown and getattr(
+                    config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+                if not allow_shutdown:
+                    _vote(getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+                nas_msg = _nas_alert_note(shutdown_on_fail, shutdown_votes is not None, config)
                 logger.error(
                     f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
                     f"some files were not copied. {nas_msg}"
                 )
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        (
-                            f"LAN backup PARTIAL: robocopy exit code "
-                            f"{sync_result.get('exit_code')} — some files were not "
-                            f"copied. {nas_msg} "
-                            f"{sync_result.get('error') or ''}"
-                        ).strip(),
-                        {"mode": "lan", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send partial-backup alert: {alert_err}")
+                # The alert goes out BEFORE any NAS shutdown below.
+                partial_text = (
+                    f"LAN backup PARTIAL: {sync_result['error']} {nas_msg}"
+                    if sync_result.get("budget_stopped") else
+                    f"LAN backup PARTIAL: robocopy exit code {sync_result.get('exit_code')} - "
+                    f"some files were not copied. {nas_msg} {sync_result.get('error') or ''}"
+                ).strip()
+                if sync_result.get("budget_stopped"):
+                    error_msg = sync_result["error"]
+                _send_run_alert(config, "lan", status, partial_text,
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, sync_result=sync_result,
+                                artefacts_dir=artefacts_dir)
+                alert_sent = True
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
-                    lan_shutdown_task(config)
+                    nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             else:
                 logger.info(f"LAN shutdown skipped - status is {status}")
+                _vote(False)
             # Terminal-state policy (single authoritative decision point):
             # a non-success status must never return normally (which the
             # engine would record as Prefect COMPLETED).
@@ -944,61 +2273,85 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 )
             return {"status": status, "exit_code": sync_result.get("exit_code", 0)}
 
-        except Exception as e:
-            error_msg = str(e)
-            if phase == "sync":
-                # Preserve the sync task's own verdict (FAILED/SUSPECT);
-                # only default to FAILED when it carries no usable status.
-                if sync_result.get("status") not in ("LAN_FAILED", "LAN_SUSPECT"):
-                    status = "LAN_FAILED"
+        except BaseException as e:   # A2: a cancel / stop is also decided here, then re-raised
+            error_msg = _error_text(e)
+            # XR: a failed attempt's own verdict (exit code, FAILED / SUSPECT)
+            sync_result = sync_state.get("result", sync_result)
+            current = sync_result.get("status", status) if phase == "sync" else status
+            status = statuses.decide_terminal_status("lan", phase, current, _exception_kind(e))
+            if isinstance(e, guards.GuardBlocked):
+                guard_record = e.record
+            fault_code = faults.classify_run("lan", status, exc=e, guard_record=guard_record,
+                                             sync_result=sync_result)
+            # An interrupted run (service stop, cancel) never powers the NAS off.
+            # F2: a guard BLOCK is a decision pending for a human (data risk), not a failure: the failure
+            # rule (PARTIAL / FAILED only, see the config text) never switches the NAS off for it.
+            blocked = isinstance(e, guards.GuardBlocked)
+            shutdown_on_fail = (allow_shutdown and isinstance(e, Exception) and not blocked and getattr(
+                config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+            if not allow_shutdown:
+                _vote(isinstance(e, Exception) and not isinstance(e, PartialRun) and not blocked and getattr(
+                    config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+            if (nas_offline_expected and isinstance(e, Exception) and not isinstance(e, guards.GuardBlocked)
+                    and fault_code in faults.NAS_UNREACHABLE_CODES):
+                alert_sent = True      # expected: the owner is told once by the rollover, not per run
+                extended_metrics = _merge_metrics(
+                    extended_metrics or _failure_telemetry(stage_seconds, phase), nas_offline_expected=True)
+            if not alert_sent and not isinstance(e, guards.GuardBlocked):
+                # The one alert of this run, sent BEFORE any NAS shutdown below.
+                nas_msg = _nas_alert_note(shutdown_on_fail, shutdown_votes is not None, config)
+                alert = ((config, "lan", status, _failure_alert_text("lan", status, error_msg, nas_msg, config=config),
+                          sync_result.get("exit_code"), started_at),
+                         dict(run_id=run_id, fault_code=fault_code, artefacts_dir=artefacts_dir))
+                if isinstance(e, Exception):
+                    _send_run_alert(*alert[0], **alert[1])
                 else:
-                    status = sync_result["status"]
-            elif phase == "pre":
-                status = "LAN_FAILED"
-            shutdown_on_fail = getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
-            if status == "LAN_SUSPECT":
-                # Abnormal transfer termination (killed/timeout-ambiguous):
-                # alert specifically — the backup() tail skips its generic
-                # alert for PartialRun-wrapped legs, and SUSPECT must never
-                # be silent.
-                nas_msg = (
-                    "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
-                    if shutdown_on_fail
-                    else "The NAS was NOT shut down; the next scheduled run will re-sync."
-                )
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name,
-                        f"LAN backup SUSPECT: {error_msg} The transfer did not "
-                        f"terminate normally; completion is unproven. {nas_msg}",
-                        {"mode": "lan", "status": status,
-                         "exit_code": sync_result.get("exit_code")},
-                        started_at,
-                    )
-                except Exception as alert_err:
-                    logger.warning(f"Could not send suspect-backup alert: {alert_err}")
+                    deferred_alert = alert          # a cancel: record first, alert second (see cloud)
+                alert_sent = True
             if shutdown_on_fail and not isinstance(e, PartialRun):
                 logger.info(
                     f"shutdown_on_all_retries_exhausted enabled: powering down NAS after {status} failure alert"
                 )
-                lan_shutdown_task(config)
+                nas_shutdown = lan_shutdown_task(config, artefacts_dir)
+            if extended_metrics is None:
+                extended_metrics = _failure_telemetry(stage_seconds, phase)
+            if phase == "post":
+                # WP5: the transfer's own verdict survives a later failure.
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_status=sync_result.get("status"))
             raise
         finally:
+            _finalize_run_artefacts(config, artefacts)
+            extended_metrics = _merge_metrics(extended_metrics, budget=_budget_metrics(
+                budget, sync_result))
+            if sync_state.get("attempts"):
+                extended_metrics = _merge_metrics(extended_metrics,
+                                                  sync_attempts=sync_state["attempts"])
+            if nas_shutdown is not None:
+                extended_metrics = _merge_metrics(extended_metrics, nas_shutdown=nas_shutdown)
+            extended_metrics = _with_guards(extended_metrics, guard_record)
+            extended_metrics = _with_artefacts(extended_metrics, artefacts)
+            if fault_code:
+                extended_metrics = _merge_metrics(extended_metrics, fault_code=fault_code)
             try:
                 _record_run(
-                    db_path, run_id, "lan", started_at, status,
+                    config, run_id, "lan", started_at, status,
                     sync_result.get("exit_code", -1), error_msg,
                     files_copied=files_copied,
                     bytes_copied=bytes_copied,
                     files_failed=files_failed,
                     extended_metrics=extended_metrics,
-                    busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                    vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                    synchronous=config.maintenance.sqlite_synchronous,
                     monotonic_start=monotonic_start,
                 )
             except Exception as rec_err:
                 logger.critical(f"Failed to record lan run {run_id}: {rec_err}")
+            if deferred_alert is not None:
+                _send_run_alert(*deferred_alert[0], **deferred_alert[1])
+            if status == "LAN_BLOCKED" and guard_record:
+                _open_block_request(config, "lan", run_id, guard_record, started_at,
+                                    artefacts_dir, sync_attempted=bool(sync_state.get("attempts")))
+            elif statuses.is_success(status):
+                _send_recovery_if_needed(config, "lan", run_id)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1006,7 +2359,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
 # ═══════════════════════════════════════════════════════════════
 
 def _record_run(
-    db_path: str,
+    config,
     run_id: str,
     mode: str,
     started_at: str,
@@ -1017,9 +2370,6 @@ def _record_run(
     bytes_copied: int = 0,
     files_failed: int = 0,
     extended_metrics: str | None = None,
-    busy_timeout_ms: int = 30000,
-    vacuum_freelist_threshold: int = 10000,
-    synchronous: str = "normal",
     monotonic_start: float | None = None,
 ):
     """Record run history to ManifestDB."""
@@ -1032,16 +2382,11 @@ def _record_run(
         duration = time.monotonic() - monotonic_start
     else:
         duration = time.time() - pendulum.parse(started_at).timestamp()
-    db = ManifestDB(
-        db_path,
-        busy_timeout_ms=busy_timeout_ms,
-        vacuum_freelist_threshold=vacuum_freelist_threshold,
-        synchronous=synchronous,
-    )
+    db = ManifestDB.from_config(config)
     try:
         if not record_run_history(
             db,
-            run_id=run_id, mode=mode,
+            run_id=run_id, mode=mode, fy=_effective_fy_prefix(config),
             started_at=started_at, ended_at=ended_at,
             status=status, exit_code=exit_code,
             duration_seconds=duration, error_message=error_msg,
@@ -1062,6 +2407,181 @@ def _record_run(
 # Report flows
 # ═══════════════════════════════════════════════════════════════
 
+def _enabled_legs(config) -> tuple[str, ...]:
+    return tuple(leg for leg in ("cloud", "lan") if getattr(config, leg).enabled)
+
+
+def _close_old_fy(config, db, fy: str) -> bool:
+    """OV-4.4: the config now points past `fy` and every enabled leg has fully copied it (`_settle_old_fy`).
+    Its open approval requests are closed ("FY closed") and its open incidents end silently (no RESOLVED
+    mail); its history stays readable. Never raises: the switch is already done, and an approval of a
+    closed FY cannot be run anyway (backup(fy=) needs an active FY). True when it was closed cleanly."""
+    try:
+        closed = db.close_fy(fy, now=now_iso())
+        if closed["approvals"] or closed["incidents"]:
+            logger.info(f"FY {fy} closed: {closed['approvals']} approval request(s) and "
+                        f"{closed['incidents']} incident(s) closed")
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"FY {fy} could not be closed cleanly ({e}); its old alerts may stay open")
+        return False
+
+
+def _old_year_notice_key(fy: str) -> str:
+    return f"rollover:{fy}:not_fully_copied"
+
+
+def _warn_old_year_not_copied(config, db, fy: str, to_fy: str | None, missing: list[str],
+                              run_id: str | None = None, occurred_at: str | None = None) -> None:
+    """ONE warning mail per old year (idempotent: never again once one was recorded) that says plainly which
+    legs have not fully copied it. Truth only, no promise about when. Never raises."""
+    try:
+        key = _old_year_notice_key(fy)
+        if db.last_notification(key) is not None:
+            return
+        names = fy_overlap.not_fully_copied_text(fy, missing)
+        went = f"The switch to {to_fy} went ahead, so new files are saved in {to_fy}. " if to_fy else ""
+        notify(config, AlertEvent(
+            key=f"rollover:{fy}:not_fully_copied", kind="WARNING", mode="rollover", fy=fy,
+            title=names[0].upper() + names[1:],
+            message=(f"{names}. {went}Until a backup that started after the year ended has copied all of "
+                     f"{fy}, both year folders stay in the backup: "
+                     f"{fy_overlap.not_fully_copied_advice(config, fy, missing)}. "
+                     f"When the copy is complete {fy} is closed by itself and you get one more email. "
+                     "The other copies of that year are not affected."),
+            occurred_at=occurred_at or now_iso(), run_id=run_id), db=db)
+    except Exception as e:  # noqa: BLE001 - a mail problem never changes what is tracked
+        logger.warning(f"Could not send the 'not yet fully copied' notice for {fy}: {e}")
+
+
+def _resolve_old_year_notice(config, db, fy: str) -> None:
+    """The matching RESOLVED mail - once - for a year the office was told was not fully copied."""
+    try:
+        key = _old_year_notice_key(fy)
+        warned = db.last_notification(key, status="SENT")
+        if warned is None:
+            return
+        done = db.last_notification(f"recovered:{key}", status="SENT")
+        if done is not None and done["id"] > warned["id"]:
+            return
+        notify(config, AlertEvent(
+            key=f"recovered:{key}", kind="RECOVERED", mode="rollover", fy=fy,
+            title=f"{fy} is fully copied now",
+            message=(f"{fy} is now fully copied to every backup copy that is switched on, so it is closed "
+                     "and no longer part of the backups. Nothing to do."),
+            status="RECOVERED"), db=db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not send the 'fully copied now' notice for {fy}: {e}")
+
+
+def _settle_old_fy(config, db, fy: str, confirmed_legs=()) -> list[str] | None:
+    """Owner decision 2026-11-23: a year the config switched past is CLOSED (tracking stopped) only once EVERY
+    enabled leg has a confirmed successful full sync of it that started after the year ended
+    (`fy_overlap.copy_state`; `confirmed_legs`: legs the caller has just seen succeed). Until then it stays in
+    the active set, so both folders keep being backed up. Idempotent and crash-safe: the facts come from
+    run_history; the only stored mark is the tombstone written after a clean close, so a leg switched on
+    later never re-opens a settled year. Returns the legs still missing ([] = closed now), None when it could
+    not be worked out (nothing is closed then: the safe side). Never raises."""
+    try:
+        state = fy_overlap.copy_state(config, db, fy, confirmed_legs)
+        if state["missing"]:
+            return state["missing"]
+        if _close_old_fy(config, db, fy):
+            fy_overlap.mark_year_closed(db, fy, now_iso())
+            _resolve_old_year_notice(config, db, fy)
+        return []
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not tell whether {fy} is fully copied ({e}); it stays in the backups")
+        return None
+
+
+def _close_finished_old_fys(config, db) -> None:
+    """Overlap review D2 + owner decision 2026-11-23: at the start of every daily check, for every FY whose
+    config switch is finished: a year already settled gets its idempotent close retried (a failed close, or
+    one skipped by a crash); any other year is closed only when every enabled leg has fully copied it, and
+    otherwise the one 'not yet fully copied' mail is sent if it was never sent. Never raises."""
+    from core import rollover_journal as rj
+
+    try:
+        configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+        for journal in db.rollover_journals():
+            if not rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]):
+                continue
+            fy = journal["from_fy"]
+            if fy == configured:
+                continue                           # the settings were put back to this year: it is current
+            if fy_overlap.year_closed(db, fy):
+                _close_old_fy(config, db, fy)
+                continue
+            missing = _settle_old_fy(config, db, fy)
+            if missing:
+                _warn_old_year_not_copied(config, db, fy, journal["to_fy"], missing)
+    except Exception as e:  # noqa: BLE001 - housekeeping, never stops the rollover check
+        logger.error(f"Closing finished financial years failed: {e}")
+
+
+def _activate_overlap(config, db=None) -> None:
+    """OV-2.7: start backing up next year's folder when it is time (plan 5.1). Called at the start of
+    EVERY backup flow run and of the daily rollover check: whichever comes first activates, the other
+    finds the activation row and does nothing. Idempotent, needs no slot, never raises."""
+    try:
+        fy_overlap.ensure_overlap_activated(config, fy_overlap.run_date(_scheduled_time()), db)
+    except Exception as e:  # noqa: BLE001 - never stops a backup or the rollover check
+        logger.error(f"FY overlap activation check failed: {e}")
+
+
+def _scheduled_time():
+    """Plan C (G-9): when this flow run was SCHEDULED to start, so a report sent late (the agent was
+    down) still covers the right calendar period. A manual run or no flow context: now."""
+    try:
+        from prefect.context import FlowRunContext
+        ctx = FlowRunContext.get()
+        run = ctx.flow_run if ctx else None
+        if run is not None and getattr(run, "auto_scheduled", False) and run.expected_start_time:
+            return pendulum.instance(run.expected_start_time).in_timezone(IST)
+    except Exception as e:  # noqa: BLE001 - an unreadable schedule means "now", never a missing report
+        logger.warning(f"Scheduled start time unknown ({e}); the report covers the period before now")
+    return pendulum.now(IST)
+
+
+def _send_summary_report(config, days: int, period: str) -> None:
+    """Send a summary report truthfully (plan WP8, C): the previous calendar week / month of the
+    flow run's scheduled time; delivery is recorded in the notifications table and a failed
+    delivery FAILS the flow. A period with no runs is still reported ("action needed: no backup
+    ran") - the week nothing ran is the week the owner must hear about."""
+    db = ManifestDB.from_config(config)
+    try:
+        scheduled = _scheduled_time()
+        report_period = (ReportPeriod.previous_month(scheduled) if period == "Monthly"
+                         else ReportPeriod.previous_week(scheduled))
+        email = report.build_summary_email(db, config.firm_name, days, period,
+                                           legs=_enabled_legs(config),
+                                           report_period=report_period,
+                                           schedule=config.schedule,
+                                           alerts_off=alert_class.switched_off(config),
+                                           config=config)
+        subject, body, attachments = email
+        rungs, labels = attachment_ladder(attachments or [])
+        result = send_email(config.notifications, subject, body, audience=AUDIENCE_REPORTS,
+                            attachment_rungs=rungs or None)
+        try:
+            db.record_notification({
+                "event_key": f"report:{period.lower()}", "kind": "REPORT", "mode": "report",
+                "subject": subject, "status": result.status, "error": result.error,
+                "attempts": result.attempts, "created_at": now_iso(),
+                "attachments_rung": (labels[result.rung] if labels and result.rung is not None
+                                     else None),
+                "audience": AUDIENCE_REPORTS, "recipients": result.recipients})
+        except Exception as e:  # noqa: BLE001 - the delivery verdict below still stands
+            logger.error(f"Could not record {period} report delivery: {e}")
+        if result.status != SENT:
+            raise RuntimeError(f"{period} report email not delivered ({result.status}): "
+                               f"{result.error}")
+        logger.info(f"{period} report delivered")
+    finally:
+        db.close()
+
+
 @flow(name="weekly-report", log_prints=True)
 def weekly_report_flow(config_path: str = CONFIG_PATH):
     """Send weekly backup summary report."""
@@ -1074,12 +2594,7 @@ def weekly_report_flow(config_path: str = CONFIG_PATH):
     if not config.notifications.weekly_enabled:
         logger.info("Weekly backup report email is disabled in configuration - skipping")
         return
-    db = ManifestDB(config.paths.database_path)
-    try:
-        from core.report import send_weekly_report
-        send_weekly_report(db, config.notifications, config.firm_name)
-    finally:
-        db.close()
+    _send_summary_report(config, days=7, period="Weekly")
 
 
 @flow(name="monthly-report", log_prints=True)
@@ -1094,76 +2609,708 @@ def monthly_report_flow(config_path: str = CONFIG_PATH):
     if not config.notifications.monthly_enabled:
         logger.info("Monthly backup report email is disabled in configuration - skipping")
         return
-    db = ManifestDB(config.paths.database_path)
-    try:
-        from core.report import send_monthly_report
-        send_monthly_report(db, config.notifications, config.firm_name)
-    finally:
-        db.close()
+    _send_summary_report(config, days=30, period="Monthly")
 
 
 # ═══════════════════════════════════════════════════════════════
 # FY rollover check — scheduled (G10 fix)
 # ═══════════════════════════════════════════════════════════════
 
-@flow(name="rollover-check", log_prints=False)
-def rollover_check_flow(config_path: str = CONFIG_PATH):
-    """Daily FY-rollover check (G10 fix).
+# NSSM-rotated service logs live in the log directory next to the app logs.
+_SERVICE_LOG_GLOBS = ("agent_svc-*.log", "prefect_svc-*.log", "watchdog_svc-*.log")
 
-    The rollover call in launch.py runs only when the agent process starts.
-    On a 24x7 server that is rarely rebooted, the April 1 rollover would
-    silently never happen. This scheduled deployment runs the SAME idempotent
-    rollover() every day: a no-op all year, and the real rollover on the
-    boundary (idempotency was verified with crash-injection probes).
 
-    Returns:
-        "ROLLOVER_COMPLETED" | "NO_ROLLOVER_NEEDED"
-    Raises:
-        RolloverError — rollover is BLOCKED (e.g. source not mounted). The
-        flow run fails in the Prefect console and an alert email is sent, so
-        a blocked rollover is visible daily until resolved.
+@task(name="log-retention")
+def log_retention_task(config) -> dict:
+    """Delete retained logs past their configured retention (plan WP2).
+
+    * run artefacts (full rclone/robocopy logs): run_logs.retention_days
+    * NSSM-rotated service logs: run_logs.service_log_retention_days
+    App logs (backup_*.log) are rotated/retained by loguru
+    (maintenance.log_retention_days). Never raises.
     """
-    from core.fy_rollover import RolloverError, rollover
+    from core.run_artefacts import purge_older_than
+
+    removed = {"run_logs": 0, "service_logs": 0}
+    try:
+        removed["run_logs"] = purge_older_than(
+            config.run_logs_dir, config.run_logs.retention_days)
+        for pattern in _SERVICE_LOG_GLOBS:
+            removed["service_logs"] += purge_older_than(
+                config.paths.log_directory,
+                config.run_logs.service_log_retention_days, glob=pattern,
+                files=True)
+    except Exception as e:  # noqa: BLE001 - housekeeping must never fail the flow
+        logger.warning(f"Log retention task failed (non-fatal): {e}")
+    logger.info(f"Log retention: removed {removed}")
+    return removed
+
+
+@flow(name="rollover-check", log_prints=False)
+def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None = None):
+    """Daily FY-rollover check (plan WP11, owner DEC-4). The single entry
+    point: the boot-time rollover in launch.py is gone.
+
+    * Forward only: today's FY must be exactly the next FY. A clock that is
+      BEHIND never rolls back (probe P4) and is not approvable - fix the
+      clock. More than one FY ahead needs a human (G6).
+    * The final backup of the closing FY runs through the NORMAL pipelines
+      (backup slot, guards, permission checks, run rows, alerts). Every
+      enabled leg must end COMPLETE, otherwise G6 blocks and asks a human.
+    * The rollover is a persisted step journal (`rollover_journal`, plan A): final backups ->
+      source folder + placeholder -> NAS folder + mount marker -> config switch
+      (compare-and-set) -> archive transition -> NAS shutdown -> INFO email. Each step is
+      idempotent; this daily check is the resumer and continues at the first unfinished step
+      (a failed NAS step never stops the config switch; a failed switch is ROLLOVER_FAILED +
+      AAM-ROL-04, retried every morning with a repeated final backup, owner D-17).
+    * Everything after the final backups runs inside one backup-slot hold.
+    * One run_history row (mode "rollover") per run.
+
+    Returns "ROLLOVER_COMPLETED" | "NO_ROLLOVER_NEEDED".
+    Raises RolloverError when blocked (the Prefect run fails; the attention
+    email points to the dashboard; the check repeats daily).
+    """
+    # Daily housekeeping rides on this daily deployment (no extra schedule).
+    # Runs first so a blocked rollover can never stop log retention.
+    try:
+        log_retention_task(load_config(config_path))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Log retention skipped (config load failed): {e}")
+
+    config = load_config(config_path)
+    db = ManifestDB.from_config(config)
+    try:
+        _close_finished_old_fys(config, db)   # overlap review D2: retry a close that failed earlier
+        _activate_overlap(config, db)         # before the sibling check, so a folder it adopts is not reported
+        _alarm_siblings(config, db, fy_overlap.run_date(_scheduled_time()))   # first: the blocked days below raise
+        return _rollover_resume(config, config_path, approval_id, db)
+    finally:
+        db.close()
+
+
+def _resolve_unprotected_new_fy(config, db, new_fy: str | None = None) -> None:
+    """The matching RESOLVED mail - once - when the switch made the new year's files protected, but only
+    for a problem the office was actually mailed about. `new_fy` is passed by the rollover run that just
+    switched (its config object still holds the old year); the daily check reads the config instead.
+    Own mail group `rollover_files`, so it never ends an unrelated rollover incident (the archive warning)."""
+    configured = new_fy or fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+    if configured is None:
+        return
+    key = f"{fy_overlap.UNPROTECTED_KEY_PREFIX}{configured}"
+    if any(open_key == key for open_key, _ in fy_overlap.open_sibling_alerts(db)):
+        _send_sibling_resolved(config, db, key)
+
+
+def _send_sibling_resolved(config, db, key: str, protected: bool = True) -> None:
+    """The ONE RESOLVED mail of a sibling alarm (key `overlap:unprotected:<fy>` or `overlap:sibling:<name>`).
+    `protected`: the folder is backed up now (active / configured); otherwise it is gone / renamed / empty."""
+    if key.startswith(fy_overlap.UNPROTECTED_KEY_PREFIX):
+        fy = key[len(fy_overlap.UNPROTECTED_KEY_PREFIX):]
+        title = f"Files in {fy} are backed up now" if protected else f"Files in {fy} no longer need a backup"
+        message = (f"{fy} is part of the backups now: the files saved in its folder are backed up." if protected
+                   else f"The {fy} folder no longer holds files that were waiting for a backup.")
+        code = "AAM-ROL-06"
+    else:
+        name = key[len(fy_overlap.SIBLING_KEY_PREFIX):]
+        title = f'The folder "{name}" is no longer a problem'
+        try:                        # an unreadable parent proves nothing: no RESOLVED mail
+            gone = name.upper() not in {e.name.upper() for e in os.scandir(fy_overlap.parent_path(config))}
+        except OSError as e:
+            logger.warning(f"No 'folder is fine now' notice for {name}: the parent folder cannot be read ({e})")
+            return
+        listed_as_ignored = name.lower() in {n.lower() for n in config.rollover.sibling_ignore}
+        if gone:
+            message = f'The folder "{name}" is no longer there (it was renamed or removed), so the warning is over.'
+        elif listed_as_ignored:
+            message = f'The folder "{name}" is no longer reported (it is on the list of folders to ignore), so the warning is over.'
+        else:
+            message = f'The folder "{name}" is no longer reported, so the warning is over.'
+        fy, code = None, "AAM-ROL-07"
+    notify(config, AlertEvent(
+        key=f"recovered:{key}", kind="RECOVERED", mode="rollover_files", title=title, message=message,
+        status="RECOVERED", resolved_code=code, fy=fy), db=db)
+
+
+def _alarm_siblings(config, db, run_date) -> None:
+    """Plan 5.2: a folder next to the year folders that is not backed up (misnamed, or next year's folder
+    holding files while it is not active) is mailed once a day until fixed, then ONE RESOLVED mail. Read-only,
+    so it also runs while the rollover is blocked (G6 / unproven clock); a failure here never stops the rollover."""
+    try:
+        active = fy_overlap.active_folders(config, db, run_date)
+        findings = fy_overlap.sibling_findings(config, active, db)
+    except fy_overlap.SiblingReadError as e:   # nothing could be proven: no alarm, and never a false RESOLVED
+        logger.warning(f"Check for folders that are not backed up could not read the folders: {e}")
+        return
+    except Exception as e:  # noqa: BLE001 - an unproven check sends nothing (never a false RESOLVED)
+        logger.warning(f"Check for folders that are not backed up failed: {e}")
+        return
+    for finding in findings:
+        try:
+            title, message = fy_overlap.sibling_text(finding, config, run_date, db)
+            unprotected = finding["kind"] == fy_overlap.SIBLING_UNPROTECTED
+            notify(config, AlertEvent(
+                key=f"overlap:{fy_overlap.sibling_key(finding).removeprefix('overlap:')}",
+                kind="ACTION_REQUIRED", mode="rollover_files",
+                title=title, message=message, occurred_at=now_iso(),
+                fault_code="AAM-ROL-06" if unprotected else "AAM-ROL-07",
+                cooldown_hours=config.alerts.stale_repeat_hours, fy=finding["fy"]), db=db)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not send the alarm for {finding.get('name')}: {e}")
+    if not fy_overlap.parent_readable(config):
+        return                  # a drive / share that is down proves nothing: never a false RESOLVED
+    try:
+        still = {fy_overlap.sibling_key(f) for f in findings}
+        covered = {a.upper() for a in active}
+        configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+        for key, _ in fy_overlap.open_sibling_alerts(db):
+            if key not in still:
+                fy = key[len(fy_overlap.UNPROTECTED_KEY_PREFIX):].upper() \
+                    if key.startswith(fy_overlap.UNPROTECTED_KEY_PREFIX) else None
+                _send_sibling_resolved(config, db, key,
+                                       protected=fy is None or fy in covered or fy == (configured or "").upper())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not send the 'folder is fine now' notice: {e}")
+
+
+class _FinalBackupWait(fy_rollover.RolloverError):
+    """The final backup only waited for the slot (D7): the step stays unfinished, no failure mail."""
+
+
+class _FinalBackupBlocked(fy_rollover.RolloverError):
+    """A leg's final backup waits for its own approval (D15): the step stays unfinished, no rollover request."""
+
+
+def _rollover_step(db, from_fy: str, to_fy: str, step: str, run_id: str, fn):
+    """Run one journal step and persist its outcome (plan A, saga).
+
+    fn() returns None (done) or ("skipped", reason). Any exception marks the step failed
+    and is returned to the caller - except a guard block, which is a human decision, not a
+    failure: the step is marked failed with that text and the block is re-raised.
+    Returns (finished, error).
+    """
+    db.rollover_step_start(from_fy, to_fy, step, now_iso(), run_id=run_id)
+    try:
+        outcome = fn()
+    except guards.GuardBlocked as e:
+        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"blocked: {e}")
+        raise
+    except _FinalBackupWait as e:
+        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"waiting: {e}")
+        raise
+    except _FinalBackupBlocked as e:
+        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=f"blocked: {e}")
+        raise
+    except Exception as e:  # noqa: BLE001 - recorded on the journal; the caller decides
+        logger.error(f"FY rollover {from_fy} -> {to_fy}: step {step} failed: {e}")
+        db.rollover_step_failed(from_fy, to_fy, step, now_iso(), error=str(e))
+        return False, e
+    if isinstance(outcome, tuple) and outcome[0] == "skipped":
+        db.rollover_step_skipped(from_fy, to_fy, step, now_iso(), reason=outcome[1])
+    else:
+        db.rollover_step_done(from_fy, to_fy, step, now_iso())
+    return True, None
+
+
+def _rollover_resume(config, config_path: str, approval_id: str | None, db):
+    """The journal-driven rollover (plan A): continue the open journal at its first
+    unfinished step, or open a new one when a rollover is due. See rollover_check_flow."""
+    from core import rollover_journal as rj
+
+    journal = db.rollover_incomplete()
+    source, lan_dest = config.paths.source_drive, config.paths.lan_destination
+    hand_switched = False
+    reentered = False
+    if journal is not None:
+        configured = fy_rollover.configured_fy(source, lan_dest)
+        switch_done = rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
+        if not switch_done and configured == journal["to_fy"]:
+            if rj.is_finished(journal["steps"][rj.FINAL_BACKUPS]):
+                # R3: the config was written but the process died before the journal saw it
+                # (the steps run in order, so the final backup is already done). The switch is
+                # done; a "final backup" now would back up the NEW folders.
+                logger.warning(f"FY rollover {journal['from_fy']} -> {journal['to_fy']}: "
+                               "config.yaml already points at the new FY - switch step closed")
+                db.rollover_step_done(journal["from_fy"], journal["to_fy"], rj.CONFIG_SWITCH,
+                                      now_iso())
+                journal = db.rollover_get(journal["from_fy"], journal["to_fy"])
+                switch_done = True
+            else:
+                # D7: NOT a crash - the final backup never completed, so config.yaml was switched
+                # by hand while the rollover was blocked. Closing the switch would back up the NEW
+                # year as the "final backup" and archive the old year without its last changes.
+                hand_switched = True
+        if (switch_done and configured is not None and fy_rollover.classify_rollover(
+                configured, get_fy_prefix()) in (fy_rollover.FORWARD, fy_rollover.JUMP)):
+            # a NEW rollover is due: an old journal stuck on a follow-up step (archive, NAS
+            # folder) must not hold the next year back
+            for step in rj.attempt_order(journal):
+                db.rollover_step_skipped(
+                    journal["from_fy"], journal["to_fy"], step, now_iso(),
+                    reason=f"superseded by the rollover to {get_fy_prefix()}")
+            logger.warning(f"FY rollover {journal['from_fy']} -> {journal['to_fy']}: open "
+                           "follow-up steps closed because the next rollover is due")
+            journal = None
+    resumed = journal is not None
+    if resumed:
+        from_fy, to_fy = journal["from_fy"], journal["to_fy"]
+        switch_pending = not rj.is_finished(journal["steps"][rj.CONFIG_SWITCH])
+        # the daily check only needs the date when the one-way switch is still to do
+        kind = (fy_rollover.classify_rollover(from_fy, get_fy_prefix())
+                if switch_pending else fy_rollover.FORWARD)
+    else:
+        from_fy = fy_rollover.configured_fy(source, lan_dest)
+        if from_fy is None:
+            fy_rollover.detect_rollover(source, lan_dest)   # logs the opt-out warning
+            return "NO_ROLLOVER_NEEDED"
+        to_fy = get_fy_prefix()
+        kind = fy_rollover.classify_rollover(from_fy, to_fy)
+        if kind == fy_rollover.NONE:
+            return "NO_ROLLOVER_NEEDED"
+        switch_pending = True
+        finished = db.rollover_get(from_fy, to_fy)         # none is open (checked above), so it is finished
+        reentered = finished is not None and kind in (fy_rollover.FORWARD, fy_rollover.JUMP)
+
+    run_id = _stable_run_id("rollover")
+    started_at = now_iso()
+    monotonic_start = time.monotonic()
+    metrics = {"from_fy": from_fy, "to_fy": to_fy, "kind": kind, "resumed": resumed}
+
+    def record(status: str, error: str | None, extra: dict) -> None:
+        try:
+            _record_run(config, run_id, "rollover", started_at, status,
+                        0 if status == "ROLLOVER_COMPLETE" else -1, error,
+                        extended_metrics=json.dumps({**metrics, **extra}, default=str),
+                        monotonic_start=monotonic_start)
+        except Exception as e:  # noqa: BLE001 - the decision itself stands
+            logger.critical(f"Failed to record rollover run {run_id}: {e}")
+
+    if hand_switched:
+        msg = (f"FY rollover {from_fy} -> {to_fy} stopped: config.yaml already points at {to_fy} "
+               f"(it was changed by hand), but the last backup of {from_fy} was never completed, "
+               f"so the last changes of {from_fy} are not protected yet. Nothing was changed or "
+               f"archived. Ask support to change source_drive and lan_destination in config.yaml on the "
+               f"server back to {from_fy} (Settings no longer changes the financial year); the daily "
+               "check then finishes the old year first and switches by itself.")
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {})
+        notify(config, AlertEvent(
+            key="rollover:switched_by_hand", kind="ACTION_REQUIRED", mode="rollover",
+            title="FY rollover stopped - settings were switched before the old year was backed up",
+            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-ROL-02", run_id=run_id))
+        raise fy_rollover.RolloverError(msg)
+
+    if reentered:
+        msg = fy_rollover.reentered_message(from_fy, to_fy)
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {})
+        notify(config, AlertEvent(
+            key=f"rollover:reentered:{to_fy}", kind="ACTION_REQUIRED", mode="rollover",
+            title="FY rollover not repeated - the settings were put back to the old year",
+            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-ROL-04", run_id=run_id))
+        raise fy_rollover.RolloverError(msg)
+
+    if switch_pending and kind == fy_rollover.CLOCK_BEHIND:
+        msg = (f"FY rollover refused: the computer clock says the current FY is "
+               f"{get_fy_prefix()}, which is EARLIER than the configured {from_fy}. The clock "
+               "is wrong; the backups keep using " + from_fy + ". Correct the server date/time "
+               "(w32tm /resync). Nothing was changed.")
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {})
+        notify(config, AlertEvent(
+            key="rollover:clock_behind", kind="ACTION_REQUIRED", mode="rollover",
+            title="Server clock is behind - FY rollover refused", message=msg,
+            status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-CLK-03", run_id=run_id))
+        raise fy_rollover.RolloverError(msg)
+
+    # The FY switch is one-way, so the date it acts on must be proven against
+    # Google / NTP first: a clock one FY ahead would otherwise roll over on its
+    # own and leave the real FY unprotected. Not approvable (like CLOCK_BEHIND).
+    # Only a pending switch needs it; the steps after the switch resume without.
+    if switch_pending:
+        clock = check_clock(
+            max_skew_seconds=config.health.max_clock_skew_seconds,
+            connection_timeout=config.health.clock_check_timeout_seconds,
+            ntp_server=config.health.ntp_server,
+            w32tm_timeout_s=config.health.w32tm_timeout_seconds,
+            artefacts=RunArtefacts.ephemeral("rollover-clock"),
+        )
+        metrics["clock"] = clock.to_metrics()
+        if clock.state != CLOCK_OK:
+            msg = (f"FY rollover {from_fy} -> {to_fy} refused: the server clock could not be "
+                   f"proven correct ({clock.state}: {clock.reason}). The backups keep using "
+                   f"{from_fy}; nothing was changed. Correct the date/time (w32tm /resync) or "
+                   "restore internet/NTP access - the check repeats every morning.")
+            logger.error(msg)
+            record("ROLLOVER_BLOCKED", msg, {})
+            notify(config, AlertEvent(
+                key=f"rollover:clock_{clock.state.lower()}", kind="ACTION_REQUIRED",
+                mode="rollover", title="Server clock not proven - FY rollover refused",
+                message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+                fault_code="AAM-ROL-03", run_id=run_id))
+            raise fy_rollover.RolloverError(msg)
+
+    journal = db.rollover_open(from_fy, to_fy, started_at)
+    _record_running(config, "rollover", run_id, started_at)   # a crash is swept as ABANDONED
+    for step in rj.reset_at_start(journal):                    # owner D-17
+        db.rollover_step_reset(from_fy, to_fy, step)
+    journal = db.rollover_get(from_fy, to_fy)
+    logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}), "
+                f"{'resuming' if resumed else 'starting'}: steps still to do: "
+                f"{', '.join(rj.attempt_order(journal))}")
+
+    src_root = fy_rollover._parent_path(source)
+    lan_root = fy_rollover._parent_path(lan_dest)
+    final_status: dict = {}
+    guard_record = None
+    blocking_error: tuple[str, Exception] | None = None
+    config_backup = None
+    archive_ok = None
+
+    def _note_lan_not_final(final_status: dict, final_errors: dict) -> dict:
+        """Manual-only NAS that could not be reached for the final backup (owner 2026-11-23): expected and
+        NON-BLOCKING. The run row of that final backup already says it did not happen (LAN_FAILED, which
+        never counts as a confirmed copy), so the year stays tracked after the switch until a LAN backup
+        has copied it (`_settle_old_fy`; dashboard, reports and the one warning mail say so).
+        Returns the status dict the guards judge (without that leg)."""
+        if final_status.get("lan") != LAN_NOT_REACHED:
+            return final_status
+        metrics["lan_final_not_reached"] = from_fy      # the rollover run row says it too
+        logger.warning(f"The final LAN backup of {from_fy} did not happen: the NAS could not be reached "
+                       f"(manual-only LAN, expected): {str(final_errors.get('lan', ''))[:300]}")
+        return {k: v for k, v in final_status.items() if k != "lan"}
+
+    def step_final_backups():
+        nonlocal final_status, guard_record
+        logger.info(f"FY rollover {from_fy} -> {to_fy} ({kind}): final backup of {from_fy}")
+        final_status, final_errors = _run_final_backups(config, run_id)
+        final_status = _note_lan_not_final(final_status, final_errors)
+        _defer_if_only_waiting(final_status)
+        _defer_if_leg_approval_open(final_status)
+        g6 = guards.g6_fy_rollover(from_fy, to_fy, kind, final_status)
+        approved, approval_record = _apply_approval(config, "rollover", approval_id, run_id, [g6])
+        try:
+            guard_record = guards.enforce("rollover", [g6], approved_guards=approved,
+                                          **{k: v for k, v in metrics.items()
+                                             if k in ("from_fy", "to_fy", "kind", "clock")},
+                                          **approval_record)
+        except guards.GuardBlocked as e:
+            record("ROLLOVER_BLOCKED", str(e),
+                   {"guards": e.record, "final_errors": final_errors})
+            _open_block_request(config, "rollover", run_id, e.record, started_at)
+            raise
+
+    def _defer_if_only_waiting(final_status: dict) -> None:
+        """D7: every failed leg only waited for the slot / had no time, and fewer than
+        rollover.final_backup_wait_retries earlier mornings did: a WARNING and a retry tomorrow, no approval."""
+        limit = config.rollover.final_backup_wait_retries
+        failed = {leg: s for leg, s in final_status.items() if not statuses.is_success(s)}
+        if limit < 1 or not failed or not all(s in statuses.WAIT_STATUSES for s in failed.values()):
+            return
+        earlier = [r for r in db.final_backup_wait_runs(from_fy, statuses.WAIT_STATUSES) if r != run_id]
+        if len(earlier) >= limit:
+            return                                    # waited long enough: G6 asks as it always did
+        msg = (f"The final backup of {from_fy} could not run tonight "
+               f"({', '.join(f'{k}={v}' for k, v in failed.items())}): "
+               f"the backup slot was busy or out of time. The switch to {to_fy} waits and is tried again "
+               f"tomorrow morning (attempt {len(earlier) + 1} of {limit}); nothing needs to be done. "
+               "Your data is safe.")
+        logger.warning(msg)
+        record("ROLLOVER_FAILED", msg, {"final_status": dict(final_status), "final_wait": True})
+        notify(config, AlertEvent(
+            key=f"rollover:{from_fy}:final_wait", kind="WARNING", mode="rollover",
+            title=f"Switch to {to_fy} waits for the last {from_fy} backup", message=msg,
+            status="ROLLOVER_FAILED", occurred_at=started_at, run_id=run_id))
+        raise _FinalBackupWait(msg)
+
+    def _defer_if_leg_approval_open(final_status: dict) -> None:
+        """D15 (plan FY overlap section 4, 'Switch blocked for days'): a leg whose final backup is guard-blocked
+        has its own approval request. The rollover (G6) asks only AFTER that approval was given (or the final
+        backup succeeded). Until then the switch stays blocked, nothing is requested, nothing proceeds."""
+        waiting = []
+        try:
+            for leg, s in final_status.items():
+                if s != f"{leg.upper()}_BLOCKED":
+                    continue
+                pending, given = db.leg_approval_state(leg, from_fy)
+                if pending and not given:
+                    waiting.append(leg)
+        except Exception as e:  # noqa: BLE001 - unknown = fail closed the old way: G6 asks and mails
+            logger.warning(f"Could not read the leg approvals of {from_fy}: {e}")
+            return
+        if not waiting:
+            return
+        msg = (f"The switch to {to_fy} is blocked: the last {from_fy} backup of the "
+               f"{' and '.join(w.upper() for w in waiting)} backup needs your approval first. Open the dashboard and "
+               f"approve or dismiss that backup request; the switch asks for its own approval afterwards. "
+               "Nothing was changed. Your data is safe.")
+        logger.error(msg)
+        record("ROLLOVER_BLOCKED", msg, {"final_status": dict(final_status), "leg_approval_open": waiting})
+        notify(config, AlertEvent(
+            key="blocked:rollover", kind="ACTION_REQUIRED", mode="rollover",
+            title="Financial-year switch blocked - approval needed",
+            message=msg, status="ROLLOVER_BLOCKED", occurred_at=started_at,
+            fault_code="AAM-ROL-02", run_id=run_id))
+        raise _FinalBackupBlocked(msg)
+
+    def step_source_folder():
+        fy_rollover.create_source_folder(
+            src_root, to_fy, placeholder_name=config.rollover.source_placeholder_name)
+
+    def step_nas_folder():
+        if not config.lan.enabled:
+            return ("skipped", "LAN backup is disabled")
+        if config.wol.enabled:
+            ensure_server_online(config)     # wake + wait, exactly as the LAN leg does
+        fy_rollover.create_nas_folder(lan_root, to_fy)
+
+    def step_config_switch():
+        nonlocal config_backup
+        config_backup = fy_rollover.update_config_yaml(
+            config_path, src_root, lan_root, to_fy, expect_fy=from_fy)
+
+    def step_archive():
+        nonlocal archive_ok
+        if not config.cloud.enabled:
+            return ("skipped", "cloud backup is disabled")
+        archive_ok = fy_rollover.run_archive_transition(
+            bucket=config.cloud.bucket, old_fy=from_fy,
+            gcs_key_path=config.paths.gcs_key_path,
+            auth_timeout=config.health.rollover_auth_timeout_seconds,
+            archive_timeout=config.health.rollover_archive_timeout_seconds,
+            config_dir=os.path.join(config.paths.runtime_dir, "gcloud"),
+        )
+        if not archive_ok:
+            raise RuntimeError(f"Archive transition of {from_fy} failed - retried every morning")
+
+    def step_nas_shutdown():
+        if not (config.lan.enabled and config.lan.shutdown_after_backup
+                and config.wol.enabled):
+            return ("skipped", "NAS shutdown is not configured")
+        lan_shutdown_task(config)
+
+    def step_announce():
+        pending = [s for s in rj.STEPS if s != rj.ANNOUNCE
+                   and not rj.is_finished(db.rollover_get(from_fy, to_fy)["steps"][s])]
+        todo = ("" if not pending else
+                " A few follow-up steps are still being retried automatically "
+                f"({', '.join(p.replace('_', ' ') for p in pending)}); your data is safe.")
+        notify(config, AlertEvent(
+            key=f"rollover:done:{to_fy}", kind="INFO", mode="rollover",
+            title=f"New financial year {to_fy} started",
+            message=(f"From today your backups use the new folder {to_fy}. The {from_fy} "
+                     f"backups are kept unchanged.{todo or ' Nothing to do.'}"),
+            status="ROLLOVER_COMPLETE", run_id=run_id, occurred_at=started_at,
+            audience=AUDIENCE_REPORTS))
+
+    steps = {
+        rj.FINAL_BACKUPS: step_final_backups, rj.SOURCE_FOLDER: step_source_folder,
+        rj.NAS_FOLDER: step_nas_folder, rj.CONFIG_SWITCH: step_config_switch,
+        rj.ARCHIVE: step_archive, rj.NAS_SHUTDOWN: step_nas_shutdown,
+        rj.ANNOUNCE: step_announce,
+    }
+
+    def run_steps():
+        nonlocal blocking_error
+        for step in rj.attempt_order(journal):
+            current = db.rollover_get(from_fy, to_fy)
+            if not rj.prerequisites_met(current, step):
+                skipped_req = rj.skipped_prerequisite(current, step)
+                if skipped_req is not None:   # not needed either (F1): the journal can complete
+                    db.rollover_step_skipped(from_fy, to_fy, step, now_iso(),
+                                             reason=f"not needed: {skipped_req} was skipped")
+                continue                      # e.g. NAS shutdown while the NAS was never reached
+            finished, error = _rollover_step(db, from_fy, to_fy, step, run_id, steps[step])
+            if not finished and step in rj.BLOCKING:
+                blocking_error = (step, error)
+                return
+            if not finished and step == rj.ARCHIVE:
+                _rollover_archive_alert(config, db, from_fy, to_fy, error, run_id, started_at)
+
+    def fail(step: str, error) -> None:
+        msg = (f"FY rollover {from_fy} -> {to_fy} stopped at step '{step.replace('_', ' ')}': "
+               f"{error}. Your data is safe; the rollover continues where it stopped every "
+               "morning.")
+        record("ROLLOVER_FAILED", msg, {"failed_step": step})
+        notify(config, AlertEvent(
+            key=f"rollover:{to_fy}:{step}", kind="ACTION_REQUIRED", mode="rollover",
+            title="Financial-year switch could not be finished", message=msg,
+            status="ROLLOVER_FAILED", occurred_at=started_at,
+            fault_code="AAM-ROL-04", run_id=run_id))
+        raise fy_rollover.RolloverError(msg)
 
     try:
-        if rollover(config_path=config_path):
-            logger.info("FY rollover completed (scheduled check) - config updated for new FY")
-            return "ROLLOVER_COMPLETED"
-        return "NO_ROLLOVER_NEEDED"
-    except RolloverError as e:
-        logger.error(f"FY rollover BLOCKED: {e}")
-        try:
-            cfg = load_config(config_path)
-            send_failure_alert(
-                cfg.notifications, cfg.firm_name,
-                (
-                    f"FY Rollover BLOCKED: {e} The fiscal-year transition "
-                    "(new FY folders + config update) did not happen. Until "
-                    "this is resolved, new-FY data may not be backed up. "
-                    "The scheduled check retries daily."
-                ),
-                {"mode": "rollover", "status": "ROLLOVER_BLOCKED", "exit_code": None},
-                now_iso(),
-            )
-        except Exception as alert_err:
-            logger.warning(f"Could not send rollover-blocked alert: {alert_err}")
+        if (config.rollover.create_source_folder_early and kind == fy_rollover.FORWARD and switch_pending
+                and not rj.is_finished(journal["steps"][rj.SOURCE_FOLDER])):
+            # plan FY-7: the office can save into the new year from day 1 even if the final backup below
+            # fails. Needs no slot. A failure here does not stop the old year's final backup; the step
+            # stays failed and run_steps retries it as a BLOCKING step before the switch.
+            early_ok, early_error = _rollover_step(db, from_fy, to_fy, rj.SOURCE_FOLDER, run_id,
+                                                   step_source_folder)
+            journal = db.rollover_get(from_fy, to_fy)
+            if not early_ok:       # nobody would otherwise know the office has no new folder to save into
+                notify(config, AlertEvent(
+                    key=f"rollover:{to_fy}:source_folder_early", kind="WARNING", mode="rollover",
+                    title=f"The new {to_fy} folder could not be created yet",
+                    message=(f"The folder {to_fy} for the new financial year could not be created: {early_error}. "
+                             f"Until it exists the office has nowhere to save new-year files. It is tried again "
+                             "every morning and before the switch; your data is safe."),
+                    status="ROLLOVER_FAILED", occurred_at=started_at, fault_code="AAM-ROL-04", run_id=run_id))
+        if not rj.is_finished(journal["steps"][rj.FINAL_BACKUPS]):
+            # the final backups run through the normal pipelines, which take the backup slot
+            # themselves (limit 1) - they must stay OUTSIDE the slot held below
+            finished, error = _rollover_step(db, from_fy, to_fy, rj.FINAL_BACKUPS, run_id,
+                                             step_final_backups)
+            if not finished:
+                blocking_error = (rj.FINAL_BACKUPS, error)
+            journal = db.rollover_get(from_fy, to_fy)
+        if blocking_error is None:
+            with _backup_slot(config):
+                run_steps()
+    except guards.GuardBlocked as e:
+        raise fy_rollover.RolloverError(str(e)) from e
+    except fy_rollover.RolloverError:
         raise
+    except Exception as e:  # noqa: BLE001 - never leave a RUNNING row and no alert behind
+        fail("unexpected", e)
+
+    final = db.rollover_get(from_fy, to_fy)
+    metrics["steps"] = {name: final["steps"][name]["state"] for name in rj.STEPS}
+    if rj.is_finished(final["steps"][rj.CONFIG_SWITCH]):       # the new year's files are protected from now on
+        # the old FY is closed (approvals + incidents) whenever the switch is finished - also on the resume
+        # after a crash (R3), where step_config_switch never runs - but ONLY once every enabled leg has a
+        # confirmed full copy of it (owner decision 2026-11-23); otherwise it stays tracked. Idempotent.
+        copied = {leg for leg, s in final_status.items() if statuses.is_success(s)}
+        still_missing = _settle_old_fy(config, db, from_fy, copied)
+        if still_missing:
+            metrics["old_year_not_fully_copied"] = {"fy": from_fy, "legs": still_missing}
+            logger.warning(f"{fy_overlap.not_fully_copied_text(from_fy, still_missing)}: it stays in the backups")
+            _warn_old_year_not_copied(config, db, from_fy, to_fy, still_missing, run_id, started_at)
+        try:
+            _resolve_unprotected_new_fy(config, db, new_fy=to_fy)
+        except Exception as e:  # noqa: BLE001 - a mail problem never changes the rollover's result
+            logger.warning(f"Could not send the 'files are backed up now' notice: {e}")
+    if blocking_error is not None:
+        fail(*blocking_error)
+
+    record("ROLLOVER_COMPLETE", None, {"guards": guard_record, "final_status": final_status,
+                                       "archive_ok": archive_ok,
+                                       "config_backup": str(config_backup)})
+    logger.info(f"FY rollover {from_fy} -> {to_fy}: switched | archive_ok={archive_ok} | "
+                f"steps={metrics['steps']}")
+    return "ROLLOVER_COMPLETED"
+
+
+def _rollover_archive_alert(config, db, from_fy: str, to_fy: str, error, run_id: str,
+                            started_at: str) -> None:
+    """AAM-ROL-05: the archive move failed. WARNING at first; ACTION_REQUIRED once it has
+    been failing for rollover.archive_alert_after_days. One stable incident per rollover."""
+    step = db.rollover_get(from_fy, to_fy)["steps"]["archive"]
+    first = step.get("first_failed_at") or started_at
+    days = (pendulum.parse(started_at) - pendulum.parse(first)).total_days()
+    escalate = days >= config.rollover.archive_alert_after_days
+    notify(config, AlertEvent(
+        key=f"rollover:{to_fy}:archive",
+        kind="ACTION_REQUIRED" if escalate else "WARNING", mode="rollover",
+        title="Old year not moved to cheaper storage yet",
+        message=(f"Moving the {from_fy} online copy to the ARCHIVE storage class failed"
+                 f"{f' for {int(days)} day(s)' if days >= 1 else ''}: {error}. Your data is "
+                 "safe; it is tried again every morning."),
+        status="ROLLOVER_COMPLETE", occurred_at=started_at, fault_code="AAM-ROL-05",
+        run_id=run_id))
+
+
+def _recorded_final_status(config, final_run_id: str) -> str | None:
+    """The terminal status the pipeline itself recorded for one final-backup run (None if unreadable)."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            for r in db.get_recent_runs(50, fy=_effective_fy_prefix(config)):
+                if r["run_id"] == final_run_id:
+                    return r["status"]
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - unreadable = treated as a normal failure (G6 asks)
+        logger.warning(f"Could not read the recorded status of {final_run_id}: {e}")
+    return None
+
+
+# final_status marker (not a run status): the NAS of a manual-only LAN leg could not be reached for the
+# final backup. It is not judged by G6; the rollover records it and tells the owner once (owner 2026-11-23).
+LAN_NOT_REACHED = "LAN_NOT_REACHED"
+
+
+def _run_final_backups(config, run_id: str) -> tuple[dict, dict]:
+    """Final backup of the closing FY on every enabled leg, through the normal
+    pipelines (config still points at the closing FY). Returns
+    ({leg: terminal status}, {leg: error})."""
+    status: dict = {}
+    errors: dict = {}
+    for leg, enabled, pipeline in (("cloud", config.cloud.enabled, _run_cloud_pipeline),
+                                   ("lan", config.lan.enabled, _run_lan_pipeline)):
+        if not enabled:
+            continue
+        try:
+            # plan A4: the LAN final backup leaves the NAS on - its new FY folder follows
+            extra = {"allow_shutdown": False} if leg == "lan" else {}
+            if leg == "lan" and manual_leg.is_manual_only(config, "lan"):
+                extra["nas_offline_expected"] = True
+            result = pipeline(config, f"{run_id}-final-{leg}", now_iso(), time.monotonic(),
+                              **extra)
+            status[leg] = result.get("status", "UNKNOWN")
+        except Exception as e:  # noqa: BLE001 - recorded; G6 blocks on it
+            status[leg] = f"{leg.upper()}_BLOCKED" if isinstance(e, guards.GuardBlocked) \
+                else f"{leg.upper()}_NOT_COMPLETE"
+            if (leg == "lan" and manual_leg.is_manual_only(config, "lan") and isinstance(e, Exception)
+                    and not isinstance(e, guards.GuardBlocked)
+                    and faults.classify_run("lan", status[leg], exc=e) in faults.NAS_UNREACHABLE_CODES):
+                status[leg] = LAN_NOT_REACHED     # manual-only NAS that is off: expected, not a G6 block
+            if (not isinstance(e, guards.GuardBlocked)
+                    and config.rollover.final_backup_wait_retries > 0):
+                recorded = _recorded_final_status(config, f"{run_id}-final-{leg}")
+                if recorded in statuses.WAIT_STATUSES:
+                    status[leg] = recorded
+            errors[leg] = str(e)
+            logger.error(f"FY rollover: final {leg} backup did not complete: {e}")
+    return status, errors
 
 
 # ═══════════════════════════════════════════════════════════════
 # Weekly independent integrity audit (read-only deep verification)
 # ═══════════════════════════════════════════════════════════════
 
+def _audit_budget_incomplete(exc: BudgetExceeded) -> dict:
+    """An audit leg with no time left in the run budget could not run (WP7/WP14)."""
+    logger.error(f"Integrity audit leg skipped: {exc}")
+    return {"status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
+            "bytes_checked": None, "mismatches": 0,
+            "detail": f"could not run - {exc}. Raise budget.audit_max_hours or move the audit."}
+
+
+def _audit_alert_kind(outcomes: list[str]) -> str:
+    """WARNING only when every unverified leg merely could not run; any
+    difference or unknown result needs a person (never switchable)."""
+    if outcomes and all(o.endswith("=AUDIT_INCOMPLETE") for o in outcomes):
+        return "WARNING"
+    return "ACTION_REQUIRED"
+
+
 @flow(name="integrity-audit", log_prints=True)
-def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
+def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: str | None = None):
     """Read-only weekly integrity audit: source↔backup content verification.
 
     This flow NEVER modifies source or destination and NEVER rewrites
     historical backup rows. It records one `integrity_audits` manifest row
-    per enabled leg (VERIFIED | VERIFICATION_FAILED) and alerts + fails on
+    per enabled leg and FY folder (VERIFIED | VERIFICATION_FAILED) and alerts + fails on
     divergence. Absence of an audit row means NOT_VERIFIED.
 
     Modes: cloud | lan | all (both sequentially, cloud first).
+
+    FY folders (plan 5.8): every active FY folder is audited, new FY first, under ONE backup slot,
+    ONE `audit_max_hours` budget and ONE NAS wake / shutdown. `fy` narrows it to one folder (it must
+    be in the active set, else the run is refused).
     """
     from core.integrity import audit_cloud, audit_lan, new_audit_id
 
@@ -1180,84 +3327,181 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
         logger.debug(f"configure_prefect_bridge skipped: {e}")
 
     logger.info(f"AAM integrity audit starting - mode={mode}, firm={config.firm_name}")
-    db = ManifestDB(config.paths.database_path)
+    legs = [leg for leg in ("cloud", "lan")
+            if mode in (leg, "all") and getattr(config, leg).enabled]
+    # the FY folders of this audit, worked out ONCE (plan 5.8); `fy` narrows it to one folder
+    folders = _active_fys(config) if legs else []
+    if fy is not None and folders:
+        if fy not in folders:
+            raise ValueError(f"FY {fy} is not being backed up right now (active: {', '.join(folders)}); "
+                             "refusing to run it.")
+        folders = [fy]
+    views = {f: fy_overlap.folder_view(config, f) for f in folders}
+    multi = len(folders) > 1
+    # WP14: the audit's run budget counts from here, including the slot wait; ALL folders share it
+    budget = RunBudget("audit", config.budget.audit_max_hours * 3600, time.monotonic())
+    db = ManifestDB.from_config(config)
+    recorded: set[tuple[str, str]] = set()     # (leg, fy) that left a row
     excs = []
+    excs_by_fy: dict[str, list] = {f: [] for f in folders}
+    outcomes_by_fy: dict[str, list[str]] = {f: [] for f in folders}   # "<leg>=<status>" of each non-VERIFIED leg: part of the alert key
+    nas_votes: list[bool] = []     # one entry per LAN folder that woke the NAS and was audited
+
+    def _record(leg: str, folder: str, audit_id: str, started_at: str, result: dict) -> None:
+        # A VERIFIED verdict is durable only once persisted: a failed DB
+        # write must fail the audit loudly (alert + FAILED flow), never
+        # silently drop a passing result or leave NOT_VERIFIED behind a
+        # COMPLETED run.
+        name = "Cloud" if leg == "cloud" else "LAN"
+        if multi:
+            name = f"{name} {folder}"
+        outcomes = outcomes_by_fy[folder]
+
+        def _fail(e: BaseException) -> None:
+            excs.append(e)
+            excs_by_fy[folder].append(e)
+
+        recorded.add((leg, folder))
+        try:
+            db.record_audit({
+                "audit_id": audit_id, "mode": leg, "fy": folder,
+                "scope": result["scope"],
+                "started_at": started_at, "ended_at": now_iso(),
+                "status": result["status"],
+                "files_checked": _nullable_audit_count(result.get("files_checked")),
+                "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
+                "mismatches": max(result["mismatches"], 0),
+                "detail": result["detail"], "created_at": now_iso(),
+            })
+        except Exception as e:
+            _fail(RuntimeError(f"{name} audit persistence failed: {e}"))
+            outcomes.append(f"{leg}=NOT_RECORDED")
+        if result.get("expected_offline"):
+            # manual-only NAS that is off (owner 2026-11-23): the row above says the check could not run;
+            # no alert mail and the flow does not fail - the next report / dashboard line shows the truth
+            logger.warning(f"{name} audit did not run: the NAS is not reachable (LAN is manual only)")
+        elif result["status"] not in (statuses.AuditStatus.VERIFIED, statuses.AuditStatus.PENDING_BACKUP):
+            _fail(RuntimeError(_audit_outcome_text(name, result)))
+            outcomes.append(f"{leg}={result['status']}")
+
+    def _audit_cloud_leg(audit_id: str, view) -> dict:
+        try:
+            cloud_timeout = int(budget.cap(view.cloud.verify_timeout_seconds))
+        except BudgetExceeded as e:
+            return _audit_budget_incomplete(e)
+        audit_artefacts = _open_run_artefacts(view, audit_id)
+        try:
+            with temp_rclone_config(
+                view.paths.gcs_key_path,
+                view.cloud.location,
+                view.cloud.project_number,
+                view.cloud.storage_class,
+            ) as rclone_cfg:
+                return audit_cloud(
+                    view.paths.source_drive, view.cloud.bucket,
+                    _effective_fy_prefix(view), rclone_cfg,
+                    timeout=cloud_timeout, artefacts=audit_artefacts,
+                    pending=_pending_context(view, db, "cloud"),
+                    **_audit_settings(view),
+                )
+        finally:
+            _finalize_run_artefacts(view, audit_artefacts)
+
+    def _audit_lan_leg(audit_id: str, view, last_lan_folder: bool = True) -> dict:
+        try:
+            lan_timeout = int(budget.cap(view.lan.subprocess_timeout_seconds,
+                                         view.budget.lan_post_reserve_minutes * 60))
+        except BudgetExceeded as e:
+            return _audit_budget_incomplete(e)   # NAS not woken: nothing to do
+        wol_check_task(config)
+        nas_votes.append(True)    # woken and audited: today's rule would shut the NAS down after this folder
+        audit_artefacts = _open_run_artefacts(view, audit_id)
+        try:
+            return audit_lan(
+                view.paths.source_drive, view.paths.lan_destination,
+                timeout=lan_timeout, artefacts=audit_artefacts,
+                pending=_pending_context(view, db, "lan"), **_audit_settings(view),
+            )
+        finally:
+            # ONE shutdown per flow run (plan 5.8): after the LAST LAN folder, and only when every
+            # LAN folder was woken and audited (a skipped / not-woken folder leaves the NAS on).
+            # Only after a successful wake; a failed shutdown never replaces the verdict.
+            if (last_lan_folder and len(nas_votes) == len(run_folders) and all(nas_votes)
+                    and config.lan.shutdown_after_backup and config.wol.enabled):
+                try:
+                    lan_shutdown_task(config, str(audit_artefacts.dir)
+                                      if audit_artefacts else None)
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"NAS shutdown after the LAN audit failed: {e}")
+            _finalize_run_artefacts(view, audit_artefacts)
+
     try:
-        with _backup_slot(config):
-            if mode in ("cloud", "all") and config.cloud.enabled:
-                audit_id = new_audit_id("cloud", "full")
-                started_at = now_iso()
-                with temp_rclone_config(
-                    config.paths.gcs_key_path,
-                    config.cloud.location,
-                    config.cloud.project_number,
-                    config.cloud.storage_class,
-                ) as rclone_cfg:
-                    result = audit_cloud(
-                        config.paths.source_drive, config.cloud.bucket,
-                        get_fy_prefix(), rclone_cfg,
-                        timeout=config.cloud.verify_timeout_seconds,
-                    )
-                # A VERIFIED verdict is durable only once persisted: a failed
-                # DB write must fail the audit loudly (alert + FAILED flow),
-                # never silently drop a passing result or leave NOT_VERIFIED
-                # behind a COMPLETED run.
+        try:
+            with _backup_slot(config):
+                # overlap review D1: the active set was worked out before the slot wait; a year closed
+                # meanwhile is skipped (info log, no row, no alert)
                 try:
-                    db.record_audit({
-                        "audit_id": audit_id, "mode": "cloud", "scope": result["scope"],
-                        "started_at": started_at, "ended_at": now_iso(),
-                        "status": result["status"],
-                        "files_checked": _nullable_audit_count(result.get("files_checked")),
-                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
-                        "mismatches": max(result["mismatches"], 0),
-                        "detail": result["detail"], "created_at": now_iso(),
-                    })
-                except Exception as e:
-                    excs.append(RuntimeError(f"Cloud audit persistence failed: {e}"))
-                if result["status"] != "VERIFIED":
-                    excs.append(RuntimeError(f"Cloud integrity audit FAILED: {result['detail']}"))
+                    now_active = _active_fys(load_config(config_path), strict=True)
+                except Exception as e:  # noqa: BLE001 - keep the earlier plan
+                    logger.warning(f"Could not re-check the active years after the slot wait ({e})")
+                    now_active = list(folders)
+                for gone in (f for f in folders if f not in now_active):
+                    logger.info(f"Integrity audit of {gone} skipped: it is no longer active")
+                run_folders = [f for f in folders if f in now_active]
+                for leg in ("cloud", "lan"):
+                    if leg not in legs:
+                        continue
+                    for i, folder in enumerate(run_folders):
+                        view = views[folder]
+                        audit_id, started_at = new_audit_id(leg, "full", folder), now_iso()
+                        try:
+                            if leg == "cloud":
+                                result = _audit_cloud_leg(audit_id, view)
+                            else:
+                                result = _audit_lan_leg(audit_id, view, i == len(run_folders) - 1)
+                        except Exception as e:  # noqa: BLE001 - recorded + alerted, never silent
+                            logger.error(f"Integrity audit ({leg}, {folder}) could not run: {e}")
+                            result = {"status": "AUDIT_INCOMPLETE", "scope": "full",
+                                      "files_checked": None, "bytes_checked": None,
+                                      "mismatches": 0,
+                                      "detail": f"could not run - {type(e).__name__}: {e}"}
+                            if (leg == "lan" and manual_leg.is_manual_only(config, "lan") and faults.classify_run(
+                                    "lan", "AUDIT_INCOMPLETE", exc=e) in faults.NAS_UNREACHABLE_CODES):
+                                result["expected_offline"] = True
+                                result["detail"] = ("not run: the NAS is not reachable (LAN is manual only) - "
+                                                    + result["detail"])
+                        _record(leg, folder, audit_id, started_at, result)
+        except Exception as e:  # noqa: BLE001 - backup slot / lock not obtained
+            logger.error(f"Integrity audit could not run: {e}")
+            for leg in legs:
+                for folder in folders:
+                    if (leg, folder) not in recorded:
+                        _record(leg, folder, new_audit_id(leg, "full", folder), now_iso(), {
+                            "status": "AUDIT_INCOMPLETE", "scope": "full", "files_checked": None,
+                            "bytes_checked": None, "mismatches": 0,
+                            "detail": f"could not run - backup slot not obtained: {e}"})
 
-            if mode in ("lan", "all") and config.lan.enabled:
-                audit_id = new_audit_id("lan", "full")
-                started_at = now_iso()
-                wol_check_task(config)
-                lan_timeout = int(getattr(config.lan, "subprocess_timeout_seconds", 14400))
-                try:
-                    result = audit_lan(
-                        config.paths.source_drive, config.paths.lan_destination,
-                        timeout=lan_timeout,
-                    )
-                finally:
-                    if config.lan.shutdown_after_backup and config.wol.enabled:
-                        lan_shutdown_task(config)
-                try:
-                    db.record_audit({
-                        "audit_id": audit_id, "mode": "lan", "scope": result["scope"],
-                        "started_at": started_at, "ended_at": now_iso(),
-                        "status": result["status"],
-                        "files_checked": _nullable_audit_count(result.get("files_checked")),
-                        "bytes_checked": _nullable_audit_count(result.get("bytes_checked")),
-                        "mismatches": max(result["mismatches"], 0),
-                        "detail": result["detail"], "created_at": now_iso(),
-                    })
-                except Exception as e:
-                    excs.append(RuntimeError(f"LAN audit persistence failed: {e}"))
-                if result["status"] != "VERIFIED":
-                    excs.append(RuntimeError(f"LAN integrity audit FAILED: {result['detail']}"))
-
-            if excs:
-                error_summary = '; '.join(str(e) for e in excs)
-                logger.error(f"Integrity audit failed: {error_summary}")
-                try:
-                    send_failure_alert(
-                        config.notifications, config.firm_name, error_summary,
-                        {"mode": mode, "status": "VERIFICATION_FAILED"},
-                        timestamp=now_iso(),
-                    )
-                except Exception:
-                    pass
-                raise ExceptionGroup("Integrity audit found divergence", excs)
-            logger.info("AAM integrity audit VERIFIED - all enabled legs match source")
+        if excs:
+            # one alert per FY (new FY first): its key, incident and subject are per FY
+            for folder in folders:
+                if not excs_by_fy[folder]:
+                    continue
+                outcomes = outcomes_by_fy[folder]
+                error_summary = '; '.join(str(e) for e in excs_by_fy[folder])
+                logger.error(f"Integrity audit failed ({folder}): {error_summary}")
+                # The key carries each leg's outcome: a "could not run" alert must
+                # never put a real mismatch inside its cooldown (code review 2026-10-16).
+                audit_fy = _alert_fy(views[folder])
+                notify(config, AlertEvent(
+                    key=f"audit:{_fy_seg(audit_fy)}{mode}:{','.join(sorted(outcomes))}", fy=audit_fy,
+                    kind=_audit_alert_kind(outcomes), mode="audit",
+                    fault_code=("AAM-AUD-02" if _audit_alert_kind(outcomes) == "WARNING"
+                                else "AAM-AUD-01"),
+                    title="Integrity audit did not verify", message=error_summary,
+                    status="NOT_VERIFIED"))
+            raise ExceptionGroup("Integrity audit did not verify", excs)
+        logger.info("AAM integrity audit finished - no enabled leg has a real difference "
+                    "(newer files may wait for the next backup)")
     finally:
         db.close()
 
@@ -1266,8 +3510,210 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all"):
 # Main backup flow — entry point for all modes
 # ═══════════════════════════════════════════════════════════════
 
+def _active_fys(config, *, strict: bool = False) -> list[str]:
+    """The FY folders to back up in this flow run, new FY first (plan 5.3). Any trouble working it out
+    falls back to the configured FY alone - the safe, always-correct answer. `strict` (the re-check after the
+    slot wait): trouble is raised to the caller, no fallback and no warning mail."""
+    configured = _effective_fy_prefix(config)
+    overlap_on = getattr(config.rollover, "overlap_enabled", True) is not False
+    db = None
+    try:
+        db = ManifestDB.from_config(config)
+        return fy_overlap.active_folders(config, db, fy_overlap.run_date(_scheduled_time()))
+    except Exception as e:  # noqa: BLE001 - never stops the configured folder's backup
+        if strict:
+            raise
+        logger.error(f"Active FY folders could not be worked out ({e}); backing up {configured} only")
+        if not overlap_on:
+            return [configured]      # overlap off: the configured FY (an old year may be missed this once)
+        try:
+            notify(config, AlertEvent(
+                key="overlap:active_set", kind="WARNING", mode="rollover",
+                title="Next year's folder was skipped tonight",
+                message=(f"The backup could not work out which year folders to copy ({e}), so tonight only "
+                         f"{configured} was backed up. The next backup tries again."),
+                fault_code=None))
+        except Exception:  # noqa: BLE001 - the warning is a courtesy, never an error
+            pass
+        return [configured]
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _slot_timeout_for_folders(leg: str, runs: list, started_at: str, monotonic_start: float,
+                              error: BaseException) -> None:
+    """The leg loop could not get the backup slot: every folder of this leg run is recorded
+    <LEG>_SLOT_TIMEOUT for ITS FY, each with its own alert (the card of each FY shows it)."""
+    for fy, view, run_id in runs:
+        status = f"{leg.upper()}_SLOT_TIMEOUT"
+        stuck = _slot_stuck(view, error)
+        detail = f"{error}{STUCK_SLOT_NOTE}" if stuck else str(error)
+        logger.error(f"{leg} run {run_id} ({fy}) could not start: {detail}")
+        try:
+            _record_run(view, run_id, leg, started_at, status, -1,
+                        f"Backup could not start: {detail}", monotonic_start=monotonic_start)
+        except Exception as rec_err:  # noqa: BLE001
+            logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
+        _send_run_alert(view, leg, status, f"The {leg.upper()} backup of {fy} could not start: {detail}",
+                        None, started_at, run_id=run_id, fault_code="AAM-SYS-08" if stuck else None)
+
+
+def _flag_nas_left_on(config, votes: list, last_run_id: str | None) -> None:
+    """A manual-only LAN run ended with the NAS still on (a failed manual run does not shut it down): say
+    so on the run row, so the dashboard shows an amber 'NAS was woken and left on' item (owner
+    2026-11-23). Only when the NAS really answers on SMB now; never raises."""
+    try:
+        if (not last_run_id or not votes or not manual_leg.is_manual_only(config, "lan")
+                or not config.wol.enabled):
+            return
+        from core import wol
+
+        ip = config.wol.server_ip
+        if not wol._smb_port_open(ip, timeout=float(config.wol.smb_connect_timeout_seconds)):
+            return
+        db = ManifestDB.from_config(config)
+        try:
+            db.merge_run_metrics(last_run_id, {"nas_left_on": {"at": now_iso(), "ip": ip}})
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping only
+        logger.error(f"Could not record that the NAS was left on: {e}")
+
+
+def _lan_shutdown_decision(config, votes: list, folders: int) -> dict | None:
+    """ONE NAS shutdown decision per LAN flow run (plan 5.3). Today's rule per folder (shut down only
+    after a COMPLETE mirror, or after a failure when shutdown_on_all_retries_exhausted is set), applied
+    to ALL folders: the NAS is powered off only when every folder voted yes. A folder that never voted
+    (MISSED, skipped, cut off) means the NAS stays on - never power off with work unfinished."""
+    if folders == 0:
+        return None
+    if len(votes) < folders or not all(v for v, _dir in votes):
+        logger.info(f"NAS stays on: {len(votes)} of {folders} folder(s) voted, "
+                    f"{sum(1 for v, _d in votes if v)} for shutdown")
+        return None
+    return lan_shutdown_task(config, votes[-1][1])
+
+
+def _drop_unrun_row(config, run_id: str) -> None:
+    """Remove the *_RUNNING row written before the slot wait for a year that was not run after all."""
+    try:
+        db = ManifestDB.from_config(config)
+        try:
+            db.delete_running_row(run_id)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - bookkeeping only; the abandoned sweep covers a leftover row
+        logger.error(f"Could not remove the unused RUNNING row {run_id}: {e}")
+
+
+def _rederive_after_slot(config, config_path: str | None, leg: str, runs: list):
+    """Overlap review D1: the active FY set was worked out BEFORE the slot wait. The rollover may have
+    switched the config and closed the old FY meanwhile: re-read the config and re-derive the set now that
+    we hold the slot. A year that is no longer active is skipped (info log, no row, no alert).
+    Returns (config, runs) to use."""
+    if config_path is None or not runs:
+        return config, runs
+    try:
+        fresh = load_config(config_path)
+        active = _active_fys(fresh, strict=True)
+    except Exception as e:  # noqa: BLE001 - keep the plan made before the wait
+        logger.warning(f"Could not re-check the active years after the slot wait ({e}); using the earlier plan")
+        return config, runs
+    kept_fys = [fy for fy, _v, _r in runs if fy in active]
+    for fy, _view, _run_id in runs:
+        if fy not in active:
+            logger.info(f"{leg} backup of {fy} skipped: it is no longer active (active now: "
+                        f"{', '.join(active)}); the year was closed while this run waited for the slot")
+    if len(kept_fys) == len(runs) and _effective_fy_prefix(fresh) == _effective_fy_prefix(config):
+        return config, runs
+    if runs[0][0] not in kept_fys:
+        _drop_unrun_row(config, runs[0][2])
+    return fresh, [(fy, fy_overlap.folder_view(fresh, fy), _stable_run_id(leg, fy)) for fy in kept_fys]
+
+
+def _run_leg_folders(config, leg: str, folders: list[str], *,
+                     approval_id: str | None, budget_hours: float | None,
+                     late_seconds: float, config_path: str | None = None) -> list[BaseException]:
+    """One leg of a flow run for every FY folder in `folders` (new FY first, plan 5.3).
+
+    * The backup slot and the watchdog backup.lock are taken ONCE around the whole loop: nothing can
+      run between two folders, and the pipelines get slot_held=True (no nested acquire).
+    * Both folders share the leg's budget (same monotonic start, same lateness); a folder that finds
+      none left is recorded <LEG>_MISSED for its FY.
+    * One folder's failure never stops the next; the exceptions are returned for the flow to raise.
+    * LAN: the first pipeline wakes the NAS, every pipeline runs with allow_shutdown=False and votes,
+      and ONE shutdown decision is made at the end (also after a folder crashed or was skipped)."""
+    excs: list[BaseException] = []
+    pipeline = _run_cloud_pipeline if leg == "cloud" else _run_lan_pipeline
+    configured = _effective_fy_prefix(config)
+    runs = [(fy, fy_overlap.folder_view(config, fy), _stable_run_id(leg, fy)) for fy in folders]
+    started_at = now_iso()
+    monotonic_start = time.monotonic()
+    votes: list = []
+    interrupted = False
+    # WP5: a run that never gets the slot, or dies while waiting for it, must still leave a row: the
+    # first folder's RUNNING row is written before the wait (each pipeline re-stamps its own at its start)
+    if runs:
+        _record_running(runs[0][1], leg, runs[0][2], started_at)
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_backup_slot(config))
+        except Exception as e:  # noqa: BLE001
+            _slot_timeout_for_folders(leg, runs, started_at, monotonic_start, e)
+            return [e]
+        except BaseException as e:   # a cancel / stop while waiting for the slot: no row may stay RUNNING
+            status = statuses.decide_terminal_status(leg, "pre", f"{leg.upper()}_RUNNING",
+                                                     statuses.EXC_INTERRUPTED)
+            for fy, view, run_id in runs:
+                try:
+                    _record_run(view, run_id, leg, started_at, status, -1,
+                                f"Backup interrupted while waiting to start: {e!r}",
+                                monotonic_start=monotonic_start)
+                except Exception as rec_err:  # noqa: BLE001
+                    logger.critical(f"Failed to record {status} for run {run_id}: {rec_err}")
+            raise
+        config, runs = _rederive_after_slot(config, config_path, leg, runs)
+        try:
+            for i, (fy, view, run_id) in enumerate(runs):
+                logger.info(f"Starting {leg} backup pipeline for {fy}")
+                kwargs = dict(approval_id=approval_id, budget_hours=budget_hours,
+                              late_seconds=late_seconds, slot_held=True, shared_budget=i > 0,
+                              budget_monotonic_start=monotonic_start)
+                if leg == "lan":
+                    kwargs.update(allow_shutdown=False, shutdown_votes=votes,
+                                  early_nas_folder=(fy != configured))
+                try:
+                    pipeline(view, run_id, started_at, time.monotonic(), **kwargs)
+                except Exception as e:  # noqa: BLE001 - the next folder still runs
+                    excs.append(e)
+        except BaseException:        # a cancel / service stop: no NAS decision while terminating
+            interrupted = True
+            raise
+        finally:
+            if leg == "lan" and not interrupted:
+                try:
+                    result = _lan_shutdown_decision(config, votes, len(runs))
+                    if result is None:
+                        _flag_nas_left_on(config, votes, runs[-1][2] if runs else None)
+                    if result is not None:
+                        db = ManifestDB.from_config(config)
+                        try:
+                            if not db.merge_run_metrics(runs[-1][2], {"nas_shutdown": result}):
+                                logger.warning(f"NAS shutdown result not stored: no run row {runs[-1][2]}")
+                        finally:
+                            db.close()
+                except Exception as e:  # noqa: BLE001 - recorded, never raised
+                    logger.error(f"NAS shutdown decision failed: {e}")
+    return excs
+
+
 @flow(name="aam-backup", log_prints=True)
-def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
+def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str | None = None,
+           budget_hours: float | None = None, fy: str | None = None):
     """AAM Backup Automation — nightly backup orchestrator.
 
     Each pipeline step is a separate Prefect task — visible in the Prefect UI
@@ -1277,7 +3723,19 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         cloud — Run only cloud backup (rclone sync → GCS)
         lan   — Run only LAN backup (robocopy /MIR, includes WoL + shutdown)
         all   — Run both sequentially (cloud first, then LAN)
+
+    approval_id: set only by the dashboard when a human approved a BLOCKED
+    run once (plan §6.2); scheduled runs never pass one.
+
+    budget_hours: manual runs only (e.g. the first full upload over a
+    weekend): replaces budget.<leg>_max_hours for this run. Scheduled runs
+    never pass it, so the schedule check (WP14) stays valid.
+
+    fy: one FY folder only (manual per-FY runs and approved re-runs, plan 5.3): it must be in the
+    active set, else the run is refused. Without it every active folder is backed up, new FY first.
     """
+    if budget_hours is not None and not 0 < budget_hours <= 168:
+        raise ValueError(f"budget_hours must be between 0 and 168, got {budget_hours}")
     valid_modes = {"cloud", "lan", "all"}
     mode = mode.lower()
     if mode not in valid_modes:
@@ -1291,13 +3749,24 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
         logger.debug(f"configure_prefect_bridge skipped: {e} - Prefect UI may not show loguru logs")
 
     logger.info(f"AAM Backup starting - mode={mode}, firm={config.firm_name}")
+    _activate_overlap(config)
+
+    # Disabled-leg guard: an explicit single-leg request for a disabled leg
+    # must fail loudly (Prefect FAILED, no run_history row, no success
+    # appearance) rather than no-op into a successful run. mode="all" still
+    # runs whichever legs are enabled (config validation forbids both off).
+    if mode == "cloud" and not config.cloud.enabled:
+        raise ValueError("Cloud backup leg is disabled in configuration; refusing to run.")
+    if mode == "lan" and not config.lan.enabled:
+        raise ValueError("LAN backup leg is disabled in configuration; refusing to run.")
 
     # G8: clean up orphaned robocopy temp logs left behind by hard-killed
     # processes (SCM stop, timeout kill, crash). Normal runs delete their own
-    # log in a finally block; only killed runs strand them in %TEMP%. The 24h
-    # age gate protects a concurrently running pipeline's active log.
+    # log in a finally block; only killed runs strand them in %TEMP%. The age
+    # gate protects a concurrently running pipeline's active log.
     try:
-        cleanup_orphaned_robocopy_logs(max_age_hours=24)
+        cleanup_orphaned_robocopy_logs(
+            max_age_hours=config.maintenance.orphan_robocopy_log_max_age_hours)
     except Exception as e:
         logger.warning(f"Orphaned robocopy log cleanup failed (non-fatal): {e}")
 
@@ -1308,52 +3777,55 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all"):
     # flow-level wrapper is intentionally GONE in this same commit; keeping
     # both would self-deadlock the limit=1 resource.
     excs = []
+    # plan I2: only the FIRST leg of this flow run is late; a second leg starts when it starts
+    late_s = 0.0 if budget_hours is not None else _scheduled_lateness_seconds()
+
+    # the FY folders of this run, worked out ONCE (plan 5.3); `fy` narrows it to one folder
+    runs_cloud = mode in ("cloud", "all") and config.cloud.enabled
+    runs_lan = mode in ("lan", "all") and config.lan.enabled
+    folders = _active_fys(config) if (runs_cloud or runs_lan) else []
+    if approval_id is not None and fy is None and folders:
+        # a re-run with an approval but no explicit fy (a hand-made call) never spreads over several folders:
+        # it only touches the configured FY (the dashboard always passes the approval's fy)
+        folders = [_effective_fy_prefix(config)]
+    if fy is not None and folders:
+        if fy not in folders:
+            raise ValueError(f"FY {fy} is not being backed up right now (active: {', '.join(folders)}); "
+                             "refusing to run it.")
+        folders = [fy]
+
+    if folders:
+        _refuse_stale_manual_start(config, mode, folders)
 
     try:
         # ── Cloud ──
-        if mode in ("cloud", "all") and config.cloud.enabled:
-            logger.info("Starting cloud backup pipeline")
-            try:
-                _run_cloud_pipeline(config, _stable_run_id("cloud"), now_iso(), time.monotonic())
-            except Exception as e:
-                excs.append(e)
+        if runs_cloud:
+            logger.info(f"Starting cloud backup for {', '.join(folders)}")
+            excs.extend(_run_leg_folders(config, "cloud", folders,
+                                         approval_id=approval_id, budget_hours=budget_hours,
+                                         late_seconds=late_s, config_path=config_path))
+            late_s = 0.0
 
         # ── LAN ──
-        if mode in ("lan", "all") and config.lan.enabled:
-            logger.info("Starting LAN backup pipeline")
-            try:
-                _run_lan_pipeline(config, _stable_run_id("lan"), now_iso(), time.monotonic())
-            except Exception as e:
-                excs.append(e)
+        if runs_lan:
+            logger.info(f"Starting LAN backup for {', '.join(folders)}")
+            excs.extend(_run_leg_folders(config, "lan", folders,
+                                         approval_id=approval_id, budget_hours=budget_hours,
+                                         late_seconds=late_s, config_path=config_path))
 
         # ── Summary ──
         if excs:
             error_summary = '; '.join(str(e) for e in excs)
             logger.error(f"Backup completed with {len(excs)} error(s): {error_summary}")
-            # PartialRun legs already sent their specific (partial/suspect)
-            # alert in-pipeline; a duplicate generic alert would page twice
-            # for one event. Generic alert fires for all other failures.
-            if any(not isinstance(e, PartialRun) for e in excs):
-                try:
-                    send_failure_alert(
-                        config.notifications,
-                        config.firm_name,
-                        error_summary,
-                        {"mode": mode},
-                        timestamp=now_iso(),
-                    )
-                except Exception:
-                    pass
+            # WP8: no generic alert here - every failed leg already sent its
+            # ONE alert at its terminal decision (or its ACTION REQUIRED
+            # email when blocked); a second email per failure was the
+            # duplicate-alert finding.
             raise ExceptionGroup("Backup completed with errors", excs)
 
         # ── Maintenance ──
         try:
-            db = ManifestDB(
-                config.paths.database_path,
-                busy_timeout_ms=config.maintenance.sqlite_busy_timeout_ms,
-                vacuum_freelist_threshold=config.maintenance.sqlite_vacuum_freelist_threshold,
-                synchronous=config.maintenance.sqlite_synchronous,
-            )
+            db = ManifestDB.from_config(config)
             db.purge_old_runs(retention_days=config.maintenance.db_retention_days)
             db.close()
         except Exception as e:

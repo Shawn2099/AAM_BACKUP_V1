@@ -7,25 +7,22 @@ generate_report_html() is shared between email delivery and UI download.
 import csv
 import html
 import io
-import random
+import json
 import re
-import smtplib
-import time
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import humanize
+import pendulum
 from loguru import logger
 
-from core.manifest import ManifestDB
-from core.time_utils import now_formatted
+from core import faults, manual_leg, statuses
+from core.email_compose import LEG_LABEL
+from core.manifest import ALL_FYS, ManifestDB
+from core.notify import AUDIENCE_ALERTS, AUDIENCE_REPORTS, SENT, send_email
+from core.report_period import ReportPeriod
+from core.time_utils import IST, format_ist, now_formatted
 from models.config import NotificationConfig
 
 
-_SMTP_MAX_ATTEMPTS = 3
-_SMTP_BASE_DELAY_SECONDS = 10
-_SMTP_JITTER_FACTOR = 0.2
 
 
 def _send_email_with_attachments(
@@ -33,77 +30,15 @@ def _send_email_with_attachments(
     subject: str,
     body_html: str,
     attachments: list[dict] = None,
+    *,
+    audience: str,
 ) -> bool:
-    """Send email via SMTP with optional attachments. Returns True on success."""
-    if not all([config.smtp_host, config.sender, config.recipients]):
-        logger.warning("Email not configured - skipping")
-        return False
-
-    if not config.smtp_username or not config.smtp_password:
-        logger.warning("SMTP credentials not set - skipping")
-        return False
-
-    msg = MIMEMultipart("mixed")
-    msg["Subject"] = subject
-    msg["From"] = config.sender
-    msg["To"] = ", ".join(config.recipients)
-
-    # Attach the HTML body
-    msg_alt = MIMEMultipart("alternative")
-    msg_alt.attach(MIMEText(body_html, "html"))
-    msg.attach(msg_alt)
-
-    # Attach the files
-    if attachments:
-        for att in attachments:
-            part = MIMEApplication(att["content"], Name=att["filename"])
-            part["Content-Disposition"] = f'attachment; filename="{att["filename"]}"'
-            msg.attach(part)
-
-    for attempt in range(1, _SMTP_MAX_ATTEMPTS + 1):
-        server: smtplib.SMTP | smtplib.SMTP_SSL | None = None
-        try:
-            if config.smtp_port == 465:
-                server = smtplib.SMTP_SSL(config.smtp_host, config.smtp_port, timeout=30)
-            else:
-                server = smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=30)
-                server.starttls()
-
-            server.login(config.smtp_username, config.smtp_password)
-            server.sendmail(config.sender, config.recipients, msg.as_string())
-
-            logger.info(f"Email sent: {subject} (attempt {attempt}/{_SMTP_MAX_ATTEMPTS})")
-            return True
-
-        except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused) as e:
-            # Auth failures or rejected senders/recipients are permanent — never retry
-            logger.error(f"Email failed (permanent SMTP error): {e}")
-            return False
-
-        except Exception as e:
-            if attempt < _SMTP_MAX_ATTEMPTS:
-                delay = _SMTP_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-                jitter = delay * _SMTP_JITTER_FACTOR * (2 * random.random() - 1)
-                wait = max(0.0, delay + jitter)
-                logger.warning(
-                    f"Email attempt {attempt}/{_SMTP_MAX_ATTEMPTS} failed: {e} "
-                    f"- retrying in {wait:.1f}s"
-                )
-                time.sleep(wait)
-            else:
-                logger.error(
-                    f"Email failed after {_SMTP_MAX_ATTEMPTS} attempts "
-                    f"('{subject}'): {e}"
-                )
-
-        finally:
-            if server is not None:
-                try:
-                    server.quit()
-                except Exception:
-                    pass
-
-    return False
+    """Send one email through the SINGLE SMTP transport (core.notify.send_email,
+    plan WP8): retries via tenacity, 5xx permanent / 4xx retried (the SMTP
+    library raises SenderRefused for transient 4xx replies too), optional auth,
+    configurable security and timeout. True only when delivered."""
+    result = send_email(config, subject, body_html, attachments or [], audience=audience)
+    return result.status == SENT
 
 
 def send_failure_alert(
@@ -124,7 +59,7 @@ def send_failure_alert(
     mode = (run_data.get("mode") or "unknown").upper()
     subject = f"Backup Failure Alert - {firm_name} ({mode})"
 
-    ts_display = f"<p><strong>Time:</strong> {html.escape(timestamp[:19].replace('T', ' '))}</p>" if timestamp else ""
+    ts_display = f"<p><strong>Time:</strong> {html.escape(format_ist(timestamp))}</p>" if timestamp else ""
     status_code = html.escape(str(run_data.get("status") or ""))
     exit_code = run_data.get("exit_code")
     exit_code_display = html.escape(str(exit_code)) if exit_code is not None else "-"
@@ -165,7 +100,8 @@ def send_failure_alert(
 </body>
 </html>"""
 
-    return _send_email_with_attachments(config, subject, body, attachments)
+    return _send_email_with_attachments(config, subject, body, attachments,
+                                        audience=AUDIENCE_ALERTS)
 
 
 # G5: cells that begin with one of these are interpreted as formulas/commands
@@ -221,115 +157,566 @@ def _generate_csv_data(runs: list[dict]) -> bytes:
     return output.getvalue().encode("utf-8")
 
 
-def generate_report_html(
-    db: ManifestDB,
-    firm_name: str,
-    days: int,
-    period: str,
-    is_email: bool = False
-) -> str:
-    """Generate an HTML report string for the given time period.
+BACKUP_LEGS = ("cloud", "lan")
 
-    Returns "" if no runs found in the period.
-    Usable by both email delivery and UI download endpoints.
-    """
-    runs = db.get_runs_since(days)
 
-    if not runs:
-        return ""
+def resolve_period(days: int, period: str, now=None, report_period=None) -> ReportPeriod:
+    """The period a report covers. Callers that know it (the scheduled flows: the previous
+    calendar week/month of the run's scheduled time) pass `report_period`; the legacy
+    (days, name) form means the previous calendar month for "Monthly", else the last `days`."""
+    if report_period is not None:
+        return report_period
+    now = now or pendulum.now(IST)
+    if period == "Monthly":
+        return ReportPeriod.previous_month(now)
+    return ReportPeriod.last_days(days, now)
 
-    total = len(runs)
-    successes = sum(1 for r in runs if (str(r.get("status", "")).endswith("_COMPLETE") and "NO_CHANGES" not in str(r.get("status", ""))) or r.get("status") == "SUCCESS")
-    no_changes = sum(1 for r in runs if "NO_CHANGES" in str(r.get("status", "")))
-    partials = sum(1 for r in runs if str(r.get("status", "")).endswith("_PARTIAL"))
-    skipped = sum(1 for r in runs if str(r.get("status", "")).endswith("_SKIPPED"))
-    failures = total - successes - no_changes - partials - skipped
 
-    total_files = sum(r.get("files_copied") or 0 for r in runs)
-    total_bytes = sum(r.get("bytes_copied") or 0 for r in runs)
+def period_runs(db: ManifestDB, days: int, period: str, now=None, report_period=None):
+    """(runs, label) of a report period (audit 2026-10-18 item 5; plan C)."""
+    rp = resolve_period(days, period, now, report_period)
+    return db.get_runs_between(rp.start, rp.end, fy=ALL_FYS), rp.label
 
-    success_rate = ((successes + no_changes) / total * 100) if total > 0 else 0
 
-    def _status_display(status: str) -> str:
-        if status in ("CLOUD_NO_CHANGES_COMPLETE", "LAN_NO_CHANGES_COMPLETE"):
-            return "No Changes"
-        if status.endswith("_COMPLETE") or status == "SUCCESS":
-            return "Completed"
-        if "_PARTIAL" in status:
-            return "Partial"
-        if "_FAILED" in status:
-            return "Failed"
-        if "_SKIPPED" in status:
-            return "Skipped"
-        return status
+def _when(run: dict):
+    try:
+        return pendulum.parse(str(run.get("started_at")), tz=IST)
+    except Exception:  # noqa: BLE001 - an unreadable time sorts first, never crashes
+        return pendulum.datetime(1970, 1, 1, tz=IST)
 
-    # Limit to 10 rows in the email body to guarantee we stay under the 102KB limit
-    rows = ""
-    row_count = 0
-    for r in runs[:10]:
-        start = (r.get("started_at") or "-")[:19].replace("T", " ")
-        mode = (r.get("mode") or "unknown").upper()
-        status = _status_display(r.get("status") or "")
-        files = r.get("files_copied") or 0
-        dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
-        
-        # Heavy truncation for the inline email (CSV will have full error)
-        err = r.get("error_message", "")
-        if err and len(err) > 100:
-            err_display = html.escape(err[:97]) + "..."
-        else:
-            err_display = html.escape(err) if err else "-"
-            
-        rows += f"<tr><td>{html.escape(start)}</td><td>{html.escape(mode)}</td><td>{html.escape(status)}</td><td>{files}</td><td>{html.escape(dur)}</td><td>{err_display}</td></tr>"
-        row_count += 1
 
-    now = now_formatted("YYYY-MM-DD HH:mm z")
+_OK = (statuses.CATEGORY_SUCCESS, statuses.CATEGORY_NO_CHANGES)
 
-    integrity_rows = ""
-    for leg in ("cloud", "lan"):
+
+def _fault(run: dict) -> tuple[str | None, str]:
+    try:
+        code = (json.loads(run.get("extended_metrics") or "{}") or {}).get("fault_code")
+    except (ValueError, AttributeError):
+        code = None
+    if code in faults.CATALOG:
+        return code, faults.CATALOG[code].title
+    return None, statuses.label(run.get("status"))
+
+
+def leg_summaries(db, runs: list[dict], legs, fy: str = ALL_FYS) -> list[dict]:
+    """Per leg: runs OK, last good copy, problems (fault code, resolved?)."""
+    out = []
+    for leg in legs:
+        leg_runs = sorted((r for r in runs if r.get("mode") == leg), key=_when)
+        finished = [r for r in leg_runs
+                    if statuses.category(r.get("status")) != statuses.CATEGORY_RUNNING]
+        ok_times = [_when(r) for r in finished if statuses.category(r.get("status")) in _OK]
+        problems = []
+        for r in finished:
+            if statuses.category(r.get("status")) in _OK:
+                continue
+            code, title = _fault(r)
+            problems.append({"when": format_ist(r.get("started_at"), "D MMM, h:mm A"),
+                             "code": code, "title": title,
+                             "resolved": any(t > _when(r) for t in ok_times),
+                             "_at": _when(r)})
         try:
-            audit = db.latest_audit(leg)
-        except Exception:
+            last = db.last_successful_run(leg, fy=fy)
+        except Exception:  # noqa: BLE001 - a partial DB (tests) has no history query
+            last = None
+        # P3: a failure is resolved by ANY later good run, also one after the period ends
+        last_good_start = _when(last) if isinstance(last, dict) else None
+        if last_good_start is not None:
+            for p in problems:
+                p["resolved"] = p["resolved"] or last_good_start > p["_at"]
+        for p in problems:
+            del p["_at"]
+        last_when = (last.get("ended_at") or last.get("started_at")) if last else None
+        out.append({"leg": leg, "label": LEG_LABEL.get(leg, leg.upper()),
+                    "total": len(finished), "ok": len(ok_times), "problems": problems,
+                    "last_good": format_ist(last_when, "D MMM YYYY, h:mm A") if last_when
+                    else "none yet"})
+    return out
+
+
+def _open_decisions(db) -> int:
+    try:
+        return len(db.open_approvals())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _name(s: dict) -> str:
+    """A leg's name in a line; with several FY sections it says which FY (OV-9.1)."""
+    return f"{s['label']} ({s['fy']})" if s.get("show_fy") and s.get("fy") else s["label"]
+
+
+def _shortfall_line(s: dict, action: bool = True) -> str:
+    """The sentence for a leg whose scheduled nights have no run row (D10 wording for a closed FY)."""
+    n, m = s["missing"], s["expected"]
+    if s.get("no_longer_backed_up"):
+        text = f"{s['fy']} is no longer backed up - {n} of {m} nights have no record"
+    else:
+        name = f"{s['label']} ({s['fy']})" if s.get("fy") else s["label"]
+        text = f"{name} - {n} of {m} scheduled nights have no backup record"
+    return ("action needed: " + text) if action else text
+
+
+def report_headline(db, summaries: list[dict]) -> tuple[str, bool]:
+    """(one line for the subject and the top, whether a person must act). A leg with no run is a
+    missing backup only if a run was SCHEDULED in the period (`scheduled` > 0, or unknown)."""
+    for s in summaries:
+        if s["total"] == 0 and s.get("scheduled", 1) > 0:
+            return f"action needed: {_name(s)} - no backup ran", True
+    for s in summaries:
+        if s.get("missing", 0) > 0:
+            return _shortfall_line(s), True
+    for s in summaries:
+        open_problems = [p for p in s["problems"] if not p["resolved"]]
+        if open_problems:
+            return f"action needed: {_name(s)} - {open_problems[-1]['title']}", True
+    for s in summaries:
+        try:
+            audit = db.latest_audit(s["leg"], fy=s.get("fy") or ALL_FYS)
+        except Exception:  # noqa: BLE001
             audit = None
-        if not audit:
-            status_text, checked, detail = "NOT VERIFIED", "-", "No independent audit has run yet."
+        if isinstance(audit, dict) and audit.get("status") == "VERIFICATION_FAILED":
+            return f"action needed: {_name(s)} - safety check found differences", True
+    if _open_decisions(db):
+        return "action needed: a backup is waiting for your decision", True
+    fixed = sum(len(s["problems"]) for s in summaries)
+    if fixed:
+        return f"backups OK - {fixed} problem(s) this period, all resolved", False
+    if summaries and all(s["total"] == 0 for s in summaries):
+        if any(s.get("manual") for s in summaries):
+            return "no backup was started in this period (manual only)", False
+        return "no backup was scheduled in this period", False
+    return "all backups OK", False
+
+
+def _mode_notes(config, db) -> list[dict]:
+    """The truth lines for legs that are off or manual only (core.manual_leg); [] without a config."""
+    if config is None:
+        return []
+    try:
+        return manual_leg.mode_lines(config, db)
+    except Exception as e:  # noqa: BLE001 - never stops the report
+        logger.warning(f"Manual-leg lines skipped in the report ({e})")
+        return []
+
+
+def _audit_row(db, leg: str, fy: str = ALL_FYS) -> dict:
+    try:
+        audit = db.latest_audit(leg, fy=fy)
+    except Exception:  # noqa: BLE001 - a partial DB (tests) has no audit query
+        audit = None
+    if not isinstance(audit, dict) or not audit:
+        return {"leg": leg, "status": "NOT VERIFIED", "checked": "-",
+                "detail": "No independent audit has run yet."}
+    status_text = audit.get("status", "UNKNOWN")
+    if status_text == "AUDIT_INCOMPLETE":
+        # WP7: "could not run" (network/TLS/DNS/process) is never divergence
+        status_text = "AUDIT COULD NOT RUN"
+    if status_text == "PENDING_BACKUP":
+        status_text = "NEWER FILES WAIT FOR THE NEXT BACKUP"
+    detail = str(audit.get("detail") or "-")
+    if audit.get("newer_incomplete_at"):        # A1: the failure stays until a check reaches a verdict
+        detail += f" The newer check on {format_ist(audit['newer_incomplete_at'])} could not run."
+    return {"leg": leg, "status": status_text,
+            "checked": format_ist(audit.get("ended_at") or audit.get("started_at")),
+            "detail": detail}
+
+
+def _scheduled_counts(schedule, summaries: list[dict], rp: ReportPeriod, window=None,
+                      manual_legs=()) -> None:
+    """Set `scheduled` on each leg summary: how many runs the schedule planned in the period (so an
+    empty period of a weekly plan is not reported as a missing backup). No schedule = unknown, which
+    keeps the old behaviour (an empty period is action needed). `window` = (start, end) of one FY
+    inside the period (OV-9.1); an empty window plans nothing."""
+    from core import overdue
+
+    start, end = window if window is not None else (rp.start, rp.end)
+    for s in summaries:
+        if s["leg"] in manual_legs:     # manual only: nothing is scheduled, so nothing can be "missing"
+            s["scheduled"], s["manual"] = 0, True
+            continue
+        try:
+            s["scheduled"] = (0 if end <= start else overdue.firings_between(
+                getattr(schedule, f"{s['leg']}_cron"), schedule.timezone, start, end))
+        except Exception:  # noqa: BLE001 - unreadable schedule: leave it unknown, never hide a gap
+            s.pop("scheduled", None)
+
+
+def _shortfall(db, config, s: dict, window, fy, active, switched: bool) -> None:
+    """Set `expected` / `missing` (and `no_longer_backed_up`) on one leg summary: the scheduled nights of
+    the leg's window that have NO run row (opus-decision D10 / report shortfall rule). A night is covered
+    when a run row of this leg and FY starts in [firing, firing + budget + stale_grace_hours); runs and
+    firings are matched one-to-one in time order. A row with a bad status covers its night (the problem
+    list already reports it). The window never starts before the leg's first run row ever; a leg with no
+    row at all keeps the plain "no backup ran" rule. Unknown inputs leave the summary unflagged."""
+    from datetime import timedelta
+
+    from core import overdue
+
+    leg, scope = s["leg"], fy or ALL_FYS
+    try:
+        first = _parse_ist(db.first_run_started_at(leg, scope))
+        if first is None:
+            return
+        start, end = window
+        start = max(start, first)
+        schedule = config.schedule
+        span = timedelta(hours=float(getattr(config.budget, f"{leg}_max_hours"))
+                         + float(config.dashboard.stale_grace_hours))
+        firings = [pendulum.instance(f).in_timezone(IST) for f in overdue.firing_times(
+            getattr(schedule, f"{leg}_cron"), schedule.timezone, start, end)] if end > start else []
+        starts = sorted(t for t in (_parse_ist(r.get("started_at")) for r in db.get_runs_between(
+            start, end + span, leg, fy=scope)) if t is not None)
+    except Exception as e:  # noqa: BLE001 - unreadable inputs: unflagged here, the other rules still run
+        logger.warning(f"Shortfall check skipped for {leg} {fy}: {e}")
+        return
+    missing, used = 0, 0
+    for f in firings:
+        while used < len(starts) and starts[used] < f:
+            used += 1                                   # a run before this firing cannot cover it
+        if used < len(starts) and starts[used] < f + span:
+            used += 1
         else:
-            status_text = audit.get("status", "UNKNOWN")
-            checked = (audit.get("ended_at") or audit.get("started_at") or "-")[:19].replace("T", " ")
-            detail = html.escape(str(audit.get("detail") or "-"))
-        integrity_rows += (
-            f"<tr><td style=\"padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;width:180px\">"
-            f"{leg.upper()} Integrity</td><td style=\"padding:6px 12px;border:1px solid #e5e7eb\">"
-            f"{html.escape(status_text)} (checked: {html.escape(str(checked))})<br>"
-            f"<span style=\"color:#6b7280;font-size:0.85rem\">{detail}</span></td></tr>"
-        )
+            missing += 1
+    s["expected"], s["missing"] = len(firings), missing
+    s["no_longer_backed_up"] = bool(missing and fy and active is not None
+                                    and fy not in active and fy != _configured_fy(config) and not switched)
+
+
+def _configured_fy(config):
+    from core import fy_overlap
+
+    return fy_overlap._configured(config)
+
+
+def _switched(db, fy) -> bool:
+    """Did the journal that closes `fy` finish its config switch?"""
+    try:
+        from core import fy_overlap, rollover_journal as rj
+
+        journal = db.rollover_get(fy, fy_overlap.next_fy(fy))
+        return bool(journal and rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _parse_ist(value):
+    try:
+        return pendulum.parse(str(value), tz=IST)
+    except Exception:  # noqa: BLE001 - an unreadable time is "unknown", never a crash
+        return None
+
+
+def _prev_fy(fy: str) -> str | None:
+    """The FY whose next_fy() is `fy` (FY27-28 -> FY26-27), wrap-safe; None for a name that is not canonical."""
+    import re
+
+    m = re.fullmatch(r"FY(\d{2})-(\d{2})", str(fy))
+    if not m:
+        return None
+    a = (int(m.group(1)) - 1) % 100
+    return f"FY{a:02d}-{int(m.group(1)):02d}"
+
+
+def fy_window(db, fy: str, rp: ReportPeriod) -> tuple:
+    """(start, end) of the part of the period in which `fy` was backed up on schedule (OV-9.1, R-10):
+    from max(period start, its activation) to min(period end, the switch that ended it). The configured
+    FY has no activation row; an FY that was never switched away from has no switch time."""
+    start, end = rp.start, rp.end
+    try:
+        act = db.get_activation(fy)
+    except Exception:  # noqa: BLE001 - a partial DB (tests) has no activations
+        act = None
+    at = _parse_ist(act.get("activated_at")) if act else None
+    if at is None:
+        # no activation row (overlap off, or it never ran): the FY became the configured one at the
+        # CONFIG_SWITCH of the journal prev_fy -> fy; nothing was planned for it before that (review B1)
+        try:
+            from core import rollover_journal as rj
+
+            prev = _prev_fy(fy)
+            j = db.rollover_get(prev, fy) if prev else None
+            step = j["steps"][rj.CONFIG_SWITCH] if j else None
+            at = _parse_ist(step.get("finished_at")) if step and rj.is_finished(step) else None
+        except Exception:  # noqa: BLE001 - no journal: the window stays the whole period
+            at = None
+    if at is not None and at > start:
+        start = at
+    try:
+        from core import fy_overlap, rollover_journal as rj
+
+        journal = db.rollover_get(fy, fy_overlap.next_fy(fy))
+        switched = (journal["steps"][rj.CONFIG_SWITCH].get("finished_at")
+                    if journal and rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]) else None)
+    except Exception:  # noqa: BLE001
+        switched = None
+    sw = _parse_ist(switched) if switched else None
+    if sw is not None and sw < end:
+        end = sw
+    return start, end
+
+
+def fy_sections(db, runs: list[dict], rp: ReportPeriod, config=None) -> list[tuple]:
+    """[(fy, window)] newest FY first: the FYs with runs in the period plus the active set (plan 5.9).
+    A FY with no run and an empty window (it had not started yet) is left out. No FY information at all
+    gives one section for the whole period (the report of a single-FY install is unchanged)."""
+    fys = {r["fy"] for r in runs if r.get("fy")}
+    if config is not None:
+        try:
+            from core import fy_overlap
+
+            fys.update(fy_overlap.active_folders(config, db, fy_overlap.run_date(None)))
+        except Exception as e:  # noqa: BLE001 - the report still goes out, from the runs alone
+            logger.warning(f"Active FYs unknown for the report ({e}); sections come from the runs")
+    if not fys:
+        return [(None, (rp.start, rp.end))]
+    out = []
+    def _start(name):
+        import re
+        m = re.search(r"\d{2}", str(name))
+        return int(m.group(0)) if m else 0
+
+    ref = _start(next(iter(sorted(fys))))
+    # new first; start years compared modulo 100 so FY00-01 is newer than FY99-00 (review N4)
+    for fy in sorted(fys, key=lambda f: ((_start(f) - ref + 50) % 100, f), reverse=True):
+        window = fy_window(db, fy, rp)
+        if window[1] <= window[0] and not any(r.get("fy") == fy for r in runs):
+            continue
+        out.append((fy, window))
+    return out or [(None, (rp.start, rp.end))]
+
+
+def _totals(runs: list[dict]) -> dict:
+    cats = [statuses.category(r.get("status")) for r in runs]
+    total = len(runs)
+    successes = cats.count(statuses.CATEGORY_SUCCESS)
+    no_changes = cats.count(statuses.CATEGORY_NO_CHANGES)
+    partials = cats.count(statuses.CATEGORY_PARTIAL)
+    skipped = cats.count(statuses.CATEGORY_SKIPPED)
+    blocked = cats.count(statuses.CATEGORY_BLOCKED)
+    running = cats.count(statuses.CATEGORY_RUNNING)
+    return {"total": total, "successes": successes, "no_changes": no_changes,
+            "partials": partials, "skipped": skipped, "blocked": blocked, "running": running,
+            # everything not positively classified counts as a failure (fail loud)
+            "failures": total - successes - no_changes - partials - skipped - blocked - running,
+            "success_rate": ((successes + no_changes) / total * 100) if total else 0}
+
+
+def _per_leg(runs: list[dict], legs) -> dict:
+    return {leg: {"files": sum(r.get("files_copied") or 0 for r in runs if r.get("mode") == leg),
+                  "bytes": sum(r.get("bytes_copied") or 0 for r in runs if r.get("mode") == leg)}
+            for leg in legs}
+
+
+def build_report_model(db: ManifestDB, report_period: ReportPeriod, legs=None, schedule=None,
+                       alerts_off=None, config=None) -> dict:
+    """Everything a report says, computed ONCE (plan C3). Every renderer (email, download, CSV,
+    subject) reads this and nothing else, so they cannot disagree.
+
+    runs      backup runs (cloud / lan) that STARTED in the period; rollover and audit rows are
+              not backups and are left out (P4)
+    per_leg   files / bytes copied per leg, never added together across legs (P4)
+    summaries per leg: runs OK, last good copy, problems; "resolved" looks at the whole history (P3)
+    audits    latest independent audit of each ENABLED leg only (P5)
+    sections  one per FY, new first (OV-9.1): that FY's runs, totals, per-leg data, summaries, audits.
+              The top-level keys are the whole period (CSV, subject); with one FY they equal its section."""
+    runs = [r for r in db.get_runs_between(report_period.start, report_period.end, fy=ALL_FYS)
+            if r.get("mode") in BACKUP_LEGS]
+    legs = tuple(legs) if legs is not None else BACKUP_LEGS
+    plan = fy_sections(db, runs, report_period, config)
+    multi = len(plan) > 1
+    active = None
+    if schedule is not None and config is not None:
+        try:
+            from core import fy_overlap
+
+            active = fy_overlap.active_folders(config, db, fy_overlap.run_date(None))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Active FYs unknown for the shortfall check ({e})")
+    sections = []
+    for fy, window in plan:
+        sruns = [r for r in runs if (r.get("fy") == fy or fy is None)] if multi or fy else runs
+        summaries = leg_summaries(db, sruns, legs, fy=fy or ALL_FYS)
+        if schedule is not None:
+            manual_legs = ({leg for leg in manual_leg.LEG_NAME if manual_leg.is_manual_only(config, leg)}
+                           if config is not None else set())
+            _scheduled_counts(schedule, summaries, report_period, window if fy else None, manual_legs)
+            if config is not None:
+                for s in summaries:
+                    if "scheduled" in s and not s.get("manual"):
+                        _shortfall(db, config, s, window if fy else (report_period.start, report_period.end),
+                                   fy, active, _switched(db, fy) if fy else False)
+        for s in summaries:
+            s["fy"], s["show_fy"] = fy, multi
+        audits = [_audit_row(db, leg, fy or ALL_FYS) for leg in legs]
+        for a in audits:
+            a["fy"], a["show_fy"] = fy, multi
+        sections.append({"fy": fy, "window": window, "runs": sruns, "totals": _totals(sruns),
+                         "per_leg": _per_leg(sruns, legs), "summaries": summaries, "audits": audits})
+    summaries = [s for sec in sections for s in sec["summaries"]]
+    headline, act = report_headline(db, summaries)
+    # a leg that is off or manual only is stated, never silent (owner 2026-11-23); an old manual
+    # backup is a soft note (amber, no "action needed", no mail)
+    notes = _mode_notes(config, db)
+    soft = any(n["soft_warn"] for n in notes)
+    if not act and soft:
+        headline = f"note: {next(n['text'] for n in notes if n['soft_warn'])}"
+    return {"alerts_off": list(alerts_off or []), "mode_notes": notes, "soft_warn": soft and not act,
+            "period": report_period, "legs": legs, "runs": runs, "totals": _totals(runs),
+            "per_leg": _per_leg(runs, legs), "summaries": summaries, "headline": headline,
+            "act": act, "sections": sections,
+            "audits": [a for sec in sections for a in sec["audits"]],
+            "open_decisions": _open_decisions(db)}
+
+
+_TD = "padding:6px 12px;border:1px solid #e5e7eb"
+_TH = ("text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;"
+       "font-size:0.85rem")
+
+
+def _summary_html(model: dict) -> str:
+    cell = "padding:6px 12px;border:1px solid #e5e7eb;vertical-align:top"
+    rows = ""
+    last_fy = object()
+    for s in model["summaries"]:
+        if s.get("show_fy") and s.get("fy") != last_fy:
+            last_fy = s.get("fy")
+            rows += (f"<tr><th colspan='3' style='{cell};text-align:left;background:#e5e7eb'>"
+                     f"{html.escape(str(last_fy))}</th></tr>")
+        if s.get("manual") and s["total"] == 0:
+            detail = "Manual only: no backup was started in this period."
+        elif s["total"] == 0 and s.get("scheduled", 1) == 0:
+            detail = "No backup was scheduled in this period."
+        elif s["total"] == 0:
+            detail = "No backup ran in this period."
+        else:
+            items = [f"{html.escape(p['when'])}: {html.escape(p['title'])}"
+                     + (f" ({p['code']})" if p["code"] else "")
+                     + (" - resolved" if p["resolved"] else " - <b>not resolved</b>")
+                     for p in s["problems"]]
+            detail = "<br>".join(items) or "No problems."
+            if s.get("missing", 0) > 0:
+                detail = (f"<b>{html.escape(_shortfall_line(s, action=False))}</b>"
+                          + (" - files saved in it are not protected" if s.get("no_longer_backed_up") else "")
+                          + ("<br>" + detail if items else ""))
+        rows += (f"<tr><th style='{cell};text-align:left;background:#f9fafb'>"
+                 f"{html.escape(s['label'])}</th><td style='{cell}'>{s['ok']} of {s['total']} "
+                 f"runs OK<br><span style='color:#6b7280'>Last good copy: "
+                 f"{html.escape(s['last_good'])}</span></td><td style='{cell}'>{detail}</td></tr>")
+    decisions = model["open_decisions"]
+    if decisions == 1:
+        open_items = "1 backup waiting for your decision on the dashboard"
+    elif decisions:
+        open_items = f"{decisions} backups waiting for your decision on the dashboard"
+    else:
+        open_items = "none"
+    act = model["act"]
+    todo = ("Open the dashboard and look at the items marked 'not resolved'; forward this "
+            "report to support if you are unsure." if act else "Nothing.")
+    colour = "#b91c1c" if act else ("#b45309" if model.get("soft_warn") else "#047857")
+    headline = model["headline"]
+    notes_html = "".join(
+        f"<p style='margin:0 0 6px 0;color:{'#b45309' if n['soft_warn'] else '#374151'}'>"
+        f"{html.escape(n['text'])}</p>" for n in model.get("mode_notes", []))
+    return (f"<div style='background:{colour};color:#ffffff;padding:10px 14px;border-radius:6px;"
+            f"font-weight:600;margin:0 0 16px 0'>"
+            f"{html.escape(headline[0].upper() + headline[1:])}</div>"
+            f"<table style='width:100%;border-collapse:collapse;margin:0 0 12px 0'>{rows}</table>"
+            f"{notes_html}"
+            f"<p><b>Open items:</b> {html.escape(open_items)}<br><b>What to do:</b> "
+            f"{html.escape(todo)}</p>")
+
+
+def _stat_row(label: str, value, bold: bool = False) -> str:
+    weight = ";font-weight:600" if bold else ""
+    return (f"<tr><td style=\"{_TD};background:#f9fafb;width:180px{weight}\">{html.escape(label)}"
+            f"</td><td style=\"{_TD}{weight}\">{value}</td></tr>\n")
+
+
+def _stats_html(t: dict, per_leg: dict, summaries: list[dict], rp) -> str:
+    if t["total"] == 0 and summaries and all(s.get("scheduled", 1) == 0 for s in summaries):
+        return (f"<p style=\"{_TD}\">No backup was scheduled in this period "
+                f"({html.escape(rp.label)}).</p>")
+    if t["total"] == 0:
+        return f"<p style=\"{_TD}\">No backups in {html.escape(rp.label)}.</p>"
+    data = "".join(
+        _stat_row(f"Files copied ({LEG_LABEL.get(leg, leg.upper())})", f"{v['files']:,}")
+        + _stat_row(f"Data transferred ({LEG_LABEL.get(leg, leg.upper())})",
+                    f"{v['bytes']:,} ({humanize.naturalsize(v['bytes'], binary=True)})")
+        for leg, v in per_leg.items())
+    return ("<table style=\"width:100%;border-collapse:collapse;margin:0 0 24px 0\">\n"
+            + _stat_row("Total Backups", t["total"])
+            + _stat_row("Successful Backups", t["successes"])
+            + _stat_row("No Changes (Up-to-date)", t["no_changes"])
+            + _stat_row("Partial Backups", t["partials"])
+            + _stat_row("Skipped Runs", t["skipped"])
+            + _stat_row("Blocked (approval needed)", t["blocked"])
+            + _stat_row("In Progress", t["running"])
+            + _stat_row("Failed Backups", t["failures"])
+            + _stat_row("Success Rate", f"{t['success_rate']:.1f}%", bold=True)
+            + data + "</table>")
+
+
+def render_report_html(model: dict, firm_name: str, is_email: bool = False, name: str = "") -> str:
+    """HTML of a report (the email body and the dashboard download), from the model only."""
+    rp, t = model["period"], model["totals"]
+    summary_html = _summary_html(model)
+    if model.get("alerts_off"):          # a switched-off kind of email must be visible to the reader
+        from core import alert_class
+
+        names = ", ".join(alert_class.LABELS[c] for c in model["alerts_off"])
+        summary_html += (f"<p style=\"{_TD};background:#fffbeb\">These emails are switched off: "
+                         f"{html.escape(names)}. The dashboard still shows every problem.</p>")
+    title = f"{name or rp.kind} Backup Report"
+
+    rows = ""
+    for r in model["runs"]:                       # every run of the period, not a "last 10"
+        dur = f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-"
+        err = r.get("error_message", "")
+        # heavy truncation for the inline email (the CSV has the full error)
+        err_display = (html.escape(err[:97]) + "..." if err and len(err) > 100
+                       else html.escape(err) if err else "-")
+        rows += (f"<tr><td>{html.escape(format_ist(r.get('started_at')))}</td>"
+                 f"<td>{html.escape((r.get('mode') or 'unknown').upper())}</td>"
+                 f"<td>{html.escape(statuses.label(r.get('status')))}</td>"
+                 f"<td>{r.get('files_copied') or 0}</td><td>{html.escape(dur)}</td>"
+                 f"<td>{err_display}</td></tr>")
+
+    secs = model.get("sections") or []
+    if len(secs) > 1:                               # one block per FY, new first (OV-9.1)
+        stats = "".join(
+            f"<h4 style=\"color:#374151;margin:8px 0\">{html.escape(str(sec['fy']))}</h4>"
+            + _stats_html(sec["totals"], sec["per_leg"], sec["summaries"], rp) for sec in secs)
+    else:
+        stats = _stats_html(t, model["per_leg"], model["summaries"], rp)
+
+    integrity_rows = "".join(
+        f"<tr><td style=\"{_TD};background:#f9fafb;width:180px\">{a['leg'].upper()} Integrity"
+        f"{html.escape(' (' + str(a['fy']) + ')') if a.get('show_fy') else ''}</td><td style=\"{_TD}\">{html.escape(a['status'])} (checked: "
+        f"{html.escape(str(a['checked']))})<br><span style=\"color:#6b7280;font-size:0.85rem\">"
+        f"{html.escape(a['detail'])}</span></td></tr>" for a in model["audits"])
 
     csv_notice = ""
     if is_email:
-        csv_notice = '<p style="color:#059669;font-weight:600;font-size:0.9rem;margin:16px 0;">A complete CSV with full error logs is attached to this email.</p>'
-
+        csv_notice = ('<p style="color:#059669;font-weight:600;font-size:0.9rem;margin:16px 0;">'
+                      'A complete CSV with full error logs is attached to this email.</p>')
+    generated = now_formatted("YYYY-MM-DD HH:mm z")
+    head = "".join(f"<th style=\"{_TH}\">{h}</th>"
+                   for h in ("Started", "Pipeline", "Status", "Files", "Duration", "Error"))
     return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
 <body style="font-family:system-ui,sans-serif;color:#1f2937;margin:0;padding:0">
 <div style="max-width:800px;margin:0 auto;padding:24px">
-<h2 style="color:#1e3a5f;margin:0 0 8px 0">{html.escape(period)} Backup Report — {html.escape(firm_name)}</h2>
-<p style="color:#6b7280;margin:0 0 24px 0">Period: Last {days} days (generated {now})</p>
+<h2 style="color:#1e3a5f;margin:0 0 8px 0">{html.escape(title)} — {html.escape(firm_name)}</h2>
+<p style="color:#6b7280;margin:0 0 16px 0">Period: {html.escape(rp.label)} (generated {generated})</p>
+
+{summary_html}
 
 {csv_notice}
 
 <h3 style="color:#374151;margin:0 0 8px 0">Summary</h3>
-<table style="width:100%;border-collapse:collapse;margin:0 0 24px 0">
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;width:180px">Total Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total}</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Successful Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{successes}</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">No Changes (Up-to-date)</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{no_changes}</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Partial Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{partials}</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Skipped Runs</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{skipped}</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Failed Backups</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{failures}</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb;font-weight:600">Success Rate</td><td style="padding:6px 12px;border:1px solid #e5e7eb;font-weight:600">{success_rate:.1f}%</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Files Backed Up</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_files:,}</td></tr>
-<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;background:#f9fafb">Data Transferred</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total_bytes:,} ({humanize.naturalsize(total_bytes, binary=True)})</td></tr>
-</table>
+{stats}
 
 <h3 style="color:#374151;margin:0 0 8px 0">Integrity Verification (independent weekly audit)</h3>
 <p style="color:#6b7280;font-size:0.85rem;margin:0 0 8px 0">A COMPLETE backup means the transfer finished normally — it does not imply independent content verification. Integrity below reflects the latest read-only audit only.</p>
@@ -337,15 +724,38 @@ def generate_report_html(
 {integrity_rows}
 </table>
 
-<h3 style="color:#374151;margin:0 0 8px 0">Recent Backups (Last 10)</h3>
+<h3 style="color:#374151;margin:0 0 8px 0">Recent Backups (all of the period)</h3>
 <table style="width:100%;border-collapse:collapse;margin:0 0 8px 0">
-<tr><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Started</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Pipeline</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Status</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Files</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Duration</th><th style="text-align:left;padding:6px 12px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:0.85rem">Error</th></tr>
+<tr>{head}</tr>
 {rows}
 </table>
-<p style="color:#6b7280;font-size:0.85rem;margin:0">Showing {row_count} most recent backups (out of {total} total)</p>
+<p style="color:#6b7280;font-size:0.85rem;margin:0">Showing all {len(model['runs'])} backups of the period</p>
 </div>
 </body>
 </html>"""
+
+
+def generate_report_html(
+    db: ManifestDB,
+    firm_name: str,
+    days: int,
+    period: str,
+    is_email: bool = False,
+    legs=None,
+    now=None,
+    report_period: ReportPeriod | None = None,
+    schedule=None,
+    alerts_off=None,
+    config=None,
+) -> str:
+    """HTML report for a period (plan C). An empty period still gives a report that says so
+    (P1). `legs` = the enabled legs; default: the legs that appear in the runs. `schedule` (the
+    config's schedule section) lets an empty period say "no backup was scheduled" instead of
+    "no backup ran" when none was due."""
+    rp = resolve_period(days, period, now, report_period)
+    return render_report_html(build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off,
+                                               config=config),
+                              firm_name, is_email, name=period)
 
 
 def send_summary_report(
@@ -355,32 +765,42 @@ def send_summary_report(
     days: int,
     period: str,
     body_html: str = None,
+    legs=None,
+    report_period: ReportPeriod | None = None,
+    schedule=None,
+    alerts_off=None,
+    app_config=None,
 ) -> bool:
     """Send aggregated summary report via email with CSV attachment.
 
-    Returns True if email sent, False if skipped or failed.
-    """
-    runs = db.get_runs_since(days)
-    if not runs:
-        logger.info(f"No runs found in last {days} days - skipping {period} report")
-        return False
-        
-    body = body_html or generate_report_html(db, firm_name, days, period, is_email=True)
-    if not body:
-        return False
+    Returns True if email sent, False if it failed."""
+    subject, body, attachments = build_summary_email(db, firm_name, days, period,
+                                                     body_html=body_html, legs=legs,
+                                                     report_period=report_period,
+                                                     schedule=schedule, alerts_off=alerts_off,
+                                                     config=app_config)
+    return _send_email_with_attachments(config, subject, body, attachments,
+                                        audience=AUDIENCE_REPORTS)
 
-    # Generate CSV with all runs for attachment
-    csv_bytes = _generate_csv_data(runs)
+
+def build_summary_email(db: ManifestDB, firm_name: str, days: int, period: str,
+                        body_html: str = None, legs=None, now=None,
+                        report_period: ReportPeriod | None = None, schedule=None, alerts_off=None,
+                        config=None) -> tuple[str, str, list[dict]]:
+    """(subject, html body, [CSV attachment]) for a summary report. A period with no runs is
+    still reported ("action needed: ... no backup ran", P1). The subject says the outcome."""
+    rp = resolve_period(days, period, now, report_period)
+    model = build_report_model(db, rp, legs, schedule=schedule, alerts_off=alerts_off, config=config)
+    body = body_html or render_report_html(model, firm_name, is_email=True, name=period)
     safe_firm = re.sub(r'[^a-zA-Z0-9_\-]', '_', firm_name)
-    csv_filename = f"{safe_firm}_{period}_Report.csv"
+    attachments = [{"filename": f"{safe_firm}_{period}_Report.csv",
+                    "content": _generate_csv_data(model["runs"])}]
+    return (f"[{firm_name} Backup] {period} backup report {rp.label} - {model['headline']}",
+            body, attachments)
 
-    attachments = [{
-        "filename": csv_filename,
-        "content": csv_bytes
-    }]
 
-    subject = f"Backup {period} Report - {firm_name}"
-    return _send_email_with_attachments(config, subject, body, attachments)
+def _legs_in(runs: list[dict]) -> tuple[str, ...]:
+    return tuple(leg for leg in ("cloud", "lan") if any(r.get("mode") == leg for r in runs))
 
 
 def send_weekly_report(
@@ -388,8 +808,15 @@ def send_weekly_report(
     config: NotificationConfig,
     firm_name: str,
     body_html: str = None,
+    legs=None,
+    report_period: ReportPeriod | None = None,
+    schedule=None,
+    alerts_off=None,
+    app_config=None,
 ) -> bool:
-    return send_summary_report(db, config, firm_name, 7, "Weekly", body_html=body_html)
+    return send_summary_report(db, config, firm_name, 7, "Weekly", body_html=body_html,
+                               legs=legs, report_period=report_period, schedule=schedule,
+                               alerts_off=alerts_off, app_config=app_config)
 
 
 def send_monthly_report(
@@ -397,6 +824,13 @@ def send_monthly_report(
     config: NotificationConfig,
     firm_name: str,
     body_html: str = None,
+    legs=None,
+    report_period: ReportPeriod | None = None,
+    schedule=None,
+    alerts_off=None,
+    app_config=None,
 ) -> bool:
-    return send_summary_report(db, config, firm_name, 30, "Monthly", body_html=body_html)
+    return send_summary_report(db, config, firm_name, 30, "Monthly", body_html=body_html,
+                               legs=legs, report_period=report_period, schedule=schedule,
+                               alerts_off=alerts_off, app_config=app_config)
 

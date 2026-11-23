@@ -9,9 +9,62 @@ import re
 from pathlib import Path
 
 import yaml
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CONFIG_PATH = "config.yaml"
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+# Absolute config path: AAM_CONFIG env (set by the service installer) or
+# <project>/config.yaml. Never CWD-relative — a service or tool started from
+# another working directory must still load the same file.
+CONFIG_PATH = str(
+    Path(os.environ["AAM_CONFIG"]).resolve()
+    if os.environ.get("AAM_CONFIG")
+    else _PROJECT_DIR / "config.yaml"
+)
+
+# Keys that were valid in earlier releases and are now ignored on purpose.
+# They are dropped with a WARNING instead of failing the strict
+# (extra="forbid") validation, so an older client config still loads.
+# Anything not listed here is rejected loudly.
+# name@domain.tld, no spaces - deliberately simple (no new dependency); the
+# SMTP server is the final judge, this catches typos before they cost an alert.
+_EMAIL = re.compile(r"[^@\s,;]+@[^@\s,;]+\.[A-Za-z]{2,}")
+
+DEPRECATED_KEYS: dict[str, frozenset[str]] = {
+    # F12: no code path ever read it; success emails were removed.
+    "notifications": frozenset({"send_on_success"}),
+    # audit 2026-10-18: replaced by attachments_max_total_kb (support attachments)
+    "alerts": frozenset({"attachment_max_kb"}),
+    # plan E: sign-in is always on and the API key is gone. An upgraded server's config.yaml still
+    # lists them: drop with a warning (code review 2026-10-19) instead of refusing to start.
+    # owner 2026-10-22: a fixed number of hours raised false "overdue" alarms for any schedule that
+    # is not daily; the limit now follows the schedule (dashboard.stale_grace_hours).
+    "dashboard": frozenset({"api_key", "auth_enabled", "stale_after_hours"}),
+}
+
+
+class StrictModel(BaseModel):
+    """Base for every config section: unknown keys are a validation error.
+
+    A typo (e.g. `shutdown_after_bakup`) must fail at load with the key
+    name in the message — silently falling back to the default is how a
+    safety switch gets flipped without anyone noticing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def model_default(model: type[BaseModel], field: str):
+    """The default of `model.field`, for a function's fallback parameter.
+
+    Owner rule: a tunable's default lives only in this module. Functions that
+    keep a fallback for direct callers (tests, tools) read it from here
+    instead of repeating a literal that can drift (it did: ManifestDB's
+    vacuum threshold said 1000 while the model said 10000).
+    """
+    return model.model_fields[field].get_default(call_default_factory=True)
+
 
 _DEFAULT_RUNTIME_DIR = os.environ.get(
     "AAM_RUNTIME_DIR",
@@ -19,7 +72,7 @@ _DEFAULT_RUNTIME_DIR = os.environ.get(
 )
 
 
-class PathsConfig(BaseModel):
+class PathsConfig(StrictModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     source_drive: str = Field(..., description="Source drive root path, e.g. D:\\")
@@ -31,7 +84,7 @@ class PathsConfig(BaseModel):
     )
     database_path: str = Field(default="", description="Path to SQLite manifest database (auto-derived from runtime_dir if empty)")
     log_directory: str = Field(default="", description="Log directory (auto-derived from runtime_dir if empty)")
-    gcs_key_path: str = Field(..., description="Path to GCS service account JSON key file")
+    gcs_key_path: str = Field(default="", description="Path to GCS service account JSON key file (required when cloud is enabled; leave empty for LAN-only)")
 
     @model_validator(mode="after")
     def derive_runtime_paths(self) -> "PathsConfig":
@@ -41,7 +94,7 @@ class PathsConfig(BaseModel):
         if not self.database_path:
             self.database_path = str(rt / "manifest.db")
         if not self.database_path.endswith(".db"):
-            raise ValueError(f"database_path must end with .db: {self.database_path}")
+            raise ValueError(f"Use a file name ending in .db (now: {self.database_path}). The history database must be a .db file.")
         return self
 
     @property
@@ -58,26 +111,36 @@ class PathsConfig(BaseModel):
     @classmethod
     def source_drive_not_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("source_drive must not be empty")
+            raise ValueError("Enter the folder to back up. Without it there is nothing to copy.")
         return v.strip()
 
     @field_validator("lan_destination")
     @classmethod
     def is_unc_path(cls, v: str) -> str:
         if not re.match(r"^\\\\.+\\", v):
-            raise ValueError(f"LAN destination must be a UNC path (\\\\server\\share): {v}")
+            raise ValueError(f"Enter the NAS folder as \\\\server\\share\\folder (now: {v}). The NAS is reached over the network, so a drive letter does not work.")
         return v
 
     @field_validator("gcs_key_path")
     @classmethod
     def gcs_key_exists(cls, v: str) -> str:
-        if not v:
-            raise ValueError("gcs_key_path must not be empty when cloud is enabled")
+        # LAN-only deployments leave this empty; cloud-enabled enforcement
+        # lives in AppConfig.cross_field_validation (fail-closed there).
         return v
 
 
-class LanConfig(BaseModel):
+class LanConfig(StrictModel):
     enabled: bool = True
+    scheduled: bool = Field(
+        default=True,
+        description="true = the NAS backup runs every night on schedule.lan_cron. false (with "
+                    "enabled true) = manual only: no nightly NAS run and no schedule-based NAS "
+                    "alarms; the dashboard button still wakes the NAS, backs up, verifies and "
+                    "shuts it down. The 1 April rollover and the weekly audit still try the NAS.")
+    on_demand_warn_after_days: int = Field(
+        default=30, ge=1, le=365,
+        description="Manual-only NAS backup (scheduled false): show a soft amber note (no email) "
+                    "when the last successful NAS backup is older than this many days.")
     retry_count: int = Field(default=3, ge=1, le=10)
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
@@ -92,20 +155,56 @@ class LanConfig(BaseModel):
     )
     max_attempts: int = Field(default=2, ge=1, le=10, description="Flow-level retry attempts for LAN backup orchestration")
     retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
+    preflight_retries: int = Field(
+        default=1, ge=0, le=5,
+        description="Extra tries of the LAN preflight (robocopy /L dry-run) after a failure")
+    preflight_retry_delay_seconds: int = Field(
+        default=30, ge=5, le=3600, description="Seconds between LAN preflight tries")
     mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
+    log_tail_kb: int = Field(default=100, ge=4, le=10240, description="Size of the robocopy log tail (KB) used for the result decision and carried into alerts/DB; the full log is always kept in run_logs")
     # F8: the preflight /L walk scales with dataset size (1M files ~= 5-10 min
     # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the
     # scale this deployment targets, aborting a healthy backup before it started.
     dry_run_timeout_seconds: int = Field(default=900, ge=60, le=7200, description="Timeout for the robocopy /L preflight dry-run (seconds)")
+    preflight_smb_attempts: int = Field(
+        default=8, ge=1, le=60,
+        description="LAN preflight: SMB port-445 reachability attempts before failing "
+                    "(each up to wol.smb_connect_timeout_seconds)")
+    preflight_smb_wait_seconds: int = Field(
+        default=15, ge=1, le=300, description="LAN preflight: seconds between SMB attempts")
+    use_backup_mode: bool = Field(
+        default=True,
+        description="robocopy /ZB (backup mode) so files the account cannot open normally "
+                    "are still copied (owner DEC-8). Needs SeBackupPrivilege on the service "
+                    "account; the preflight checks it. false = no /ZB.")
+    min_free_dest_gb: float = Field(
+        default=5, ge=0, le=100_000,
+        description="Preflight: the NAS must have the bytes this backup will copy plus this "
+                    "many GB free.")
+    privilege_check_timeout_seconds: int = Field(
+        default=60, ge=5, le=600,
+        description="Timeout for the `whoami /priv` SeBackupPrivilege check (seconds)")
+
+    @property
+    def nightly(self) -> bool:
+        """The NAS leg runs on the schedule (and so is judged against it)."""
+        return self.enabled and self.scheduled
+
+    @property
+    def manual_only(self) -> bool:
+        """The NAS leg is on but has no nightly run: started from the dashboard only."""
+        return self.enabled and not self.scheduled
 
 
-class WolConfig(BaseModel):
+class WolConfig(StrictModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     enabled: bool = True
     # F11: empty default + conditional validation below. The MAC is only
     # meaningful when WoL is enabled; requiring it for disabled pipelines made
     # lan-only / cloud-only deployments carry a fake MAC.
     mac_address: str = ""
-    server_ip: str = "192.168.10.10"
+    server_ip: str = ""     # no made-up default: must be the NAS host when Wake-on-LAN is on
     broadcast_address: str = Field(
         default="",
         description=(
@@ -114,15 +213,42 @@ class WolConfig(BaseModel):
             "different VLAN or managed switch that blocks 255.255.255.255."
         ),
     )
-    wake_timeout_seconds: int = Field(default=300, ge=60, le=600)
-    ping_interval_seconds: int = Field(default=15, ge=5, le=60)
-    stability_wait_seconds: int = Field(default=30, ge=0)
+    # WP10 (owner issue 2026-10-14): a NAS cold boot (POST + disk spin-up +
+    # OS + SMB service) routinely takes minutes. Generous defaults; set to
+    # 2x the cold-boot time measured on site (plan WP17).
+    wake_timeout_seconds: int = Field(
+        default=900, ge=60, le=3600,
+        description="Max seconds to wait for the NAS to become usable over SMB after WoL")
+    ping_interval_seconds: int = Field(
+        default=15, ge=5, le=120, description="Seconds between readiness polls")
+    stability_wait_seconds: int = Field(
+        default=90, ge=0, le=900,
+        description="After SMB first answers, wait this long and re-check before using the NAS")
+    smb_connect_timeout_seconds: float = Field(
+        default=15, ge=1, le=120,
+        description="TCP connect timeout for each SMB (port 445) readiness probe")
     # G3: a single unicast-ish broadcast packet is frequently dropped
     # (managed switches, NIC firmware, half-initiated NIC wake state).
     # Standard practice (cf. etherwake -s/-I): send several rounds.
     # 3 rounds × 5 s adds only ~10 s against a 300 s wake timeout.
-    wake_retry_count: int = Field(default=3, ge=1, le=10)
-    wake_retry_interval_seconds: int = Field(default=5, ge=1, le=30)
+    wake_retry_count: int = Field(
+        default=5, ge=1, le=20, description="Magic-packet rounds sent per wake attempt")
+    wake_retry_interval_seconds: int = Field(
+        default=10, ge=1, le=120, description="Seconds between magic-packet rounds")
+    # WP10: the shutdown result is verified, not assumed.
+    shutdown_delay_seconds: int = Field(
+        default=300, ge=0, le=3600,
+        description="shutdown.exe /t delay; staff can cancel with `shutdown /a` on the NAS meanwhile")
+    shutdown_command_timeout_seconds: int = Field(
+        default=120, ge=5, le=600, description="Max seconds for shutdown.exe itself to return")
+    shutdown_verify_timeout_seconds: int = Field(
+        default=600, ge=60, le=7200,
+        description=("Seconds (from the command) within which the NAS must stop answering on "
+                     "port 445; must be longer than shutdown_delay_seconds. The backup slot is "
+                     "held meanwhile, so a queued job never starts against a NAS about to power off"))
+    shutdown_verify_closed_probes: int = Field(
+        default=2, ge=1, le=10,
+        description="Consecutive closed-port probes (ping_interval_seconds apart) that count as 'off'")
 
     @field_validator("mac_address")
     @classmethod
@@ -130,22 +256,36 @@ class WolConfig(BaseModel):
         # F11: an empty MAC is allowed here; enabled-ness is checked in the
         # model validator below (field validators can't see sibling fields).
         if v and not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", v):
-            raise ValueError(f"Invalid MAC address format: {v}")
+            raise ValueError(f"Enter the NAS network address like 00:11:22:AA:BB:CC (now: {v}). Wake-on-LAN needs the exact address.")
         return v
 
     @model_validator(mode="after")
     def _mac_required_when_enabled(self) -> "WolConfig":
         if self.enabled and not self.mac_address:
-            raise ValueError("wol.mac_address is required when wol.enabled is true")
+            raise ValueError("Enter the NAS network (MAC) address, or switch Wake-on-LAN off. The NAS cannot be woken without it.")
+        if self.enabled and not self.server_ip:
+            raise ValueError("Enter the NAS address (IP), or switch Wake-on-LAN off. The NAS cannot be woken or switched off without it.")
+        return self
+
+    @model_validator(mode="after")
+    def _verify_window_outlasts_delay(self) -> "WolConfig":
+        if self.shutdown_verify_timeout_seconds <= self.shutdown_delay_seconds:
+            raise ValueError(
+                f"Raise the time to wait for the NAS to switch off above the shutdown delay "
+                f"(wol.shutdown_verify_timeout_seconds {self.shutdown_verify_timeout_seconds} s, "
+                f"wol.shutdown_delay_seconds {self.shutdown_delay_seconds} s). "
+                "The NAS only powers off after the delay, so the check would give up too early.")
         return self
 
     @field_validator("server_ip")
     @classmethod
     def valid_ipv4(cls, v: str) -> str:
+        if not v:       # allowed only while Wake-on-LAN is off; _mac_required_when_enabled checks the rest
+            return v
         try:
             ipaddress.IPv4Address(v)
         except ipaddress.AddressValueError:
-            raise ValueError(f"Invalid IPv4 address: {v}")
+            raise ValueError(f"Enter a valid IP address like 192.168.1.20 (now: {v}).")
         return v
 
     @field_validator("broadcast_address")
@@ -157,8 +297,8 @@ class WolConfig(BaseModel):
                 ipaddress.IPv4Address(v)
             except ipaddress.AddressValueError:
                 raise ValueError(
-                    f"Invalid broadcast_address IPv4 '{v}'. "
-                    "Set to empty string to auto-derive from server_ip."
+                    f"Enter a valid broadcast address like 192.168.1.255, or leave it empty "
+                    f"to work it out automatically (now: '{v}')."
                 )
         return v
 
@@ -180,8 +320,19 @@ class WolConfig(BaseModel):
         return f"{parts[0]}.255"
 
 
-class CloudConfig(BaseModel):
+class CloudConfig(StrictModel):
     enabled: bool = True
+    scheduled: bool = Field(
+        default=True,
+        description="true = the cloud backup runs every night on schedule.cloud_cron. false (with "
+                    "enabled true) = manual only: no nightly cloud run and no schedule-based "
+                    "cloud alarms; the dashboard button still backs up and verifies. The 1 April "
+                    "rollover and the weekly audit still run the cloud leg and a real failure "
+                    "there still blocks.")
+    on_demand_warn_after_days: int = Field(
+        default=30, ge=1, le=365,
+        description="Manual-only cloud backup (scheduled false): show a soft amber note (no email) "
+                    "when the last successful cloud backup is older than this many days.")
     # C-A: in-rclone duration cap. None = auto (subprocess timeout minus a
     # 300s margin); 0 disables the flag entirely; explicit value wins.
     max_duration_seconds: int | None = Field(
@@ -196,27 +347,72 @@ class CloudConfig(BaseModel):
     # F11: no real-looking default. An empty bucket is only valid when cloud
     # is disabled; an enabled cloud backup must name its bucket explicitly.
     bucket: str = ""
-    project_number: str = "920173882190"
+    project_number: str = ""
     location: str = "asia-south1"
     storage_class: str = "STANDARD"
     bandwidth_limit: str = "10M"
     retry_count: int = Field(default=3, ge=1, le=10)
-    subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
+    subprocess_timeout_seconds: int = Field(default=18000, ge=3600)
     max_attempts: int = Field(default=3, ge=1, le=10, description="Flow-level retry attempts for cloud backup orchestration")
     retry_delay_seconds: int = Field(default=300, ge=60, le=3600, description="Delay between flow-level retry attempts")
-    verify_timeout_seconds: int = Field(default=14400, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Increase to 14400+ for large datasets on HDD.")
+    preflight_retries: int = Field(
+        default=1, ge=0, le=5,
+        description="Extra tries of the cloud preflight (source + GCS access probe) after a failure")
+    preflight_retry_delay_seconds: int = Field(
+        default=30, ge=5, le=3600, description="Seconds between cloud preflight tries")
+    verify_retries: int = Field(
+        default=1, ge=0, le=5,
+        description="Extra tries of the after-upload check and report step after a failure")
+    verify_retry_delay_seconds: int = Field(
+        default=60, ge=5, le=3600, description="Seconds between after-upload check tries")
+    verify_timeout_seconds: int = Field(default=18000, ge=60, le=86400, description="Timeout for post-sync rclone check verify step (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     preflight_timeout_seconds: int = Field(default=300, ge=30, le=3600, description="Timeout for pre-sync rclone check dry-run (seconds)")
+    probe_retries: int = Field(
+        default=2, ge=0, le=10,
+        description="rclone --retries for the preflight GCS access probe (lsjson --max-depth 0)")
+    probe_retries_sleep_seconds: int = Field(
+        default=5, ge=0, le=300,
+        description="rclone --retries-sleep for the preflight GCS access probe (seconds)")
+    dry_run_timeout_seconds: int = Field(
+        default=1800, ge=60, le=86400,
+        description="Timeout (seconds) for each guard measurement before the cloud sync: "
+                    "`rclone sync --dry-run` (planned deletions) and `rclone size` of the "
+                    "source. Default ~4x the measured 3-8 min diff time at 1M files; "
+                    "tune from run_logs telemetry.")
     # F7: listing timeouts sized for the target scale (200GB / ~1M files, growing
     # to ~2.5M by yr-5). Measured order-of-magnitude: rclone size over GCS takes
     # ~40-150s at 1M objects, the lsjson manifest ~2-5 min, the diff ~3-8 min —
     # the old defaults (30/300/600) were tuned for a demo-sized bucket and
     # would time out (and misreport "0 files") at the real scale.
-    diff_timeout_seconds: int = Field(default=1800, ge=30, le=7200, description="Timeout for rclone check --combined diff report (seconds)")
-    manifest_timeout_seconds: int = Field(default=900, ge=30, le=7200, description="Timeout for rclone lsjson manifest listing (seconds)")
+    diff_timeout_seconds: int = Field(default=18000, ge=30, le=86400, description="Timeout for rclone check --combined diff report (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
+    manifest_timeout_seconds: int = Field(default=18000, ge=30, le=86400, description="Timeout for rclone lsjson manifest listing (seconds). Conservative 5h initial limit; tune from month-one telemetry.")
     cloud_size_timeout_seconds: int = Field(default=300, ge=10, le=3600, description="Timeout for rclone size GCS object count query (seconds)")
     transfers: int = Field(default=2, ge=1, le=64, description="rclone --transfers concurrent file transfers")
     checkers: int = Field(default=4, ge=1, le=64, description="rclone --checkers concurrent file checkers")
+    modify_window_seconds: int = Field(
+        default=2, ge=0, le=10,
+        description="(max 10: a wide window makes the upload skip same-size edits) rclone --modify-window for the upload, the after-upload check and the "
+                    "difference report (seconds); 2 = NTFS modification-time granularity")
+    sync_retries_sleep_seconds: int = Field(
+        default=30, ge=1, le=600,
+        description="rclone --retries-sleep for the upload and its dry-run (seconds); set "
+                    "explicitly so a retry cannot reset the --max-duration deadline")
+    stats_interval_seconds: int = Field(
+        default=60, ge=1, le=3600,
+        description="rclone --stats: progress lines in the upload log every N seconds "
+                    "(the final totals line is written regardless)")
+    retries_sleep_seconds: int = Field(
+        default=10, ge=0, le=600,
+        description="rclone --retries-sleep for the difference report (seconds); its "
+                    "--retries is cloud.retry_count")
     buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
+    error_tail_lines: int = Field(default=100, ge=1, le=10000, description="Max rclone error lines carried into alerts/DB/dashboard; the full log is always kept in run_logs")
+    write_probe_enabled: bool = Field(
+        default=True,
+        description="Preflight: create and delete a tiny test object under "
+                    "<bucket>/_aam_preflight/ (outside every FY folder) to prove write and "
+                    "delete rights before syncing (owner DEC-5). Uses "
+                    "preflight_timeout_seconds.")
 
     @field_validator("bucket")
     @classmethod
@@ -224,15 +420,20 @@ class CloudConfig(BaseModel):
         # F11: empty is legal here; the enabled-ness check lives in the model
         # validator (a field validator cannot see `enabled`).
         if v and not re.match(r"^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$", v):
-            raise ValueError(f"Invalid bucket name: {v}")
+            raise ValueError(f"Use 3 to 63 lower-case letters, digits or hyphens for the bucket name (now: {v}). Google Cloud rejects other names.")
         return v
 
     @model_validator(mode="after")
     def _bucket_required_when_enabled(self) -> "CloudConfig":
         if self.enabled and not re.match(r"^[a-z0-9][a-z0-9\-]{1,61}[a-z0-9]$", self.bucket):
             raise ValueError(
-                "cloud.bucket is required when cloud.enabled is true — "
-                f"got {self.bucket!r}. Set it to the real GCS bucket name."
+                "Enter the Google Cloud bucket name, or switch the cloud backup off. "
+                f"The cloud backup cannot run without it (now: {self.bucket!r})."
+            )
+        if self.enabled and not self.project_number.strip():
+            raise ValueError(
+                "Enter the Google Cloud project number, or switch the cloud backup off. "
+                "The cloud backup cannot run without it."
             )
         return self
 
@@ -241,24 +442,78 @@ class CloudConfig(BaseModel):
     def valid_storage_class(cls, v: str) -> str:
         valid = {"STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE"}
         if v.upper() not in valid:
-            raise ValueError(f"Invalid storage_class '{v}'. Must be one of: {sorted(valid)}")
+            raise ValueError(f"Choose one of {', '.join(sorted(valid))} (now: '{v}').")
         return v.upper()
 
     @field_validator("bandwidth_limit")
     @classmethod
     def valid_bandwidth(cls, v: str) -> str:
         if not re.match(r"^\d+[kMG]$", v):
-            raise ValueError(f"Invalid bandwidth_limit '{v}'. Format: 10M, 500k, 1G")
+            raise ValueError(f"Enter the speed limit like 10M, 500k or 1G (now: '{v}').")
         return v
 
+    @property
+    def nightly(self) -> bool:
+        """The cloud leg runs on the schedule (and so is judged against it)."""
+        return self.enabled and self.scheduled
 
-class NotificationConfig(BaseModel):
+    @property
+    def manual_only(self) -> bool:
+        """The cloud leg is on but has no nightly run: started from the dashboard only."""
+        return self.enabled and not self.scheduled
+
+
+class SecretText(str):
+    """A secret read from config.yaml. `protected` = it was stored encrypted (DPAPI, plan S2);
+    False = it was a plain value (dev / tests; the dashboard shows amber on a server)."""
+
+    protected: bool = True
+    undecryptable: bool = False
+
+    def __new__(cls, value: str = "", protected: bool = True, undecryptable: bool = False):
+        obj = super().__new__(cls, value)
+        obj.protected = protected
+        obj.undecryptable = undecryptable
+        return obj
+
+    def __getnewargs__(self):                 # copy / deepcopy / pickle (pydantic model_copy)
+        return (str(self), self.protected, self.undecryptable)
+
+    def __repr__(self) -> str:
+        return "'***'"
+
+
+class NotificationConfig(StrictModel):
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
+
+    @field_validator("smtp_password")
+    @classmethod
+    def _decrypt_smtp_password(cls, v: str) -> str:
+        """`dpapi:<base64>` is decrypted in memory (the plain value never goes back to disk).
+        A value that cannot be decrypted on this machine (config.yaml copied from another server)
+        loads EMPTY so the services still start; mail then reports its missing password."""
+        from core import secrets as secrets_store
+
+        if not secrets_store.is_protected(v):
+            return SecretText(v, protected=not v)
+        try:
+            return SecretText(secrets_store.unprotect(v), protected=True)
+        except secrets_store.SecretsError as e:
+            logger.error(f"notifications.smtp_password cannot be decrypted on this server ({e}) - "
+                         "enter the mail password again in Settings")
+            return SecretText("", protected=True, undecryptable=True)
     sender: str = ""
-    recipients: list[str] = Field(default_factory=list)
+    recipients: list[str] = Field(
+        default_factory=list,
+        description="The ALERTS list: problems, action needed, warnings, resolved notices. "
+                    "Empty = alerts go to report_recipients.")
+    report_recipients: list[str] = Field(
+        default_factory=list,
+        description="The REPORTS list: the weekly and monthly reports and the new-financial-year "
+                    "notice. Empty = reports go to recipients (the alerts list).")
     # F12: the old `send_on_success` flag was removed — no code path ever
     # read it (success emails would have been 5 a.m. noise), and a config
     # switch that does nothing is worse than none. Pydantic ignores unknown
@@ -266,13 +521,55 @@ class NotificationConfig(BaseModel):
     send_on_failure: bool = True
     weekly_enabled: bool = True
     monthly_enabled: bool = True
+    smtp_security: str = Field(
+        default="auto", pattern="^(auto|starttls|ssl|none)$",
+        description="auto = SSL on port 465, STARTTLS otherwise; none = plaintext "
+                    "(internal relay only)",
+    )
+    smtp_auth: bool = Field(
+        default=True,
+        description="Log in with smtp_username/smtp_password. false = unauthenticated "
+                    "internal relay. When true, missing credentials are a recorded "
+                    "delivery FAILURE, never a silent skip.",
+    )
+    smtp_timeout_seconds: float = Field(default=30, ge=1, le=600)
+    retry_attempts: int = Field(default=3, ge=1, le=10,
+                                description="SMTP send attempts for transient errors")
+    retry_base_seconds: float = Field(default=10, ge=0, le=600,
+                                      description="Base of the exponential retry backoff")
 
     @field_validator("smtp_port")
     @classmethod
     def valid_port(cls, v: int) -> int:
         if not 1 <= v <= 65535:
-            raise ValueError(f"Invalid SMTP port: {v}")
+            raise ValueError(f"Enter a mail port between 1 and 65535 (now: {v}). Common ones are 587 and 465.")
         return v
+
+    # DEC-9 follow-up: an address typo meant alerts silently went nowhere.
+    @field_validator("sender")
+    @classmethod
+    def valid_sender(cls, v: str) -> str:
+        if v and not _EMAIL.fullmatch(v):
+            raise ValueError(f"Enter the sender as name@domain.tld (now: '{v}'). Mail servers reject other forms.")
+        return v
+
+    @field_validator("recipients", "report_recipients")
+    @classmethod
+    def valid_recipients(cls, v: list[str], info) -> list[str]:
+        """One list: well-formed, no address twice (case-insensitive). The same address may be in
+        both lists (it then receives both kinds of email)."""
+        which = "report list" if info.field_name == "report_recipients" else "alerts list"
+        cleaned = [r.strip() for r in v]
+        bad = [r for r in cleaned if not _EMAIL.fullmatch(r)]
+        if bad:
+            raise ValueError(f"Fix or remove in the {which}: " + ", ".join(repr(b) for b in bad)
+                             + ". Each recipient must look like name@domain.tld, or emails go nowhere.")
+        lowered = [r.lower() for r in cleaned]
+        dupes = sorted({r for r, low in zip(cleaned, lowered) if lowered.count(low) > 1}, key=str.lower)
+        if dupes:
+            raise ValueError(f"Remove the duplicate in the {which}: {', '.join(dupes)}. "
+                             "Each address should be listed once per list.")
+        return cleaned
 
     def __repr__(self) -> str:
         return (
@@ -286,7 +583,66 @@ class NotificationConfig(BaseModel):
         return self.__repr__()
 
 
-class MaintenanceConfig(BaseModel):
+class AlertsConfig(StrictModel):
+    """Alert behaviour (plan §5.5)."""
+
+    repeat_cooldown_hours: float = Field(
+        default=12, ge=0, le=720,
+        description="The same alert (same key) is re-sent at most once per this many "
+                    "hours while unresolved; repeats inside the window are recorded "
+                    "as SUPPRESSED. 0 = never suppress.",
+    )
+    send_decision_needed: bool = Field(
+        default=True,
+        description="Email when a backup is blocked and waits for your decision. Off: nothing is mailed "
+                    "- the dashboard still shows it in red and holds the approval card.")
+    send_overdue: bool = Field(
+        default=True, description="Email when a backup is overdue (the dashboard still shows it).")
+    send_action_needed: bool = Field(
+        default=True,
+        description="Email when a person must act: financial-year problems, safety-check differences, "
+                    "service problems.")
+    send_resolved: bool = Field(
+        default=True, description="Email 'resolved' when a reported problem is fixed.")
+    send_info: bool = Field(
+        default=True, description="Email information notices (a new financial year started).")
+    incident_quiet_days: int = Field(
+        default=7, ge=1, le=90,
+        description="An alert with no resolution signal of its own (financial-year, dashboard and other "
+                    "alerts) that has not occurred again for this many days counts as over: the next "
+                    "occurrence is a NEW problem and its first email is always sent.")
+    undelivered_digest_max_age_hours: int = Field(
+        default=72, ge=0, le=336,
+        description="When alert emails could not be delivered (mail server down) and mail works again, ONE "
+                    "digest email lists the alerts of the last this many hours that never arrived. "
+                    "Older ones are not sent again. 0 = no digest.")
+    undelivered_digest_retry_minutes: int = Field(
+        default=30, ge=5, le=1440,
+        description="While the digest email cannot be delivered either, the watchdog tries again at most "
+                    "once per this many minutes.")
+    stale_repeat_hours: float = Field(
+        default=24, ge=1, le=720,
+        description="The 'backup overdue' email for a leg is repeated at most once per this many "
+                    "hours while the leg stays overdue (other alerts follow repeat_cooldown_hours).",
+    )
+    body_max_chars: int = Field(default=1000, ge=100, le=100_000,
+                                description="Inline message length in the email body")
+    # Support attachments (docs/EMAIL_CONTENT_SPEC.md §5, audit 2026-10-18)
+    attachments_max_total_kb: int = Field(
+        default=5120, ge=100, le=20_480,
+        description="All attachments of one email together (support report + logs zip). "
+                    "5 MB stays under common 10 MB company mail limits after encoding; a "
+                    "logs zip that does not fit is left out and the report names the folder.")
+    attach_file_names: bool = Field(
+        default=True,
+        description="Attach the run's full logs (they contain client file and folder names). "
+                    "Owner 2026-10-18 (D1): yes. false = support report only.")
+    support_log_tail_lines: int = Field(
+        default=200, ge=20, le=5000,
+        description="Lines of each tool log in the support report (error lines first)")
+
+
+class MaintenanceConfig(StrictModel):
     """Operational housekeeping settings."""
     concurrency_wait_seconds: int = Field(
         default=3600,
@@ -309,16 +665,43 @@ class MaintenanceConfig(BaseModel):
         ),
     )
     db_retention_days: int = Field(
-        default=90,
-        ge=7,
+        default=730,
+        ge=35,
         le=3650,
-        description="Days of run history to keep in ManifestDB (7–3650)",
+        description="Days of run history to keep in ManifestDB (35–3650). At least 35: the 30-day "
+                    "report window plus a week, and the safety guards read their baseline (the last "
+                    "successful run of a leg) from this history - once it is purged the shrink guard "
+                    "passes as a 'first run'.",
     )
     log_retention_days: int = Field(
         default=90,
         ge=1,
         le=365,
         description="Days of log files to retain before Loguru auto-deletion (1–365)",
+    )
+    orphan_robocopy_log_max_age_hours: int = Field(
+        default=24,
+        ge=1,
+        le=720,
+        description="G8: robocopy temp logs left in %TEMP% by a killed run are deleted once "
+                    "older than this (hours); the age gate protects a running backup's log",
+    )
+    lock_release_retries: int = Field(
+        default=5, ge=0, le=50,
+        description="A7: how often the backup lock file is deleted again when the first delete fails "
+                    "(an antivirus scan or the watchdog reading the file blocks the delete on Windows).",
+    )
+    lock_release_delay_ms: int = Field(
+        default=200, ge=10, le=5000,
+        description="A7: wait between two attempts to delete the backup lock file (milliseconds).",
+    )
+    tool_poll_seconds: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=30,
+        description="A6: while rclone/robocopy runs, the agent checks this often whether the flow "
+                    "was cancelled or interrupted; it then stops the tool and records the run "
+                    "(seconds). A cancel is noticed within this time.",
     )
     sqlite_busy_timeout_ms: int = Field(
         default=30000,
@@ -332,9 +715,231 @@ class MaintenanceConfig(BaseModel):
         le=50000,
         description="VACUUM triggers when SQLite freelist page count exceeds this value (~40 MB at default). Lower = more frequent VACUUM.",
     )
+    config_backups_keep: int = Field(
+        default=50, ge=5, le=1000,
+        description="config.yaml.bak-* copies kept next to config.yaml (one per settings save "
+                    "or FY rollover); older ones are deleted after a successful settings save")
+    config_lock_timeout_seconds: int = Field(
+        default=30, ge=1, le=600,
+        description="How long a settings save, password change or FY rollover waits for another "
+                    "writer of config.yaml (lock file beside it) before giving up with an error")
+    config_replace_retries: int = Field(
+        default=20, ge=0, le=200,
+        description="Extra attempts to swap in the new config.yaml when Windows says 'access "
+                    "denied' because another process has the file open")
+    config_replace_delay_ms: int = Field(
+        default=50, ge=10, le=5000,
+        description="Pause between those attempts, in milliseconds")
+    abandon_running_after_hours: float = Field(
+        default=24, ge=1, le=168,
+        description="A run whose process is gone is recorded ABANDONED (with a failure email) "
+                    "at the next agent or backup start; only when the process cannot be read "
+                    "does a run still RUNNING after this many hours count as ABANDONED.",
+    )
 
 
-class HealthConfig(BaseModel):
+class RunLogsConfig(StrictModel):
+    """Full per-run tool logs (plan WP2): kept complete, compressed, purged."""
+
+    dir: str = Field(
+        default="",
+        description="Root for per-run artefacts (full rclone/robocopy logs, check "
+                    "outputs). Empty = <runtime_dir>/run_logs.",
+    )
+    retention_days: int = Field(
+        default=90, ge=7, le=3650,
+        description="Delete run artefact folders older than this many days.",
+    )
+    compress_after_kb: int = Field(
+        default=1024, ge=0, le=10_485_760,
+        description="gzip artefact files larger than this after the run (0 = compress all).",
+    )
+    min_free_gb: float = Field(
+        default=5.0, ge=0, le=10_000,
+        description="Warn (and mark the run artefacts degraded) when the artefact "
+                    "volume has less free space than this.",
+    )
+    service_log_retention_days: int = Field(
+        default=90, ge=7, le=3650,
+        description="Delete NSSM-rotated service logs (agent_svc-*, prefect_svc-*, "
+                    "watchdog_svc-*) older than this many days.",
+    )
+
+
+class GuardsConfig(StrictModel):
+    """Data-safety guards (plan WP3, §6.3; defaults = owner DEC-2).
+
+    A guard that trips stops the run BEFORE any transfer as *_BLOCKED and
+    asks a human (dashboard approval). G2/G4 compare with the last
+    successful run of the same leg and the same FY.
+    """
+
+    max_delete_files: int = Field(
+        default=500, ge=0, le=100_000_000,
+        description="G3: block when a backup would delete more than this many "
+                    "destination files. Also the cloud --max-delete backstop.",
+    )
+    max_delete_percent: float = Field(
+        default=10, ge=0, le=100,
+        description="G3: block when a backup would delete more than this percent "
+                    "of the destination files.",
+    )
+    max_source_shrink_percent: float = Field(
+        default=20, ge=0, le=100,
+        description="G2: block when the source has this percent fewer files than "
+                    "at the last successful backup of the same FY.",
+    )
+    small_folder_files: int = Field(
+        default=100, ge=0, le=10_000_000,
+        description="G2/G3: a folder with fewer files than this is a small folder (a new year's folder "
+                    "that has just been started): the percentage limits are replaced by "
+                    "small_folder_max_deletes. 0 = off (percentages always apply).",
+    )
+    small_folder_max_deletes: int = Field(
+        default=10, ge=0, le=100_000,
+        description="G3: in a small folder, block when a backup would delete more than this many files "
+                    "(never more than max_delete_files). G2: the limit on how many files a small folder "
+                    "may shrink by (max_delete_files does not apply to G2).",
+    )
+    forbid_local_destination: bool = Field(
+        default=True,
+        description="G4: block a LAN destination that resolves to this machine "
+                    "(a backup on the same machine does not protect against its loss).",
+    )
+
+
+class ApprovalsConfig(StrictModel):
+    """Human approval of a BLOCKED run (plan §6.2, owner DEC-3)."""
+
+    expiry_hours: float = Field(
+        default=12, ge=1, le=168,
+        description="An approval given on the dashboard is valid for this many hours "
+                    "and for ONE run only.",
+    )
+    tolerance_percent: float = Field(
+        default=0, ge=0, le=100,
+        description="How much worse the re-measured numbers may be than the approved "
+                    "ones (0 = must not be worse at all).",
+    )
+
+
+class AuditConfig(StrictModel):
+    """Weekly read-only integrity audit (plan WP7)."""
+
+    checkers: int = Field(default=1, ge=1, le=16,
+                          description="rclone check --checkers (1 = gentle on the HDD)")
+    retries: int = Field(default=3, ge=0, le=10, description="rclone check --retries")
+    retries_sleep_seconds: int = Field(default=10, ge=0, le=600,
+                                       description="rclone check --retries-sleep (seconds)")
+    modify_window_seconds: int = Field(
+        default=2, ge=0, le=10,
+        description="rclone check --modify-window (seconds); 2 = NTFS modification-time "
+                    "granularity")
+    detail_max_paths: int = Field(default=100, ge=1, le=10_000,
+                                  description="Max divergent paths listed in the audit detail "
+                                              "(counts are always complete)")
+    backup_first_prompt_minutes: int = Field(
+        default=60, ge=0, le=10_080,
+        description="'Check now' asks whether to back up first when the last good backup of a "
+                    "copy started more than this many minutes ago (0 = always ask). The check "
+                    "never starts a backup by itself.")
+    network_error_patterns: list[str] = Field(
+        default_factory=list,
+        description="Extra regular expressions (case-insensitive) that mark an audit as "
+                    "'could not run' (AUDIT_INCOMPLETE) instead of a content difference - "
+                    "added to the built-in TLS/DNS/auth/network/listing signatures.",
+    )
+
+    @field_validator("network_error_patterns")
+    @classmethod
+    def valid_regexes(cls, v: list[str]) -> list[str]:
+        for pattern in v:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"Fix the pattern {pattern!r} in audit.network_error_patterns. It is not a valid regular expression: {e}")
+        return v
+
+
+class RolloverConfig(StrictModel):
+    """FY rollover (plan WP11, owner DEC-4)."""
+
+    source_placeholder_name: str = Field(
+        default="README_FY.txt", min_length=1, max_length=100,
+        description="Small text file written into the NEW source FY folder at rollover "
+                    "(never overwritten), so the first backups of the new FY have a real "
+                    "file and guard G1 does not block an intentionally new, empty FY.",
+    )
+
+    create_source_folder_early: bool = Field(
+        default=True,
+        description="Create the new financial year's source folder as soon as the rollover starts - "
+                    "before the final backup of the old year - so the office can save into it on 1 April "
+                    "even when that final backup fails and the switch waits for your approval. Only for "
+                    "the normal next year on a proven clock. From the start month (rollover.early_start_month) the "
+                    "next year's folder is backed up every night as well (rollover.overlap_enabled); before "
+                    "that, or with that switched off, files saved there are not backed up until the switch "
+                    "is done, and the dashboard and an email say so.",
+    )
+
+    overlap_enabled: bool = Field(
+        default=True,
+        description="Back up the NEXT financial year's folder as well from early_start_month until the "
+                    "April switch (US clients work in it from January). Off = only the configured year "
+                    "is backed up; the daily check then warns if the next year's folder holds files.",
+    )
+
+    early_start_month: int = Field(
+        default=1, ge=1, le=3,
+        description="Calendar month (1 = January ... 3 = March) from which the next financial year's "
+                    "folder is backed up together with the current one.",
+    )
+
+    activation_alert_after_hours: int = Field(
+        default=24, ge=1, le=168,
+        description="If next year's folder cannot be set up for backup (clock not proven, parent folder "
+                    "missing, no right to create folders, ...), you get an action-needed email after this "
+                    "many hours.",
+    )
+
+    sibling_ignore: list[str] = Field(
+        default_factory=list,
+        description="Folder names next to the year folders that look like a year folder but are not "
+                    "(never backed up, never warned about). Plain folder names, one per entry.",
+    )
+
+    final_backup_wait_retries: int = Field(
+        default=2, ge=0, le=7,
+        description="If the old year's final backup could only not get the backup slot (it was busy) or "
+                    "had no time left, the switch waits and tries again on the next mornings instead of "
+                    "asking you to approve 'roll over anyway'. You get a warning email. After this many "
+                    "mornings of waiting the approval request is opened as usual. 0 = ask at once.",
+    )
+
+    archive_alert_after_days: int = Field(
+        default=3, ge=1, le=365,
+        description="The old FY's move to the cheaper ARCHIVE storage class is retried every "
+                    "morning; after it has failed for this many days the warning email becomes "
+                    "an 'action needed' email.",
+    )
+
+    @field_validator("sibling_ignore")
+    @classmethod
+    def plain_folder_names(cls, v: list[str]) -> list[str]:
+        for name in v:
+            if not name.strip() or any(c in name for c in "\\/:"):
+                raise ValueError(f"Use plain folder names without / \\ or : (now: {name!r}).")
+        return v
+
+    @field_validator("source_placeholder_name")
+    @classmethod
+    def plain_file_name(cls, v: str) -> str:
+        if any(c in v for c in "\\/:") or v.strip(".") == "":
+            raise ValueError(f"Use a plain file name without / \\ or : (now: {v!r}). The file is created inside the source folder.")
+        return v
+
+
+class HealthConfig(StrictModel):
     """Pre-backup health check tuning."""
     max_clock_skew_seconds: int = Field(
         default=600,
@@ -348,6 +953,18 @@ class HealthConfig(BaseModel):
         le=60,
         description="Timeout for the HTTPS connection to googleapis.com during clock skew check (seconds)",
     )
+    # WP12 / DEC-6: an unverifiable clock is reported, never silently OK.
+    clock_unverified_policy: str = Field(
+        default="warn", pattern="^(warn|block)$",
+        description=("When neither Google nor ntp_server can tell the time: 'warn' = the cloud "
+                     "backup runs and the run row + dashboard show 'clock unverified'; "
+                     "'block' = the cloud backup fails with the reason"),
+    )
+    ntp_server: str = Field(
+        default="time.windows.com", min_length=1,
+        description="NTP server for the w32tm fallback when Google's Date header cannot be read")
+    w32tm_timeout_seconds: int = Field(
+        default=30, ge=5, le=120, description="Max seconds for one `w32tm /stripchart` sample")
     min_free_source_gb: int = Field(
         default=1,
         ge=1,
@@ -368,38 +985,238 @@ class HealthConfig(BaseModel):
     )
 
 
-class DashboardConfig(BaseModel):
-    auth_enabled: bool = True
-    api_key: str = Field(default="", description="API key for dashboard authentication")
+class BudgetConfig(StrictModel):
+    """Per-job run budgets (plan WP14). Counted from the job's start, including
+    any wait for the backup slot; a job that reaches its budget stops cleanly as
+    *_PARTIAL and continues next run. Starting values (owner 2026-10-15): tune
+    from the duration of real runs."""
+    cloud_max_hours: float = Field(
+        default=6, ge=1, le=72,
+        description="Cloud backup run budget (sync + size check). A first full upload "
+                    "spreads over several nights within this budget")
+    lan_max_hours: float = Field(default=4, ge=0.5, le=72,
+                                 description="LAN backup run budget (NAS wake + mirror + shutdown)")
+    audit_max_hours: float = Field(default=8, ge=0.5, le=72,
+                                   description="Weekly integrity audit run budget (both legs)")
+    cloud_verify_reserve_minutes: int = Field(
+        default=60, ge=0, le=600,
+        description="Of the cloud budget, kept for the size check / manifest after the upload")
+    lan_post_reserve_minutes: int = Field(
+        default=30, ge=0, le=600,
+        description="Of the LAN budget, kept after the mirror for the destination walk and the "
+                    "verified NAS shutdown")
+
+
+class WatchdogConfig(StrictModel):
+    """AamWatchdog tuning (plan WP13). Read once at watchdog start."""
+    prefect_health_url: str = Field(
+        default="http://127.0.0.1:4200/api/health", description="Prefect API health endpoint")
+    check_interval_seconds: int = Field(default=60, ge=10, le=600,
+                                        description="Normal poll interval")
+    failure_threshold: int = Field(
+        default=5, ge=1, le=60, description="Consecutive failed health checks before acting")
+    request_timeout_seconds: int = Field(default=30, ge=1, le=120,
+                                         description="HTTP timeout per health check")
+    backup_wait_interval_seconds: int = Field(
+        default=120, ge=10, le=1800, description="Re-check interval while a backup is running")
+    max_deferrals: int = Field(
+        default=15, ge=1, le=1000,
+        description="Lock held but no rclone/robocopy: deferrals before the CRITICAL alert")
+    max_transfer_deferrals: int = Field(
+        default=240, ge=1, le=10_000,
+        description=("rclone/robocopy running: deferrals before the zombie-transfer handling "
+                     "(240 x 120 s = 8 h, above the longest legitimate transfer)"))
+    restart_cooldown_seconds: int = Field(
+        default=120, ge=0, le=1800, description="Pause after a restart before resuming checks")
+    max_starts_per_window: int = Field(
+        default=3, ge=1, le=20, description="Circuit breaker: auto-starts per service per window")
+    start_window_seconds: int = Field(default=3600, ge=60, le=86_400,
+                                      description="Circuit-breaker window")
+    stop_pending_timeout_seconds: int = Field(
+        default=600, ge=60, le=7200,
+        description=("A service still STOP_PENDING after this long has its process killed - "
+                     "only when no backup holds the lock; otherwise alert and wait. Must exceed "
+                     "the agent's graceful stop (NSSM AppStopMethodConsole 180 s)"))
+    kill_wait_seconds: int = Field(
+        default=60, ge=5, le=600, description="After killing a stuck service: wait for STOPPED")
+    api_ready_timeout_seconds: int = Field(
+        default=300, ge=30, le=1800,
+        description="Restart: wait this long for the Prefect API before starting the agent")
+    service_poll_seconds: int = Field(default=5, ge=1, le=60,
+                                      description="Poll interval while waiting for a service state")
+    sc_timeout_seconds: int = Field(default=30, ge=5, le=120,
+                                    description="Max seconds for one sc.exe call")
+    log_rotation_mb: int = Field(
+        default=10, ge=1, le=1000,
+        description="Rotate the watchdog's own log (watchdog_app.log) at this size; kept "
+                    "run_logs.service_log_retention_days")
+    healthy_mark_seconds: int = Field(
+        default=300, ge=60, le=3600,
+        description="How often a fully healthy check is recorded in the database; an incident of the "
+                    "watchdog's own alerts is over once a healthy mark follows its email")
+    stale_check_interval_seconds: int = Field(
+        default=1800, ge=60, le=86_400,
+        description="How often the watchdog checks that every enabled leg had a successful "
+                    "backup by its next scheduled run + run budget + dashboard.stale_grace_hours; "
+                    "an overdue leg is emailed (again per alerts.stale_repeat_hours)")
+
+
+class DashboardConfig(StrictModel):
     bind_address: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1024, le=65535)
+    public_url: str = Field(
+        default="",
+        description="Dashboard address put into attention emails (e.g. "
+                    "http://backup-server:8080). Empty = automatic: with bind_address "
+                    "0.0.0.0 the office address of this server is detected for every email, "
+                    "otherwise http://<bind_address>:<port>.",
+    )
+    # Owner 2026-10-18: office network only, never public. The installer opens
+    # the dashboard port in Windows Firewall to these remote addresses only.
+    firewall_remote_addresses: list[str] = Field(
+        default_factory=lambda: ["LocalSubnet"], min_length=1,
+        description="Who may open the dashboard over the network (Windows Firewall "
+                    "RemoteAddress): LocalSubnet (the server's own office subnet), an IP, "
+                    "a CIDR (10.10.151.0/24) or a range (10.10.151.10-10.10.151.50). "
+                    "Applied by deploy/06_install_services.ps1 when bind_address is not "
+                    "127.0.0.1.")
+    stale_grace_hours: float = Field(
+        default=2, ge=0, le=168,
+        description="Banner, /health and the overdue email turn red when an enabled leg has had no "
+                    "successful backup by its next scheduled run + the run budget + this many hours "
+                    "of grace (a daily schedule: about 26 h, a weekly one: about a week).")
+    catching_up_max_days: int = Field(
+        default=14, ge=1, le=365,
+        description="A leg that is overdue but whose latest run is a budget-stopped PARTIAL that copied "
+                    "data (a large upload spread over several nights) shows amber 'catching up' for "
+                    "this many days after its first partial run; after that it is red and emailed.")
+    alert_failure_window_days: int = Field(
+        default=7, ge=1, le=90,
+        description="Banner + /health turn red when an alert or report email failed to be "
+                    "delivered within this many days.")
+    # Owner 2026-10-15: Advanced settings need a second, separate login.
+    admin_password_hash: str = Field(
+        default="",
+        description="Advanced-settings login: a salted PBKDF2 hash written by the installer, "
+                    "'Change Advanced password' in Advanced, or the reset script on the server - "
+                    "never the password itself. Empty = nobody can open Advanced.")
+    admin_session_minutes: int = Field(
+        default=30, ge=5, le=480,
+        description="The Advanced-settings login expires after this many minutes")
+    admin_password_min_length: int = Field(
+        default=10, ge=8, le=128, description="Minimum length of a new admin password")
 
-    @model_validator(mode="after")
-    def api_key_required_when_auth_enabled(self) -> "DashboardConfig":
-        if self.auth_enabled and not self.api_key:
-            raise ValueError("api_key must be set when auth_enabled is True")
-        return self
+    login_password_hash: str = Field(
+        default="",
+        description="Dashboard sign-in password (plan E1): a salted PBKDF2 hash written by the "
+                    "installer, 'Change dashboard password' in Advanced, or the reset script "
+                    "on the server - never the password itself. Empty = nobody can sign in.")
+
+    @field_validator("admin_password_hash", "login_password_hash")
+    @classmethod
+    def _valid_password_hash(cls, v: str) -> str:
+        if v and not v.startswith("pbkdf2_sha256$"):
+            raise ValueError("Leave it empty or use a hash created by the dashboard or the installer. "
+                             "Never type a plain password here.")
+        return v
+
+    # Audit 2026-10-18 item 7: one budget per kind of action (a few settings
+    # saves must never use up the right to approve a blocked backup), and the
+    # dashboard's timings, all tunable here instead of literals in ui.py.
+    rate_limit_window_seconds: int = Field(
+        default=300, ge=10, le=3600, description="Window of every dashboard rate limit")
+    rate_limit_triggers: int = Field(
+        default=5, ge=1, le=100,
+        description="Manual backup / verification / FY-check starts per window and address")
+    rate_limit_logins: int = Field(
+        default=10, ge=1, le=100, description="Sign-in attempts (dashboard and Advanced) per window")
+    rate_limit_reports: int = Field(
+        default=10, ge=1, le=100, description="Report downloads / report emails per window")
+    rate_limit_settings: int = Field(
+        default=20, ge=1, le=200,
+        description="Settings saves, admin-password changes and test emails per window")
+    rate_limit_decisions: int = Field(
+        default=10, ge=1, le=100,
+        description="Approve / run / dismiss of blocked backups per window")
+    session_hours: int = Field(
+        default=24, ge=1, le=168, description="A dashboard sign-in lasts this many hours")
+    link_cache_seconds: int = Field(
+        default=60, ge=0, le=3600,
+        description="The dashboard address put into emails is looked up from the network at most "
+                    "this often (0 = every time)")
+    config_refresh_seconds: int = Field(
+        default=300, ge=10, le=3600,
+        description="The dashboard re-reads config.yaml at most this often")
+    trigger_wait_seconds: int = Field(
+        default=180, ge=0, le=600,
+        description="A manual start waits this long for the run's first result before "
+                    "answering (the run continues afterwards)")
+    manual_start_max_wait_minutes: int = Field(
+        default=30, ge=5, le=1440,
+        description="A manual start that begins later than this many minutes after the button "
+                    "was pressed is not run: it is recorded as Missed and nothing is touched "
+                    "(the NAS is never woken for it)")
+    agent_max_silence_seconds: int = Field(
+        default=120, ge=30, le=3600,
+        description="A manual start is refused when the backup service has not asked for work "
+                    "for this long (it is not running)")
+    history_nights: int = Field(
+        default=30, ge=7, le=90,
+        description="The dashboard shows one mark per night for this many nights")
+    apply_delay_seconds: int = Field(
+        default=2, ge=1, le=30,
+        description="'Apply changes' restarts the backup service this long after the page "
+                    "has been answered")
+    apply_force_exit_seconds: int = Field(
+        default=120, ge=30, le=600,
+        description="If the service has not stopped this long after 'Apply changes', it is "
+                    "ended (the service manager then starts it again)")
+    apply_block_before_run_seconds: int = Field(
+        default=120, ge=0, le=3600,
+        description="'Apply changes' is refused when a scheduled run is due within this time")
+    apply_reconnect_timeout_seconds: int = Field(
+        default=300, ge=60, le=1800,
+        description="The Settings page waits this long for the restarted service to answer")
+    apply_poll_seconds: int = Field(
+        default=3, ge=1, le=30,
+        description="The Settings page asks every this often whether the service is back")
+
+    @field_validator("firewall_remote_addresses")
+    @classmethod
+    def _office_addresses_only(cls, v: list[str]) -> list[str]:
+        ip = r"\d{1,3}(?:\.\d{1,3}){3}"
+        allowed = re.compile(rf"^(?:LocalSubnet|{ip}(?:/\d{{1,2}})?|{ip}-{ip})$")
+        bad = [a for a in v if not allowed.fullmatch(a.strip())]
+        if bad:
+            raise ValueError("Use LocalSubnet, an IP address, a CIDR or a range instead of "
+                             + ", ".join(repr(b) for b in bad)
+                             + ". The dashboard must never be open to everyone (Any).")
+        return [a.strip() for a in v]
 
     def __repr__(self) -> str:
-        return f"DashboardConfig(auth_enabled={self.auth_enabled}, api_key='***', bind_address='{self.bind_address}', port={self.port})"
+        return f"DashboardConfig(bind_address='{self.bind_address}', port={self.port})"
 
     def __str__(self) -> str:
         return self.__repr__()
 
 
-class ScheduleConfig(BaseModel):
+class ScheduleConfig(StrictModel):
     """Per-deployment cron schedule configuration."""
     cloud_cron: str = Field(default="0 18 * * *", description="Cloud backup cron expression")
     lan_cron: str = Field(default="0 1 * * *", description="LAN backup cron expression")
     weekly_cron: str = Field(default="0 8 * * MON", description="Weekly report cron expression")
-    monthly_cron: str = Field(default="0 8 1 * *", description="Monthly report cron expression")
+    monthly_cron: str = Field(
+        default="30 8 1 * *",
+        description="Monthly report cron expression. Default 08:30 so it never starts in the "
+                    "same minute as the Monday 08:00 weekly report when the 1st is a Monday.")
     rollover_cron: str = Field(
         default="0 6 * * *",
         description="Daily FY rollover check cron (no-op except on the fiscal-year boundary)",
     )
     audit_cron: str = Field(
-        default="0 3 * * SUN",
-        description="Weekly read-only integrity audit (Sunday low-load window, single checker)",
+        default="0 10 * * SUN",
+        description="Weekly read-only integrity audit (Sunday, single checker). 10:00 so the "
+                    "default 01:00 LAN run (4 h budget) can never overlap it (WP14)",
     )
     timezone: str = Field(default="Asia/Kolkata", description="IANA timezone for all schedules")
 
@@ -408,7 +1225,7 @@ class ScheduleConfig(BaseModel):
     def valid_cron(cls, v: str) -> str:
         parts = v.strip().split()
         if len(parts) != 5:
-            raise ValueError(f"Invalid cron expression '{v}': expected 5 fields (min hour dom month dow)")
+            raise ValueError(f"Pick the time with the schedule picker, or enter 5 fields like '0 21 * * *' (now: '{v}').")
         return v
 
     @model_validator(mode="after")
@@ -434,13 +1251,14 @@ class ScheduleConfig(BaseModel):
                 CronSchedule(cron=getattr(self, field_name), timezone=self.timezone)
             except Exception as e:
                 raise ValueError(
-                    f"schedule.{field_name}={getattr(self, field_name)!r} "
-                    f"(timezone={self.timezone!r}) rejected by Prefect's scheduler: {e}"
+                    f"Change schedule.{field_name} to a valid schedule (now "
+                    f"{getattr(self, field_name)!r}, timezone {self.timezone!r}). "
+                    f"The scheduler rejected it: {e}"
                 ) from e
         return self
 
 
-class AppConfig(BaseModel):
+class AppConfig(StrictModel):
     firm_name: str = "AAM Associates"
     paths: PathsConfig
     lan: LanConfig = Field(default_factory=LanConfig)
@@ -451,15 +1269,50 @@ class AppConfig(BaseModel):
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
+    run_logs: RunLogsConfig = Field(default_factory=RunLogsConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    guards: GuardsConfig = Field(default_factory=GuardsConfig)
+    approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
+    rollover: RolloverConfig = Field(default_factory=RolloverConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
+    watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
+
+    @model_validator(mode="after")
+    def _schedule_fits_the_budgets(self) -> "AppConfig":
+        """WP14 / DEC-7: the configured schedule must be provably free of slot
+        overruns. Only jobs that take the backup slot are checked (reports and
+        the daily no-op rollover check do not)."""
+        from core.budget import schedule_problems
+
+        jobs = {}
+        if self.cloud.enabled and self.cloud.scheduled:
+            jobs["cloud"] = (self.schedule.cloud_cron, self.budget.cloud_max_hours * 3600)
+        if self.lan.enabled and self.lan.scheduled:
+            jobs["lan"] = (self.schedule.lan_cron, self.budget.lan_max_hours * 3600)
+        jobs["audit"] = (self.schedule.audit_cron, self.budget.audit_max_hours * 3600)
+        problems = schedule_problems(jobs, self.schedule.timezone,
+                                     self.maintenance.concurrency_wait_seconds)
+        if problems:
+            raise ValueError("Change the start times: the schedule does not fit the run budgets "
+                             "(the maximum running times).\n  - " + "\n  - ".join(problems))
+        return self
+
+    @property
+    def run_logs_dir(self) -> Path:
+        """Effective artefact root (configured dir or <runtime_dir>/run_logs)."""
+        if self.run_logs.dir:
+            return Path(self.run_logs.dir)
+        return Path(self.paths.runtime_dir) / "run_logs"
 
     @model_validator(mode="after")
     def cross_field_validation(self) -> "AppConfig":
         if self.lan.enabled and not self.paths.lan_destination.startswith("\\\\"):
-            raise ValueError("paths.lan_destination must be a UNC path when LAN is enabled")
+            raise ValueError("Enter the NAS folder as \\\\server\\share, or switch the LAN backup off. The LAN backup needs a network folder.")
         if self.cloud.enabled and not self.paths.gcs_key_path:
-            raise ValueError("paths.gcs_key_path is required when cloud is enabled")
+            raise ValueError("Choose the Google Cloud key file, or switch the cloud backup off. The cloud backup cannot sign in without it.")
         if not self.lan.enabled and not self.cloud.enabled:
-            raise ValueError("At least one destination (lan or cloud) must be enabled")
+            raise ValueError("Switch on the LAN backup or the cloud backup. With both off, nothing is backed up.")
 
         # FY Mismatch Safety Guard:
         # Prevent mirroring FY24-25 into FY23-24 if a human typo occurs.
@@ -469,17 +1322,18 @@ class AppConfig(BaseModel):
         # convention (FY25-26); a name like FY2026-27 silently disables rollover
         # forever. Refuse at config load instead of at the FY boundary.
         fy_4digit = re.compile(r"FY\d{4}-\d{2,4}\b", re.IGNORECASE)
-        for path_name, path_value in (("source_drive", self.paths.source_drive),
-                                      ("lan_destination", self.paths.lan_destination)):
+        checked = [("source_drive", self.paths.source_drive)]
+        if self.lan.enabled:          # an unused NAS placeholder (cloud-only) is not read by anything
+            checked.append(("lan_destination", self.paths.lan_destination))
+        for path_name, path_value in checked:
             for seg in path_value.replace("\\", "/").split("/"):
                 seg = seg.strip()
                 if fy_4digit.search(seg):
                     raise ValueError(
-                        f"paths.{path_name} uses a 4-digit FY name ({seg!r}) — "
-                        "fiscal-year rollover only supports the 2-digit convention "
-                        "(FY25-26). Rename the FY folder: a 4-digit name silently "
-                        "disables rollover forever, and every run after the FY "
-                        "boundary would keep overwriting the previous year's data."
+                        f"Rename the folder {seg!r} (paths.{path_name}) to the two-digit form "
+                        "like FY25-26. The yearly switch to a new financial year only understands "
+                        "that form; with a 4-digit name it would silently never happen and every "
+                        "run after the year end would overwrite the previous year's data."
                     )
         src_parts = self.paths.source_drive.replace("\\", "/").rstrip("/").split("/")
         src_fy = src_parts[-1].upper() if fy_pattern.match(src_parts[-1]) else None
@@ -487,13 +1341,44 @@ class AppConfig(BaseModel):
         lan_parts = self.paths.lan_destination.replace("\\", "/").rstrip("/").split("/")
         lan_fy = lan_parts[-1].upper() if fy_pattern.match(lan_parts[-1]) else None
 
-        if src_fy and lan_fy and src_fy != lan_fy:
+        # Owner 2026-10-22: the source MUST be a year folder, whichever backup legs are on. The cloud folder and
+        # the guard baselines are named after it; without one the name would silently fall back to the calendar
+        # year and change at midnight on 1 April (a full re-upload, no final backup, no archive, guards starting
+        # from nothing) and the yearly switch would never run. Predictable layout: D:\FY25-26, D:\FY24-25, ...
+        if not src_fy:
             raise ValueError(
-                f"CRITICAL DATA LOSS PREVENTION: source_drive FY ({src_fy}) and "
-                f"lan_destination FY ({lan_fy}) do not match! "
-                "The system refuses to start because syncing would overwrite the old FY data with the new FY data. "
-                "Please manually correct config.yaml so both paths point to the identical FY folder."
+                "The folder to back up must be a financial-year folder like FY26-27 (for example D:\\FY26-27). "
+                "The cloud copy and the safety checks are named after that folder; without it the name would "
+                "change by itself every 1 April and the yearly switch would not run. Fix it under "
+                "Settings > Advanced (or ask support).")
+
+        # The source folder decides the financial year. The NAS path only counts while the NAS backup is on
+        # (cloud-only keeps an unused placeholder that nothing reads, so it may look like anything).
+        if self.lan.enabled and src_fy and not lan_fy:
+            raise ValueError(
+                f"While the NAS backup is on, both folders must end in the same financial-year folder: the "
+                f"source ends in {src_fy} but the NAS folder does not. Otherwise the yearly switch would point "
+                "the NAS at a new empty folder and the real data would stop being backed up. "
+                "Fix the NAS folder under Settings > Advanced (or ask support).")
+
+        if self.lan.enabled and src_fy and lan_fy and src_fy != lan_fy:
+            raise ValueError(
+                f"Make both paths end in the same FY folder (source {src_fy}, NAS {lan_fy}). "
+                "The system refuses to start otherwise: the backup would overwrite the old "
+                "year's data with the new year's. Fix the NAS folder under Settings > Advanced (or ask support)."
             )
+
+        # OV-10.3 (plan 5.10, R-25): while the NAS leg and the overlap are on, the next year's folder is created
+        # BESIDE the configured one. A NAS FY folder that is the share itself (\\nas\FY26-27) has no share root
+        # to create it in: fail closed now instead of at the first activation.
+        if self.lan.enabled and self.rollover.overlap_enabled and lan_fy:
+            unc_parts = [p for p in self.paths.lan_destination.replace("\\", "/").split("/") if p.strip()]
+            if len(unc_parts) <= 2:
+                raise ValueError(
+                    f"The NAS folder {self.paths.lan_destination!r} is the share root itself. Put the financial-year "
+                    f"folder inside a share (for example \\\\server\\backup\\{lan_fy}) so next year's folder can be "
+                    "created beside it, or switch off the early backup of the next year "
+                    "(rollover.overlap_enabled). Fix it under Settings > Advanced (or ask support).")
 
         return self
 
@@ -501,7 +1386,24 @@ class AppConfig(BaseModel):
     def from_yaml(cls, path: str) -> "AppConfig":
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls(**data)
+        return cls(**_drop_deprecated_keys(data or {}))
+
+
+def _drop_deprecated_keys(data: dict) -> dict:
+    """Remove DEPRECATED_KEYS from a raw config mapping, warning per key."""
+    from loguru import logger
+
+    for section, keys in DEPRECATED_KEYS.items():
+        values = data.get(section)
+        if not isinstance(values, dict):
+            continue
+        for key in sorted(keys & values.keys()):
+            values.pop(key)
+            logger.warning(
+                f"config: '{section}.{key}' is deprecated and ignored - "
+                "remove it from config.yaml"
+            )
+    return data
 
 
 def load_config(config_path: str = CONFIG_PATH) -> AppConfig:

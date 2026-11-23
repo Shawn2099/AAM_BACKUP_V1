@@ -11,24 +11,21 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 
 import watchdog
+from test_support.fake_sc import fake_sc
 
 
 @pytest.fixture
 def mock_sc_run():
-    with patch("watchdog.subprocess.run") as m:
-        def side_effect(args, **kwargs):
-            mock_result = MagicMock()
-            if "query" in args:
-                mock_result.stdout = "STATE : 4  RUNNING"
-                mock_result.returncode = 0
-            elif "stop" in args:
-                mock_result.returncode = 0
-            return mock_result
-        m.side_effect = side_effect
+    def side_effect(args):
+        mock_result = MagicMock(returncode=0, stdout="")
+        if "queryex" in args:
+            mock_result.stdout = "STATE : 4  RUNNING"
+        return mock_result
+    with fake_sc(side_effect=side_effect) as m:
         yield m
 
 
@@ -76,7 +73,7 @@ def _run_loop(max_sleeps, events, lock_path):
             # args AS-IS — cmd here IS the command list ["sc", "stop", ...].
             events.append(("sc", list(cmd)))
             result = MagicMock()
-            if "query" in cmd:
+            if "queryex" in cmd:
                 result.stdout = "STATE : 4  RUNNING"
                 result.returncode = 0
             else:
@@ -86,7 +83,7 @@ def _run_loop(max_sleeps, events, lock_path):
         try:
             with patch("watchdog._resolve_paths"), \
                  patch("watchdog.BACKUP_LOCK_PATH", lock_path), \
-                 patch("watchdog.subprocess.run", side_effect=sc_wrapper):
+                 fake_sc(side_effect=sc_wrapper):
                 watchdog.main()
         except KeyboardInterrupt:
             pass
@@ -95,7 +92,7 @@ def _run_loop(max_sleeps, events, lock_path):
 def _unhealthy_httpx():
     # FAILURE_THRESHOLD-1 pre-threshold cycles each sleep CHECK_INTERVAL_SECONDS;
     # every cycle afterwards reaches the transfer/lock decision logic.
-    with patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+    with patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         yield
 
 
@@ -107,7 +104,7 @@ def test_transfer_deferrals_do_not_presatisfy_lock_cap(mock_sc_run, temp_lock_fi
 
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
          patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
-         patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+         patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         # sleeps: 4 threshold + 20 transfer-deferral + 14 lock-deferral grace,
         # then the 15th cycle (lock stale/dead) forces -> stop. Budget covers it all.
         _run_loop(60, events, temp_lock_file)
@@ -135,7 +132,7 @@ def test_transfer_cap_force_restarts_in_same_iteration(mock_sc_run, temp_lock_fi
 
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
          patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
-         patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+         patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         _run_loop(400, events, temp_lock_file)
 
     stops = [i for i, e in enumerate(events) if e[0] == "sc" and "stop" in e[1]]
@@ -160,7 +157,7 @@ def test_live_lock_owner_never_unlinked_or_restarted(mock_sc_run, temp_lock_file
     with patch("watchdog._is_backup_running", side_effect=seq.lock_held), \
          patch("watchdog._transfer_process_running", side_effect=seq.transferring), \
          patch("watchdog._alert_wedged_lock") as mock_alert, \
-         patch("httpx.get", side_effect=httpx.ConnectError("dead")):
+         patch("httpx2.get", side_effect=httpx2.ConnectError("dead")):
         # Run beyond MAX_DEFERRALS (15)
         _run_loop(25, events, temp_lock_file)
 
@@ -173,7 +170,7 @@ def test_live_lock_owner_never_unlinked_or_restarted(mock_sc_run, temp_lock_file
 def test_healthy_cycle_resets_both_counters(mock_sc_run, temp_lock_file):
     """A healthy API response resets both deferral counters. Budget of 1
     sleep = exactly one full healthy cycle (check -> agent check -> sleep)."""
-    with patch("httpx.get") as m_httpx:
+    with patch("httpx2.get") as m_httpx:
         resp = MagicMock()
         resp.status_code = 200
         m_httpx.return_value = resp

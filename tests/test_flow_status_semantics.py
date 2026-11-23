@@ -41,11 +41,13 @@ def _make_config():
 # ═══════════════════════════════════════════════════════════════
 
 class TestCloudVerifyFailure:
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.cloud_publish_artifact_task")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
+    @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task")
     @patch("flow.get_fy_prefix", return_value="FY26-27")
@@ -80,7 +82,7 @@ class TestCloudVerifyFailure:
         assert "unexpected-in-cloud=2" in args[6]
         # Alert fired with the verify details
         mock_alert.assert_called_once()
-        alert_err = mock_alert.call_args.args[2]
+        alert_err = mock_alert.call_args.args[1].message
         assert "missing-from-cloud=1" in alert_err
         assert "unexpected-in-cloud=2" in alert_err
         assert "size-changed=1" in alert_err
@@ -89,11 +91,13 @@ class TestCloudVerifyFailure:
         # No artifact on failure
         mock_artifact.assert_not_called()
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.cloud_publish_artifact_task")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
+    @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task")
     @patch("flow.get_fy_prefix", return_value="FY26-27")
@@ -134,6 +138,8 @@ class TestCloudFailureStatus:
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
+    @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task")
     @patch("flow.get_fy_prefix", return_value="FY26-27")
@@ -158,6 +164,8 @@ class TestCloudFailureStatus:
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
+    @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task", side_effect=RuntimeError("source missing"))
     @patch("flow.get_fy_prefix", return_value="FY26-27")
@@ -182,6 +190,8 @@ class TestLanFailureStatus:
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task")
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -205,6 +215,8 @@ class TestLanFailureStatus:
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task")
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task")
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -229,11 +241,13 @@ class TestLanFailureStatus:
 # ═══════════════════════════════════════════════════════════════
 
 class TestLanPartialShutdown:
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -256,16 +270,18 @@ class TestLanPartialShutdown:
 
         mock_shutdown.assert_not_called()  # THE F3 BUG: used to shut the NAS down
         mock_alert.assert_called_once()
-        alert_msg = mock_alert.call_args.args[2]
+        alert_msg = mock_alert.call_args.args[1].message
         assert "PARTIAL" in alert_msg and "9" in alert_msg
         args = mock_record.call_args.args
         assert args[4] == "LAN_PARTIAL"
 
-    @patch("flow.send_failure_alert", return_value=True)
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.lan_publish_artifact_task")
     @patch("flow.lan_record_task")
     @patch("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
+    @patch("flow.lan_access_task", new=MagicMock())
+    @patch("flow.lan_guards_task", new=MagicMock())
     @patch("flow.lan_snapshot_before_task", return_value={})
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
@@ -293,53 +309,45 @@ class TestLanPartialShutdown:
 # ═══════════════════════════════════════════════════════════════
 
 class TestCloudTimeoutMessage:
-    @patch("core.cloud_sync.temp_rclone_config")
-    def test_timeout_error_is_resumable(self, mock_temp_cfg):
+    def test_timeout_error_is_resumable(self, tmp_path):
         from contextlib import contextmanager
+
+        from core.cloud_sync import run_cloud_sync
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_run_tool
 
         @contextmanager
         def fake_cfg(*a, **k):
             yield "/tmp/rclone-test.conf"
 
-        mock_temp_cfg.side_effect = fake_cfg
-
-        with patch("core.cloud_sync.subprocess.run",
-                   side_effect=subprocess.TimeoutExpired(cmd="rclone", timeout=300)):
-            from core.cloud_sync import run_cloud_sync
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with patch("core.cloud_sync.temp_rclone_config", side_effect=fake_cfg), \
+             fake_run_tool("core.cloud_sync", timed_out=True):
             result = run_cloud_sync(
                 source="E:\\DATA", bucket="b", fy_prefix="FY26-27",
                 gcs_key_path="/tmp/k.json", project_number="1", storage_class="STANDARD",
-                timeout=300,
+                timeout=300, artefacts=art,
             )
-
         assert result["status"] == "CLOUD_FAILED"
         assert result["exit_code"] == -1
         assert "resumable" in result["error"]
         assert "next run continues" in result["error"]
-
-
 # ═══════════════════════════════════════════════════════════════
 # G10 — scheduled rollover-check flow
 # ═══════════════════════════════════════════════════════════════
 
 class TestRolloverCheckFlow:
-    @patch("core.fy_rollover.rollover", return_value=False)
-    def test_no_rollover_needed(self, mock_rollover):
-        assert flow.rollover_check_flow.fn("config.yaml") == "NO_ROLLOVER_NEEDED"
-        mock_rollover.assert_called_once_with(config_path="config.yaml")
+    """G10 kept: the flow is a daily, idempotent no-op until the FY changes.
+    The rollover decisions themselves (forward-only, final backups through
+    the pipelines, G6 approval) are covered in tests/test_m2_rollover.py."""
 
-    @patch("core.fy_rollover.rollover", return_value=True)
-    def test_rollover_completed(self, mock_rollover):
-        assert flow.rollover_check_flow.fn("config.yaml") == "ROLLOVER_COMPLETED"
-
+    # the daily check first looks for an open rollover journal (plan A): none here
+    @patch("flow.ManifestDB.from_config",
+           new=lambda cfg: MagicMock(rollover_incomplete=MagicMock(return_value=None)))
+    @patch("flow.log_retention_task")
+    @patch("flow.get_fy_prefix", return_value="FY26-27")
     @patch("flow.load_config")
-    @patch("flow.send_failure_alert", return_value=True)
-    @patch("core.fy_rollover.rollover")
-    def test_blocked_alerts_and_raises(self, mock_rollover, mock_alert, mock_cfg):
-        from core.fy_rollover import RolloverError
-        mock_rollover.side_effect = RolloverError("source drive E: not mounted")
+    def test_no_rollover_needed(self, mock_cfg, _fy, _ret):
         mock_cfg.return_value = _make_config()
-        with pytest.raises(RolloverError, match="not mounted"):
-            flow.rollover_check_flow.fn("config.yaml")
-        mock_alert.assert_called_once()
-        assert "BLOCKED" in mock_alert.call_args.args[2]
+        assert flow.rollover_check_flow.fn("config.yaml") == "NO_ROLLOVER_NEEDED"
+

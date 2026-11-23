@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from loguru import logger
+from models.config import MaintenanceConfig, model_default
 
 LOG_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
@@ -11,7 +12,7 @@ LOG_FORMAT = (
 )
 
 
-def configure(log_dir: str | Path, log_retention_days: int = 30) -> None:
+def configure(log_dir: str | Path, log_retention_days: int = model_default(MaintenanceConfig, "log_retention_days")) -> None:
     """Configure Loguru with daily rotating file + stderr output.
 
     Args:
@@ -19,10 +20,13 @@ def configure(log_dir: str | Path, log_retention_days: int = 30) -> None:
         log_retention_days: Days before log files are auto-deleted.
                             Override via config.maintenance.log_retention_days.
     """
+    global _bridge_configured
+
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     logger.remove()
+    _bridge_configured = False
 
     logger.add(
         sys.stderr,

@@ -25,6 +25,13 @@ def scratch():
         SCRATCH.rmdir()
 
 
+_CHAOS_TOOLS_PRESENT = Path(r"C:\ChaosTest\tools").exists()
+_needs_chaos_tools = pytest.mark.skipif(
+    not _CHAOS_TOOLS_PRESENT,
+    reason="chaos-test tool directory C:\ChaosTest\tools not present on this machine",
+)
+
+
 class TestBatch2Registry:
     def test_five_scenarios(self):
         assert [s.sid for s in b2.ALL2] == ["B2-1", "B2-2", "B2-3", "B2-4", "B2-5"]
@@ -48,6 +55,7 @@ class TestBatch2Registry:
 
 
 class TestBatch2Entrypoints:
+    @_needs_chaos_tools
     def test_tools_referenced_exist(self):
         for name in ("killrob.py", "killrcl.py", "inv.py", "hashpair.py",
                      "pfx.py", "dblkill_postrem.py"):

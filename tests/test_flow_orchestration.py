@@ -38,23 +38,52 @@ class TestBackupModeRouting:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    def test_valid_modes_accepted(self, mock_bridge, mock_log, mock_cfg):
+    @patch("flow.cleanup_orphaned_robocopy_logs")
+    @patch("flow.ManifestDB")
+    @patch("flow._run_lan_pipeline")
+    @patch("flow._run_cloud_pipeline")
+    def test_valid_modes_accepted(self, mock_cloud, mock_lan, mock_db, mock_cleanup,
+                                  mock_bridge, mock_log, mock_cfg):
+        # Both legs enabled: every valid mode routes to the right pipeline(s).
+        mock_config = MagicMock()
+        mock_config.cloud.enabled = True
+        mock_config.lan.enabled = True
+        mock_config.paths.source_drive = "E:/DATA/FY26-27"
+        mock_cfg.return_value = mock_config
+        for mode in ("cloud", "lan", "all"):
+            backup.fn("config.yaml", mode)
+        assert mock_cloud.call_count == 2   # cloud + all
+        assert mock_lan.call_count == 2     # lan + all
+
+    @pytest.mark.parametrize("mode", ["cloud", "lan"])
+    @patch("flow.load_config")
+    @patch("flow.configure_logging")
+    @patch("flow.configure_prefect_bridge")
+    def test_single_disabled_leg_refuses(self, mock_bridge, mock_log, mock_cfg, mode):
+        # Disabled-leg guard: an explicit single-leg request for a disabled
+        # leg must fail loudly, never no-op into a successful run.
         mock_config = MagicMock()
         mock_config.cloud.enabled = False
         mock_config.lan.enabled = False
         mock_cfg.return_value = mock_config
-        for mode in ("cloud", "lan", "all"):
+        with pytest.raises(ValueError, match="disabled in configuration"):
             backup.fn("config.yaml", mode)
 
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    def test_mode_case_insensitive(self, mock_bridge, mock_log, mock_cfg):
+    @patch("flow.cleanup_orphaned_robocopy_logs")
+    @patch("flow.ManifestDB")
+    @patch("flow._run_cloud_pipeline")
+    def test_mode_case_insensitive(self, mock_cloud, mock_db, mock_cleanup,
+                                   mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
-        mock_config.cloud.enabled = False
+        mock_config.cloud.enabled = True
         mock_config.lan.enabled = False
+        mock_config.paths.source_drive = "E:/DATA/FY26-27"
         mock_cfg.return_value = mock_config
         backup.fn("config.yaml", "CLOUD")
+        mock_cloud.assert_called_once()
 
 
 class TestBackupDisabledPipelines:
@@ -124,12 +153,17 @@ class TestCloudRecordTask:
     @patch("flow.record_sync_results")
     def test_records_to_db(self, mock_record, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
+        mock_db_cls.from_config.return_value = mock_db
+        config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
         verify_data = {
             "manifest": [{"Path": "a.txt", "Size": 100, "ModTime": 1.0}],
             "diff": {"removed": ["old.txt"]},
         }
-        cloud_record_task.fn("/tmp/test.db", verify_data, {"status": "CLOUD_COMPLETE"})
+        cloud_record_task.fn(config, verify_data, {"status": "CLOUD_COMPLETE"})
+        # plan 5.4: the DB is opened only through from_config (settings from config)
+        mock_db_cls.from_config.assert_called_once_with(config)
+        mock_db_cls.assert_not_called()
         mock_record.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -204,11 +238,15 @@ class TestLanRecordTask:
     @patch("flow.diff_snapshots", return_value={"added": {}, "removed": {}, "modified": {}})
     def test_records_with_after_dict(self, mock_diff, mock_record, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
+        mock_db_cls.from_config.return_value = mock_db
+        config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
         # snapshot_to_dict returns {path: (size, mtime)} tuples
         before = {"old.txt": (100, 1.0)}
         after = {"new.txt": (200, 2.0)}
-        lan_record_task.fn("/tmp/test.db", {"status": "LAN_COMPLETE"}, before, after)
+        lan_record_task.fn(config, {"status": "LAN_COMPLETE"}, before, after)
+        mock_db_cls.from_config.assert_called_once_with(config)
+        mock_db_cls.assert_not_called()
         mock_record.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -218,22 +256,23 @@ class TestLanShutdownTask:
         config = MagicMock()
         config.lan.shutdown_after_backup = False
         config.wol.enabled = True
-        lan_shutdown_task.fn(config)  # Should not raise
+        assert lan_shutdown_task.fn(config) is None
 
     def test_skips_when_wol_disabled(self):
         config = MagicMock()
         config.lan.shutdown_after_backup = True
         config.wol.enabled = False
-        lan_shutdown_task.fn(config)  # Should not raise
+        assert lan_shutdown_task.fn(config) is None
 
-    @patch("flow.shutdown_server")
+    @patch("flow.shutdown_from_config")
     def test_shutdowns_when_enabled(self, mock_shutdown):
         config = MagicMock()
         config.lan.shutdown_after_backup = True
         config.wol.enabled = True
         config.wol.server_ip = "192.168.10.10"
         lan_shutdown_task.fn(config)
-        mock_shutdown.assert_called_once_with("192.168.10.10")
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is config
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -245,9 +284,13 @@ class TestRecordRun:
     @patch("flow.record_run_history")
     def test_records_run(self, mock_record, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
-        _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
-                     "CLOUD_COMPLETE", 0, None)
+        mock_db_cls.from_config.return_value = mock_db
+        config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
+        _record_run(config, "run-1", "cloud", "2026-01-01T00:00:00Z",
+                    "CLOUD_COMPLETE", 0, None)
+        mock_db_cls.from_config.assert_called_once_with(config)
+        mock_db_cls.assert_not_called()
         mock_record.assert_called_once()
         mock_db.close.assert_called_once()
 
@@ -256,8 +299,10 @@ class TestRecordRun:
     @patch("flow.record_run_history", return_value=False)
     def test_logs_critical_when_run_history_not_persisted(self, mock_record, mock_logger, mock_db_cls):
         mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
-        _record_run("/tmp/test.db", "run-1", "cloud", "2026-01-01T00:00:00Z",
+        mock_db_cls.from_config.return_value = mock_db
+        config = MagicMock()
+        config.paths.source_drive = "E:/DATA/FY26-27"
+        _record_run(config, "run-1", "cloud", "2026-01-01T00:00:00Z",
                     "CLOUD_COMPLETE", 0, None)
         mock_logger.critical.assert_called_once()
         mock_db.close.assert_called_once()
@@ -297,11 +342,11 @@ class TestBackupMaintenance:
 
         backup.fn("config.yaml", "all")
 
-        mock_db_cls.assert_called_with(
-            "/tmp/test.db",
-            busy_timeout_ms=45000,
-            vacuum_freelist_threshold=12345,
-            synchronous="full",
+        # Maintenance opens the DB through the single config-driven factory
+        # (ManifestDB.from_config reads busy_timeout/vacuum/synchronous).
+        mock_db_cls.from_config.assert_called_with(config)
+        mock_db_cls.from_config.return_value.purge_old_runs.assert_called_once_with(
+            retention_days=30
         )
 
 
@@ -312,31 +357,21 @@ class TestBackupMaintenance:
 class TestWeeklyReportFlow:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
-    @patch("flow.ManifestDB")
-    def test_calls_send_weekly_report(self, mock_db_cls, mock_log, mock_cfg):
-        mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
-        mock_config = MagicMock()
-        mock_cfg.return_value = mock_config
-        with patch("core.report.send_weekly_report") as mock_send:
-            weekly_report_flow.fn("config.yaml")
-            mock_send.assert_called_once()
-            mock_db.close.assert_called_once()
+    @patch("flow._send_summary_report")
+    def test_sends_the_weekly_summary(self, mock_send, mock_log, mock_cfg):
+        mock_cfg.return_value = MagicMock()
+        weekly_report_flow.fn("config.yaml")
+        assert mock_send.call_args.kwargs == {"days": 7, "period": "Weekly"}
 
 
 class TestMonthlyReportFlow:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
-    @patch("flow.ManifestDB")
-    def test_calls_send_monthly_report(self, mock_db_cls, mock_log, mock_cfg):
-        mock_db = MagicMock()
-        mock_db_cls.return_value = mock_db
-        mock_config = MagicMock()
-        mock_cfg.return_value = mock_config
-        with patch("core.report.send_monthly_report") as mock_send:
-            monthly_report_flow.fn("config.yaml")
-            mock_send.assert_called_once()
-            mock_db.close.assert_called_once()
+    @patch("flow._send_summary_report")
+    def test_sends_the_monthly_summary(self, mock_send, mock_log, mock_cfg):
+        mock_cfg.return_value = MagicMock()
+        monthly_report_flow.fn("config.yaml")
+        assert mock_send.call_args.kwargs == {"days": 30, "period": "Monthly"}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -344,65 +379,30 @@ class TestMonthlyReportFlow:
 # ═══════════════════════════════════════════════════════════════
 
 class TestFailureAlertPath:
-    @patch("flow.load_config")
-    @patch("flow.configure_logging")
-    @patch("flow.configure_prefect_bridge")
-    @patch("flow.send_failure_alert")
-    @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud: auth failed"))
-    def test_single_failure_sends_alert(self, mock_pipeline, mock_alert, mock_bridge, mock_log, mock_cfg):
-        mock_config = MagicMock()
-        mock_config.cloud.enabled = True
-        mock_config.lan.enabled = False
-        mock_config.firm_name = "Test Firm"
-        mock_config.notifications = MagicMock()
-        mock_cfg.return_value = mock_config
-
-        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
-            backup.fn("config.yaml", "cloud")
-
-        mock_alert.assert_called_once()
-        call_args = mock_alert.call_args
-        assert call_args[0][2] == "cloud: auth failed"
-        assert call_args[0][3]["mode"] == "cloud"
+    """WP8: backup() sends NO alert of its own - each failed leg already sent
+    exactly one at its terminal decision (tests/test_m3_alerts.py). The old
+    joined generic alert was the duplicate-alert finding."""
 
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud error"))
     @patch("flow._run_lan_pipeline", side_effect=RuntimeError("lan error"))
-    def test_both_failures_join_messages(self, mock_lan, mock_cloud, mock_alert, mock_bridge, mock_log, mock_cfg):
+    def test_failures_raise_without_a_second_alert(self, mock_lan, mock_cloud, mock_alert,
+                                                   mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
         mock_config.cloud.enabled = True
         mock_config.lan.enabled = True
-        mock_config.firm_name = "Test Firm"
-        mock_config.notifications = MagicMock()
+        mock_config.paths.source_drive = "E:/DATA/FY26-27"
+        mock_config.rollover.overlap_enabled = False
         mock_cfg.return_value = mock_config
 
-        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
+        with pytest.raises(ExceptionGroup, match="Backup completed with errors") as ei:
             backup.fn("config.yaml", "all")
 
-        call_args = mock_alert.call_args
-        error_msg = call_args[0][2]
-        assert "cloud error" in error_msg
-        assert "lan error" in error_msg
-        assert "; " in error_msg
-
-    @patch("flow.load_config")
-    @patch("flow.configure_logging")
-    @patch("flow.configure_prefect_bridge")
-    @patch("flow.send_failure_alert", side_effect=RuntimeError("SMTP down"))
-    @patch("flow._run_cloud_pipeline", side_effect=RuntimeError("cloud error"))
-    def test_alert_failure_does_not_suppress_backup_exception(self, mock_pipeline, mock_alert, mock_bridge, mock_log, mock_cfg):
-        mock_config = MagicMock()
-        mock_config.cloud.enabled = True
-        mock_config.lan.enabled = False
-        mock_config.firm_name = "Test Firm"
-        mock_config.notifications = MagicMock()
-        mock_cfg.return_value = mock_config
-
-        with pytest.raises(ExceptionGroup, match="Backup completed with errors"):
-            backup.fn("config.yaml", "cloud")
+        assert {str(e) for e in ei.value.exceptions} == {"cloud error", "lan error"}
+        mock_alert.assert_not_called()
 
 
 # ---------------------------------------------------------------
@@ -479,6 +479,8 @@ class TestCloudPipelineSkipsRecordOnManifestError:
 
         with patch.object(flow, "health_check_task"), \
              patch.object(flow, "cloud_preflight_task", mock_preflight), \
+             patch.object(flow, "cloud_guards_task", MagicMock()), \
+             patch.object(flow, "cloud_access_task", MagicMock()), \
              patch.object(flow, "cloud_sync_task", mock_sync), \
              patch.object(flow, "cloud_verify_and_report_task", mock_verify), \
              patch.object(flow, "cloud_record_task") as mock_record, \
@@ -488,6 +490,8 @@ class TestCloudPipelineSkipsRecordOnManifestError:
             mock_db_cls.return_value.get_cloud_synced_entries.return_value = {}
             config = MagicMock()
             config.paths.database_path = str(tmp_path / "m.db")
+            # _effective_fy_prefix() parses the source leaf: must be a real str.
+            config.paths.source_drive = str(tmp_path / "FY26-27")
             config.maintenance.sqlite_busy_timeout_ms = 30000
             config.maintenance.sqlite_vacuum_freelist_threshold = 10000
             config.maintenance.sqlite_synchronous = "normal"

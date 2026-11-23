@@ -11,15 +11,15 @@ async function emailReport(period) {
         const response = await fetch('/trigger/report/' + period + '/email', { method: 'POST' });
         const data = await response.json();
         if (response.ok) {
-            showToast(data.detail || 'Report emailed successfully!', 'success');
+            showToast(data.detail || 'Check that it arrived. The report was emailed.', 'success');
         } else if (response.status === 404) {
-            showToast(data.detail || 'No runs found for this period.', 'info');
+            showToast(data.detail || 'Try again after the next backup. No backups ran in this period, so there is nothing to send.', 'info');
         } else {
-            showToast(data.detail || 'Failed to send email.', 'error');
+            showToast(data.detail || 'Check the mail settings and try again. The email was not sent.', 'error');
         }
     } catch (err) {
         if (typeof showToast === 'function') {
-            showToast('Network error: ' + err.message, 'error');
+            showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error');
         } else {
             alert('Network error: ' + err.message);
         }

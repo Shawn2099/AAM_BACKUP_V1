@@ -1,0 +1,1006 @@
+# SESSION HANDOFF — read this first in every new session
+
+**Last updated:** 2026-11-21 (see the 2026-11-21 FY overlap block below - it is newest and wins; older text follows). 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
+UI + email audit and rebuild - see §4f; rclone exit codes +
+bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
+**Box not redeployed with §4d / §4e / §4f** (box is at 6adcfb2; owner decides). §4f adds schema
+v3 (one-time in-place upgrade of the box DB) and needs `dashboard.public_url` + bind/firewall
+on deploy day (see §4f).
+
+
+---
+
+## >>> 2026-11-22 RELEASE BREAK-IT SESSION - progress + state in `docs/RELEASE_BREAK_SESSION_2026-11-22.md` and `..._PART2.md`, `..._PART3.md` and `..._PART4.md` and `..._PART5.md` and `..._PART6.md` (READ ALL SIX FIRST; Part 6 is newest) <<<
+Fixes live on branch `release-candidate` (worktree C:\AAMTest\code), not yet merged into fy-overlap; AAMMerger services are stopped/disabled on this PC and must be restored; test stack under C:\AAMTest.
+
+---
+
+## >>> 2026-11-21 - FY OVERLAP: BUILT, BOX DEPLOY AND OWNER ITEMS OPEN (newest, overrides below) <<<
+
+### UPDATE 2026-11-22: lab triage DONE; box deploy and owner decisions remain
+- The 5 lab reds of 2026-11-21 were lab fixtures / floors, not product bugs (commit b914d63). A new full lab run then showed 5 other reds caused by that fixture change (w22 x2, w23 x2, w6b share the `test_w6_flow` rig, still queried `FY26-26`); fixed, those 3 files pass (7 passed). Unit suite 3478 passed. Local OV-11.3 probe and a local rehearsal (cloud leg real GCS test prefixes, both folders) done; the LAN leg of the rehearsal needs an elevated shell (SeBackupPrivilege). Opus review of the last WPs done and fixed (41c5a3e). OV-12.1 lifecycle drafted, NOT applied. Remaining: OV-10.1 (owner OK), OV-11.4 box deploy (corrected runbook below), OV-12.1 owner review, rotate the old password in the public history.
+
+### PAUSED 2026-11-21 (owner paused the work) - exactly where we stopped
+- Branch `fy-overlap`, all pushed to origin; last commit = see `git log -1`. Unit suite green at the last full run (3465 passed, 18 skipped; later commits only added the lab scenario, the rehearsal tool + its tests, docs).
+- **FIRST THING NEXT SESSION: triage the full audit-lab run of 2026-11-21 (62 min): 244 passed, 5 FAILED** (log `agent_runs/lab_wp11.txt`, gitignored; rerun the failing tests alone with a clean PREFECT_HOME to see detail):
+  `test_w10_frameworks::test_w10_production_line_coverage_during_real_run`, `test_w19_ui::test_w19_trigger_cloud_branches` and `..._trigger_lan_branches` (got 503: the new busy check in `ui._refuse_if_busy` asks Prefect, the lab has none - fake `_is_running`/`_is_verify_running` like tests/test_f2 do, or fix the lab rig),
+  `test_w6_flow::test_w6_backup_flow_failure_alert_policy`, `test_w6_flow::test_w6_integrity_audit_flow` (its log shows `FY26-26` = a lab config whose FY name is not consecutive: `_active_fys` fell back to the configured FY and the audit then failed on a LAN path - likely a lab fixture needing a valid FY leaf, not a product bug, but VERIFY before dismissing).
+  `audit_lab/test_w25_fy_overlap.py` (the 15-month scenario) passed.
+- Then: owner decisions - OV-10.1 (needs OK to touch owner's `upload_fy.py`/`restore.py`), OV-11.3 box rights test, OV-11.4 box deploy (Opus review of the deploy steps first, tell the owner, no backup running), OV-11.5 run of `tools/fy_overlap_rehearsal.py` on the box (dry run first; it sends a real INFO mail and wakes the NAS), OV-12.1 GCS lifecycle review, "Found while building" items.
+- Never commit the owner's files (core/restore.py, core/upload.py, restore.py, upload_fy.py, tests/test_restore_engine.py, tests/test_upload_engine.py, docs/RESTORE_CLOUD.md, tools/server_health/README.md).
+
+**Branch `fy-overlap` (from mvp-hardening 968b6b4). Built and committed: WP0-WP9 (upgrade + httpx2, schema v6, active set / activation / siblings,
+orchestration, alerts + approvals + closed FY, guards, overdue / watchdog, dashboard, audit, reports), OV-10.2 (readiness probes), OV-10.3 (validator),
+OV-11.1 (audit-lab scenario `audit_lab/test_w25_fy_overlap.py`), OV-11.5 (rehearsal `tools/fy_overlap_rehearsal.py`). Last commit 0c22da1. The
+task list `docs/TASKS_FY_OVERLAP_2026-11-20.md` is the truth (ticks); OV-11.2 (docs: ARCHITECTURE section 3.4 / 4 / 10 + this block) is this update.**
+**Not deployed: the trial box still runs 9461ac2 (2026-10-23). Do not merge to main before the box deploy and the owner's OK.**
+
+**OPEN (in order):**
+1. **OV-10.1** `upload_fy.py` / `restore.py` must refuse every active FY (tests R-20). Those files hold the OWNER'S uncommitted restore / upload work: coordinate, needs the owner's OK before touching them.
+2. **OV-11.3** trial box rights test: create / delete a test folder next to `E:\FY26-27` and in the NAS share root as the service account (`deploy/probe_service_account.py`, `04_check_readiness.ps1`), plus the cloud bucket check on rclone 1.76.0.
+3. **OV-11.4** trial-box deploy (see runbook below), then watch the next LAN and cloud runs. Optional before it: `python tools/fy_overlap_rehearsal.py` (dry run) and `--execute` (test years FY90-91 / FY91-92 only).
+4. **OV-12.1** GCS lifecycle: never ARCHIVE an active FY prefix (current + early), keep the noncurrent-version rules; review with the owner; apply with `gcloud storage buckets update --lifecycle-file`; verify with `describe`. `deploy/gcs_lifecycle.json` is the git version (the owner's staged variant was in an old session scratchpad, may be gone).
+
+**Deploy runbook notes (OV-11.4):**
+- **Order (Opus review 2026-11-22, all verified):** (0) BEFORE stopping anything: run the NEW code's `load_config(<AAM_CONFIG>)` on the live config (new strict keys / the OV-10.3 NAS-path rule would stop all three services at boot) and a dry `tools/fy_overlap_rehearsal.py`; (1) no backup running, tell the owner; (2) stop AamWatchdog, AamBackupAgent, AamPrefectServer; (3) copy the Prefect DB (`prefect.db` + `-wal`/`-shm`) and the old `manifest.db` set; (4) rename `manifest.db` + `-wal`/`-shm`; (5) deploy the bundle, then **`uv sync --frozen --no-dev` (or `deploy/04_check_readiness.ps1`) with the services stopped** - `launch.py` / `watchdog.py` import `httpx2` and uv.lock changed by ~2800 lines (Prefect 3.9.4); without it the agent dies on ImportError and no backup runs; (6) **start AamPrefectServer, wait until `/api/health` answers (the 3.7.2 -> 3.9.4 alembic migration runs here)**, then AamBackupAgent, then AamWatchdog; (7) `/health`, `/status` folders[].
+- **Rollback is more than `git reset --keep`:** stop the three services, `git reset --keep <previous sha>`, `uv sync --frozen --no-dev` (old lock), restore the copied `prefect.db` + `-wal`/`-shm` AND put the renamed old `manifest.db` set back (old code cannot open a v6 file or the migrated Prefect DB), start server, agent, watchdog.
+- **Rehearsal:** `python tools/fy_overlap_rehearsal.py --execute --mail-to <owner address>` (the office's addresses are never used; `--execute` refuses without it) must run from an ELEVATED shell / the service account (the LAN pre-flight needs SeBackupPrivilege). Cloud test prefixes: the bucket is versioned, so `rclone purge` only makes the FY90-91 / FY91-92 test objects NONCURRENT; they stay up to 92 days (Coldline from day 1) until the lifecycle deletes them. Harmless, but not "gone at once".
+- No backup running (Prefect slot `aam-backup` free, no `backup.lock`). Stop AamWatchdog, then AamBackupAgent (and AamPrefectServer for the DB copy).
+- **Back up the Prefect server DB first**: `<PREFECT_HOME>/prefect.db` + `-wal` / `-shm` with the services stopped. Prefect 3.7.2 -> 3.9.4 runs alembic migrations at server start; there is no way back without the copy. No script does it yet.
+- **Fresh manifest DB**: rename `manifest.db` + `-wal` / `-shm` (schema v6 refuses an older file, never migrates). Keep the renamed files. History starts empty.
+- **First-run approvals (I2)**: with a fresh DB there is no baseline for any (leg, FY), so the FIRST night of each leg becomes BLOCKED + an approval if any file was deleted since the last backup (plan 5.5 as written). Tell the office; approve on the dashboard.
+- **Mail subject label**: every per-leg mail subject is now `[Firm Backup] [FY26-27] FAILURE: ...`; fix any mail rule that matches `[Firm Backup] FAILURE`. Per-leg alert keys change series at deploy: at most one extra mail per OPEN problem, outside the old thread.
+- Deploy with the git bundle recipe (see the 2026-10-22 block), start AamBackupAgent then AamWatchdog, check `/health`, `/status` has `folders[]`. The first real cloud run on rclone 1.76.0 with the real GCS backend + DPAPI key path is NOT proven by the lab (local remotes only): watch it.
+- Before the deploy check the real `lan_destination`: a NAS path that IS the FY folder (`\\nas\FY26-27`, share root) now fails to load while LAN + overlap are on (OV-10.3).
+
+**Found while building, for the owner (full text at the bottom of the task list):**
+- WP0: Prefect DB backup before deploy (above); rclone 1.76 proven on local remotes only (above); transitive majors with Prefect 3.9.4 (apprise 1->2, cyclopts 4->5, redis 7->8, python-slugify 8->9, pywin32 311->312); httpx2 2.16.2 is only 4 days old (adds httpcore2, truststore, httpx2-jsfetch); 9 SyntaxWarnings in old tests; `test_launch_comprehensive` + `test_p2_sched_pause` fail when run as only those two files in that order (same on old code).
+- OV-2.3..2.5: (1) a link / junction replacing an early folder AFTER activation is not caught by pre-flight (`health.source_drive_fault` checks only exists / iterdir); (2) the clock-unproven activation alert reuses AAM-ROL-03, parent-missing / link deferrals have no fault code (a dedicated code + EMAIL_CONTENT_SPEC row would be cleaner); (3) old fault text AAM-ROL-06 no longer fits.
+- WP2 review: (2) deviation needing the owner's nod: the misnamed-folder alarm fires only for a name pointing NEWER than the configured year ('FY25-26 old', 'FY26-27 - Copy' ignored); (3) `core/audit_pending.py` keeps the plain percentage tripwire for pending deletes (9-file folder, 1 delete = 11 %): align with the small-folder rule; (4) `alerts.stale_repeat_hours` 24 vs a daily 06:00 check can suppress a sibling mail every other day; (5) per-key incidents for `overlap:*` keys (a RECOVERED of one `rollover_files` key restarts another's incident); (6) a config hand-edited to the next FY in March drops the old FY silently.
+- WP3 review open: N-2 the `nas_shutdown` attention item reads the configured FY's row (a manual early-FY LAN run does not show it); N-5 a late scheduled run whose second folder is MISSED gets the 'scheduled X h before' text.
+- WP4 review nit: the FY appears twice in some `overlap:*` subjects.
+- WP5-WP9 review, left for the owner: I2 first-night approvals after a fresh DB (above); OV-10.3 share-root path (above); N1 the audit can leave a NAS it woke switched on with no attention item; N3 small-folder allowance can exceed a tiny folder (D-11 accepted); N5 after a JUMP rollover the closed FY's scheduled count runs to the period end (inflated only); N6 switching overlap off mid-window hides a PENDING early-FY approval from the banner; N7 the `_active_fys` fallback mail text says "backed up" even when the audit called it; N8 the second folder's card can show idle between folders.
+
+**Facts for the next session:** notification rows written before OV-4.1 have fy NULL; test fakes of `ManifestDB` need `fy` kwargs; real GCS may be used in final box runs (test prefixes only). Recorded results: WP0 unit suite 3055 passed / 18 skipped, audit lab 248 passed on the upgraded versions; WP2 unit suite 3321 passed (later counts: commit messages). The owner's uncommitted restore / upload work (core/restore.py, core/upload.py, restore.py, upload_fy.py, their tests, docs/RESTORE_CLOUD.md, tools/server_health/README.md) is NOT ours: never commit it with our tasks.
+
+New business rule: US clients use the NEXT FY folder from 1 January, Indian clients from 1 April, so from 1 Jan until the April switch BOTH folders are backed up (each FY folder is backed up for 15 months). Architecture: `docs/ARCHITECTURE.md` section 3.4.
+- Plan (FINAL, rev 4): `docs/PLAN_FY_OVERLAP_2026-11-20.md`. Tasks: `docs/TASKS_FY_OVERLAP_2026-11-20.md`. Tooling audit: `docs/AUDIT_TOOLING_2026-11-20.md`. Old FY plans are in `docs/archive/`.
+- **GitHub repo `Shawn2099/AAM_BACKUP_V1` is PUBLIC** and its pushed history contains a temporary NAS / service-account password from 2026-10-20: the owner should rotate it (NAS + box) and consider making the repo private; scan for secrets before every push.
+
+## >>> 2026-10-23 - FRESH-INSTALL WORK + OPEN ITEMS (newest of the newest) <<<
+
+Owner goal: install on a clean Windows Server 2016 from scratch (owner will supply a fresh 2016 VM for the dry run).
+Plan: `docs/PLAN_FRESH_INSTALL_2026-10-23.md` (rev 2, section 5 binding). Guide: `docs/INSTALL_FRESH.md`. Built and
+committed (INST-1..): `.gitattributes` (CRLF for .bat/.ps1/config.install.yaml), `deploy/_common.ps1`,
+04/06/03 rewritten parts, `install_checks.py`, `set_mail_password.py`, `send_test_mail.py`, `config.install.yaml`
+(02_collect_config.ps1 removed). Config for a fresh install lives OUTSIDE the locked code folder:
+`C:\BackupAgent\config\config.yaml` (scripts resolve it with `Resolve-ConfigFile`; the trial box keeps `C:\AAMBackup\config.yaml`).
+Two Opus reviews found and we fixed: 03 step 2 unescaped `)` (aborted the script), code-folder lock breaking the
+agent's writes next to config.yaml, wrong gcloud flag, Defender warning forever, IE cannot show Prefect UI, etc.
+
+**NOT deployed to the trial box. Box still runs 9906026.** Audit lab on the FY block was started by the owner at 00:08
+(`agent_runs\audit_lab_20261023_0008\REPORT.md`) - read it first, fix failures, THEN deploy FY-9..HEAD (checklist from the
+Opus upgrade audit: deploy before ~01:45 IST or after the 02:01 cloud run is terminal; `aam-backup` concurrency slot = 0;
+no backup.lock; stop AamWatchdog, restart AamBackupAgent, start AamWatchdog; no old python PIDs left; DB copy first;
+rollback = `git reset --keep 9906026` + same restart order; DB schema unchanged).
+
+Open checklist (tick when done):
+**2026-10-23 08:53 IST - TRIAL BOX DEPLOYED to `9461ac2`** (was 433adbf; DB copy `manifest.db.bak-before-inst8-*`, services restarted idle: agent, watchdog; /health healthy, no warnings; next runs LAN 21:01, cloud 02:01 IST). Same step set `wol.server_ip` -> 10.10.151.53 (config backup `config.yaml.bak-inst8-*`, WoL still Off) and the Advanced password was set (owner typed it in chat: advise changing it in Settings once the trial ends). Lab run on this code was started 08:5x IST (`agent_runsudit_lab_<stamp>\REPORT.md`) - read it.
+**2026-10-23 (later): TARGET SERVER = DOMAIN CONTROLLER?** `deploy/server_discovery_report.md` (AAMBDC001, domain caaam.com, Server 2016 Datacenter, subnet 192.168.10.x, Enterprise Admins among local admins) says the install target is a domain controller: NO local accounts, so `.ambackup` / New-LocalUser / Get-LocalUser do not work. 04 now uses `Get-ServiceAccountState` (domain or local) and INSTALL_FRESH step 5 has the DOMAIN\aambackup variant. OWNER MUST CONFIRM it is a DC and which account to use; the domain's GPO decides batch/service logon rights.
+Lab rerun on this code still to do (previous report was against rigs without a year folder; fixed in 433adbf).
+
+- [ ] Lab REPORT.md read, failures fixed
+- [x] Deploy to the trial box (done 08:53 IST, see above); 02:01 cloud run was CLOUD_NO_CHANGES_COMPLETE, no spam mail
+- [x] I-4 WoL host check in Settings save (`core/wol_target.py`, used by `config_edit._refuse_wol_target_mismatch` and `deploy/install_checks.py`); `wol.server_ip` has NO default any more (was 192.168.10.10)
+- [x] I-13 `core/permissions._explain_write_failure`: unreachable (AAM-NAS-01) / folder missing / missing rights
+- [x] `core/notify._nas_host` uses the NAS path host; wol.server_ip only when WoL is on
+- [x] R-12 `deploy/probe_service_account.py` check "cloud bucket" (bucket read + `_aam_preflight` write/delete) runs AS the service account
+- [x] I-15 nits (08_uninstall kills only OUR rclone/robocopy/prefect/uv; gcloud script is now 12_configure_gcloud.ps1; RUN_GCLOUD_LOGIN.bat uses its own folder; deploy/server_discovery_report.* is the REAL target server's report - kept) - was: 08_uninstall kills EVERY robocopy/rclone/uv process (limit to ours); two scripts numbered 07; RUN_GCLOUD_LOGIN.bat hard-coded path; remove committed server_discovery_report.*; SESSION_HANDOFF line mojibake
+- [ ] I-16 old-year bulk upload tool (own plan: rclone copy never sync, one prefix per old folder, never into the current FY prefix, ARCHIVE class, bandwidth limit, ends with rclone check --one-way)
+- [ ] Clean-VM dry run of INSTALL_FRESH.md - verify: Authenticated Users in BUILTIN\Users, SDK zip layout + bundled Python (CLOUDSDK_PYTHON), uv Python readable by aambackup, W32Time start type, Get-Credential window, filtered token vs SeBackupPrivilege (probe -RunLevel Limited), Notepad CRLF, B2 (account writes next to config.yaml) as the real account
+- [ ] Alert-controls steps D-G (docs/PLAN_ALERT_CONTROLS_2026-10-22.md)
+- [ ] Owner items: Advanced password (different from dashboard, >=10 chars), acceptance items (Advanced password and WoL server_ip: done 23 Oct)
+
+---
+
+## >>> 2026-10-22 LATE UPDATE (newest of the newest) - FY folders + deploy <<<
+
+**Box now runs `9906026` (deployed ~22:12 IST: bundle `^4d32a24`, ff merge, DB backup `C:\BackupAgent\manifest.db.bak-before-fy-*`,
+agent+watchdog restarted while idle).** That includes alert controls A-C. Plan `docs/archive/PLAN_FY_FOLDERS_2026-10-22.md` (rev 2,
+Opus-reviewed) is built through FY-8: FY-1 both paths end in an FY folder or neither (config load) | FY-2 a finished rollover is
+never re-run when the paths are put back (`rollover:reentered:<fy>`, AAM-ROL-04) | FY-3 Settings can never change the FY
+(`config_edit._refuse_fy_change`, 409) | FY-4 the two paths are Advanced | FY-5 G6 text "nothing saved in <to_fy> is backed up yet" |
+FY-6 `fy_rollover.unprotected_new_fy` -> red card + daily mail AAM-ROL-06 (`rollover:unprotected:<fy>`) + one RESOLVED mail
+(`flow._alarm_unprotected_new_fy`, runs first in `rollover_check_flow`) | FY-7 `rollover.create_source_folder_early` (default
+true): SOURCE_FOLDER step runs BEFORE the final backups, FORWARD + proven clock only (journal vocabulary unchanged; do NOT add
+REQUIRES[CONFIG_SWITCH]) | FY-8 Advanced source picker: `core/source_picker.py`, `GET /api/settings/browse`,
+`POST /api/settings/check-source`, picks the PARENT only (FY leaf fixed), never creates folders, `static/js/settings.js`.
+Unit suite 2915 passed. NOT yet run for this block: audit lab (clean PREFECT_HOME) and the Opus code review of FY-1..8.
+**Owner decisions:** old FY after the switch is NOT backed up and NOT checked (accepted risk, no catch-up job); hand edit of
+config.yaml moving the FY stays an accepted risk. **Box facts:** schedule now cloud `1 2 * * *`, LAN `1 21 * * *`, audit
+`0 8 * * SUN` (applied 22:30); dashboard `http://10.10.150.170:8080`; dashboard password was reset by us (owner has it; the
+Advanced password is still unknown - the two must differ, min 10 chars; reset with `deploy/set_dashboard_passwords.py`, ask is
+injectable); `report_recipients` now set by the owner; `wol.server_ip` still the stale 10.10.186.231 (WoL is Off on the box);
+LAN destination already uses the real NAS 10.10.151.53. The 21:00 LAN run of 22 Oct was LAN_COMPLETE (slot fix proven).
+**FY review fixes are DONE in the repo (FY-9..FY-17, plan `docs/archive/PLAN_FY_FIXES_2026-10-22.md` rev 2, unit suite 2960 passed), NOT yet deployed (box still runs 9906026):** the SOURCE folder alone decides the FY (`configured_fy`); **a year folder on the source is MANDATORY whichever legs are on** (owner 2026-10-22; config load refuses otherwise; NAS must match while the NAS is on; with the NAS off the NAS path is an unused placeholder, never read or rewritten); drive-root paths keep their backslash (`D:\FY25-26` -> `D:\FY26-27`); picker accepts only absolute local paths, drive root has no parent, links anywhere in the path, case-insensitive; dashboard asks presence only (`new_fy_has_files`), the daily mail counts (junction-safe); the ROL-06 alarm + its RESOLVED use mode `rollover_files` (own incident; RESOLVED goes out in the switching run; `_incident_closed` branch); rollover messages send the owner to support; a failed early new-year folder sends a WARNING (`rollover:<fy>:source_folder_early`); JS try/catch. Deploy note: an existing install whose source has no year folder will refuse to start (runbook section 4). **Old years:** only the CURRENT FY is backed up; at deployment a SEPARATE bulk-upload tool/script must upload older year folders (`D:\FY24-25`, `D:rchives\FY10-11`) - never into the current year's cloud folder, nothing verifies them unless the tool does (`rclone check`); NOT built yet. Edits to a closed year after the switch are not backed up (accepted).
+**The owner runs the audit lab themselves:** `powershell -ExecutionPolicy Bypass -File tools\run_audit_lab.ps1` writes
+`agent_runs\audit_lab_<stamp>\REPORT.md` (+ lab.log, junit.xml); read that report first and fix whatever it lists.
+**Next:** verify the 02:01 cloud run of 23 Oct; alert-controls steps D-G; audit lab + Opus review of FY-1..8; owner acceptance
+items (previews, reports, 7 nights, restore drill, NAS shutdown test only with the owner at the NAS).
+
+## >>> 2026-10-22 SESSION - READ THIS FIRST (newest, overrides older status below) <<<
+
+**Branch `mvp-hardening`, HEAD = the "ALERTS-C" commit (a46976f) + the doc commit that follows it. Box (`ssh innoviztawinserver2016`)
+runs `4d32a24` (deployed 19:33 IST, services restarted, DB backed up to `C:\BackupAgent\manifest.db.bak-20261022-1933`,
+config backup `C:\AAMBackup\config.yaml.bak-pre-recipients-20261022-1933`). Steps ALERTS-A/B/C are NOT deployed yet (local
+only, unit suite 2863 passed). Nothing is pushed to GitHub (deploy = `git bundle` over ssh, see "Deploy recipe").**
+
+### What happened today (all committed, tests first, Opus-reviewed)
+1. **Root cause of "no backup since 20 Oct" (fixed + deployed):** a cloud run held the Prefect concurrency slot `aam-backup`
+   when the services restarted (21:48-21:50 on 20 Oct); Prefect keeps the slot's *lease* only in server memory by default, so
+   the new server did not know the holder and the DB still counted `active_slots=1` forever -> every run waited 3600 s and
+   ended `*_SLOT_TIMEOUT`. Fix `479d6b7`: `PREFECT_SERVER_CONCURRENCY_LEASE_STORAGE=prefect.server.concurrency.lease_storage.filesystem`
+   in the AamPrefectServer env (`deploy/06_install_services.ps1`; already set on the box with nssm; leases live in
+   `<PREFECT_HOME>/concurrency_leases`). Lab wave **W24** (`audit_lab/test_w24_server_restart.py`) kills holder+server,
+   restarts the server and asserts the slot is freed (red on the old installer); it also proves a 30 s server outage in
+   the middle of a real cloud sync / LAN mirror is harmless (both finish COMPLETE). On the box the orphaned slot was reset
+   once through the Prefect API (`PATCH /api/v2/concurrency_limits/aam-backup {"active_slots":0}`, only with no active
+   flow run) and a manual cloud run finished `CLOUD_NO_CHANGES_COMPLETE`.
+   New fault **AAM-SYS-08 "Backup slot stuck"**: a slot wait that times out while no live process holds `backup.lock`
+   (`flow._slot_stuck`); wording only, nothing is released automatically (owner rule: never auto-proceed).
+2. **Two recipient lists** (`3089fe6`..`e9bed20`, plan `docs/PLAN_RECIPIENTS_AND_SCHEDULE_ALERTS_2026-10-22.md`):
+   `notifications.recipients` = ALERTS list, `notifications.report_recipients` = REPORTS list. Same address may be in both,
+   never twice in one (case-insensitive). **An empty list uses the other one** (symmetric). Test email + password-changed
+   notice go to both (each address once); weekly/monthly report + financial-year notice to reports. One function decides:
+   `core.notify.resolve_recipients(notifications, audience)`; `send_email(..., audience=)` is REQUIRED; every `AlertEvent`
+   has `audience`. A refused recipient (typo) makes the delivery FAILED and names it (`RecipientsPartlyRefused`, not
+   retried). Schema **v5** (`notifications.audience`, `.recipients`); `notification_failures_since` is cleared only by a
+   later SENT of the SAME audience (or `both`). Dashboard: RED `recipients_none`, AMBER `alerts_list_empty`.
+   **Box state: only `recipients` is set (2 addresses); `report_recipients` empty -> reports go to the same 2 addresses.
+   The owner still has to type the two lists in Settings.**
+3. **"Overdue" follows the schedule** (`72ed43d`, `164392e`, `5985e81`, `7db9ad7`): no more fixed 26 h. Overdue =
+   now > (next scheduled run after the last success STARTED) + the leg's run budget + `dashboard.stale_grace_hours` (2)
+   (`core/overdue.py`, one CronSim step, real elapsed time). `dashboard.stale_after_hours` is deprecated (dropped with a warning).
+   `serve.py` records the schedule it registers in `db_meta.schedule_in_effect` with a per-leg `cloud_since`/`lan_since`
+   (set only when that leg's cron or the timezone changed; the first record has none) - a schedule saved but not applied
+   changes nothing, and a changed schedule starts its own clock. Fresh install/never-succeeded leg = AMBER `first_run:<leg>`
+   until its first run is due; a progressing budget-stopped PARTIAL = AMBER `catching_up:<leg>` for
+   `dashboard.catching_up_max_days` (14), never a watchdog mail. `/status` legs carry `timing.state`
+   (on_time|late|overdue|waiting|catching_up) which `dashboard.js` renders. Reports say "no backup was scheduled in this
+   period" when the schedule planned none. Legacy attention tests use `test_support/attention_cfg.py` (every-minute
+   schedule, 24 h budget, 2 h grace = the old 26 h window).
+4. **Quieter overdue mail** (`5985e81`, `7db9ad7`): the watchdog skips `stale:<leg>` when a SENT/SUPPRESSED failure/action mail
+   exists after the latest OWED run (`overdue.latest_owed` = latest firing whose run time has passed); FAILED/DISABLED
+   rows and `stale:` rows never count; repeats at most per `alerts.stale_repeat_hours` (24) via `AlertEvent.cooldown_hours`.
+5. **Opus reviews** of plan (twice), of the code, and of the alert-controls plan are in this conversation's history; their
+   findings are folded into the commits and `docs/PLAN_ALERT_CONTROLS_2026-10-22.md` (rev 3).
+
+### IN PROGRESS: alert controls (`docs/PLAN_ALERT_CONTROLS_2026-10-22.md`, rev 3 = binding, owner answers at the end)
+Done locally, not deployed: **A** `core/alert_class.py` (one classifier: failure|decision|overdue|action|resolved|info|security|test;
+scan test fails if an `AlertEvent` key prefix is unregistered) - `11107ae`. **B** incidents close by what happened (later
+success / VERIFIED audit / healthy watchdog mark in db_meta / `alerts.incident_quiet_days` 7) not only by a RESOLVED mail -
+`ccd71b5`. **C** a switch per class: `alerts.send_decision_needed|send_overdue|send_action_needed|send_resolved|send_info`
+(+ existing `notifications.send_on_failure`), all default true, Advanced + typed phrase, amber `alerts_off[:class]` items,
+report line "These emails are switched off", password-changed + test email unswitchable - `a46976f`.
+**TO DO, in this order (each: test first, full suite, GitNexus detect-changes, one commit):**
+- **D follow-up (reminder) switches + limits** (owner: "I like the current implementation but follow-ups switchable; don't
+  spam"): bool `alerts.follow_ups_general` (failure+action), `follow_ups_overdue`, `follow_ups_decision` (default TRUE = today);
+  off = only the first mail of an incident (banner + approval card stay). Per class: interval (`repeat_cooldown_hours` 12,
+  `stale_repeat_hours` 24, new `decision_repeat_hours` 12; all 1..720) and `max_reminders` (0..365, default 100 = no practical
+  limit; overdue `stale_max_reminders`; decision `decision_max_reminders` 1..365 default 6, never 0 while its switch is on).
+  Count = SENT non-RECOVERED rows with `thread_id = root` of the incident (never "same key after last RECOVERED"); never apply
+  when `same is None`. A reminder past the limit is recorded with NEW status `LIMITED` (NOT SUPPRESSED - the watchdog's
+  `told_about_leg_since` must not count it). After the limit nothing more is sent (owner: no daily fallback). Reminder text
+  "reminder n of m". Recommended box values: failure/action 12 h + 2, overdue 24 h + 1, decision 12 h + 6.
+- **E** `recovered:<leg>` / `watchdog:recovered` only when the mode has an open SENT incident (else SUPPRESSED "nothing was
+  reported"); the watchdog stops depending on the in-memory `_attention_raised`.
+- **F** `alerts.failure_alert_after_hours` (default 0 = immediate): only keys `backup:<leg>:*` / `missed:<leg>:*` on cloud/lan,
+  skipped while the leg's last success is younger than N h -> status `DEFERRED` (not a delivery failure); infrastructure faults
+  stay immediate via a `delay_exempt` flag on `core/faults.CATALOG` entries (AAM-NAS-*, AAM-SYS-01/02/08).
+- **G** docs (EMAIL_CONTENT_SPEC section 6, runbook, ARCHITECTURE), `config.example.yaml` in the same commits
+  (`test_m4_config_example`, `test_m4_settings_admin` enumerate every key; number keys need a `_UNITS` entry).
+- Then: full unit suite, audit lab, Opus code review, deploy, set the recommended values in Settings.
+
+### Owner decisions (2026-10-22)
+Two lists, same address allowed in both; empty list -> other list; test email to both; overdue/alerts must follow the
+schedule (no false alarms); do NOT spam the client inbox; follow-ups switchable; decision-needed editable (min 1 reminder);
+password-changed notice not switchable; infrastructure faults stay immediate when the failure delay is on.
+**Still open with the owner:** (a) the two recipient lists (which addresses where); (b) the box's cloud schedule
+`schedule.cloud_cron: "57 14 * * *"` (14:57 daily - looks like a test leftover; handoff says production should be `0 2 * * *`);
+(c) NAS `lan.server_ip` 10.10.186.231 vs real 10.10.151.53, the temporary NAS password typed in chat, NAS lockout (see 20 Oct block).
+
+### Verify first thing next session
+- Did the **21:00 LAN run on 22 Oct** finish `LAN_COMPLETE` (first real run after the slot fix)? `run_history` on the box,
+  banner clear, one RESOLVED mail only. Check the 23 Oct 14:57 cloud run too. Look at `notifications` for spam.
+- Then deploy A/B/C (and D-G when done): `git bundle create x.bundle mvp-hardening ^4d32a24`, base64 over ssh into a python
+  script (see recipe), `git merge --ff-only FETCH_HEAD` in `C:\AAMBackup`, check `load_config` of the live config, back up the
+  DB with `sqlite3 .backup`, stop watchdog+agent, start agent then watchdog (only when no flow run is active / no backup.lock).
+
+### Deploy recipe + gotchas learned today
+- No scp: write a Python script with the bundle embedded as base64 and run `ssh innoviztawinserver2016 'C:\AAMBackup\.venv\Scripts\python.exe -' < script.py`.
+  Create the bundle with an explicit ref: `git bundle create x.bundle mvp-hardening ^<boxcommit>` (a bare range has no ref).
+- Service restarts through ssh may be blocked by the auto-mode classifier unless the owner said so in the conversation
+  ("you may do it if needed" was given 2026-10-22). Never work around a denial.
+- Git Bash heredocs with backslashes/quotes break: write patch scripts with the Write tool into the scratchpad and run them
+  with `.venv\Scripts\python.exe`. `sed -i` by line number is fragile; patch by exact text.
+- **Local audit lab:** `~/.prefect/prefect.db` (1.8 GB) on this PC was migrated by a different Prefect version
+  (`alembic ... Can't locate revision '14806cb26270'`), so every lab test that starts a Prefect server HANGS (e.g.
+  `test_w19_require_auth_branches`). Run the lab with a clean home: `PREFECT_HOME=<tmp dir> .venv\Scripts\python.exe -m pytest audit_lab --ignore=audit_lab/test_w7_deployed.py -q -s --timeout=900 -p no:cacheprovider -o addopts=""`
+  (62 min; last full run 22 Oct after A2..C-OVERDUE: 244 passed / 3 skipped / 4 failed, the 4 were stale lab expectations,
+  fixed in `4d32a24` and re-run green). The audit lab imports the working tree: do not edit core modules while it runs
+  (use `git worktree add /tmp/wt -b branch` for parallel work, copy `config.yaml` into it).
+- `pendulum` DateTime + `timedelta` is wall-clock-ish and `CronSim` keeps the tzinfo it is given: `core/overdue._aware`
+  rebuilds plain stdlib datetimes from the timestamp; keep it that way.
+- New tests that expect "overdue" on an empty DB must seed an old run (an empty DB is only "waiting for the first run").
+
+### Where things are
+`core/alert_class.py` (classes, switches, labels) | `core/overdue.py` (deadline/next_firing/latest_owed/firings_between) |
+`core/attention.py` (`compute_attention`, `leg_timing`, `_leg_clock`) | `core/notify.py` (`resolve_recipients`, `_incident`,
+`_incident_closed`, `_switched_off_reason`, `_cooldown_hours`) | `core/manifest.py` (schema v5, `schedule_in_effect`,
+`first_known_at`, `told_about_leg_since`, `leg_success_after`, `audit_verified_after`, `watchdog_healthy_at`,
+`first_partial_after`) | `serve.py::_record_schedule_in_effect` | tests: `test_recipients_*`, `test_overdue_schedule`,
+`test_report_schedule`, `test_stale_mail_dedup`, `test_alert_class`, `test_incident_closure`, `test_alert_switches`,
+lab `test_w24_server_restart`.
+
+
+> **Box at a989ae6 (2026-10-19 19:30, deployed by git bundle over SSH, branch NOT pushed to GitHub; detached HEAD as before).** Code only: no service restart, so the running services still hold the older code in memory (the change affects scripts and the readiness probe, not the backup path). Verified on the box: mail password probe OK as Administrator and as LocalSystem; `encrypt_secrets.py` = "already encrypted", config.yaml untouched. NOT yet run: `04_check_readiness.ps1 -ServiceAccount .\aambackup` (needs the account password; owner types it).
+>
+> **2026-10-19 (night) - feature freeze (owner):** S4 closed (settier does not work on GCS; the archive stays on gcloud). S5 built for the SMTP password ONLY (the Google key stays plain, owner decision): `core/secret_setup.py`, `deploy/encrypt_secrets.py` (called by the installer), readiness checks the password decrypts as the service account (`probe_service_account.py`) and as LocalSystem (`probe_mail_secret.py`). 10.2 docs updated (ARCHITECTURE §5.2/5.3/5.6-5.8/§9/§10.7, EMAIL_CONTENT_SPEC, DEPLOY_RUNBOOK, config.example). Unit suite 2526 passed. **No more feature work; remaining = acceptance on the box + owner:** deploy this commit and run 04/06 (proves S5 under both accounts and the gcloud archive as the service account), G3 email previews to the owner, C7 reports from the box DB, 10.4 scenarios (NAS shutdown only with the owner at the NAS), 10.5 seven nights, 10.6 password change, final audit lab re-run. Only bug fixes from here.
+>
+> **2026-10-19 (evening) - Google key + archive:** `deploy/lock_gcs_key.ps1` (run by the installer, applied on the box) leaves only SYSTEM, Administrators and the service account (read) on the key; the account is a parameter, the list is rebuilt each run. The key is still PLAIN (encryption parked by the owner; no readiness check yet). `rclone settier` does NOT work on GCS, so the FY archive step stays on gcloud: it now passes the key as a file (`CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, no `activate-service-account`, so no copy in gcloud's `credentials.db`), sets `CLOUDSDK_PYTHON` to the agent's interpreter and `CLOUDSDK_CONFIG` to `<runtime>/gcloud`, and first runs `gcloud --version`. SDK 589.0.0 unzipped to the box's `deploy/bin/google-cloud-sdk` (gitignored) and installed machine-wide as a fallback. The 365-day lifecycle rule stays as the fallback. NOT yet proven under the service account (only as Administrator, scratch object in `_gc_probe/`, ARCHIVE confirmed); a rewrite under versioning leaves the old STANDARD version for up to 92 days (storage cost only). Audit lab: fully green (the W19 trigger test now expects the backup-first question). The earlier claim that the NAS was woken/shut down was wrong: WoL and shutdown are disabled on the box and never ran there.
+>
+> **2026-10-19 update:** the safety check now separates "newer files wait for the next backup" (`PENDING_BACKUP`, amber, no email) from real faults - plan `docs/PLAN_AUDIT_PENDING_2026-10-19.md` (steps 1-4 done and proven on the box at 9186fb6; the weekly "backup first" chain, step 5, is deferred until a real week of data). New key `audit.backup_first_prompt_minutes`. Accepted by the owner (do not work on): locked files / no VSS, nothing alerts if the server is down, in-place ransomware, size-only daily cloud check. Restore drill + restore-script key handling (`.dpapi` vs plain key, hardcoded bucket fallback) is deferred to LAST.
+
+> **2026-10-20 (evening) - TRIAL BOX DEPLOYED AND LAN LEG PROVEN.** Box is at `14f50d8` (branch `mvp-hardening`, deployed by git bundle, NOT pushed to GitHub); `06` re-run, all three services run as `.\aambackup`. `04_check_readiness.ps1 -ServiceAccount .\aambackup` passes every probe. LAN run through the service finished `LAN_COMPLETE` (19:53). **Root cause of the LAN failures since 19 Oct 21:00 (WinError 1326, later 1909):** the NAS-side `aambackup` had no password, then retries locked it out. Fixed on the NAS (password set, lockout threshold 0 = OFF for now). **Gotchas found:** (1) a recreated `aambackup` has a new SID: it must be added to *Backup Operators* (gives "Back up files and directories" + "Log on as a batch job"; the readiness probe, a scheduled task, fails with exit 267011 without it), then re-run 06 (restores folder ACLs + log-on-as-a-service); (2) NAS login must be addressed as `<NAS name>\aambackup`; (3) in cmd, single quotes become part of the password; (4) `.ps1` opens in Notepad from Explorer/cmd - run with `powershell -File`. **Open with owner:** `lan.server_ip` is `10.10.186.231` (silent) while the NAS answers at `10.10.151.53` (WoL / wait-for-NAS use `server_ip`); the temporary password `Qwerty123@@m` was typed in chat - change it on both machines, then re-run 04 + 06; turn the NAS lockout back on (e.g. threshold 10). `04` once hung after its last probe (cause unknown; killed). Cloud leg not re-run since 14:57. Not yet done: G3 previews, C7, 10.4, seven nights, restore drill.
+>
+> **2026-10-20 (later) - ALL OF THE AUDIT PLAN IS BUILT AND COMMITTED** (`docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`,
+> hashes there). Unit suite **2675 passed / 19 skipped / 0 failed**. New lab wave **W23** (`audit_lab/test_w23_cancel.py`):
+> a Prefect-style cancel (`_thread.interrupt_main(SIGTERM)`, how Prefect 3.7.2 cancels a flow-run process on Windows;
+> 30 s grace, then a forced kill) mid-sync on the real tools: cloud 0.8 s / LAN 1.3 s to exit, no tool left, `*_FAILED` +
+> `AAM-SYS-02`, lock released, next run converges. What changed: `run_tool` polls (`maintenance.tool_poll_seconds`) and kills
+> its tree on any BaseException; pipelines decide an interrupt through `statuses.EXC_INTERRUPTED` and record BEFORE they
+> alert; `_hold_backup_lock` is mandatory in production (`lock_release_retries/_delay_ms`); `latest_audit` keeps a failed
+> audit; BLOCKED text knows a sync ran (`sync_attempted`); `smb_ready` needs the share root; G3 and the cloud backstop share
+> `guards.max_delete_allowance` (decimal percent, fail-closed on 0 destination files); the two deletion limits are basic
+> Settings keys; banner/`/health` red on a failed latest run (missed = amber); `notify` sends a short notice if building an
+> alert fails; undelivered-alerts clears after a later SENT; the audit classifier ignores file names and counts;
+> `db_retention_days` >= 35; a hand-switched rollover config stops with `rollover:switched_by_hand` (AAM-ROL-02).
+> **Deferred by the owner:** D6 (run_logs.dir validation), D8 (installer exit honesty / refuse while a backup runs), D9 (partly
+> refused recipients). **Dropped:** first-full-backup button, hung-tool detector, Stop button, E1. The first cloud upload
+> simply runs in nightly chunks (`budget.cloud_max_hours`, CLOUD_PARTIAL, resumes by itself); expect PARTIAL emails and, after
+> 26 h, the stale banner until it completes. **Final audit lab run (2026-10-20, after the last commit): 244 passed, 3 skipped, 1 failed. The one failure, `test_w16_lan_flow_random_tree_is_lossless_and_honest`, was a Prefect temporary-server `409 Conflict` on `set_state` (Hypothesis: "failed on the first call but did not on a subsequent one"); alone it passes (38 s). Infrastructure flake, not a code defect.** Open: the
+> infra phase with the owner: `04_check_readiness.ps1 -ServiceAccount .\aambackup` (needs the password), G3 email previews,
+> C7 reports from the box DB, 10.4 scenarios (NAS shutdown only with the owner at the NAS), seven nights, restore drill
+> (also a dry run of `deploy/09_restore_from_gcs.bat` - only its text is tested; it now asks for the bucket when config.yaml
+> cannot be read). Not proven on the real box: the Windows cancel through NSSM/`prefect serve` (W23 proves the Prefect-side
+> mechanism on real processes, not the service wrapper).
+>
+> **2026-10-20 - final code audit + new plan (owner):** 4 read-only reviewers + advisor audited the branch
+> (unit suite re-run first: 2526 passed / 19 skipped). **Current plan: `docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`**
+> (rev 2, every claim re-verified by 3 independent readers who reproduced them: Part A bug fixes A1-A7: hidden failed
+> audit, interrupted run recorded as success (also `run_tool` not killing its child on cancel), BLOCKED text, `smb_ready`
+> winerror 53/67, deploy scripts 03/09, backup.lock must be mandatory; Part B deletion limits in Settings incl. the G3 vs
+> backstop rounding defect; Part C "First full backup" button with no duration limits via ONE `limits_for()` and a
+> `*_DEFERRED` status; Part D nine small truthfulness/data fixes awaiting owner approval).
+> Owner decisions: LAN /MIR has no in-run delete cap (preflight G3 is enough); dangerous approvals = dashboard login +
+> typed phrase (Advanced password stays for tech support); basic settings stay editable with the dashboard login;
+> one pair of deletion limits for both legs; first full backup = button in Settings. **Reviewed, NOT fixing for MVP:**
+> plain-HTTP dashboard, unauthenticated loopback Prefect API, security headers, per-IP-only rate limit, GET logout,
+> `config.yaml.bak-*` keeping the old plaintext SMTP password, redaction gaps, status-suffix matching in faults/email,
+> unknown file counts shown as 0, no RECOVERED for stale/audit/rollover alerts, `uv sync` while services run, NSSM log
+> rotation, service-account Modify on the project folder. The audit lab has NOT been re-run (do it once, at the end).
+
+> New session: read this file, then `MVP_HARDENING_PLAN.md` §13 (the task checklist) and
+> `docs/ARCHITECTURE.md` (how the program works). Do not re-plan; continue at "Next steps".
+
+> **START HERE:** the §4f-2 topics were discussed and the plan is **AGREED (owner 2026-10-18)
+> - full plan + task checklist: `docs/PLAN_OPEN_TOPICS_2026-10-18.md`** (short copy in §4g;
+> the plan file wins). Work through its "Order of work" step by step; each step test-first, full
+> suite, GitNexus impact + detect_changes, one commit. Box: full control (owner), but deploy
+> only at step 9 of §4g.
+
+---
+
+## 1. What we are doing
+
+Hardening the AAM Backup Automation MVP (rclone → GCS, robocopy → NAS, WoL/shutdown,
+FY rollover, reports, alerts; Prefect 3 on Windows Server 2016) for client handover.
+Acceptance bar (owner): **core works every time, everything is truthful, no data loss
+caused by our program, a human is asked whenever an action could be wrong.**
+
+| Document | Purpose |
+|---|---|
+| `MVP_HARDENING_PLAN.md` | the approved plan: rules (§2), WPs (§7), config keys (§8), decisions (§11), **checklist (§13)** |
+| `docs/ARCHITECTURE.md` | block diagrams, decision points, file map, **§10 gates (every check per leg)** |
+| `docs/audit/BASELINE_mvp-hardening.md` | M0 test baseline |
+| `SESSION_HANDOFF.md` | this file — current position |
+| `HANDOVER.md` | OLD (audit-lab era, 2026-10-10) — background only |
+
+## 2. Owner rules (non-negotiable)
+
+1. Reliability ≫ speed. No shortcuts, no guesses — ask the owner when unsure.
+2. **Every tunable lives in config** (pydantic model holds the default + bounds); no literals at call sites.
+3. Reuse tools/libraries (rclone/robocopy flags, Prefect, stdlib, locked deps: tenacity, psutil, cronsim, pendulum, pydantic). New dependency only with owner approval. Shared functions for repeated logic.
+4. If an action could cause a wrong result/data loss → stop (`*_BLOCKED`), email "open the dashboard", decide on the dashboard (approval). Never auto-proceed.
+5. Full tool logs kept (`run_logs/`, 90-day retention, configurable).
+6. Test first: every fix has a regression test that is red on the old code.
+7. Commit per sub-step with finding IDs; end commit messages with
+   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+8. **Production-trial box: FULL CONTROL** (owner 2026-10-15, re-confirmed 2026-10-18) - we may
+   deploy, restart services, change config and run tests on it (see §6). Still tell the owner
+   what will be done before an action that stops a backup or touches backup data.
+9. Accepted risks (do not work on): ransomware vs LAN mirror; GCS lifecycle keeps ~2 versions.
+
+## 3. Status
+
+| Milestone | State |
+|---|---|
+| M0 Baseline | **done** (a8f7f7f) — suite 0 failed |
+| M1 Foundations | **done** (1.1–1.8, see plan §13) |
+| M2 Data safety | **done** (2.1–2.6) |
+| M3 Truth | **done** (3.1–3.5) — see plan §13 incl. the deferred tool_runner note |
+| M4 Operations | **done** (4.1–4.6) — M4 lab 238/1 → W10 stale expectation fixed → **0 red** |
+| M5 Acceptance (on-box) | **in progress on the trial box - PAUSED by owner 2026-10-15 ~16:40** (see §4a) |
+
+**Test status (2026-10-18, §4f, HEAD 1bc1474):** `tests/` **2142 passed / 0 failed / 19 skipped**;
+audit lab 231/7/3 -> the 7 reds fixed in 93e8d75 (plan 0.3), full re-run DONE: 238 passed / 0 failed / 3 skipped (
+`agent_runs/logs/lab_step0_20261018-2019.log`). Older: lab at 0eac85a 238/0/3.
+**M4 milestone audit lab (2026-10-15): 238 passed / 1 failed / 2 skipped (20 min)**; the 1 red was
+W10 `deployment_schedules_fire_when_intended` expecting the old monthly 08:00 / audit 03:00 -
+updated to 08:30 / 10:00, green. W16 schedule collision is green now (local config fixed).
+**No intentional reds remain.**
+Audit lab: see the M3 milestone line in §4 (only expected red: W16, which needs the owner's
+config.yaml `monthly_cron` changed - DEC-7).
+
+### M2/M3 building blocks - all wired now (kept as a map)
+| Module | What | Wire in |
+|---|---|---|
+| `core/guards.py` | G1–G5 **wired** (2.2, 2.3) | — |
+| `core/approvals.py` | **wired** (2.3): `approvals` table, attention email, `approval_id` flow param, dashboard approve/dismiss/run | — |
+| `core/smb_ready.py` | NAS readiness | **wired** in 2.5 (b59a6d6) |
+| `core/rclone_errors.py` | **wired** (3.3): integrity audit → `AUDIT_INCOMPLETE`; cloud write probe cause | — |
+| `core/notify.py` | **wired** (3.4): every alert + report email; `report.send_failure_alert` remains only as a legacy helper (unused by flow/watchdog) | — |
+| `core/attention.py` | **new** (3.5): dashboard banner + `/health` | — |
+
+## 4. Next steps (in order)
+
+1. **2.3 approvals — DONE** (8afa499, 0c627c0, 975d499). How it works: guard BLOCK → `*_BLOCKED`
+   row → one approval request (all blocked guards, phrase) + ONE `ACTION_REQUIRED` email
+   (`blocked:<leg>`) → dashboard card → typed phrase → `POST /approvals/{id}/approve` (needs
+   `dashboard.auth_enabled: true`) → re-runs `backup-<leg>` with `approval_id` → re-measure;
+   proceeds only if every blocked guard is covered and not worse; approval used up before any
+   transfer. G5: missing marker → BLOCKED; approval creates the marker. **Production check before
+   go-live:** the trial box config must have `dashboard.auth_enabled: true`, otherwise nobody can
+   approve (by design).
+2. **2.4 preflight permissions — DONE** (99ad2c1, efc222b): `core/permissions.py`; SeBackupPrivilege
+   in the LAN health step (only with `lan.use_backup_mode`); NAS write probe, source read probe, NAS
+   free space (`/BYTES`) in `lan-access`; cloud `touch`+`deletefile` probe in `cloud-access`; LAN
+   dry-run on `run_tool` + `/UNILOG` (full listing kept, streamed). Lab: `use_backup_mode: false`
+   (lab account has no SeBackupPrivilege); production-command experiments use
+   `labconf.PRODUCTION_LAN`. **Go-live:** service account needs SeBackupPrivilege + NAS modify
+   rights + bucket objectAdmin - the preflight now names each missing one.
+3. **2.6 rollover — DONE** (f778164): see plan §13. Unit suite 1580 passed / 0 failed; lab W6 proves
+   the real rollover end to end; W12/W13 green. The full-lab M2 milestone run had not finished when
+   M2 full lab: 234 passed / 6 failed -> the 5 W18 launch tests patched the removed
+   `core.fy_rollover.rollover`; fixed (W18 29/29 green). Remaining red: W16 schedule collision
+   (intentional, WP8 / 3.4). **M2 milestone: green except the intentional red.**
+4. **M3 DONE** — 3.1 22706fc, 3.2 fd1abce, 3.3 992cd8d, 3.4 c2ed9f2 + 9665489, 3.5 f8783dd.
+   **M3 milestone lab: 236 passed / 3 failed** -> W8 report-flow test moved to the new truthful
+   contract (fixed, re-run green). The other two (W16 schedule collision, W8 deployment
+   schedule == config) both read the owner's local config.yaml and turn green with:
+   Owner action: change `schedule.monthly_cron` to `"30 8 1 * *"` in the local and the
+   production config.yaml (code default + example already changed) - lab W16 then turns green.
+5. **M4 DONE** (4.1 shutdown verified; 4.2 clock tri-state; 4.3 watchdog; 4.4 run budgets; 4.5
+   installer + readiness probe as the service account; 4.6 config.example.yaml complete - plan §13).
+   **4.7 settings page DONE (DEC-9, owner 2026-10-15)**: `/settings` on the dashboard edits every key
+   except lock-out keys (risky ones need a typed phrase); E2E-tested on a real uvicorn server; the
+   Owner reviewed it in a demo 2026-10-15 -> feedback built: one box per email (+/x), email
+   validation server-side, schedules as day/time picker (IST), live server validation (Save only
+   when valid), every client-facing time in IST, tabs Settings (29 basic keys) / Advanced /
+   FY rollover ("Run FY rollover now" = the normal check, only when due; blocked -> approval card;
+   clock behind never forceable). Advanced has its own login (owner: initially = dashboard key,
+   changeable inside Advanced; only a PBKDF2 hash `dashboard.admin_password_hash` is stored;
+   server-enforced). Units are fixed labels (bandwidth/buffer as MB/s / MB numbers); every
+   setting has a plain name + help (`core/config_help.py`), timetable as plain lines + overview.
+   Idea for later: apply schedule changes without restarting the agent.
+   **NEXT: M5 acceptance** - 5.1 full suite + audit lab green + diff review; 5.2 on-box WP17
+   checklist (needs owner OK + the service account); 5.3 seven truthful nights.
+   DONE 2026-10-16 (§4d): tool_runner migration of cloud_verify / cloud_reporter / integrity /
+   cloud_preflight; task retries (preflight 1x30 s, verify 1x60 s) are config keys.
+   **Owner decision pending (found in 4.5):** `03_setup_system.bat` sets Windows Update Active
+   Hours 12:00-06:00, i.e. reboots allowed 06:00-12:00 - with cloud at 02:00 + 6 h budget a
+   Windows Update reboot can hit the cloud run until 08:00. Options: Active Hours 20:00-09:00
+   (protects 21:00-08:00, but reboots then fall in office hours) or shorter cloud budget.
+   **Service account (owner, before go-live):** create a local account (e.g. `aambackup`) on the
+   server AND the same user/password on the NAS with write on the share; put it in "Back up files
+   and directories" (secpol) if `lan.use_backup_mode`; then `04_check_readiness.ps1 -ServiceAccount
+   .\aambackup` must be all green before `06_install_services.ps1 -ServiceAccount .\aambackup`.
+   **WP17 on-box checks added by 4.3/4.5:** graceful `sc stop AamBackupAgent` with the new
+   NSSM -> .venv python launcher chain (Ctrl+C reaches launch.py, backup.lock released, no
+   STOP_PENDING); watchdog ordered restart + STOP_PENDING kill against the real services.
+   4.3 was not run against the real services: on-box check in WP17 (needs owner OK).
+   **OWNER ACTIONS before deploying this code (4.4 refuses the old schedules at load):**
+   - production `config.yaml`: `cloud_cron: "0 2 * * *"` (LAN stays 21:00), `audit_cron:
+     "0 10 * * SUN"`, `monthly_cron: "30 8 1 * *"`; otherwise the services will not start.
+   - local `config.yaml`: DONE 2026-10-15 (audit Sunday 10:00, monthly 08:30) - lab W16 schedule test should now turn green.
+   - Budgets are starting values (owner 2026-10-15: real durations unknown) - tune from
+     `extended_metrics.budget.used_hours` after 1-2 weeks of real nights.
+   - First full cloud upload: spreads over nights as CLOUD_PARTIAL, or run `backup-cloud` once by
+     hand in Prefect with parameter `budget_hours` (e.g. 48) over a weekend.
+   Owner questions answered 2026-10-15: a failed leg never fails the other (separate jobs/rows/
+   alerts); only an overrun can make the next job SLOT_TIMEOUT - which the budgets now prevent.
+   4.2 note: `block` policy = cloud FAILED (not an approval); owner may want it as G7 BLOCKED + approval
+   later - ask if it matters. The audit's LAN shutdown has
+   no run row: a non-VERIFIED audit shutdown is the WARNING email only (the banner reads the last
+   LAN *run* row).
+6. (M4 items 4.1-4.6 are listed as DONE in item 5 above; the duplicate list was removed 2026-10-18.)
+
+## 4h. PROGRESS on the §4g plan (2026-10-18 session) - read this first
+
+Plan file `docs/PLAN_OPEN_TOPICS_2026-10-18.md` has the ticks + commit hashes. **Done:** step 0
+(7 lab reds fixed, lab 238/0/3), 0b (11 packages upgraded, `uv audit` 0 advisories; `filelock`;
+`config_file.config_transaction` = the ONE locked writer of config.yaml, 3 `maintenance.config_*`
+keys), SCH (schema v4: `rollover_journal(+_steps)`, `notifications.attachments_rung`), **group A
+complete** (journal `core/rollover_journal.py`; `flow._rollover_resume` = the resumer; step
+functions in `core/fy_rollover.py`; ROL-04/05; `ROLLOVER_RUNNING/FAILED/ABANDONED`; A4 no NAS
+shutdown in the final LAN backup; A7 `_complete_pending_rollover_nas_folder`; A8 Settings > FY
+rollover step card; independent review F1-F4 fixed; lab W6b with real robocopy). Unit suite at
+last run: **2218 passed / 0 failed / 19 skipped**. Owner decision D-17: a retry that still has to
+switch repeats the final backup.
+**Done since (2026-10-19):** group **I** (e42d2af..6c38038; W22 hard-kill lab; W10 coverage floors
+lowered manifest 45->40, flow 60->55 because A/I add failure-night-only branches; full lab then
+**242 passed / 3 skipped / 0 failed**), group **B** (e63ad59, a7480ae: attachment ladder
+full -> report-only -> none, sized to the advertised SMTP SIZE, one rung down on 552/554/hang-up,
+rung in `notifications.attachments_rung`), group **C** (619d69b, d7a5b1b: `core/report_period.py`
+`ReportPeriod`, `ManifestDB.get_runs_between`, `report.build_report_model` + `render_report_html`;
+calendar periods from the flow run's scheduled time; empty period still reports and replaces the
+AAM-RPT-01 stale alert; P3/P4/P5 fixed; lab tests w14/w19/w20 updated). Unit suite: **2260 passed /
+19 skipped**. The full lab has NOT been re-run since B and C.
+**Group E done (2026-10-19):** two passwords (`dashboard.login_password_hash`, `dashboard.admin_password_hash`),
+sign-in always on, `api_key`/`auth_enabled`/`X-API-Key` removed, sessions carry hash fingerprints,
+'not set up' = fail closed, Advanced > Passwords card, INFO email on change,
+`core/password_setup.py` + `deploy/set_dashboard_passwords.py` (installer, only missing) +
+`deploy/11_reset_dashboard_passwords.ps1`, real-uvicorn E2E. Tests/lab use `test_support/ui_login.py`
+(fixed hashes, autouse signed-in TestClient, marker `anonymous` to opt out). The local ignored
+`config.yaml` had its two removed keys deleted (copy of the old file in the session scratchpad).
+Unit suite 2290 passed. **Milestone lab after B, C, E: 241 passed / 3 skipped / 2 failed -> both (W8 raw httpx clients without a session) fixed and re-run green.** The full lab now takes ~50 min.
+Also done: D1 `core/netinfo.py`, S1 `core/secrets.py` (DPAPI), H2/H3 deploy scripts, G1/G2 `core/email_samples.py` + `tools/preview_emails.py`.
+**Done after that (2026-10-19):** D2/D3 (`notify.dashboard_urls`, new key `dashboard.link_cache_seconds`), F1/F2 (dated run-log folder + file names), S2 (smtp_password DPAPI, `SecretText`), S3 (`core/gcs_key.py`, `.dpapi` key via rclone env var; rclone 1.74.3 accepts it), G1/G2 (incl. report samples). Unit suite 2353 passed. Full lab NOT re-run since D/F/S (do it at step 10.1).
+**DEPLOYED to the trial box 2026-10-19 (fresh install, release 10d3054+):** everything is in `docs/DEPLOY_LOG_2026-10-19.md`
+(backup `C:\AAM_backup_20261019` on the box; 6 deploy bugs found and fixed; cloud `CLOUD_NO_CHANGES_COMPLETE`, LAN `LAN_COMPLETE`,
+real test email with the DPAPI mail password; dashboard + Advanced use the owner's chosen password (same for both); agent still runs as
+`.ambackup`, installed with `06_install_services.ps1 -KeepServiceAccount`). Branch pushed to origin/mvp-hardening.
+**Still open (all need the trial box / owner):** S4 (verify `rclone settier ARCHIVE` on the real bucket; the FY archive step still needs the key as a FILE - do NOT switch the box to the `.dpapi` key before S4), S5 (installer encrypts key + SMTP password, readiness decrypt checks as service account and LocalSystem), C7 (real-DB reports emailed), G3 (previews to the owner), step 10 (release: suite + lab + code review, docs, fresh install, M5 incl. the real NAS shutdown ONLY with the owner next to it, 7 nights).
+**Open:** C7 (email real reports built from a read-only copy of the box DB) waits for step 10.
+**Next:** group **E** (two passwords, remove X-API-Key/auth_enabled/api_key, E10 sign-in always on)
+-> **milestone audit lab** -> D, S, F, H, G, step 10 release.
+**OWNER INSTRUCTION (2026-10-18): do NOT test the real NAS shutdown today.** No test, lab run or
+box action may power off the real NAS (rollover `nas_shutdown`, `lan_shutdown_task`, M5 shutdown
+scenarios). It is tested later, with the owner physically near the NAS: open item for step 10 /
+M5. Until then the lab keeps shutdown faked/off (W6b already skips `nas_shutdown`).
+**Working notes:** OpenCode CLI is not installed here (opencode agent fails) - use a Claude
+`general-purpose` read-only reviewer instead (it found 4 real bugs in A). `tests/test_lan_shutdown_policy`
+used to depend on test order (fixed). Write patch scripts with the Write tool into the scratchpad,
+never heredocs with backslashes. Print `^FAILED` lines (not `tail`) after suite runs; check
+`git status --short` before every commit.
+
+## 4i. Session 2026-10-19 (later): "Apply changes" + dashboard redesign
+
+Owner: users must not need .bat files; the UI needs a real design pass (frontend-design skill).
+- **Apply changes (0c4554b + fix in the redesign commit):** Settings shows an amber bar "N saved
+  changes are waiting for a restart" + **Apply changes** (`POST /api/settings/apply`). Pending =
+  restart-effect keys in `config_changes` newer than this process (`core/app_restart.STARTED_AT`),
+  so it survives a reload. Restart = clean SIGINT of the agent after the reply; **NSSM AppExit
+  default = Restart (30 s delay, verified on the box)** brings it back; hard `os._exit` after
+  `dashboard.apply_force_exit_seconds`. Refused (409, never queued) while the backup lock is held
+  or ANY Prefect run is running / queued / due within `apply_block_before_run_seconds`; Prefect
+  unreachable = busy. `/health` carries `boot_id`; the page polls until it changes.
+  New keys `dashboard.apply_*` (5). `cloud.enabled`/`lan.enabled` are now start-only (needs Apply).
+  Watchdog keys: `watchdog.py` reloads its tunables when config.yaml's mtime changes (no restart;
+  log size/retention still need a service restart). Effect texts no longer mention the .bat.
+  **NOT yet proven on the real box:** the SIGINT -> NSSM restart chain and the "watchdog does not
+  react to the 30 s gap" assumption (watchdog treats START_PENDING as NSSM handling it). Test on
+  the box after deploy (tell the owner first - it restarts the agent; do it when no run is due).
+- **Redesign (owner chose preview v5; an earlier "ledger" look was replaced):** floating pill
+  navigation, a status band with a seal (`setHero` in dashboard.js), the "Where your files go" route
+  (files -> Office copy / Online copy), nested-shell cards, a 30-night strip per copy
+  (`core/night_strip.py`; `/status` fields `cloud.nights` / `lan.nights`; key
+  `dashboard.history_nights`), a plain-language timeline (`renderHistory`) and a side rail (numbers,
+  guide, reports). Light by default, dark follows the computer (dark palette = the original graphite +
+  blue). Geist is bundled in `static/fonts` (licence next to it) because the dashboard may be offline.
+  Settings and sign-in use the same tokens (`dashboard.css` aliases the old Settings names).
+  The design iterations are in `research_notes/ui_preview/` (not committed). Pitfalls: a shell heredoc
+  turned `\n` in a JS string into a real newline (`TestPageAssets` now runs `node --check`);
+  `[hidden]` is forced to `display:none` in the CSS.
+
+## 4g. AGREED PLAN (owner 2026-10-18) - §4f-2 topics + older items
+
+Principles: one source of truth per concern (one report model, one SMTP path, one rollover
+state, one credential store; outputs only render); every multi-step action is idempotent
+and resumable from persisted state; fail closed but never silent (row + email + dashboard);
+no new dependencies; new tunables = config keys with bounds.
+
+Owner decisions: topic 4 = keep the built "Send test email" only; recipients = everyone gets
+everything for now; preview of every email = yes; reports: scheduled emails = calendar
+periods (weekly Mon-Sun, monthly = previous calendar month), dashboard downloads AND the
+dashboard "send email" buttons = last 7 / last 30 days up to now; server IP is static but
+the link is resolved dynamically; two passwords (dashboard + Advanced), both changed/reset
+inside Advanced, plus a server-side reset script for a forgotten Advanced password (yes);
+Windows Update is currently stopped on the box - a reboot mid-run must simply resume next
+run (item I). Clock-check "block" stays a FAILED backup (not approvable). Prefect
+`database is locked` accepted for MVP.
+
+**A. FY rollover = persisted, resumable step journal (saga).** Findings: R1 the final LAN
+backup shuts the NAS down BEFORE the new NAS FY folder is created (fails silently with
+`lan.shutdown_after_backup` + WoL); R2 exceptions in the switch (slot busy, mkdir, config
+write) = no row, no email, maybe half done; R3 crash between config write and row = switched
+silently, next day NONE; R4 archive failure = log only, never retried, INFO says "nothing to
+do". Design: table `rollover_journal` (new-database schema; fresh install, no upgrade path - plan D-16: from/to FY, per-step state, attempts, last
+error, times); steps (each idempotent): final backups + G6 -> source folder + placeholder ->
+NAS folder + marker (final LAN backup does NOT shut the NAS down; wake/ready as in the LAN
+leg) -> config switch as compare-and-set (only if config still points at the old FY) +
+reload/validate, restore backup on failure -> archive transition -> NAS shutdown -> INFO
+email ("nothing to do" only when every step is done). The daily 06:00 check is the resumer
+(continues at the first not-done step). Crash: ROLLOVER_RUNNING row first (abandoned sweep).
+NAS step failed: config still switches (cloud protects the new FY from day 1); step stays
+pending and the next LAN pipeline (NAS awake) completes it from the journal - no approval.
+New codes AAM-ROL-04 (switch failed part-way, ACTION_REQUIRED), AAM-ROL-05 (archive failed,
+WARNING; ACTION_REQUIRED after new key `rollover.archive_alert_after_days`). Dashboard
+rollover step card. Tests: calendar simulation per failure + resume on 2 April; lab W6 with
+the NAS off after the final backup.
+
+**B. Emails sized to fit, never lost to attachments.** `_send_once` -> `SmtpSession`
+(connect, EHLO, read the RFC 1870 SIZE limit, send). Measure the encoded message (base64 ~4/3)
+against min(server SIZE, `alerts.attachments_max_total_kb`) and pick the richest rung:
+report+zip -> report+tail-only zip -> report only -> none + "logs on the server at <path>".
+A size rejection (5xx) or disconnect during DATA steps one rung down and resends at once.
+`notifications` records the rung delivered. Tests: real SMTP server with small SIZE, 552,
+hang-up mid-DATA.
+
+**C. Reports = one model, many renderers.** Findings: P1 an empty period sends NO report;
+P2 weekly = rolling 7x24h but labelled as calendar days; P3 "resolved" only inside the
+period; P4 rollover rows counted as backups, files summed across legs; P5 integrity rows for
+disabled legs. Design: `ReportPeriod` (IST start/end, label; scheduled = previous calendar
+week / previous calendar month; dashboard download + send buttons = last 7 / 30 days up to
+now); `db.get_runs_between(start, end)`; `ReportModel` built once (per-leg backup totals,
+last good copy, problems resolved against full history, latest audit, open decisions, data
+per leg); email HTML, download, CSV, subject only render it; empty period still reports
+("action needed: no backup ran"); download text "No backups in <period>". Proof: reports from
+a read-only copy of the box DB emailed to the owner.
+
+**D. Dashboard link resolved dynamically.** `dashboard.public_url` empty = auto: new
+`core/netinfo.py` asks the OS which local address routes to the NAS / default gateway (UDP
+connect + getsockname, no packet sent); resolved per email (short cache). Emails show
+`http://<ip>:8080 (or http://<name>:8080)`. A manual `public_url` that differs from the
+detected address -> readiness + watchdog amber. Firewall stays LocalSubnet.
+
+**E. Passwords.** `dashboard.login_password_hash` (new) + `dashboard.admin_password_hash`,
+both PBKDF2-SHA256 600k (stdlib), written via `config_edit` (atomic, backup, history).
+Advanced "Passwords" card: change dashboard password / change Advanced password; both
+require re-entering the current Advanced password; new twice; min length; the two must
+differ. Sessions carry a credential version -> on change every other session signed in
+with the old password ends (OWASP); the changer stays signed in. INFO email "dashboard
+password changed by <who>". Bootstrap: no hash yet -> one sign-in with `api_key` from
+config.yaml, dashboard forces setting both. Forgotten Advanced password:
+`deploy/11_reset_dashboard_passwords.ps1` (admin on the server) clears the hashes ->
+bootstrap state.
+
+**F. Dated log names.** `run_logs/<day>/2026-10-18_2100_lan_<short id>/` and files
+`2026-10-18_2100_lan_robocopy-sync.log`; built only in `RunArtefacts`; DB run id unchanged;
+old paths stay valid; retention unchanged.
+
+**G. Preview of every email.** `core/email_samples.py` = one realistic sample per kind / fault
+family / reminder+RESOLVED / reports / password notice / ROL-04/05 / attachment rung (unit
+test fails if a fault code has no sample). `tools/preview_emails.py --to <addr>` sends them
+through the real composer + transport with `[PREVIEW]`, no DB record, no cooldown;
+`--out <dir>` writes .eml files.
+
+**H. Older items.** 36 `uv audit` advisories: targeted `uv lock --upgrade-package` + suite +
+lab. `03_setup_system.bat` Active Hours 12:00-06:00 = 18 h is INVALID on WS2016 (max 12 h,
+Microsoft waas-restart doc): Windows Update is stopped on the box now; make the script
+write a valid 12 h window (20:00-08:00) and readiness report the real update state.
+
+**I. Interruption (reboot / power cut mid-run) resumes next run.** Already OK: Prefect 3.7.2
+`concurrency()` holds the slot on a 300 s renewed lease (dead process frees it); robocopy
+`/Z` restartable; GCS uploads atomic; `sweep_abandoned_runs` -> ABANDONED + one email;
+backup.lock PID check. GAP: the run budget counts from the actual start, so a run Prefect
+starts late after a reboot (e.g. 09:30) gets a full budget -> office hours + the schedule
+proof assumes scheduled starts. Fix: budget counted from the flow run's scheduled start
+(manual runs: actual start); no budget left -> `*_MISSED` row + WARNING email, next night
+continues. Prove in the audit lab: hard-kill the process tree mid-sync (cloud, LAN), mid-audit,
+mid-rollover; restart -> ABANDONED + one email, lock gone, slot free within the lease, next
+run completes, destination == source, no false guard block.
+
+**Rev 2 (re-review):** gaps G-1..G-9 added in the plan file §2a - notably new group K (one
+locked writer for config.yaml, `filelock` proposed), removal of the `X-API-Key` master key (E9),
+report emails recorded (C8). Rev 3/4 (final): filelock yes; exactly two dashboard passwords
+(hashes in config.yaml, reset script, `api_key` + `X-API-Key` removed); SMTP password + Google
+key encrypted with DPAPI (group S); HTTPS removed (post-MVP). Plan file status: FINAL.
+
+**Order of work:** 0 commit docs + tidy handoff, fix the 7 audit-lab reds (§4f) + rerun the
+lab (S) -> 0b K config store (S) -> 1 A rollover (L) -> 2 I interruption (M) -> 3 B email sizing (M) -> 4 C reports (M)
+-> 5 E passwords (M) -> 6 D dashboard address (S) -> 7 F log names (S) -> 8 H (S-M) -> 9 G
+preview to the owner + fix feedback -> 10 full suite + audit lab + code review -> deploy to
+the box -> M5 scenarios -> 7 truthful nights -> tune budgets -> owner changes the `aambackup`
+password on both machines.
+
+## 4f. Session 2026-10-18 (UI + email audit, plain-language emails, fault codes)
+
+Box check (read-only): 3 services Running; every night since the 16 Oct deploy recorded truthfully
+(LAN_COMPLETE x3 incl. the approved first copy, CLOUD_NO_CHANGES_COMPLETE x3, weekly audit
+18 Oct VERIFIED both legs); only error = known Prefect `database is locked`.
+Owner asked for a UI + email audit, then: dashboard **office network only** (never public);
+emails easy for a non-technical person with a recommended action, fault codes and attached
+logs so a forwarded email lets support find the reason. **Spec: `docs/EMAIL_CONTENT_SPEC.md`**
+(research + sources, every email's wording, 54 fault codes, attachments, owner decisions D1-D6:
+D1 attach logs with client file names = yes; D2 support contact = not now; D3 auto-send to
+support = not now; D4 subject `[<firm> Backup]`; D5 FY-switch INFO email = yes; D6 English).
+Commits (each test-first, full suite green, GitNexus detect-changes before commit):
+- bf142d2 alert switch: ACTION_REQUIRED/RECOVERED/INFO never silenced; `send_on_failure` is
+  Advanced + typed confirmation; amber banner while off; audit differences = ACTION_REQUIRED.
+- 0f30f00 Message-ID / Date / Auto-Submitted + plain-text part on every email.
+- 9a73268 office-network dashboard: `dashboard_link_problem` (amber + readiness FAIL when the
+  email link is 127.0.0.1/0.0.0.0), new key `dashboard.firewall_remote_addresses` (LocalSubnet,
+  server-only), installer opens only the dashboard port to it; 4200 never opened.
+- a21786a `core/faults.py` (53 codes then, 54 with ROL-03 in 4384349; the commit message says
+  57 - wrong number): codes at
+  raise sites (`faults.coded`), `GuardResult.fault_code`, rclone transport category, status;
+  stored in `extended_metrics.fault_code`. Never parsed from message text.
+- 4384349 `core/email_compose.py`: every email = severity + what happened + "Is my data safe?"
+  + numbered steps + next run (IST) + dashboard link + For-support block; every producer sets
+  its code (watchdog SVC-01..04, overdue SYS-03, abandoned SYS-02, FY ROL-03 ...).
+- a6cd7ee `core/support_bundle.py`: support report .txt + run-folder logs .zip, secrets
+  redacted, `alerts.attachments_max_total_kb` (5120) / `attach_file_names` / 
+  `support_log_tail_lines`; `alerts.attachment_max_kb` deprecated. File-list CSV = follow-up.
+- eaf998d incidents: repeat suppressed only while key AND fault code unchanged and no RESOLVED
+  since; reminders + RESOLVED reply in the incident thread. **Schema v3** (notifications
+  fault_code / message_id / thread_id).
+- 330524e dashboard: "Cannot reach the backup server since ..." banner + Last updated; Settings
+  "Send test email" + amber until changed mail settings are tested; fault code + title on run
+  rows; separate rate-limit buckets; `dashboard.rate_limit_*`, `session_hours`,
+  `config_refresh_seconds`, `trigger_wait_seconds` keys (no literals left in ui.py).
+- 1bc1474 reports: per-leg plain summary, all runs, monthly = previous calendar month, outcome
+  in the subject; once-a-year "New financial year started" INFO email.
+Tests: `tests/` 2142 passed / 0 failed / 19 skipped. **Audit lab at 1bc1474 (21 min): 231 passed /
+7 failed / 3 skipped** (log `agent_runs/audit_lab_2026-10-18_email.log`). No backup/guard/real-tool
+red. Causes: w14 auth + w19 session use removed `ui._SESSION_TTL` (now `dashboard.session_hours`);
+w19 flash test covers the removed dead flash code; w19 email endpoints' fake lacks the new `legs`
+arg; w8 report SMTP-outage seeds this month's runs (monthly = previous month now); w10 coverage
+floor `core/health.py` 44.8% < 45%; **w14 `/report/weekly` + `/report/monthly` 404** - to check:
+probably fixed seed dates (date rot), but `_serve_report` still says "No runs found in the last 30
+days" (wrong for a calendar month) and "Download Monthly Report" mid-month now gives LAST month
+(design question - see 4f-2 topic 3). NOT fixed yet (owner paused for discussion).
+**Deploy-day steps for §4f (owner):** set `dashboard.public_url: "http://<server-name>:8080"`,
+`dashboard.bind_address: "0.0.0.0"` (or the server's office IP), re-run `04_check_readiness.ps1`
+(new check "Dashboard link in emails") and `06_install_services.ps1` (creates the firewall
+rule); then Settings > "Send test email". First alert per open problem after the upgrade may be
+re-sent once (old notification rows have no fault code).
+**Open / follow-up:** file-list CSV attachment (spec §5.3); Gmail shows the RESOLVED email
+outside the thread (own subject, by design); a real Gmail send of each email type on the box.
+
+### 4f-2. Open topics (DISCUSSED 2026-10-18 -> agreed plan in §4g; kept for background)
+
+Owner: "discuss and make a plan before moving forward". Nothing below is built yet.
+Proposed order: 1 -> 2 -> 5 -> 3 (review only, then discuss) -> 4 -> 6 -> 7.
+
+1. **Attachments must never block an email.** Today: 5 MB cap, zip left out if too big, a
+   bundle error falls back to a short text. Gap: if the mail server/filter rejects the whole
+   message (e.g. 552 too large, Sophos refusing .zip) it is a permanent error, not retried -
+   the alert is lost. Proposal: on any permanent rejection of an email WITH attachments, resend
+   at once WITHOUT them, adding "logs could not be attached; they are on the server at <path>";
+   record both attempts.
+2. **Dashboard link by IP, not name.** `http://backup-server:8080` needs name resolution
+   (workgroup without DNS often fails; phones never resolve NetBIOS names). Proposal: installer
+   detects the server's office IP and proposes `public_url: http://<ip>:8080` (owner confirms);
+   readiness checks the IP is static / DHCP-reserved; a daily check that the email link still
+   points at THIS server (amber if the IP changed); emails show "http://<ip>:8080 (or
+   http://<name>:8080)". The NAS IP stays in NAS emails (already); the link must be the main
+   server, where the dashboard runs.
+3. **Reports - verify properly (owner: next).** Note: reports were already changed in 1bc1474.
+   Review: correctness (OK/failed/partial/blocked counting, IST period boundaries vs UTC
+   `cutoff_iso`, runs over midnight, month lengths, empty month, report during a running
+   backup); consistency report = dashboard = CSV = emails; content an accountant needs (GB
+   backed up, files changed, NAS fullness, safety check, growth); timing (Mon 08:00, 1st 08:30);
+   proof: generate real reports from a read-only copy of the box DB and email them to the owner.
+   Findings first, discuss, then fix.
+4. **Settings test email.** "Send test email" is BUILT (330524e, uses the saved settings,
+   amber until tested). Proposed addition: "Test these settings before saving" (connect +
+   login + send with the typed, unsaved values) so a wrong password is caught before save.
+5. **FY rollover failure - real gaps found (read-only check of `rollover_check_flow`).**
+   Covered today: clock behind (CLK-03), clock not proven (ROL-03), final backup incomplete /
+   jump > 1 FY (G6 -> approval card, ROL-01/02). NOT covered: an exception DURING the switch
+   (NAS unreachable creating the new FY folder, config.yaml not writable, backup slot busy) ->
+   no run row, NO email, only a failed Prefect run, and possibly half done (folders created,
+   config not updated). Cloud archive-transition failure -> only a log warning, no email.
+   Proposal: ROLLOVER_FAILED row + email (new codes AAM-ROL-04 switch failed part-way,
+   AAM-ROL-05 archive transition failed), consistency check after the switch (folders + config
+   agree), restore config.yaml from its backup on failure, calendar-simulation tests for each
+   failure on 1 April.
+6. **Date + time in log names.** Today `run_logs/<day>/<flow-run-uuid>-lan/robocopy-sync.log` -
+   undatable once copied/zipped. Proposal: run folder `2026-10-18_2100_lan_<short id>` and files
+   `2026-10-18_2100_lan_robocopy-sync.log`; retention + dashboard + support bundle read the new
+   names (attachments are already dated).
+7. **Other points to decide:**
+   - Recipients: one list gets everything today. Reports to partners, alerts to IT/support, or
+     everyone gets everything? (owner decision)
+   - Preview: send one real sample of every email type to the owner's inbox (preview command)
+     to review in Gmail/Outlook and on a phone before deploy.
+   - Deploy §4d/§4e/§4f to the box: dashboard on the office network, `public_url` = IP, test
+     email, then the M5 5.2 scenario list.
+   - File-list CSV attachment (spec §5.3) - still a follow-up.
+   - Still open from before: Windows Update Active Hours; 36 `uv audit` advisories (transitive
+     via Prefect).
+
+## 4e. Session 2026-10-16 (rclone exit codes, sync retries - XR-1..XR-6)
+
+Owner asked for the best fix (not patches) after research. Research, options and decisions:
+**`docs/audit/EXIT_CODES_AND_RETRIES_2026-10-16.md`** (rclone v1.74.3 source + real-binary
+experiments; real logs in `test_support/rclone_logs/`). Commits fe5855e, 7a2dc09.
+- **XR-1 (data loss, fixed):** Prefect task retries re-ran `rclone sync` with a fresh
+  `--max-delete N` each attempt - 3 runs x `--max-delete 2` deleted all 6 files (real binary).
+  Now `flow._sync_with_retries` (both legs): guards re-measured before every retry with this
+  run's deletions counted (G3 cumulative), `--max-delete` = what is left
+  (`guards.remaining_delete_allowance`), and a `--max-delete` stop is never retried ->
+  re-measure -> `CLOUD_BLOCKED` + approval (`guards.backstop_blocked`).
+- **XR-2 (data loss, fixed):** robocopy `/MIR` repeat after 10 min without re-checking -> now
+  robocopy /L + destination count + G1-G5 + access run again first; unknown deletions = no repeat.
+- **XR-3:** a deletes-only sync exits 9 -> NO_CHANGES only when rclone's stats prove 0 changes.
+- **XR-4:** rclone logs its own retried attempts (even "Attempt 2/3 succeeded") at ERROR level
+  -> only the final attempt + final `stats.errors` decide SUSPECT.
+- **XR-5:** exit 10 from rclone's own `--max-duration` -> PARTIAL, verify skipped (was VERIFY_FAILED).
+- **XR-6:** retries only for rclone 1/4/5 not marked fatal / LAN_FAILED not a timeout, delay must
+  fit the budget. The run row now keeps a failed sync's real exit code + FAILED/SUSPECT
+  (was exit -1) and `sync_attempts`. An approval also covers its own run's retries.
+- No new config keys (`*.max_attempts` / `*.retry_delay_seconds` keep their meaning).
+- Not done / post-MVP: LAN leg on rclone (`--max-delete`, `--backup-dir`) evaluated and
+  rejected for MVP (loses `/ZB`, ACL copy, the verified robocopy guard parsing). The audit lab
+  runs with `max_attempts: 1`, so retries are proven by unit tests, not on the real tools.
+- Tests: `tests/` 2030 passed / 0 failed / 19 skipped. Full audit lab (at 7a2dc09, 21 min):
+  237 passed / 1 failed / 3 skipped - the 1 red was the W10 line-coverage floor for
+  `cloud_sync.py` (82% < 85%: the new failure-only branches are not taken on a clean night);
+  floor set to 80 with the reason in the test, re-run green. No behaviour red.
+- Owner decision open: none new. Deploy to the box when you choose (same runbook).
+
+## 4d. Session 2026-10-16 (GitNexus scan + "no hard-coded values" sweep)
+
+Owner asked: run GitNexus, fix the findings, no hard-coded values anywhere, generous and safe
+defaults. Rule applied: **every default = the value that already ran on the trial box** (no
+behaviour change); a literal that disagreed with the model was a bug and now follows the model.
+Commits (each test-first, GitNexus impact + detect_changes before commit):
+- ee5fe7d dead code: `write_config_values`, `count_extra_file_lines`, `is_no_changes`, `read_section`.
+- 5c1bb82 **bug**: the Prefect run summary was never published when rclone stats were missing
+  (`bytes_copied=None` divided) - now "unknown"; the bare `except: pass` around it now warns.
+- 76bf8f5 `cloud_record_task` / `lan_record_task` / `_record_run` take `config` and open the DB
+  via `ManifestDB.from_config` (plan 5.4); literal 30000/10000/"normal" signature defaults gone.
+- 73a9e24 task retries are config: `cloud.preflight_retries`/`_delay_seconds` (1/30),
+  `cloud.verify_retries`/`_delay_seconds` (1/60), `lan.preflight_retries`/`_delay_seconds` (1/30).
+- 60155c3, 7670f0b, a330db5, e10ad53 **tool_runner migration DONE (M3 deferral)**: cloud_preflight
+  probe, cloud_verify, cloud_reporter size/manifest/diff, integrity `rclone check` all run through
+  `run_tool` - output kept in the run folder (the cloud verify-report task and each audit leg now
+  get `artefacts_dir`), timeouts kill the tree. **No `subprocess.run` outside tool_runner remains
+  in production code.** Verdict functions AST-identical. New keys: `cloud.probe_retries` (2),
+  `cloud.probe_retries_sleep_seconds` (5), `cloud.modify_window_seconds` (2),
+  `cloud.retries_sleep_seconds` (10, diff), `audit.modify_window_seconds` (2). Result dicts keep
+  their shape (incl. `exit_code -1` when rclone did not finish - the flow evidence gate reads it).
+  Test helper: `test_support.fake_tools.SubprocessStyleRunTool` (old subprocess-style mocks ->
+  real ToolResults). Never patch `tempfile.mkstemp` / `os.close` (global; breaks run_tool's
+  artefact writes - the old `(0, path)` stub closed pytest's stdin).
+- 5c17a53 `models.config.model_default(Model, "field")`: 36 function fallbacks in core/ now read
+  the model; 5 had drifted (ManifestDB vacuum 1000 vs 10000, WoL 3x5s vs 5x10s, log retention 30
+  vs 90, rclone error tail 10 vs 100 - only direct callers/tests saw them). New key
+  `maintenance.orphan_robocopy_log_max_age_hours` (24) replaces a call-site literal in flow.
+- 0eac85a upload command: `--modify-window` -> `cloud.modify_window_seconds`, `--retries-sleep`
+  -> new `cloud.sync_retries_sleep_seconds` (30, kept separate: C-A max-duration), `--stats` ->
+  new `cloud.stats_interval_seconds` (60).
+- 9b8ddec manual code review of the session diff: `cloud.`/`audit.modify_window_seconds` capped at
+  0-10 s and made risky (typed confirmation) - a wide window would make the upload skip same-size
+  edits. Review also checked: no caller passes moved parameters positionally (AST scan), artefact
+  text decodes with errors=replace, every not-completed run_tool path fails closed.
+- Disk note for the owner: run_tool keeps stdout, so the nightly `rclone lsjson -R` listing is now
+  kept in run_logs (gzip after the run, 90-day retention, `run_logs.min_free_gb` guard). The
+  diff's `--combined` file (lists every unchanged file) is still a temp file, not kept.
+
+**Still literal on purpose / owner decision (not changed):** process-kill wait 30 s
+(tool_runner x3, services.py), `run_capture` 4000-char cap, ManifestDB schema-migration retry
+3 x 1 s, dashboard page sizes (`get_recent_runs(25)`, `limit=200` x3), launch.py health probe 5 s /
+dashboard supervise 60 s / 0.5 s, SMB port 445 (protocol). `report.send_failure_alert`'s 1000-char
+cut is in the legacy helper nothing calls. Integrity fallbacks are kept (read from the model)
+because ~50 test call sites use them; elsewhere migrated functions have no fallback at all.
+Ephemeral run_tool folders (`aam_tool_*` in %TEMP%, used when no run folder is passed) are never
+deleted - pre-existing convention, only hit outside a pipeline.
+
+## 4c. Session 2026-10-16 (later) - dev tooling + calendar simulation
+
+- Dev group now locks pytest-timeout, pytest-cov, ruff, hypothesis, time-machine (all were
+  ad hoc or missing; `uv sync` would have dropped them). Owner approved.
+- MCP servers registered locally (`claude mcp list`): gitnexus (`node .gitnexus/run.cjs mcp`,
+  avoids the npm 11 npx crash) and context7 (live library docs).
+- `tests/test_calendar_simulation.py`: real nights via cronsim + `pendulum.travel_to`
+  (time-machine) - rollover once on April 1, server off over April 1, clock wrongly in April,
+  clock falling back, IST midnight, stale boundary, run-log retention. Verified against 7
+  planted bugs (all caught). Limits: child processes, the Prefect scheduler and
+  `time.monotonic` keep real time.
+- OPEN (owner decision): `uv audit` reports 36 advisories, all transitive via Prefect
+  (anyio, cryptography, urllib3 < 2.8.0, h2, mako, fsspec, apprise...). Fix = targeted
+  `uv lock --upgrade-package` + full suite + audit lab. Also: `04_check_readiness.ps1` runs
+  `uv sync --frozen` without `--no-dev` (dev tools land on the box; harmless).
+- Pre-existing noise: a Prefect "Logging error / Stopping temporary server" at suite exit
+  (also without the new test/time-machine).
+
+## 4b. Session 2026-10-16 (unattended, owner away) - box review + code audit
+
+**Box (read-only this session - the auto-mode classifier refused writes/approvals on the box):**
+- 21:00 LAN run 2026-10-15: `LAN_BLOCKED` (G5: marker missing on the EMPTY destination
+  `\\10.10.151.53\aam_nas\FY26-27`) + exactly ONE `ACTION_REQUIRED` email - correct by design.
+  **Owner action:** approve it on the dashboard (phrase `INITIALISE DESTINATION`, approval
+  `0b14b56b...`) to get the first full LAN copy; then continue the §4a scenario list.
+- Prefect server log: sporadic `sqlite3.OperationalError: database is locked` (a few/day since July,
+  mostly `mark_deployments_ready`, once "error during state validation" 2026-09-01). Prefect 3.7.2
+  already sets `busy_timeout=60s`; failures in 0-30 ms = SQLite WAL read->write upgrade conflict
+  (busy handler skipped by design) inside Prefect's own services. Retried by Prefect; no night lost
+  (every scheduled night has its row). Proper fix = Postgres (new dependency -> owner decision).
+  The new stale-leg email (below) now reports it if it ever costs a night.
+- Watchdog `Traceback ... KeyboardInterrupt` in watchdog_svc logs = NSSM Ctrl+C on stop (benign).
+
+**Fixed + committed (test-first, full suite 1873 passed / 0 failed; lab W16+W17 49/49):**
+- ce18fc3 `smb_ready` failure reason said "within 0s" after 4 min of probing (LAN preflight uses
+  max_wait_s=0 + min_attempts) - now states the time really spent.
+- 34cbc28 **Abandoned runs**: a RUNNING row became ABANDONED only at agent start and only when
+  > 24 h old -> a reboot during the 02:00 cloud run (Windows Update!) left it "Running" with NO
+  alert; a flow-run crash while the agent stayed up was never swept. Now the RUNNING row records
+  its owner `pid:create_time`; `backup_repository.sweep_abandoned_runs` (agent start + every
+  pipeline start) marks dead-owner rows ABANDONED at once + one FAILURE email; live owner never
+  touched; unreadable owner keeps the 24 h backstop. Real-process kill test.
+- eb87fc5 **Stale-leg email** (plan §2 rule 11, approved but never built): the watchdog checks
+  every `watchdog.stale_check_interval_seconds` (1800) - also while the API is down - and emails
+  `stale:<leg>` (ACTION_REQUIRED, cooldown-repeated) using the banner's `core.attention`
+  evaluation. Catches runs that never start (scheduler, import crash after a bad deploy).
+  **On deploy the box will email "LAN overdue" at once - truthful (LAN has not succeeded since
+  the fresh install).**
+- 117327e **Weekly audit silent failures**: an exception in a leg (NAS not waking = WolTimeout, GCS
+  key missing, helper raising) or the slot not obtained escaped with NO email and NO audit row
+  (a cloud exception also skipped LAN). Now: per-leg AUDIT_INCOMPLETE "could not run" row, other
+  leg still runs, one audit alert. Full lab (before this change) 238/0; W6+W12 after it 13/13.
+- **Owner asked me to approve + deploy (2026-10-16); the auto-mode classifier refused every box
+  write even then** -> owner approves on the dashboard and deploys by hand, or adds a Bash
+  permission rule for `ssh innoviztawinserver2016` so the next session can.
+- **Deployed 2026-10-16 07:48** (box at c48a600): `git pull --ff-only`, services restarted
+  (watchdog/agent stopped, server restarted, agent + watchdog started); config loads, all 6
+  deployments served, API healthy. Owner approved `0b14b56b...` at 07:41 -> first LAN run
+  `LAN_COMPLETE` (marker `.AAM_TARGET_MOUNTED` written, 580 files) -> no "LAN overdue" email.
+- Settings: `.claude/settings.json` allows `Bash(ssh innoviztawinserver2016:*)` and
+  `PowerShell(ssh innoviztawinserver2016:*)`.
+- **/code-review of these 4 commits -> 10 findings, triaged with owner (MVP: pipelines must run;
+  dig only where an alert goes silent or email can stop a backup):**
+  - FIXED c2e8386: audit alert key `audit:{mode}` -> `audit:{mode}:<leg>=<status>,...` (a real
+    MISMATCH is no longer suppressed by an earlier "could not run" alert).
+  - VERIFIED ab4dd4d: SMTP down never stops a backup (notify never raises, callers wrapped; test
+    with a refused port). Delay bound: retry_attempts x smtp_timeout + backoff (~2.5 min per email
+    with defaults), only when an abandoned run is pending. Accepted for MVP.
+  - BY DESIGN: abandoned key `backup:{leg}:{status}` = same scheme as every run failure; nightly
+    runs are 24 h apart > 12 h cooldown, so only a manual retry inside 12 h is suppressed.
+  - COVERED: live-but-hung RUNNING row / late sweep -> the next run cannot get the slot
+    (`*_SLOT_TIMEOUT` + "could not start" email) and the watchdog's stale-leg email follows.
+  - DEFERRED post-MVP: fresh install emails "overdue" at once (owner: note for install day);
+    duplicated run-alert format in `sweep_abandoned_runs`; unused `audit_id` param + duplicated
+    "could not run" dict in `integrity_audit_flow`.
+
+## 4a. M5 on the trial box - where we paused (2026-10-15)
+
+Owner: the trial box is ours (fresh install OK, old config only as reference; memory
+`trial-box-full-access`). **Use this PC as the "NAS"; NO NAS shutdowns for now.**
+- Box `C:\AAMBackup` = fresh clone of `mvp-hardening` (now `74a905c`); old install kept as
+  `C:\AAMBackup_v113`; its config + local edits saved in the session scratchpad (`box_ref/`, NOT in git
+  - secrets). Box config: schedule fixed (cloud 02:00, monthly 08:30), LAN target
+  `\\10.10.151.53\aam_nas\FY26-27` (= THIS PC, share `aam_nas` = `C:\AAM_NAS`, folder FY26-27 created),
+  `lan.shutdown_after_backup: false`, `wol.enabled: false`. Old config backups next to config.yaml.
+- Account `aambackup` exists on BOTH machines (same password; owner chose it and typed it in chat - it
+  equals the box Administrator password -> **owner should change both after testing**, then re-run
+  04/06). Box: member of Backup Operators. Services installed by `06_install_services.ps1
+  -ServiceAccount .\aambackup -PasswordFile ...`; **AamBackupAgent runs as .\aambackup (Running)**,
+  server + watchdog LocalSystem. A readiness-only re-run was in flight when paused - re-run it to
+  confirm all green except "Update Active Hours" (owner decision pending).
+- Done on the box with the new code: readiness (all green except Active Hours); cloud backup
+  CLOUD_NO_CHANGES_COMPLETE (clock OK, guards PASS, rclone counts); LAN with NAS unreachable ->
+  LAN_FAILED + exactly ONE alert email (real Gmail); graceful agent stop 0.6 s, lock released.
+- **Real deploy bugs found on the box and fixed** (all committed + tested): (1) DPAPI password file
+  trailing newline -> empty password, installer printed [OK] while agent stayed LocalSystem -> trim +
+  read back Win32_Service.StartName, stop if wrong; (2) Start-Process -Credential fails 0xC0000142
+  without a desktop -> probe runs as a scheduled task; (3) our own services on 4200/8080 flagged on
+  re-install -> OK; (4) uv hard-links .venv to the admin's cache (ACL shared) -> service account
+  could not import -> `uv sync --link-mode copy`; (5) runtime grant without /T missed existing
+  files -> NSSM could not open agent_svc.log -> `/T /C`, stop on failure.
+- **Next (after the pause):** confirm readiness green; first full LAN copy to this PC; then the
+  scenario list: no-change + changed-files nights (counts); NAS unavailable (stop share) -> one
+  email, RECOVERED; mass delete in E:\FY26-27 -> BLOCKED -> dashboard approval; empty/renamed
+  source -> blocked; tiny LAN budget -> LAN_PARTIAL; audit VERIFIED then a changed NAS file ->
+  difference; watchdog hung-API restart order + emails; settings page on the box. Restore the box's
+  E:\FY26-27 afterwards. Also: remove stale services AamChaosAgent/AamChaosServer/AamF4Rig and the
+  stale deployment backup-lan-p2scen; delete `AAM_setup_this_pc_as_NAS.ps1` +
+  `AAM_hand_password_to_Claude.ps1` from the owner's Desktop when done (the latter never saved:
+  double-click PowerShell is blocked by execution policy on this PC).
+- Remote-install mechanics (scripts prompt at the keyboard only): scratchpad
+  `box_account_template.py` = set aambackup password from stdin, write DPAPI files, run 04/06 with
+  `-PasswordFile` (files deleted by the scripts). Run it with the box's system Python when .venv is absent.
+
+### Verified tool facts (real binaries, 2026-10-14/15)
+- **rclone final stats**: the LAST JSON log line with a "stats" key holds the totals
+  (`transfers` = files uploaded, `bytes`, `deletes`, `errors`, `checks`); no change -> all 0.
+- **whoami**: Git Bash's `whoami` shadows Windows' - call `%SystemRoot%\System32\whoami.exe`.
+  `/priv /fo csv /nh` = one CSV row per privilege, column 1 = name (locale independent).
+- **robocopy `/BYTES`**: exact Bytes row (without it: rounded `3.33 m`); Files row and
+  `*EXTRA File` lines unchanged. robocopy reads paths beyond MAX_PATH (no `/ZB` needed).
+- `shutil.disk_usage` works on UNC paths; `rclone touch` / `deletefile` exit 0 (deletefile of a
+  missing object: exit 4).
+- **robocopy `/L` writes nothing**: a missing destination is not created (exit 1); an existing one
+  keeps names, sizes and mtimes (verified 2026-10-15). That is why the listing still runs when the
+  mount marker is missing.
+- **robocopy 10.0 `/L /MIR` (no `/NJS`)**: Files **Total** = source file count (G2). **Planned deletions = number of `*EXTRA File` lines** (one per file `/MIR` deletes, nested files in extra folders included). The Files **Extras column is NOT the delete count**: it also counts `/XF`-excluded destination files (the mount marker, any depth), which `/MIR` keeps; files under `/XD` folders are counted in neither.
+- **rclone v1.74.3 `sync --dry-run --use-json-log`**: one `"skipped":"delete"` line per planned file deletion (nested included; folder removals are separate `"remove directory"` lines). Dry-run exit 0 = copies planned, 9 = none (`--error-on-no-transfer`), deletes do not change it.
+- **rclone `--max-delete N`**: deletes up to N, then fatal error, **exit 7** (→ CLOUD_FAILED), log "failed to delete K files".
+- **Missing source**: robocopy `/MIR` exit 16 ("ERROR 2 Accessing Source Directory"), rclone sync exit 3 ("not deleting files as there were IO errors"); destination untouched in both.
+- `rclone size <local dir> --json` → `{"count":N,...}` = what `rclone sync` sees.
+- **shutdown.exe** (Win 11 + trial box WS2016, owner-authorised 2026-10-15): exit = Win32 error, text on
+  **stderr** as `<host>: <text>(<code>)`, stdout empty. `/s /m` 0 = accepted, **1190** = already
+  scheduled, **5** = access denied (this PC → trial box, workgroup), **1707** = invalid address;
+  `/a` 0 = aborted, **1116** = nothing to abort. Real `/t 60` on the trial box: port 445 closed at
+  **t+107 s** (~47 s after the delay) and stayed closed (no flapping).
+- **The committed 4.1 code run for real against the trial box from this PC (2026-10-15, owner-authorised):**
+  FAILED (no rights: exit 5 + "Access is denied.(5)", no polling); with an Administrator IPC$ session
+  (`net use \\<ip>\IPC$ /user:Administrator *`): NOT_VERIFIED (accepted, cancelled with `shutdown /a`
+  after 10 s, still reachable after 90 s) and VERIFIED (`/t 30`: port 445 closed after 56 s).
+  The IPC$ session also shows the fix for production: credentials the NAS accepts.
+- **w32tm /stripchart /computer:X /samples:1 /dataonly** (Win 11 **and trial box WS2016**, identical, 2026-10-15): ok = rc 0, last line
+  `12:10:52, +00.9227616s`; NTP server not answering = **rc 0** with `12:10:52, error: 0x800705B4`;
+  unknown host = rc 2147953401, `The following error occurred: No such host is known. (0x80072AF9)`.
+- **sc.exe** (trial box WS2016, read-only `queryex`/`qc`, 2026-10-15): all text incl. errors on
+  **stdout**, exit = Win32 error (1060 missing service). `queryex`: `STATE : 4  RUNNING`,
+  `PID : 1100`. AamBackupAgent `DEPENDENCIES : AamPrefectServer`; all 3 run as LocalSystem.
+- Sending `\\host` through `ssh ... 'shutdown ...'` mangles the backslashes (got 1707); pipe a Python
+  script written with the Write tool instead.
+
+## 5. Gotchas learned (save time)
+
+- **Audit lab now takes ~30 min**; its LAN rigs mirror to `\\127.0.0.1\<drive>$` so `labconf` sets `guards.forbid_local_destination: false`; mirror-mechanics rigs (tiny random trees) use `labconf.MIRROR_MECHANICS_GUARDS`. Prefect temp-server `409 Conflict` failures are flakes - re-run the single test.
+- New pipeline tasks must be stubbed in existing pipeline tests: decorator stacks use `@patch("flow.<task>", new=MagicMock())` (no extra arg).
+- Mount-marker name is duplicated in 5 modules (`wol.CANARY_NAME`, `integrity`, `lan_preflight`, `lan_sync`, `fy_rollover`); new code uses `guards.MOUNT_MARKER` - consolidate when those modules are touched.
+
+- **Git Bash heredocs mangle backslashes** (`\n`, `\t`, `\\`) even with `<<'EOF'` in this environment. For any code/text containing backslashes use the Write/Edit tools, or a Python script file written with Write. Always re-check diffs for stray `\n`.
+- Remote PowerShell over SSH: no `&&` (use `;`), set `[Console]::OutputEncoding=[Text.Encoding]::UTF8`, no scp/sftp — pipe Python via stdin: `cat script.py | ssh innoviztawinserver2016 'C:\AAMBackup\.venv\Scripts\python.exe -'`.
+- Run tests with `.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider -o addopts="" --timeout=600`.
+- Audit lab: `-m pytest audit_lab --ignore=audit_lab/test_w7_deployed.py -q -s --timeout=1800 -p no:cacheprovider -o addopts=""` (~20 min; run in background; do NOT edit modules it imports while it runs — its child processes import fresh code).
+- Tests are sandboxed: `test_support/sandbox_config.py` sets `AAM_CONFIG` to a temp config; never point tests at the real `config.yaml`.
+- `test_support/fake_tools.py` = fake `run_tool` (writes real-format logs, UTF-16 for robocopy); `test_support/smtp_server.py` = real SMTP test server.
+- `RunArtefacts.open(dir)` is used inside Prefect tasks (pass the folder path string, not the object).
+- `smtplib` raises `SMTPSenderRefused` for 4xx too — classify SMTP errors by reply code.
+
+## 6. Production-trial box (facts from 2026-10-14; full control since 2026-10-15)
+
+> **Current state (2026-10-18):** owner gave us full control of the box. `C:\AAMBackup` is a
+> fresh clone of `mvp-hardening` at 6adcfb2 (§4a/§4b), AamBackupAgent runs as `.\aambackup`,
+> schedule LAN 21:00 / cloud 02:00. The bullets below describe the OLD v1.1.3 install and are
+> kept as background only.
+
+- SSH alias `innoviztawinserver2016` (user `administrator`), code `C:\AAMBackup` (branch `production`, v1.1.3 `6550aad`), runtime `C:\BackupAgent`.
+- Windows Server 2016 Standard, **WORKGROUP**; all 3 services run as **LocalSystem** → root cause of NAS "Access is denied" (plan §10 item 2): needs a dedicated service account.
+- rclone v1.74.3, robocopy 10.0.14393. Config: LAN 21:00, cloud 22:00, LAN target `\\10.10.151.53\aam_test\CHAOS01\FY26-27` (test leftover), demo bucket. Both NAS IPs do not answer on 445.
+- Production `config.yaml` passes the new strict validation (only deprecated `notifications.send_on_success`, dropped with a warning).
+- DB: 59 legacy `*_SKIPPED` rows are really preflight failures (display as failures, never rewrite history).
+- **Deploy by hand: `docs/DEPLOY_RUNBOOK.md`** (owner asked 2026-10-15 - no AI agent on the server).
+  Compatibility verified on the box (read-only): all deploy `.ps1` parse on its PowerShell
+  5.1.14393; every tool the `.bat` files call exists; `Get-LocalUser`, `Start-Process -Credential`
+  available. Box has git (`C:\Program Files\Git`), `C:\AAMBackup` = clone on branch `production`
+  (6550aad) **with ~200 lines of uncommitted local edits** (core/integrity.py, ui.py, uv.lock) -
+  the runbook saves them (patch + stash) before switching; owner/dev to review if still needed.
+  Python on the box: `C:\Program Files\Python312` (all users) - fine for the service account.
+- Production schedule (read-only, 2026-10-15): LAN 21:00, cloud 22:00, audit = code default,
+  `concurrency_wait_seconds` default (1 h). Trial-box run durations are demo-sized (0-5 min,
+  579 files / 57 MB) - no basis for real budgets.
+- 2026-10-15 ~11:56 and ~12:08 IST: the box was **shut down twice by our 4.1 tests** with the owner's
+  permission (owner restarts it by hand; after the first restart all 3 services came back Running).
+  No backup was running either time.
+
+## 7. Housekeeping
+
+- Not committed on purpose: `audit_lab/raw/*.err`, coverage files, `qc`, `query`, one-off root scripts (`analyze_logs*.py`, `coverage_func_scan.py`, `scan_stale_imports.py`, `search_lan.py`, `test_cloud_verify_timeout.py`) — owner to decide on deletion.
+- Update this file at the end of every working session (status table, next steps, gotchas).

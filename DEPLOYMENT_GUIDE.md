@@ -1,3 +1,7 @@
+> **SUPERSEDED - do not use for an installation.** The current procedure is `docs/INSTALL_FRESH.md` (first install) and
+> `docs/DEPLOY_RUNBOOK.md` (update). This guide predates the service account, the closed Prefect port, the mandatory year
+> folder and the new schedule, and some of its commands are wrong for today's code. Kept only as history.
+
 # AAM Backup Automation – Deployment Guide
 
 This guide covers the complete, end-to-end installation process for deploying the AAM Backup Automation system on a Windows Server or PC.
@@ -67,6 +71,15 @@ Verify it installed:
 ```cmd
 gcloud --version
 ```
+
+> **The backup itself uses `gcloud` once a year** (the FY rollover moves the closed year to the
+> ARCHIVE storage class). The agent runs as a service account that cannot read another user's
+> profile, so `gcloud` must NOT live only under a user's `AppData`. Keep a copy in
+> `deploy\bin\google-cloud-sdk` (unzip `google-cloud-cli-windows-x86_64.zip` into `deploy\bin`; the
+> agent finds it first) and, as a fallback, install it for all users (`GoogleCloudSDKInstaller.exe
+> /S /allusers /noreporting`). No `gcloud auth login` is needed on the server: the agent passes the
+> key file to gcloud for each call and nothing is stored. The bucket's 365-day lifecycle rule archives
+> the closed year anyway; the rollover step only brings that forward.
 
 ### 4. Google Cloud Console Setup (Manual, ~10 min)
 
@@ -192,6 +205,12 @@ Verify the key file was created:
 dir deploy\keys\aam-gcs-key.json
 ```
 
+**Then protect it.** Delete any other copy of the key (the folder you ran the command from,
+Downloads, e-mail). `06_install_services.ps1` runs `deploy\lock_gcs_key.ps1`, which leaves only
+SYSTEM, Administrators and the service account (read only) able to open the key; the `Users` group
+loses access. It runs on every install, so a renamed service account is picked up
+(`-ServiceAccount` is a parameter; nothing is hardcoded).
+
 ### 0i. Grant the service account permissions on the bucket
 
 ```cmd
@@ -288,7 +307,7 @@ Open `config.yaml` and update the following sections using the snippets from Ste
 | `paths.source_drive` | Local data path, e.g. `D:\\FY26-27` |
 | `paths.lan_destination` | UNC path, e.g. `\\\\192.168.10.10\\share\\FY26-27` |
 | `paths.runtime_dir` | Runtime data folder (logs, DB, lock). Default: `C:\\BackupAgent` |
-| `paths.gcs_key_path` | `C:\\AAM_BACKUP_V1\\deploy\\keys\\aam-gcs-key.json` |
+| `paths.gcs_key_path` | `C:\\AAMBackup\\deploy\\keys\\aam-gcs-key.json` (wherever the project is installed) |
 | `cloud.enabled` | `true` |
 | `cloud.bucket` | `aam-cloudbackup` |
 | `cloud.project_number` | `aam-backup-2026` |

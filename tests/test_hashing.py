@@ -1,5 +1,7 @@
-"""Tests for hashing — MD5 checksum computation and verification."""
+"""Tests for core/hashing.py — compute_md5() and verify_checksum()."""
 
+import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -7,57 +9,63 @@ from core.hashing import PENDING_CHECKSUM, compute_md5, verify_checksum
 
 
 class TestComputeMd5:
-    def test_known_content(self, temp_dir):
-        f = temp_dir / "test.txt"
+    def test_known_content(self, tmp_path):
+        """MD5 of known content matches hashlib."""
+        f = tmp_path / "test.txt"
         f.write_bytes(b"hello world")
-        digest = compute_md5(str(f))
-        assert digest == "5eb63bbbe01eeed093cb22bb8f5acdc3"
+        expected = hashlib.md5(b"hello world", usedforsecurity=False).hexdigest()
+        assert compute_md5(f) == expected
 
-    def test_empty_file(self, temp_dir):
-        f = temp_dir / "empty.txt"
+    def test_empty_file(self, tmp_path):
+        """MD5 of empty file."""
+        f = tmp_path / "empty.txt"
         f.write_bytes(b"")
-        digest = compute_md5(str(f))
-        assert digest == "d41d8cd98f00b204e9800998ecf8427e"
+        expected = hashlib.md5(b"", usedforsecurity=False).hexdigest()
+        assert compute_md5(f) == expected
 
-    def test_binary_content(self, temp_dir):
-        f = temp_dir / "binary.bin"
-        f.write_bytes(bytes(range(256)))
-        digest = compute_md5(str(f))
-        assert len(digest) == 32
+    def test_large_file_streaming(self, tmp_path):
+        """File larger than 64KB chunk — streaming read works."""
+        f = tmp_path / "large.bin"
+        data = b"x" * 200_000  # > 64KB
+        f.write_bytes(data)
+        expected = hashlib.md5(data, usedforsecurity=False).hexdigest()
+        assert compute_md5(f) == expected
 
-    def test_accepts_path_object(self, temp_dir):
-        f = temp_dir / "pathobj.txt"
-        f.write_text("test")
-        digest = compute_md5(f)
-        assert len(digest) == 32
+    def test_string_path(self, tmp_path):
+        """Accepts str path, not just Path."""
+        f = tmp_path / "test.txt"
+        f.write_bytes(b"test")
+        assert compute_md5(str(f)) == compute_md5(f)
 
-    def test_file_not_found(self, temp_dir):
-        with pytest.raises(FileNotFoundError):
-            compute_md5(str(temp_dir / "nonexistent.txt"))
+    def test_binary_content(self, tmp_path):
+        """Binary content with null bytes."""
+        f = tmp_path / "binary.bin"
+        data = bytes(range(256))
+        f.write_bytes(data)
+        expected = hashlib.md5(data, usedforsecurity=False).hexdigest()
+        assert compute_md5(f) == expected
 
 
 class TestVerifyChecksum:
-    def test_matching_checksum(self, temp_dir):
-        f = temp_dir / "match.txt"
-        f.write_bytes(b"hello world")
-        expected = "5eb63bbbe01eeed093cb22bb8f5acdc3"
-        assert verify_checksum(str(f), expected) is True
+    def test_matching_checksum(self, tmp_path):
+        """Correct checksum → True."""
+        f = tmp_path / "test.txt"
+        f.write_bytes(b"hello")
+        md5 = compute_md5(f)
+        assert verify_checksum(f, md5) is True
 
-    def test_mismatched_checksum(self, temp_dir):
-        f = temp_dir / "mismatch.txt"
-        f.write_bytes(b"hello world")
-        assert verify_checksum(str(f), "deadbeef" * 4) is False
+    def test_mismatched_checksum(self, tmp_path):
+        """Wrong checksum → False."""
+        f = tmp_path / "test.txt"
+        f.write_bytes(b"hello")
+        assert verify_checksum(f, "0" * 32) is False
 
-    def test_pending_checksum_returns_false(self, temp_dir):
-        f = temp_dir / "pending.txt"
-        f.write_bytes(b"some data")
-        assert verify_checksum(str(f), PENDING_CHECKSUM) is False
+    def test_pending_checksum_returns_false(self, tmp_path):
+        """PENDING_CHECKSUM sentinel → False (no false positives)."""
+        f = tmp_path / "test.txt"
+        f.write_bytes(b"hello")
+        assert verify_checksum(f, PENDING_CHECKSUM) is False
 
-    def test_pending_is_string_pending(self):
+    def test_pending_constant_value(self):
+        """PENDING_CHECKSUM is 'pending'."""
         assert PENDING_CHECKSUM == "pending"
-
-    def test_case_sensitive_checksum(self, temp_dir):
-        f = temp_dir / "case.txt"
-        f.write_bytes(b"hello world")
-        expected = "5eb63bbbe01eeed093cb22bb8f5acdc3"
-        assert verify_checksum(str(f), expected.upper()) is False

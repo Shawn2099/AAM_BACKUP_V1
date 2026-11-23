@@ -34,6 +34,14 @@ Write-Host ""
 
 $TargetIP = Read-Host "Enter Backup Server IP to test connectivity (or press Enter to skip)"
 
+# -- Helper: ping with a timeout. the timeout parameter of Test-Connection is PowerShell 7 only
+function Test-HostPing([string]$HostName, [int]$TimeoutMs = 2000) {
+    $ping = New-Object System.Net.NetworkInformation.Ping
+    try { return ($ping.Send($HostName, $TimeoutMs).Status -eq 'Success') }
+    catch { return $false }
+    finally { $ping.Dispose() }
+}
+
 # -- Helper: append to markdown ----------------------------------------
 function md($line) {
     Add-Content -Path $ReportMD -Value $line -Encoding UTF8
@@ -153,7 +161,7 @@ if ($dnsOK) {
 # Internet
 md "### Internet Connectivity"
 md ""
-$pingOK = Test-Connection -ComputerName 8.8.8.8 -Count 1 -TimeoutSeconds 2 -Quiet
+$pingOK = Test-HostPing 8.8.8.8
 if ($pingOK) {
     md "- **Internet Access:** Available"
     json "    `"internet_access`": `"available`","
@@ -169,7 +177,7 @@ md "### Target Backup Server Test"
 md ""
 if ($TargetIP) {
     md "- **Target IP:** $TargetIP"
-    $pingTarget = Test-Connection -ComputerName $TargetIP -Count 1 -TimeoutSeconds 2 -Quiet
+    $pingTarget = Test-HostPing $TargetIP
     if ($pingTarget) {
         md "- **Ping:** Successful"
         $mac = (arp -a $TargetIP | Select-String $TargetIP | Select-Object -First 1) -replace '^\s+(\S+)\s+.*', '$1'
@@ -263,10 +271,10 @@ if ($psPolicy -eq "Restricted") {
 # Firewall
 $fwProfiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq $true }
 if ($fwProfiles) {
-    md "- **Windows Firewall:** Active (ports 4200, 8080 may need rules)"
-    md "  - To add firewall rules, run these as Administrator:"
-    md "    netsh advfirewall firewall add rule name=`"AAM Prefect 4200`" dir=in action=allow protocol=tcp localport=4200"
-    md "    netsh advfirewall firewall add rule name=`"AAM Dashboard 8080`" dir=in action=allow protocol=tcp localport=8080"
+    md "- **Windows Firewall:** Active"
+    md "  - 06_install_services.ps1 opens ONLY the dashboard port, ONLY to the office network"
+    md "    (dashboard.firewall_remote_addresses, default LocalSubnet)."
+    md "  - Never open port 4200: the Prefect API has no login and stays on 127.0.0.1."
     json "    `"firewall`": `"active`","
 } else {
     md "- **Windows Firewall:** Inactive"
@@ -409,7 +417,7 @@ Write-Host "[10/11] Testing GCS connectivity..."
 md "## 10. GCS Connectivity"
 md ""
 
-$gcsPing = Test-Connection -ComputerName storage.googleapis.com -Count 1 -TimeoutSeconds 2 -Quiet
+$gcsPing = Test-HostPing storage.googleapis.com
 if ($gcsPing) {
     md "- **storage.googleapis.com:** Reachable"
 } else {

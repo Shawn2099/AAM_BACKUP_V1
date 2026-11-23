@@ -30,7 +30,7 @@ def _make_config():
 
 def _patch_pipeline():
     return (
-        patch("flow.send_failure_alert", return_value=True),
+        patch("flow.notify"),
         patch("flow.cloud_publish_artifact_task"),
         patch("flow.cloud_record_task"),
         patch("flow.cloud_verify_and_report_task"),
@@ -40,13 +40,15 @@ def _patch_pipeline():
         patch("flow.get_fy_prefix", return_value="FY26-27"),
         patch("flow.ManifestDB"),
         patch("flow._record_run"),
+        patch("flow.cloud_guards_task"),
+        patch("flow.cloud_access_task"),
     )
 
 
 def _run_with(sync_result, verify_data):
     patches = _patch_pipeline()
     mocks = [p.start() for p in patches]
-    mock_alert, mock_artifact, mock_record_task, mock_verify, mock_sync, _, _, _, mock_db, mock_record = mocks
+    mock_alert, mock_artifact, mock_record_task, mock_verify, mock_sync, _, _, _, mock_db, mock_record, _, _ = mocks
     mock_sync.with_options.return_value.return_value = sync_result
     mock_verify.with_options.return_value.return_value = verify_data
     mock_db.return_value.get_cloud_synced_entries.return_value = {}
@@ -202,7 +204,7 @@ class TestSuspectAndPartialPolicy:
 class TestLanSuspectPipeline:
     def _run_lan(self, sync_result):
         patches = (
-            patch("flow.send_failure_alert", return_value=True),
+            patch("flow.notify"),
             patch("flow.lan_publish_artifact_task"),
             patch("flow.lan_record_task"),
             patch("flow.lan_snapshot_after_task"),
@@ -212,10 +214,12 @@ class TestLanSuspectPipeline:
             patch("flow.wol_check_task"),
             patch("flow.health_check_task"),
             patch("flow._record_run"),
+            patch("flow.lan_guards_task"),
+            patch("flow.lan_access_task"),
         )
         mocks = [p.start() for p in patches]
         (mock_alert, mock_artifact, mock_record_task, mock_after,
-         mock_sync, mock_before, _, _, _, mock_record) = mocks
+         mock_sync, mock_before, _, _, _, mock_record, _, _) = mocks
         mock_sync.with_options.return_value.return_value = sync_result
         # Snapshot tasks are called directly (no with_options) in the LAN
         # pipeline — return real dicts so diff_snapshots runs for real.

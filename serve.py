@@ -37,7 +37,7 @@ def _deployments():
             backup.to_deployment(
                 name="backup-cloud",
                 parameters={"config_path": CONFIG_PATH, "mode": "cloud"},
-                schedules=[Cron(config.schedule.cloud_cron, tz)],
+                schedules=_nightly_schedules(config, "cloud", config.schedule.cloud_cron, tz),
                 tags=["production", "cloud"],
                 description="Daily cloud backup - rclone sync to GCS (asia-south1)",
             )
@@ -48,7 +48,7 @@ def _deployments():
             backup.to_deployment(
                 name="backup-lan",
                 parameters={"config_path": CONFIG_PATH, "mode": "lan"},
-                schedules=[Cron(config.schedule.lan_cron, tz)],
+                schedules=_nightly_schedules(config, "lan", config.schedule.lan_cron, tz),
                 tags=["production", "lan"],
                 description="Daily LAN backup - robocopy /MIR, includes WoL and auto-shutdown",
             )
@@ -74,15 +74,15 @@ def _deployments():
         )
     )
 
-    # G10: scheduled FY-rollover check. A no-op except on the fiscal-year
-    # boundary; required because the boot-time check in launch.py only runs
-    # when the agent process starts (24x7 servers are rarely rebooted).
+    # G10 / WP11: scheduled FY-rollover check - the ONLY rollover entry point
+    # (the boot-time check in launch.py was removed). Tagged "rollover" so the
+    # dashboard can tell it is running before re-running an approved rollover.
     deployments_out.append(
         rollover_check_flow.to_deployment(
             name="rollover-check",
             parameters={"config_path": CONFIG_PATH},
             schedules=[Cron(config.schedule.rollover_cron, tz)],
-            tags=["maintenance"],
+            tags=["maintenance", "rollover"],
             description="Daily FY rollover check - idempotent; runs the real rollover on April 1",
         )
     )
@@ -100,7 +100,35 @@ def _deployments():
         )
     )
 
+    _record_schedule_in_effect(config)
     return tuple(deployments_out)
+
+
+def _nightly_schedules(config, leg: str, cron: str, tz) -> list:
+    """The cron of a leg that runs every night; NO schedule for a manual-only leg (`<leg>.scheduled`
+    false): its deployment is still registered so the dashboard button can start it (owner 2026-11-23)."""
+    from core import manual_leg
+
+    return [Cron(cron, tz)] if manual_leg.is_nightly(config, leg) else []
+
+
+def _record_schedule_in_effect(config) -> None:
+    """Remember which schedules THIS process registers. The dashboard and the watchdog judge
+    "overdue" against these: a schedule saved in Settings but not applied yet (it takes effect
+    when the agent restarts) must not change what counts as late. Written just before serve()
+    starts, from the same config object the deployments were built from."""
+    try:
+        from core.manifest import ManifestDB
+
+        db = ManifestDB.from_config(config)
+        try:
+            db.set_schedule_in_effect({"cloud_cron": config.schedule.cloud_cron,
+                                       "lan_cron": config.schedule.lan_cron,
+                                       "timezone": config.schedule.timezone})
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001 - never stops the scheduler; the config is the fallback
+        print(f"[serve] could not record the schedule in effect: {e}")
 
 
 if __name__ == "__main__":

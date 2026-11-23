@@ -3,9 +3,16 @@
 These tests run without any live hardware Robocopy or SMB network operations.
 """
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
+
+os.environ.setdefault("PREFECT_TEST_MODE", "1")
+os.environ.setdefault("PREFECT_API_URL", "")
+os.environ.setdefault("PREFECT_SERVER_ALLOW_EPHEMERAL_MODE", "1")
+
+from prefect.testing.utilities import prefect_test_harness
 
 from core.integrity import (
     _parse_combined_file,
@@ -14,6 +21,7 @@ from core.integrity import (
 from core.lan_sync import decide_lan_result
 import flow
 from flow import _run_cloud_pipeline, integrity_audit_flow
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 def _make_mock_config(tmp_path=None):
@@ -42,6 +50,8 @@ def _make_mock_config(tmp_path=None):
     cfg.cloud.retry_delay_seconds = 60
     cfg.lan.enabled = True
     cfg.lan.subprocess_timeout_seconds = 7200
+    cfg.budget.audit_max_hours = 8               # WP14 run budget
+    cfg.budget.lan_post_reserve_minutes = 30
     cfg.lan.shutdown_after_backup = True
     cfg.wol.enabled = True
     cfg.wol.server_ip = "192.168.1.100"
@@ -51,10 +61,12 @@ def _make_mock_config(tmp_path=None):
 # ── BUG-01: Premature cloud_record_task ──────────────────────────────────────
 
 class TestBug01CloudRecordPostGate:
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
+    @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task")
     @patch("flow.ManifestDB")
@@ -65,6 +77,7 @@ class TestBug01CloudRecordPostGate:
         mock_db_inst = MagicMock()
         mock_db_inst.get_cloud_synced_entries.return_value = {}
         mock_db.return_value = mock_db_inst
+        mock_db.from_config.return_value = mock_db_inst
 
         mock_sync.with_options.return_value.return_value = {"status": "CLOUD_COMPLETE", "exit_code": 0}
         # Verify reports 1 modified difference — evidence_ok fails!
@@ -86,6 +99,8 @@ class TestBug01CloudRecordPostGate:
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
+    @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task")
     @patch("flow.ManifestDB")
@@ -96,6 +111,7 @@ class TestBug01CloudRecordPostGate:
         mock_db_inst = MagicMock()
         mock_db_inst.get_cloud_synced_entries.return_value = {}
         mock_db.return_value = mock_db_inst
+        mock_db.from_config.return_value = mock_db_inst
 
         mock_sync.with_options.return_value.return_value = {"status": "CLOUD_COMPLETE", "exit_code": 0}
         mock_verify.with_options.return_value.return_value = {
@@ -114,7 +130,7 @@ class TestBug01CloudRecordPostGate:
 # ── BUG-02 & BUG-03 & BUG-08: integrity_audit_flow slot + WoL + clamp ────────
 
 class TestBug02And03AuditOrchestration:
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
     @patch("flow.wol_check_task")
     @patch("flow.temp_rclone_config")
@@ -128,6 +144,7 @@ class TestBug02And03AuditOrchestration:
     ):
         mock_db_inst = MagicMock()
         mock_db.return_value = mock_db_inst
+        mock_db.from_config.return_value = mock_db_inst
         mock_audit_cloud.return_value = {
             "status": "VERIFIED", "scope": "cloud/full", "files_checked": 50,
             "bytes_checked": 1000, "mismatches": 0, "detail": "cloud verified",
@@ -138,20 +155,24 @@ class TestBug02And03AuditOrchestration:
         }
 
         cfg = _make_mock_config()
-        with patch("flow.load_config", return_value=cfg):
-            integrity_audit_flow(mode="all")
+        with prefect_test_harness():
+            with patch("flow.load_config", return_value=cfg), \
+                    patch("flow._active_fys", return_value=["FY26-27"]), \
+                    patch("flow.fy_overlap.folder_view", side_effect=lambda c, f: c):   # one FY folder (mock config)
+                integrity_audit_flow(mode="all")
 
         # 1. Enclosed in _backup_slot
         mock_slot.assert_called_once_with(cfg)
         # 2. WoL check task called before audit_lan
         mock_wol.assert_called_once_with(cfg)
         # 3. Timeout passed to audit_lan
-        mock_audit_lan.assert_called_once_with(
-            cfg.paths.source_drive, cfg.paths.lan_destination,
-            timeout=cfg.lan.subprocess_timeout_seconds,
-        )
+        mock_audit_lan.assert_called_once()
+        call = mock_audit_lan.call_args
+        assert call.args == (cfg.paths.source_drive, cfg.paths.lan_destination)
+        assert call.kwargs["timeout"] == cfg.lan.subprocess_timeout_seconds
         # 4. LAN shutdown task called in finally
-        mock_shutdown.assert_called_once_with(cfg)
+        mock_shutdown.assert_called_once()
+        assert mock_shutdown.call_args.args[0] is cfg  # + the run's artefacts dir (WP10)
         # 5. BUG-08/F-T4-3: unknown counts persist as NULL (never a
         # false zero); legacy negative sentinels still clamp to 0.
         lan_record_call = [
@@ -186,7 +207,7 @@ class TestBug04AuditFileReadErrors:
         assert modified == ["modified.txt"]
         assert unchanged == ["clean.txt"]
 
-    @patch("core.integrity.subprocess.run")
+    @patch("core.integrity.run_tool", new_callable=SubprocessStyleRunTool)
     def test_run_rclone_check_fails_on_read_errors(self, mock_run, tmp_path):
         # rclone reports 0 differences found, but 1 error while checking (exit 1)
         mock_res = MagicMock()
@@ -196,15 +217,15 @@ class TestBug04AuditFileReadErrors:
             "2026/09/07 10:00:00 ERROR : locked.xlsx: permission denied\n"
             "2026/09/07 10:00:00 NOTICE: 1 errors while checking\n"
         )
-        mock_run.return_value = mock_res
 
-        with patch("core.integrity.tempfile.mkstemp") as mock_mkstemp:
-            mock_diff = tmp_path / "diff.txt"
-            mock_diff.write_text("! locked.xlsx\n", encoding="utf-8")
-            import os
-            fd = os.open(str(mock_diff), os.O_RDONLY)
-            mock_mkstemp.return_value = (fd, str(mock_diff))
+        def _rclone_writes_combined(cmd, **_kw):
+            # rclone writes the diff where --combined points (real mkstemp file;
+            # patching mkstemp is global and breaks run_tool's artefact writes)
+            Path(cmd[cmd.index("--combined") + 1]).write_text("! locked.xlsx\n", encoding="utf-8")
+            return mock_res
 
+        mock_run.side_effect = _rclone_writes_combined
+        if True:
             result = _run_rclone_check("C:\\src", "\\\\nas\\dst", "test", timeout=60)
             assert result["status"] == "VERIFICATION_FAILED"
             assert "file read or check errors occurred" in result["detail"]

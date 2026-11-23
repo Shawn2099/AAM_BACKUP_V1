@@ -1,159 +1,134 @@
-"""Shared fixtures for AAM Backup Automation V1 tests.
-
-REAL INFRASTRUCTURE POLICY
-==========================
-Every test in this suite exercises the ORIGINAL production programs
-(core/*, flow.py, watchdog.py, launch.py, serve.py, ui.py) against real
-infrastructure:
-
-  * real robocopy.exe / rclone.exe subprocesses (resolved via the
-    production core.process.resolve_binary — deploy\bin is preferred),
-  * the real \\127.0.0.1\lan_backup SMB share for LAN destinations,
-  * the real GCS bucket from config.yaml under a dedicated test prefix,
-  * real TCP/UDP sockets, real SQLite databases, real Prefect API server,
-  * real subprocess timeouts enforced by the OS — never mocked time.
-
-No module, method, or builtin used by production code is monkey-patched,
-stubbed, or replaced anywhere in this suite.
-"""
-
+# tests/conftest.py
 import os
-import sys
-import tempfile
-from io import StringIO
 from pathlib import Path
 
 import pytest
-from loguru import logger
 
-# Real ephemeral Prefect API + database for @flow execution (production code path)
 os.environ["PREFECT_TEST_MODE"] = "1"
-os.environ["PREFECT_RESULTS_PERSIST_BY_DEFAULT"] = "false"
-os.environ.pop("PREFECT_RESULTS_DEFAULT_STORAGE_BLOCK", None)
-os.environ["PREFECT_SERVER_ANALYTICS_ENABLED"] = "false"
 
+# WP16 test isolation: every CONFIG_PATH default must resolve to a throwaway
+# sandbox config, never the real config.yaml. Must run before any project
+# module (models.config computes CONFIG_PATH at import) is imported.
+from test_support import sandbox_config  # noqa: E402
 
-def pytest_configure(config):
-    """Global pytest configuration."""
-    import logging
-    # Suppress noisy teardown logs from the ephemeral Prefect server
-    logging.getLogger("prefect.server").setLevel(logging.ERROR)
+sandbox_config.install()
 
-    # BUG-10: Inject deploy\bin into PATH so bundled rclone.exe is discovered by tests
-    deploy_bin = Path(__file__).resolve().parent.parent / "deploy" / "bin"
-    if deploy_bin.exists() and str(deploy_bin) not in os.environ.get("PATH", ""):
-        os.environ["PATH"] = f"{deploy_bin};{os.environ.get('PATH', '')}"
+# BUG-10: Inject deploy\bin into PATH so bundled rclone.exe is discovered by tests
+deploy_bin = Path(__file__).resolve().parent.parent / "deploy" / "bin"
+if deploy_bin.exists() and str(deploy_bin) not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = f"{deploy_bin};{os.environ.get('PATH', '')}"
 
 
 @pytest.fixture
-def temp_db_path():
-    """Create a temporary SQLite database path, cleaned up after test."""
-    fd, path = tempfile.mkstemp(suffix=".db", prefix="test_aam_")
-    os.close(fd)
-    yield path
-    try:
-        Path(path).unlink()
-    except OSError:
-        pass
+def tmp_db(tmp_path):
+    """Fresh ManifestDB in a temp directory."""
+    from core.manifest import ManifestDB
+
+    db = ManifestDB(str(tmp_path / "test_manifest.db"))
+    yield db
+    db.close()
 
 
 @pytest.fixture
-def capture_logs():
-    """Capture loguru logs to a string buffer."""
-    buf = StringIO()
-    handler_id = logger.add(buf, format="{level} | {message}", level="DEBUG")
-    yield buf
-    logger.remove(handler_id)
+def populated_db(tmp_db):
+    """Database pre-populated with files synced to both cloud and lan."""
+    tmp_db.bulk_upsert_synced(
+        [{"path": "docs/client_report.pdf", "size": 2048, "mtime": 1700000000.0}],
+        mode="lan", fy="FY26-27",
+    )
+    tmp_db.bulk_upsert_synced(
+        [{"path": "docs/client_report.pdf", "size": 2048, "mtime": 1700000000.0}],
+        mode="cloud", fy="FY26-27",
+    )
+    return tmp_db
 
 
-@pytest.fixture
-def temp_dir():
-    """Create a temporary directory, cleaned up after test."""
-    with tempfile.TemporaryDirectory(prefix="test_aam_") as d:
-        yield Path(d)
+@pytest.fixture(autouse=True)
+def _reset_loguru_sinks():
+    """Isolate loguru between tests.
 
-
-@pytest.fixture
-def sample_yaml_config():
-    """Return minimal valid YAML config string for testing."""
-    return """firm_name: "TestFirm"
-paths:
-  source_drive: "C:\\\\test_source"
-  lan_destination: "\\\\\\\\10.0.0.1\\\\share"
-  database_path: "C:\\\\test\\\\manifest.db"
-  log_directory: "C:\\\\test\\\\logs"
-  temp_directory: "C:\\\\test\\\\temp"
-  gcs_key_path: "C:\\\\test\\\\key.json"
-lan:
-  enabled: true
-  retry_count: 3
-  retry_wait_seconds: 10
-  subprocess_timeout_seconds: 14400
-  shutdown_after_backup: true
-  max_attempts: 2
-  retry_delay_seconds: 600
-  mt_threads: 8
-wol:
-  enabled: true
-  mac_address: "AA-BB-CC-DD-EE-FF"
-  server_ip: "10.0.0.1"
-  wake_timeout_seconds: 300
-  ping_interval_seconds: 15
-  stability_wait_seconds: 30
-cloud:
-  enabled: true
-  bucket: "test-bucket"
-  project_number: "123456"
-  location: "asia-south1"
-  storage_class: "COLDLINE"
-  bandwidth_limit: "10M"
-  retry_count: 3
-  subprocess_timeout_seconds: 21600
-  max_attempts: 3
-  retry_delay_seconds: 300
-  verify_timeout_seconds: 600
-  transfers: 4
-  checkers: 16
-schedule:
-  cloud_cron: "0 18 * * *"
-  lan_cron: "0 1 * * *"
-  weekly_cron: "0 8 * * MON"
-  monthly_cron: "0 8 1 * *"
-  timezone: "Asia/Kolkata"
-dashboard:
-  auth_enabled: true
-  api_key: "test-key-123"
-  bind_address: "127.0.0.1"
-  port: 8080
-notifications:
-  smtp_host: ""
-  smtp_port: 587
-  smtp_username: ""
-  smtp_password: ""
-  sender: ""
-  recipients: []
-  send_on_failure: false
-"""
-
-
-@pytest.fixture(scope="session", autouse=True)
-def prefect_harness():
-    """Start a REAL ephemeral Prefect server + SQLite DB for the whole session.
-
-    Flows execute through the actual Prefect orchestration API exactly as they
-    do in production; only the backing database lives in a temporary location.
+    core.logging.configure() (and some tests) add a sink bound to the
+    sys.stderr object of the *current* test; pytest closes that capture
+    stream afterwards, so a later test's log call hit a closed file
+    ("OSError: [Errno 9] Bad file descriptor") depending on test order.
+    After every test, drop all sinks and re-add one that resolves
+    sys.stderr at write time.
     """
-    try:
-        from prefect.filesystems import LocalFileSystem
-        from prefect.testing.utilities import prefect_test_harness
+    import sys
 
-        with prefect_test_harness():
+    from loguru import logger
+
+    yield
+    logger.remove()
+    logger.add(lambda message: sys.stderr.write(message), level="INFO")
+
+
+@pytest.fixture(autouse=True)
+def _guard_standard_fds():
+    """Fail any test that closes the process's stdin/stdout/stderr fds.
+
+    A mocked mkstemp returning fd 0 made production code os.close(0),
+    breaking unrelated later tests. Detect it at the source instead.
+    """
+    import os
+
+    def _open_fds():
+        alive = set()
+        for fd in (0, 1, 2):
             try:
-                LocalFileSystem(basepath=tempfile.gettempdir()).save(
-                    "backup-storage", overwrite=True
-                )
-            except Exception:
+                os.fstat(fd)
+                alive.add(fd)
+            except OSError:
                 pass
-            yield
-    except Exception:
+        return alive
+
+    before = _open_fds()
+    yield
+    closed = before - _open_fds()
+    assert not closed, f"test closed standard file descriptor(s) {sorted(closed)}"
+
+@pytest.fixture(autouse=True)
+def _dashboard_session():
+    """The dashboard always needs a sign-in (plan E10): register the fixed test session and
+    Advanced-session tokens (test_support.ui_login.HEADERS / ADMIN_HEADERS) in the ui module."""
+    import ui
+    from test_support import ui_login
+
+    ui_login.register(ui)
+    yield
+    ui_login.unregister(ui)
+
+
+@pytest.fixture(autouse=True)
+def _dashboard_test_client(request, monkeypatch):
+    """TestClient(ui.app) starts signed in (the session registered above) unless the test is
+    marked `anonymous` (tests of the sign-in itself)."""
+    if request.node.get_closest_marker("anonymous"):
         yield
+        return
+    import ui
+    from fastapi.testclient import TestClient
+
+    from test_support import ui_login
+
+    original = TestClient.__init__
+
+    def signed_in_init(self, app, *args, **kwargs):
+        if app is ui.app and not kwargs.get("headers") and not kwargs.get("cookies"):
+            kwargs["cookies"] = {"session": ui_login.SESSION_TOKEN}
+        original(self, app, *args, **kwargs)
+
+    monkeypatch.setattr(TestClient, "__init__", signed_in_init)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _backup_service_is_serving(monkeypatch):
+    """F1: the manual-start endpoints ask Prefect whether a backup service polls the deployment. Tests that
+    do not care about that answer 'yes'; tests of the check use ui._agent_serving_real."""
+    import ui
+
+    async def serving(deployment):
+        return True
+
+    monkeypatch.setattr(ui, "_agent_serving", serving)

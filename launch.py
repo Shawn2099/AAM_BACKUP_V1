@@ -36,14 +36,37 @@ def _run_dashboard():
     uvicorn.run(app, host=bind, port=port, log_level="warning")
 
 
+def _supervise_dashboard(thread: threading.Thread, interval_seconds: int = 60) -> threading.Thread:
+    """Lightweight dashboard monitor: log a warning if the thread dies.
+
+    Does NOT restart or kill anything — dashboard failure must never affect
+    backup correctness. Observability only; backups continue via scheduler.
+    Returns the monitor thread (daemon).
+    """
+    def _watch() -> None:
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                alive = thread.is_alive()
+            except Exception:
+                alive = False
+            if not alive:
+                print("[launch] WARNING: dashboard thread is not alive — scheduler continues; restart service to restore UI")
+                return
+
+    mon = threading.Thread(target=_watch, daemon=True, name="dashboard-monitor")
+    mon.start()
+    return mon
+
+
 def _check_prefect_api(url="http://127.0.0.1:4200/api"):
     """Verify Prefect API server is running. Raises if not reachable."""
-    import httpx
+    import httpx2
     try:
-        resp = httpx.get(f"{url}/health", timeout=5)
+        resp = httpx2.get(f"{url}/health", timeout=5)
         if resp.status_code == 200:
             return True
-    except httpx.ConnectError:
+    except httpx2.ConnectError:
         pass
     except Exception:
         pass
@@ -97,6 +120,46 @@ def _ensure_concurrency_limit():
             _pool.submit(asyncio.run, _create()).result()
 
 
+def _mark_abandoned_runs():
+    """Plan WP5: a RUNNING run whose process is gone (agent restart, reboot,
+    crash) is recorded as ABANDONED and alerted, so the history and the
+    dashboard stay truthful. Never blocks startup."""
+    try:
+        from core.backup_repository import sweep_abandoned_runs
+        from core.manifest import ManifestDB
+        from models.config import CONFIG_PATH, load_config
+
+        cfg = load_config(CONFIG_PATH)
+        db = ManifestDB.from_config(cfg)
+        try:
+            n = len(sweep_abandoned_runs(cfg, db))
+        finally:
+            db.close()
+        if n:
+            print(f"[launch] {n} run(s) left RUNNING by a previous agent recorded as ABANDONED")
+    except Exception as e:  # noqa: BLE001
+        print(f"[launch] Warning: could not mark abandoned runs (non-fatal): {e}")
+
+
+def _check_db_identity():
+    """opus-decision L2: tell the owner when the manifest database was silently re-created (a lost or
+    renamed manifest.db while earlier runs exist). Loud, never blocks startup."""
+    try:
+        from core import db_identity
+        from core.manifest import ManifestDB
+        from models.config import CONFIG_PATH, load_config
+
+        cfg = load_config(CONFIG_PATH)
+        db = ManifestDB.from_config(cfg)
+        try:
+            if db_identity.check_at_startup(cfg, db):
+                print("[launch] WARNING: the backup database was created new although earlier runs exist")
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        print(f"[launch] Warning: could not check the database identity (non-fatal): {e}")
+
+
 def _cancel_orphaned_runs():
     """Cancel any PENDING or RUNNING flow runs left over from a previous crashed session.
 
@@ -130,6 +193,8 @@ def _cancel_orphaned_runs():
     async def _cancel():
         from prefect.client.orchestration import get_client
         from prefect.client.schemas.filters import (
+            FlowFilter,
+            FlowFilterName,
             FlowRunFilter,
             FlowRunFilterState,
             FlowRunFilterStateType,
@@ -139,6 +204,21 @@ def _cancel_orphaned_runs():
 
         try:
             async with get_client() as client:
+                aam_flow_names = [
+                    "aam-backup",
+                    "weekly-report",
+                    "monthly-report",
+                    "rollover-check",
+                    "integrity-audit",
+                ]
+                aam_flows = await client.read_flows(
+                    flow_filter=FlowFilter(name=FlowFilterName(any_=aam_flow_names))
+                )
+                aam_flow_ids = {f.id for f in aam_flows}
+                if not aam_flow_ids:
+                    print("[launch] No registered AAM flows found on server — skipping orphan run cleanup")
+                    return
+
                 for state_type in [StateType.PENDING, StateType.RUNNING]:
                     # If a backup is actively running, only cancel PENDING flows
                     if state_type == StateType.RUNNING and backup_active:
@@ -166,9 +246,7 @@ def _cancel_orphaned_runs():
                         offset += limit
                     runs = [
                         r for r in all_runs
-                        if getattr(r, "flow_id", None) is not None
-                        or "aam-backup" in str(getattr(r, "name", ""))
-                        or any(k in str(getattr(r, "name", "")) for k in ("backup-", "report", "rollover"))
+                        if getattr(r, "flow_id", None) in aam_flow_ids
                     ]
                     cancelled = 0
                     for r in runs:
@@ -213,6 +291,7 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
     from prefect.client.orchestration import get_client
     from prefect.exceptions import ObjectNotFound
 
+    legs_default = legs is None
     if legs is None:
         audit_enabled = bool(
             getattr(config.lan, "enabled", False) or getattr(config.cloud, "enabled", True)
@@ -229,6 +308,11 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
         "integrity-audit": "integrity-audit",
     }
 
+    from core import manual_leg
+
+    manual = {n for n, leg in (("backup-lan", "lan"), ("backup-cloud", "cloud"))
+              if legs_default and manual_leg.is_manual_only(config, leg)}
+
     async def _reconcile() -> dict:
         results: dict = {}
         async with get_client() as client:
@@ -241,7 +325,17 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
                     results[dep_name] = "absent (nothing to reconcile)"
                     continue
                 paused = bool(getattr(dep, "paused", False))
-                if enabled and paused:
+                if dep_name in manual:
+                    # manual only: the deployment stays runnable (the dashboard button) but must not
+                    # fire by itself, so any schedule left from an earlier boot is removed
+                    removed = 0
+                    for sch in await client.read_deployment_schedules(dep.id):
+                        await client.delete_deployment_schedule(dep.id, sch.id)
+                        removed += 1
+                    if paused:
+                        await client.resume_deployment(dep.id)
+                    results[dep_name] = f"manual only ({removed} schedule(s) removed)"
+                elif enabled and paused:
                     await client.resume_deployment(dep.id)
                     results[dep_name] = "resumed (leg enabled)"
                 elif not enabled and not paused:
@@ -271,7 +365,12 @@ def main():
     print("=" * 50)
 
     from models.config import CONFIG_PATH, load_config
-    _cfg = load_config(CONFIG_PATH)
+    try:
+        _cfg = load_config(CONFIG_PATH)
+    except Exception as exc:
+        one_line = " ".join(str(exc).split())[:600]
+        print(f"[launch] FATAL: config.yaml is invalid - the backup agent cannot start: {one_line}")
+        raise
 
     # Wait for Prefect API — retry loop handles the startup race that occurs after
     # a watchdog-triggered service restart (Prefect takes ~45s to be API-ready).
@@ -301,28 +400,19 @@ def main():
     time.sleep(0.5)
     if not dash_thread.is_alive():
         print("[launch] Warning: Dashboard thread not alive after start (may be race in tests)")
+    _supervise_dashboard(dash_thread)
 
-    # Check for FY rollover before starting normal operations.
-    # On April 1, this runs a final backup of the closing FY, transitions
-    # old GCS data to ARCHIVE storage, creates new FY folders, and
-    # atomically updates config.yaml to point to the new FY paths.
-    # Backup flows load config fresh on every run, so they pick up the
-    # new paths without a restart.
-    from core.fy_rollover import RolloverError, rollover
-    try:
-        if rollover():
-            print("[launch] FY rollover completed — config updated for new FY")
-    except RolloverError as e:
-        print(f"[launch] FY rollover blocked: {e}")
-        print("[launch] Will retry on next scheduled run.")
-    except Exception as e:
-        print(f"[launch] Warning: FY rollover check failed (non-fatal): {e}")
+    # FY rollover is NOT run here (plan WP11): it ran synchronously before the
+    # scheduler started, outside the backup slot. The scheduled rollover-check
+    # deployment (daily) is the single entry point.
 
     # Create the global concurrency limit for backup serialization
     _ensure_concurrency_limit()
 
     # Cancel orphaned flow runs from previous crashed/shutdown sessions
     _cancel_orphaned_runs()
+    _mark_abandoned_runs()
+    _check_db_identity()
 
     # P2-SCHED: pause deployments whose leg is disabled in config (and resume
     # re-enabled ones). Filtering registration alone is NOT enough - Prefect's

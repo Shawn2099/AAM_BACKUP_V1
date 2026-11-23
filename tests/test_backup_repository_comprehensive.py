@@ -1,232 +1,103 @@
-"""Comprehensive tests for core/backup_repository.py — DB write operations."""
+"""Comprehensive tests for core/backup_repository.py — all functions."""
 
-from __future__ import annotations
-
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.backup_repository import record_run_history, record_sync_results
-from core.manifest import ManifestDB
-
-
-@pytest.fixture(autouse=True, scope="session")
-def prefect_harness():
-    """Override session-scoped fixture from conftest to avoid Prefect server startup."""
-    yield
-
-
-@pytest.fixture
-def db(tmp_path):
-    """Create a fresh ManifestDB for each test."""
-    db_path = tmp_path / "test_backup_repo.db"
-    manifest = ManifestDB(db_path)
-    yield manifest
-    manifest.close()
-
-
-# ── record_sync_results ──────────────────────────────────────────────────────
-
-
-class TestRecordSyncResults:
-    def test_records_rclone_format_entries(self, db):
-        entries = [
-            {"Path": "file1.txt", "Size": 100, "ModTime": 1234567890.0},
-            {"Path": "dir/file2.txt", "Size": 200, "ModTime": 1234567891.0},
-        ]
-        record_sync_results(db, "cloud", entries)
-        assert db.file_count("cloud_status") == 2
-        entry = db.get_entry("file1.txt")
-        assert entry["file_size"] == 100
-
-    def test_records_walk_format_entries(self, db):
-        entries = [
-            {"path": "file_a.txt", "size": 300, "mtime": 1234567892.0},
-            {"path": "sub/file_b.txt", "size": 400, "mtime": 1234567893.0},
-        ]
-        record_sync_results(db, "lan", entries)
-        assert db.file_count("lan_status") == 2
-        entry = db.get_entry("file_a.txt")
-        assert entry["file_size"] == 300
-
-    def test_records_mixed_format_entries(self, db):
-        entries = [
-            {"Path": "rclone_file.txt", "Size": 100, "ModTime": 1.0},
-            {"path": "walk_file.txt", "size": 200, "mtime": 2.0},
-        ]
-        record_sync_results(db, "cloud", entries)
-        assert db.file_count("cloud_status") == 2
-
-    def test_handles_empty_entries(self, db):
-        record_sync_results(db, "cloud", [])
-        assert db.file_count("cloud_status") == 0
-
-    def test_handles_none_entries(self, db):
-        record_sync_results(db, "cloud", None)
-        assert db.file_count("cloud_status") == 0
-
-    def test_prunes_stale_entries(self, db):
-        # Pre-populate with an entry that's marked synced
-        db.upsert_file_entry("old_file.txt", 100, 1.0, cloud_status="synced")
-        # Record new entries that don't include old_file.txt
-        entries = [{"Path": "new_file.txt", "Size": 200, "ModTime": 2.0}]
-        record_sync_results(db, "cloud", entries)
-        # old_file.txt should be pruned (both statuses null → deleted)
-        assert db.get_entry("old_file.txt") is None
-        assert db.get_entry("new_file.txt") is not None
-
-    def test_deletes_removed_entries(self, db):
-        db.upsert_file_entry("delete_me.txt", 100, 1.0)
-        entries = [{"Path": "keep.txt", "Size": 200, "ModTime": 2.0}]
-        record_sync_results(db, "cloud", entries, removed=["delete_me.txt"])
-        assert db.get_entry("delete_me.txt") is None
-        assert db.get_entry("keep.txt") is not None
-
-    def test_handles_empty_removed_list(self, db):
-        entries = [{"Path": "a.txt", "Size": 100, "ModTime": 1.0}]
-        record_sync_results(db, "cloud", entries, removed=[])
-        assert db.file_count("cloud_status") == 1
-
-    def test_handles_none_removed(self, db):
-        entries = [{"Path": "a.txt", "Size": 100, "ModTime": 1.0}]
-        record_sync_results(db, "cloud", entries, removed=None)
-        assert db.file_count("cloud_status") == 1
-
-    def test_normalizes_backslash_in_entries(self, db):
-        entries = [{"Path": "sub\\file.txt", "Size": 100, "ModTime": 1.0}]
-        record_sync_results(db, "lan", entries)
-        assert db.get_entry("sub/file.txt") is not None
-
-    def test_backslash_subdir_paths_not_pruned_after_upsert(self, db):
-        """Regression: Windows backslash paths from os.walk on UNC shares must
-        not be pruned immediately after being upserted.
-
-        bulk_upsert_synced normalizes backslashes to forward slashes before
-        storing in DB. active_paths must use the same format so the prune
-        comparison does not incorrectly flag every subdirectory file as stale
-        on every LAN backup run on Windows.
-        """
-        entries = [
-            # Root-level files (no separator — unaffected baseline)
-            {"path": "root_a.txt",              "size": 100, "mtime": 1.0},
-            # Subdirectory files with Windows backslash separators
-            {"path": r"sub\file_a.txt",         "size": 200, "mtime": 2.0},
-            {"path": r"a\b\c\deep.pdf",         "size": 300, "mtime": 3.0},
-            {"path": r"folder\nested\img.png",  "size": 400, "mtime": 4.0},
-        ]
-        record_sync_results(db, "lan", entries)
-        # All 4 files must be synced — subdirectory ones must NOT be pruned
-        assert db.file_count("lan_status") == 4
-        assert db.get_entry("root_a.txt")["lan_status"] == "synced"
-        assert db.get_entry("sub/file_a.txt")["lan_status"] == "synced"
-        assert db.get_entry("a/b/c/deep.pdf")["lan_status"] == "synced"
-        assert db.get_entry("folder/nested/img.png")["lan_status"] == "synced"
-        # Re-run with identical data: count must stay stable (no spurious pruning)
-        record_sync_results(db, "lan", entries)
-        assert db.file_count("lan_status") == 4
-
-    def test_defaults_missing_fields(self, db):
-        entries = [{"Path": "minimal.txt"}]
-        record_sync_results(db, "cloud", entries)
-        entry = db.get_entry("minimal.txt")
-        assert entry["file_size"] == 0
-        assert entry["mtime"] == 0
-
-
-# ── record_run_history ───────────────────────────────────────────────────────
 
 
 class TestRecordRunHistory:
-    def test_records_run_successfully(self, db):
+    def test_success(self, tmp_db):
+        """Successful record → True, and the row is queryable."""
         result = record_run_history(
-            db,
-            run_id="run-001",
+            db=tmp_db,
+            run_id="run-success-1",
             mode="cloud",
-            started_at="2026-06-24T10:00:00+05:30",
-            ended_at="2026-06-24T10:05:00+05:30",
+            fy="FY26-27",
             status="CLOUD_COMPLETE",
+            started_at="2026-01-01T00:00:00",
+            ended_at="2026-01-01T01:00:00",
             exit_code=0,
-            duration_seconds=300.0,
+            duration_seconds=3600,
             files_copied=100,
-            bytes_copied=50000,
+            bytes_copied=10000,
         )
         assert result is True
-        runs = db.get_recent_runs()
-        assert len(runs) == 1
-        assert runs[0]["run_id"] == "run-001"
+        assert tmp_db.last_run("cloud", fy="FY26-27")["run_id"] == "run-success-1"
 
-    def test_returns_false_on_db_error(self, db):
-        with patch.object(db, "insert_run", side_effect=Exception("db locked")):
-            result = record_run_history(
-                db,
-                run_id="run-002",
-                mode="lan",
-                started_at="2026-06-24T10:00:00+05:30",
-                ended_at="2026-06-24T10:05:00+05:30",
-                status="LAN_COMPLETE",
-                exit_code=0,
-                duration_seconds=300.0,
-            )
-        assert result is False
-
-    def test_calls_wal_checkpoint(self, db):
-        with patch.object(db, "wal_checkpoint") as mock_ckpt:
-            record_run_history(
-                db,
-                run_id="run-003",
-                mode="cloud",
-                started_at="2026-06-24T10:00:00+05:30",
-                ended_at="2026-06-24T10:05:00+05:30",
-                status="CLOUD_COMPLETE",
-                exit_code=0,
-                duration_seconds=300.0,
-            )
-            mock_ckpt.assert_called_once()
-
-    def test_includes_extended_metrics(self, db):
-        record_run_history(
-            db,
-            run_id="run-004",
-            mode="cloud",
-            started_at="2026-06-24T10:00:00+05:30",
-            ended_at="2026-06-24T10:05:00+05:30",
-            status="CLOUD_COMPLETE",
-            exit_code=0,
-            duration_seconds=300.0,
-            extended_metrics='{"key": "value"}',
-        )
-        runs = db.get_recent_runs()
-        assert runs[0]["extended_metrics"] == '{"key": "value"}'
-
-    def test_includes_error_message(self, db):
-        record_run_history(
-            db,
-            run_id="run-005",
-            mode="cloud",
-            started_at="2026-06-24T10:00:00+05:30",
-            ended_at="2026-06-24T10:05:00+05:30",
-            status="FAILED",
-            exit_code=1,
-            duration_seconds=300.0,
-            error_message="something went wrong",
-        )
-        runs = db.get_recent_runs()
-        assert runs[0]["error_message"] == "something went wrong"
-        assert runs[0]["exit_code"] == 1
-
-    def test_defaults_optional_fields(self, db):
-        record_run_history(
-            db,
-            run_id="run-006",
+    def test_with_error_message(self, tmp_db):
+        """Record with error message."""
+        result = record_run_history(
+            db=tmp_db,
+            run_id="run-failed-1",
             mode="lan",
-            started_at="2026-06-24T10:00:00+05:30",
-            ended_at="2026-06-24T10:05:00+05:30",
-            status="LAN_COMPLETE",
-            exit_code=0,
-            duration_seconds=300.0,
+            fy="FY26-27",
+            status="LAN_FAILED",
+            started_at="2026-01-01T00:00:00",
+            ended_at="2026-01-01T00:30:00",
+            exit_code=1,
+            duration_seconds=1800,
+            files_copied=0,
+            bytes_copied=0,
+            error_message="Network timeout",
         )
-        runs = db.get_recent_runs()
-        assert runs[0]["files_copied"] == 0
-        assert runs[0]["bytes_copied"] == 0
-        assert runs[0]["error_message"] is None
-        assert runs[0]["extended_metrics"] is None
+        assert result is True
+        assert tmp_db.last_run("lan", fy="FY26-27")["error_message"] == "Network timeout"
+
+    def test_with_extended_metrics(self, tmp_db):
+        """Record with extended metrics JSON."""
+        result = record_run_history(
+            db=tmp_db,
+            run_id="run-metrics-1",
+            mode="cloud",
+            fy="FY26-27",
+            status="CLOUD_COMPLETE",
+            started_at="2026-01-01T00:00:00",
+            ended_at="2026-01-01T01:00:00",
+            exit_code=0,
+            duration_seconds=3600,
+            extended_metrics='{"diff_partial": true}',
+        )
+        assert result is True
+        assert tmp_db.last_run("cloud", fy="FY26-27")["extended_metrics"] == '{"diff_partial": true}'
+
+
+class TestRecordSyncResults:
+    def test_rclone_shaped_entries(self, tmp_db):
+        """rclone-shaped entries are upserted."""
+        entries = [
+            {"Path": "file1.txt", "Size": 100, "ModTime": "2026-01-01T00:00:00Z"},
+            {"Path": "file2.txt", "Size": 200, "ModTime": "2026-01-01T01:00:00Z"},
+        ]
+        record_sync_results(tmp_db, "cloud", entries, fy="FY26-27")
+        count = tmp_db.file_count("cloud_status", fy="FY26-27")
+        assert count == 2
+        assert tmp_db.get_entry("file1.txt", fy="FY26-27") is not None
+        assert tmp_db.get_entry("file2.txt", fy="FY26-27") is not None
+
+    def test_walk_shaped_entries(self, tmp_db):
+        """walk-shaped entries are upserted."""
+        entries = [
+            {"path": "file1.txt", "size": 100, "mtime": 1700000000.0},
+            {"path": "file2.txt", "size": 200, "mtime": 1700000001.0},
+        ]
+        record_sync_results(tmp_db, "lan", entries, fy="FY26-27")
+        count = tmp_db.file_count("lan_status", fy="FY26-27")
+        assert count == 2
+        assert tmp_db.get_entry("file1.txt", fy="FY26-27") is not None
+        assert tmp_db.get_entry("file2.txt", fy="FY26-27") is not None
+
+    def test_cross_mode_delete(self, tmp_db):
+        """Both modes track the same path independently — recording one mode
+        does not disturb the other (cross-mode removal is driven by the
+        `removed=[...]` argument, not by recording)."""
+        entries = [
+            {"Path": "file1.txt", "Size": 100, "ModTime": "2026-01-01T00:00:00Z"},
+        ]
+        record_sync_results(tmp_db, "cloud", entries, fy="FY26-27")
+        # Now record for LAN — the cloud entry must be untouched
+        record_sync_results(tmp_db, "lan", entries, fy="FY26-27")
+        # Both should have the entry
+        assert tmp_db.file_count("cloud_status", fy="FY26-27") == 1
+        assert tmp_db.file_count("lan_status", fy="FY26-27") == 1

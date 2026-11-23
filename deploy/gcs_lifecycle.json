@@ -6,6 +6,7 @@
         "storageClass": "COLDLINE"
       },
       "condition": {
+        "isLive": false,
         "daysSinceNoncurrentTime": 1,
         "matchesStorageClass": [
           "STANDARD"
@@ -17,7 +18,8 @@
         "type": "Delete"
       },
       "condition": {
-        "numNewerVersions": 2
+        "isLive": false,
+        "numNewerVersions": 3
       }
     },
     {
@@ -25,6 +27,7 @@
         "type": "Delete"
       },
       "condition": {
+        "isLive": false,
         "daysSinceNoncurrentTime": 92
       }
     },
@@ -34,7 +37,29 @@
         "storageClass": "ARCHIVE"
       },
       "condition": {
-        "age": 365
+        "matchesPrefix": [
+          "FY24-25/",
+          "FY25-26/"
+        ],
+        "matchesStorageClass": [
+          "STANDARD",
+          "NEARLINE",
+          "COLDLINE"
+        ]
+      }
+    },
+    {
+      "action": {
+        "type": "SetStorageClass",
+        "storageClass": "ARCHIVE"
+      },
+      "condition": {
+        "age": 365,
+        "matchesStorageClass": [
+          "STANDARD",
+          "NEARLINE",
+          "COLDLINE"
+        ]
       }
     },
     {

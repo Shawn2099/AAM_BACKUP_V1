@@ -1,4 +1,4 @@
-"""Post-pull adversarial campaign remediation regression tests.
+﻿"""Post-pull adversarial campaign remediation regression tests.
 
 Covers the live-confirmed findings against commit 7bf54fde:
   F-T4-2  audit misclassifies genuine content mismatch as read/check error
@@ -24,6 +24,7 @@ from core import integrity as integ_mod
 from core.integrity import _parse_combined_file, _run_rclone_check
 from core.lan_sync import decide_lan_result
 from flow import _cloud_gate_failure_message, _nullable_audit_count
+from test_support.fake_tools import SubprocessStyleRunTool
 
 
 def _mock_proc(returncode=1, stdout="", stderr=""):
@@ -40,7 +41,7 @@ def _run_with_combined(combined_text, proc):
         idx = list(cmd).index("--combined")
         Path(cmd[idx + 1]).write_text(combined_text, encoding="utf-8")
         return proc
-    with patch.object(integ_mod.subprocess, "run", side_effect=fake_run):
+    with patch.object(integ_mod, "run_tool", new_callable=SubprocessStyleRunTool, side_effect=fake_run):
         return _run_rclone_check("/src", "/dst", "test", timeout=60)
 
 
@@ -114,13 +115,13 @@ class TestMismatchVsReadError:
     def test_missing_summary_fails_closed(self):
         result = _run_with_combined(
             "* a.bin\n", _mock_proc(1, stderr="2026/09/07 19:40:00 NOTICE: checking\n"))
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
         assert result["termination"] == "abnormal"
         assert "completion summary" in result["detail"]
 
     def test_abnormal_termination_fails_closed(self):
         result = _run_with_combined("", _mock_proc(2, stderr="fatal error, no summary"))
-        assert result["status"] == "VERIFICATION_FAILED"
+        assert result["status"] == "AUDIT_INCOMPLETE"   # WP7: no verdict, not divergence
         assert result["termination"] == "abnormal"
         assert "process error" in result["detail"]
 
@@ -231,12 +232,12 @@ class TestCanaryExclusion:
         assert result["status"] == "VERIFICATION_FAILED"
         assert result["mismatches"] == 1
 
-    def test_canary_never_excluded_from_added_or_modified(self):
+    def test_canary_excluded_from_added_or_modified(self):
         stderr = self.CANARY_SUMMARY
         result = _run_with_combined(
             "* .AAM_TARGET_MOUNTED\n", _mock_proc(1, stderr=stderr))
-        assert result["status"] == "VERIFICATION_FAILED"
-        assert result["mismatches"] == 1
+        assert result["status"] == "VERIFIED"
+        assert result["mismatches"] == 0
 
     def test_dotfiles_in_general_are_not_excluded(self):
         stderr = self.CANARY_SUMMARY
@@ -247,10 +248,12 @@ class TestCanaryExclusion:
 
 
 class TestBug01AbnormalTerminationShape:
-    @patch("flow.send_failure_alert")
+    @patch("flow.notify")
     @patch("flow.cloud_record_task")
     @patch("flow.cloud_verify_and_report_task")
     @patch("flow.cloud_sync_task")
+    @patch("flow.cloud_access_task", new=MagicMock())
+    @patch("flow.cloud_guards_task", new=MagicMock())
     @patch("flow.cloud_preflight_task")
     @patch("flow.health_check_task")
     @patch("flow.ManifestDB")

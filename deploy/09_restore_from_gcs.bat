@@ -31,46 +31,49 @@ for %%I in ("%SCRIPT_DIR%\..") do set "PROJECT_DIR=%%~fI"
 set "RCLONE=%SCRIPT_DIR%\bin\rclone.exe"
 set "KEY_FILE=%SCRIPT_DIR%\keys\aam-gcs-key.json"
 set "CONFIG_YAML=%PROJECT_DIR%\config.yaml"
+if not exist "%CONFIG_YAML%" if exist "C:\BackupAgent\config\config.yaml" set "CONFIG_YAML=C:\BackupAgent\config\config.yaml"
 set "READ_CONFIG=%SCRIPT_DIR%\read_config.py"
 
-:: -- Find uv (consistent with all other scripts) ------------------------
-set "UV_EXE="
-for /f "delims=" %%I in ('where uv 2^>nul') do (
-    set "UV_EXE=%%I"
-    goto :uv_found
-)
-:uv_found
-if "%UV_EXE%"=="" if exist "%USERPROFILE%\.local\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.local\bin\uv.exe"
-if "%UV_EXE%"=="" if exist "%USERPROFILE%\.cargo\bin\uv.exe"        set "UV_EXE=%USERPROFILE%\.cargo\bin\uv.exe"
-if "%UV_EXE%"=="" if exist "C:\Program Files\Python312\Scripts\uv.exe" set "UV_EXE=C:\Program Files\Python312\Scripts\uv.exe"
+:: -- Project Python (A5) -------------------------------------------------
+:: The project's own venv interpreter only. `uv run` would sync the live .venv
+:: (dev group, internet, hard links into the admin's cache) and has broken the
+:: agent's DLL access before; this tool must not touch the installation.
+set "VENV_PY=%PROJECT_DIR%\.venv\Scripts\python.exe"
 
-:: -- Read bucket name from config.yaml (uv-managed Python env) ----------
-set "BUCKET_NAME=aam-cloudbackup"
-if not "%UV_EXE%"=="" (
-    if exist "%READ_CONFIG%" if exist "%CONFIG_YAML%" (
-        cd /d "%PROJECT_DIR%"
-        for /f "delims=" %%I in ('"%UV_EXE%" run --quiet python "%READ_CONFIG%" "%CONFIG_YAML%" cloud.bucket --default aam-cloudbackup 2^>nul') do (
-            set "BUCKET_NAME=%%I"
-        )
+:: -- Read bucket name from config.yaml -----------------------------------
+:: Never guessed: when it cannot be read (fresh machine after a disaster, no
+:: config.yaml, no venv) the operator types it and sees it in the summary.
+set "BUCKET_NAME="
+if exist "%VENV_PY%" if exist "%READ_CONFIG%" if exist "%CONFIG_YAML%" (
+    for /f "delims=" %%I in ('"%VENV_PY%" "%READ_CONFIG%" "%CONFIG_YAML%" cloud.bucket 2^>nul') do (
+        set "BUCKET_NAME=%%I"
     )
 )
+if "%BUCKET_NAME%"=="" (
+    echo.
+    echo  [WARN] The bucket name could not be read from config.yaml.
+    set /p BUCKET_NAME="        Enter the GCS bucket name to restore from: "
+)
+if "%BUCKET_NAME%"=="" (
+    echo [FAIL] No bucket name - nothing is restored from a guessed bucket.
+    pause
+    exit /b 1
+)
 
-:: -- Logging setup -------------------------------------------------------
+:: -- Logging setup (log folder only: a wrong default here is harmless) ---
 set "DEFAULT_RUNTIME=C:\BackupAgent"
 set "RUNTIME_DIR=%DEFAULT_RUNTIME%"
-if not "%UV_EXE%"=="" (
-    if exist "%READ_CONFIG%" if exist "%CONFIG_YAML%" (
-        for /f "delims=" %%R in ('"%UV_EXE%" run --quiet python "%READ_CONFIG%" "%CONFIG_YAML%" paths.runtime_dir --default "%DEFAULT_RUNTIME%" 2^>nul') do (
-            set "RUNTIME_DIR=%%R"
-        )
+if exist "%VENV_PY%" if exist "%READ_CONFIG%" if exist "%CONFIG_YAML%" (
+    for /f "delims=" %%R in ('"%VENV_PY%" "%READ_CONFIG%" "%CONFIG_YAML%" paths.runtime_dir --default "%DEFAULT_RUNTIME%" 2^>nul') do (
+        set "RUNTIME_DIR=%%R"
     )
 )
 set "LOG_DIR=%RUNTIME_DIR%\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 
 :: Timestamped log file per restore session
-for /f "tokens=2 delims==" %%I in ('wmic os get LocalDateTime /value') do set "DT=%%I"
-set "TIMESTAMP=%DT:~0,4%-%DT:~4,2%-%DT:~6,2%_%DT:~8,2%-%DT:~10,2%"
+rem wmic is removed on Windows 11 24H2+; Windows PowerShell 5.1 exists on every supported OS
+for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd_HH-mm"') do set "TIMESTAMP=%%I"
 set "LOG_FILE=%LOG_DIR%\restore_%TIMESTAMP%.log"
 
 :: -- Banner --------------------------------------------------------------
@@ -220,7 +223,7 @@ if %RCLONE_EXIT% equ 0 (
     echo      Full log: %LOG_FILE%
     call :LOG "[OK] Restore completed successfully. Dest=!LOCAL_DEST!"
 ) else (
-    echo [WARN] Restore finished with errors (exit code: %RCLONE_EXIT%).
+    echo [WARN] Restore finished with errors ^(exit code: %RCLONE_EXIT%^).
     echo        Some files may not have transferred. Review full log:
     echo        %LOG_FILE%
     echo        Common causes: network interruption, permission error on a

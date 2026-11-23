@@ -4,10 +4,14 @@ Extracts duplicated ManifestDB interaction from flow.py tasks.
 Centralizes file entry upserts, run history recording, and maintenance.
 """
 
+import json
 from pathlib import PureWindowsPath
+
 from loguru import logger
 
 from core.manifest import ManifestDB
+from core.notify import AlertEvent, notify
+from core.process import process_token, token_alive
 
 
 def _clean_path(raw_path: str | None) -> str:
@@ -26,6 +30,8 @@ def record_sync_results(
     mode: str,
     entries: list[dict],
     removed: list[str] | None = None,
+    *,
+    fy: str,
 ) -> None:
     """Record sync results to ManifestDB using bulk operations and prune stale entries.
 
@@ -37,6 +43,7 @@ def record_sync_results(
         mode: 'cloud' or 'lan'.
         entries: File entries from rclone lsjson or walk_lan_destination.
         removed: List of relative paths removed from destination.
+        fy: the FY folder these entries belong to (the catalog is kept per FY).
     """
     if entries:
         normalized = []
@@ -55,18 +62,20 @@ def record_sync_results(
             })
 
         if normalized:
-            db.bulk_upsert_synced(normalized, mode)
+            db.bulk_upsert_synced(normalized, mode, fy=fy)
 
             # Self-healing: prune stale entries that are marked synced in DB but no longer exist.
             active_paths = {item["path"] for item in normalized}
-            pruned = db.prune_stale_synced(mode, active_paths)
+            pruned = db.prune_stale_synced(mode, active_paths, fy=fy)
             if pruned:
                 logger.info(f"Pruned {pruned} stale {mode} entries from manifest")
 
     if removed:
         clean_removed = [_clean_path(p) for p in removed if _clean_path(p)]
         if clean_removed:
-            db.delete_entries(clean_removed)
+            cleared = db.clear_mode_status(mode, clean_removed, fy=fy)
+            if cleared:
+                logger.info(f"Cleared {cleared} removed {mode} entries from manifest")
 
 
 def record_run_history(
@@ -74,6 +83,7 @@ def record_run_history(
     *,
     run_id: str,
     mode: str,
+    fy: str,
     started_at: str,
     ended_at: str,
     status: str,
@@ -94,6 +104,7 @@ def record_run_history(
         db.insert_run({
             "run_id": run_id,
             "mode": mode,
+            "fy": fy,
             "started_at": started_at,
             "ended_at": ended_at,
             "status": status,
@@ -111,3 +122,41 @@ def record_run_history(
     except Exception as e:
         logger.error(f"Failed to record run history: {e}")
         return False
+
+
+def start_run_row(db: ManifestDB, *, run_id: str, mode: str, fy: str, started_at: str) -> None:
+    """The *_RUNNING row of a run, owned by THIS process (plan WP5): if the
+    process dies before recording an outcome, sweep_abandoned_runs can prove it."""
+    db.insert_run({"run_id": run_id, "mode": mode, "fy": fy, "started_at": started_at,
+                   "status": f"{mode.upper()}_RUNNING",
+                   "extended_metrics": json.dumps({"owner": process_token()})})
+
+
+def sweep_abandoned_runs(config, db: ManifestDB) -> list[dict]:
+    """Record runs whose process died without an outcome as *_ABANDONED and
+    send each one's FAILURE alert (the run never reached its own alert).
+    Runs at agent start and at every pipeline start."""
+    rows = db.abandon_dead_runs(token_alive, config.maintenance.abandon_running_after_hours)
+    for row in rows:
+        leg = row["mode"]
+        logger.error(f"{leg} run {row['run_id']} (started {row['started_at']}) recorded as "
+                     f"{row['status']}: {row['error_message']}")
+        if leg == "rollover":
+            # not a backup: the journal resumes it (plan A); one stable incident per year
+            notify(config, AlertEvent(
+                key="rollover:abandoned", kind="FAILURE", mode="rollover",
+                title="FY rollover interrupted",
+                message=(f"{row['error_message']} Your data is safe: the rollover continues "
+                         "where it stopped at the next morning check."),
+                status=row["status"], occurred_at=row["started_at"],
+                fault_code="AAM-ROL-04", run_id=row["run_id"]), db=db)
+            continue
+        row_fy = row.get("fy") or None      # the FY of the swept run, not the configured one (OV-4.1)
+        notify(config, AlertEvent(
+            key=f"backup:{row_fy + ':' if row_fy else ''}{leg}:{row['status']}",
+            kind="FAILURE", mode=leg,
+            title=f"{leg.upper()} backup abandoned",
+            message=f"{row['error_message']} The next scheduled run copies what is missing.",
+            status=row["status"], occurred_at=row["started_at"],
+            fault_code="AAM-SYS-02", run_id=row["run_id"], fy=row_fy), db=db)
+    return rows

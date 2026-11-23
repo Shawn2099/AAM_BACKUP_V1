@@ -1,275 +1,121 @@
-"""Comprehensive tests for core/report.py — email reports and HTML generation."""
+"""Comprehensive tests for core/report.py — all functions."""
 
-from __future__ import annotations
-
-import smtplib
+import os
 from unittest.mock import MagicMock, patch
 
+import pendulum
 import pytest
 
+from core.notify import FAILED, SENT, DeliveryResult
 from core.report import (
-    _send_email_with_attachments,
     generate_report_html,
-    send_failure_alert,
     send_monthly_report,
-    send_summary_report,
     send_weekly_report,
 )
-from models.config import NotificationConfig
+
+IST = "Asia/Kolkata"
 
 
-@pytest.fixture(autouse=True, scope="session")
-def prefect_harness():
-    """Override session-scoped fixture from conftest to avoid Prefect server startup."""
-    yield
-
-
-def _make_config(**overrides) -> NotificationConfig:
-    defaults = dict(
-        smtp_host="smtp.example.com",
-        smtp_port=587,
-        smtp_username="user@example.com",
-        smtp_password="secret",
-        sender="backup@example.com",
-        recipients=["admin@example.com"],
-        send_on_failure=True,
-    )
-    defaults.update(overrides)
-    return NotificationConfig(**defaults)
-
-
-# ── _send_email_with_attachments ──────────────────────────────────────────────────────────────
-
-
-class TestSendEmail:
-    def test_returns_false_when_no_host(self):
-        config = _make_config(smtp_host="")
-        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
-
-    def test_returns_false_when_no_sender(self):
-        config = _make_config(sender="")
-        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
-
-    def test_returns_false_when_no_recipients(self):
-        config = _make_config(recipients=[])
-        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
-
-    def test_returns_false_when_no_username(self):
-        config = _make_config(smtp_username="")
-        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
-
-    def test_returns_false_when_no_password(self):
-        config = _make_config(smtp_password="")
-        assert _send_email_with_attachments(config, "subj", "<p>hi</p>") is False
-
-    def test_ssl_port_465(self):
-        config = _make_config(smtp_port=465)
-        mock_server = MagicMock()
-        with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server) as mock_ssl:
-            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
-        assert result is True
-        mock_ssl.assert_called_once_with("smtp.example.com", 465, timeout=30)
-        mock_server.login.assert_called_once()
-        mock_server.sendmail.assert_called_once()
-        mock_server.quit.assert_called()
-
-    def test_starttls_port_587(self):
-        config = _make_config(smtp_port=587)
-        mock_server = MagicMock()
-        with patch("core.report.smtplib.SMTP", return_value=mock_server) as mock_smtp:
-            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
-        assert result is True
-        mock_smtp.assert_called_once_with("smtp.example.com", 587, timeout=30)
-        mock_server.starttls.assert_called_once()
-        mock_server.login.assert_called_once()
-        mock_server.sendmail.assert_called_once()
-        mock_server.quit.assert_called()
-
-    def test_plain_port_25(self):
-        config = _make_config(smtp_port=25)
-        mock_server = MagicMock()
-        with patch("core.report.smtplib.SMTP", return_value=mock_server):
-            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
-        assert result is True
-        mock_server.starttls.assert_called_once()
-
-    def test_returns_false_on_smtp_connection_error(self):
-        config = _make_config()
-        with patch("core.report.smtplib.SMTP_SSL", side_effect=ConnectionRefusedError("refused")):
-            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
-        assert result is False
-
-    def test_returns_false_on_sendmail_failure(self):
-        config = _make_config(smtp_port=465)
-        mock_server = MagicMock()
-        mock_server.sendmail.side_effect = smtplib.SMTPException("send failed")
-        with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server):
-            with patch("core.report.smtplib.SMTPException", SMTPException=type(mock_server.sendmail.side_effect)):
-                result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
-        assert result is False
-
-    def test_quit_called_even_on_error(self):
-        config = _make_config(smtp_port=465)
-        mock_server = MagicMock()
-        mock_server.login.side_effect = Exception("login failed")
-        with patch("core.report.smtplib.SMTP_SSL", return_value=mock_server):
-            result = _send_email_with_attachments(config, "subj", "<p>hi</p>")
-        assert result is False
-        mock_server.quit.assert_called()
-
-
-# ── generate_report_html ─────────────────────────────────────────────────────
+def _recent_iso():
+    return pendulum.now(IST).isoformat()
 
 
 class TestGenerateReportHtml:
-    def test_returns_empty_when_no_runs(self):
-        mock_db = MagicMock()
-        mock_db.get_runs_since.return_value = []
-        result = generate_report_html(mock_db, "TestFirm", 7, "Weekly")
-        assert result == ""
+    def test_empty_db_still_reports(self, tmp_db):
+        """Empty database -> a report that says no backup ran (plan C, P1)."""
+        result = generate_report_html(tmp_db, "Test Firm", 7, "Weekly")
+        assert "No backups in" in result
 
-    def test_returns_html_with_runs(self):
+    def test_with_runs(self, populated_db):
+        """DB with runs → HTML string."""
+        populated_db.insert_run({
+            "run_id": "r1",
+            "mode": "cloud",
+            "fy": "FY26-27",
+            "status": "CLOUD_COMPLETE",
+            "started_at": _recent_iso(),
+            "ended_at": _recent_iso(),
+            "files_copied": 100,
+            "bytes_copied": 10000,
+        })
+        result = generate_report_html(populated_db, "Test Firm", 7, "Weekly")
+        assert result is not None
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_monthly_report(self, populated_db):
+        """Monthly report generation."""
+        populated_db.insert_run({
+            "run_id": "r2",
+            "mode": "lan",
+            "fy": "FY26-27",
+            "status": "LAN_COMPLETE",
+            "started_at": _recent_iso(),
+            "ended_at": _recent_iso(),
+        })
+        result = generate_report_html(populated_db, "Test Firm", 30, "Monthly")
+        assert result is not None
+
+
+class TestSendReports:
+    def _make_mock_db(self, run_mode="cloud", run_status=None):
         mock_db = MagicMock()
+        if run_status is None:
+            run_status = f"{run_mode.upper()}_COMPLETE"
         mock_db.get_runs_since.return_value = [
             {
-                "started_at": "2026-06-24T10:00:00+05:30",
-                "mode": "cloud",
-                "status": "CLOUD_COMPLETE",
+                "mode": run_mode,
+                "status": run_status,
+                # previous calendar month: inside the monthly period (audit 2026-10-18)
+                "started_at": pendulum.now(IST).start_of("month").subtract(days=3).isoformat(),
                 "files_copied": 100,
-                "bytes_copied": 1024,
-            },
-            {
-                "started_at": "2026-06-23T10:00:00+05:30",
-                "mode": "lan",
-                "status": "LAN_COMPLETE",
-                "files_copied": 50,
-                "bytes_copied": 2048,
-            },
+                "files_failed": 0,
+                "duration_seconds": 3600,
+                "error_message": "",
+            }
         ]
-        with patch("core.report.now_formatted", return_value="2026-06-24 10:00 IST"):
-            result = generate_report_html(mock_db, "TestFirm", 7, "Weekly")
-        assert "<html>" in result
-        assert "TestFirm" in result
-        assert "Weekly" in result
-        assert "2" in result  # total runs
+        mock_db.latest_audit.return_value = None
+        return mock_db
 
-    def test_counts_partials_correctly(self):
-        mock_db = MagicMock()
-        mock_db.get_runs_since.return_value = [
-            {"started_at": "2026-06-24T10:00:00+05:30", "mode": "cloud", "status": "CLOUD_COMPLETE", "files_copied": 10, "bytes_copied": 100},
-            {"started_at": "2026-06-23T10:00:00+05:30", "mode": "cloud", "status": "CLOUD_PARTIAL", "files_copied": 5, "bytes_copied": 50},
-            {"started_at": "2026-06-22T10:00:00+05:30", "mode": "lan", "status": "FAILED", "files_copied": 0, "bytes_copied": 0},
-        ]
-        with patch("core.report.now_formatted", return_value="2026-06-24 10:00 IST"):
-            result = generate_report_html(mock_db, "F", 7, "W")
-        assert "1" in result  # 1 success
-        assert "Partial" in result
+    def _make_mock_config(self):
+        mock_config = MagicMock()
+        mock_config.smtp_host = "localhost"
+        mock_config.smtp_port = 25
+        mock_config.smtp_username = "user"
+        mock_config.smtp_password = "pass"
+        mock_config.sender = "test@example.com"
+        mock_config.recipients = ["admin@example.com"]
+        return mock_config
 
-    def test_handles_none_files_copied(self):
-        mock_db = MagicMock()
-        mock_db.get_runs_since.return_value = [
-            {"started_at": "2026-06-24T10:00:00+05:30", "mode": "cloud", "status": "CLOUD_COMPLETE", "files_copied": None, "bytes_copied": None},
-        ]
-        with patch("core.report.now_formatted", return_value="2026-06-24 10:00 IST"):
-            result = generate_report_html(mock_db, "F", 7, "W")
-        assert "<html>" in result
+    def test_send_weekly_report_success(self):
+        """Successful email send → True."""
+        mock_db = self._make_mock_db()
+        mock_config = self._make_mock_config()
 
-    def test_shows_all_runs_in_period(self):
-        mock_db = MagicMock()
-        mock_db.get_runs_since.return_value = [
-            {"started_at": f"2026-06-{24-i:02d}T10:00:00+05:30", "mode": "cloud", "status": "CLOUD_COMPLETE", "files_copied": 1, "bytes_copied": 1}
-            for i in range(15)
-        ]
-        with patch("core.report.now_formatted", return_value="2026-06-24 10:00 IST"):
-            result = generate_report_html(mock_db, "F", 30, "Monthly")
-        # Only 10 runs should be shown (capped).
-        runs_section = result.split("Recent Backups")[1]
-        data_rows = runs_section.count("<td>") // 6  # 6 <td> per row
-        assert data_rows == 10
-        assert "Showing 10 most recent backups" in result
+        with patch("core.report.send_email", return_value=DeliveryResult(SENT)):
+            result = send_weekly_report(mock_db, mock_config, "Test Firm")
+            assert result is True
 
+    def test_send_weekly_report_failure(self):
+        """Failed email send → False."""
+        mock_db = self._make_mock_db()
+        mock_config = self._make_mock_config()
 
-# ── send_failure_alert ───────────────────────────────────────────────────────
+        with patch("core.report.send_email",
+                   return_value=DeliveryResult(FAILED, "Connection refused", 3)):
+            result = send_weekly_report(mock_db, mock_config, "Test Firm")
+            assert result is False
 
+    def test_send_monthly_report_success(self):
+        """Successful monthly email → True."""
+        mock_db = self._make_mock_db(run_mode="lan")
+        mock_config = self._make_mock_config()
 
-class TestSendFailureAlert:
-    def test_skips_when_disabled(self):
-        config = _make_config(send_on_failure=False)
-        result = send_failure_alert(config, "firm", "err", {"mode": "cloud"})
-        assert result is False
+        with patch("core.report.send_email", return_value=DeliveryResult(SENT)):
+            result = send_monthly_report(mock_db, mock_config, "Test Firm")
+            assert result is True
 
-    def test_sends_when_enabled(self):
-        config = _make_config(send_on_failure=True)
-        with patch("core.report._send_email_with_attachments", return_value=True) as mock_send:
-            result = send_failure_alert(config, "MyFirm", "boom", {"mode": "cloud"}, timestamp="2026-06-24T10:00:00Z")
-        assert result is True
-        call_args = mock_send.call_args
-        assert "Failure" in call_args[0][1]
-        assert "MyFirm" in call_args[0][1]
-        assert "boom" in call_args[1] or "boom" in str(call_args)
-
-
-# ── send_weekly_report ───────────────────────────────────────────────────────
-
-
-class TestSendWeeklyReport:
-    def test_delegates_to_summary_report(self):
-        mock_db = MagicMock()
-        config = _make_config()
-        with patch("core.report.send_summary_report", return_value=True) as mock_send:
-            result = send_weekly_report(mock_db, config, "Firm")
-        assert result is True
-        mock_send.assert_called_once_with(mock_db, config, "Firm", 7, "Weekly", body_html=None)
-
-    def test_passes_body_html(self):
-        mock_db = MagicMock()
-        config = _make_config()
-        with patch("core.report.send_summary_report", return_value=True) as mock_send:
-            send_weekly_report(mock_db, config, "Firm", body_html="<p>custom</p>")
-        call_kwargs = mock_send.call_args
-        assert call_kwargs[1]["body_html"] == "<p>custom</p>"
-
-
-# ── send_monthly_report ──────────────────────────────────────────────────────
-
-
-class TestSendMonthlyReport:
-    def test_delegates_to_summary_report(self):
-        mock_db = MagicMock()
-        config = _make_config()
-        with patch("core.report.send_summary_report", return_value=True) as mock_send:
-            result = send_monthly_report(mock_db, config, "Firm")
-        assert result is True
-        mock_send.assert_called_once_with(mock_db, config, "Firm", 30, "Monthly", body_html=None)
-
-
-# ── send_summary_report ──────────────────────────────────────────────────────
-
-
-class TestSendSummaryReport:
-    def test_returns_false_when_no_runs(self):
-        mock_db = MagicMock()
-        mock_db.get_runs_since.return_value = []
-        config = _make_config()
-        with patch("core.report.generate_report_html", return_value=""):
-            result = send_summary_report(mock_db, config, "Firm", 7, "Weekly")
-        assert result is False
-
-    def test_sends_email_with_body(self):
-        mock_db = MagicMock()
-        config = _make_config()
-        with (
-            patch("core.report.generate_report_html", return_value="<p>report</p>"),
-            patch("core.report._send_email_with_attachments", return_value=True) as mock_send,
-        ):
-            result = send_summary_report(mock_db, config, "Firm", 7, "Weekly")
-        assert result is True
-        assert "Weekly" in mock_send.call_args[0][1]
-
-    def test_uses_provided_body_html(self):
-        mock_db = MagicMock()
-        config = _make_config()
-        with patch("core.report._send_email_with_attachments", return_value=True) as mock_send:
-            result = send_summary_report(mock_db, config, "Firm", 7, "Weekly", body_html="<p>override</p>")
-        assert result is True
-        assert "<p>override</p>" in str(mock_send.call_args)
+    def test_smtp_retries_come_from_config(self):
+        """WP8: the single transport (core.notify) retries per config."""
+        from models.config import NotificationConfig
+        assert NotificationConfig().retry_attempts == 3

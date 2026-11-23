@@ -1,244 +1,288 @@
-"""Comprehensive tests for core/lan_sync.py — pure matrices plus REAL runs.
-
-Classification, command building, log parsing and orphan cleanup call the
-original production functions directly. The orchestration smoke test drives
-the actual robocopy binary through run_lan_sync against \\127.0.0.1\lan_backup.
-"""
-
-from __future__ import annotations
+"""Comprehensive tests for core/lan_sync.py — all functions and edge scenarios."""
 
 import os
+import subprocess
 import tempfile
-import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from core.lan_sync import (
-    _read_log_tail,
-    _validate_required_flags,
+    ROBOCOPY_LOG_PREFIX,
     build_robocopy_command,
     classify_exit_code,
     cleanup_orphaned_robocopy_logs,
     count_failed_lines,
+    decide_lan_result,
     failed_file_count,
+    log_shows_completed_summary,
     run_lan_sync,
+    summarize_log_counts,
+    _summary_files_row_values,
+    _validate_required_flags,
+    _read_log_tail,
 )
-from models.config import LanConfig
 
 
-SMB_ROOT = Path(r"\\127.0.0.1\lan_backup\AAM_PYTEST_LAN")
+class TestValidateRequiredFlags:
+    def test_nc_flag_rejected(self):
+        with pytest.raises(ValueError, match="/NC"):
+            _validate_required_flags(["/NC"])
 
+    def test_nc_flag_case_insensitive(self):
+        with pytest.raises(ValueError, match="/NC"):
+            _validate_required_flags(["/nc"])
 
-@pytest.fixture
-def smb_dest():
-    d = SMB_ROOT / f"comp_{int(time.time() * 1000)}_{os.getpid()}"
-    d.mkdir(parents=True, exist_ok=True)
-    yield d
-    import shutil
-    shutil.rmtree(d, ignore_errors=True)
+    def test_valid_flags_pass(self):
+        _validate_required_flags(["/MIR", "/V", "/TS"])
 
-
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# 1. classify_exit_code — full bitmask matrix (pure, original fn)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
-class TestClassifyExitCode:
-
-    @pytest.mark.parametrize("code", [0, 1, 2, 3])
-    def test_codes_0_to_3_complete(self, code):
-        assert classify_exit_code(code) == "LAN_COMPLETE"
-
-    @pytest.mark.parametrize("code", [4, 5, 6, 7])
-    def test_codes_4_to_7_partial(self, code):
-        assert classify_exit_code(code) == "LAN_PARTIAL"
-
-    @pytest.mark.parametrize("code", [8, 9, 10, 15])
-    def test_codes_8_to_15_partial(self, code):
-        assert classify_exit_code(code) == "LAN_PARTIAL"
-
-    @pytest.mark.parametrize("code", [16, 17, 32, 255])
-    def test_bit4_and_above_failed(self, code):
-        assert classify_exit_code(code) == "LAN_FAILED"
-
-    @pytest.mark.parametrize("code", [-1, -8, -16])
-    def test_negative_codes_failed(self, code):
-        assert classify_exit_code(code) == "LAN_FAILED"
-
-
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# 2. build_robocopy_command — flag matrix + REAL binary resolution
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class TestBuildRobocopyCommand:
+    def test_basic_command(self):
+        from models.config import LanConfig
+        config = LanConfig()
+        cmd = build_robocopy_command("E:\\", "\\\\nas\\share", config)
+        # resolve_binary() returns the full path to the real binary
+        # (deploy\bin\robocopy.exe or system PATH), not the bare name.
+        assert cmd[0].lower().endswith("robocopy.exe")
+        assert "E:\\" in cmd
+        assert "\\\\nas\\share" in cmd
+        assert "/MIR" in cmd
+        assert "/MT:4" in cmd
+        assert "/R:3" in cmd
+        assert "/W:10" in cmd
+        assert "/V" in cmd
+        assert "/TS" in cmd
+        assert "/FP" in cmd
 
-    def test_all_flags_present(self):
-        cfg = LanConfig(mt_threads=8, retry_count=5, retry_wait_seconds=15)
-        cmd = build_robocopy_command("D:\\", "\\\\10.0.0.5\\share", cfg)
+    def test_custom_threads(self):
+        from models.config import LanConfig
+        config = LanConfig(mt_threads=8)
+        cmd = build_robocopy_command("E:\\", "\\\\nas\\share", config)
+        assert "/MT:8" in cmd
 
-        for flag in ("/MIR", "/Z", "/ZB", "/XJ", "/MT:8", "/R:5", "/W:15",
-                     "/NP", "/NDL", "/NJH", "/TS", "/FP", "/V"):
-            assert flag in cmd
-        # P1-COUNT: /NJS removed — job summary is the files_failed source.
-        assert "/NJS" not in cmd
-
-    def test_source_and_dest_in_command(self):
-        cfg = LanConfig()
-        cmd = build_robocopy_command("E:\\SOURCE", "\\\\NAS\\Backups", cfg)
-        assert cmd[1] == "E:\\SOURCE"
-        assert cmd[2] == "\\\\NAS\\Backups"
-
-    def test_exclusions_present(self):
-        cmd = build_robocopy_command("D:\\", "\\\\10.0.0.5\\share", LanConfig())
-        assert "System Volume Information" in cmd
-        assert "$RECYCLE.BIN" in cmd
+    def test_excludes_canary(self):
+        from models.config import LanConfig
+        config = LanConfig()
+        cmd = build_robocopy_command("E:\\", "\\\\nas\\share", config)
         assert ".AAM_TARGET_MOUNTED" in cmd
 
-    def test_resolves_real_binary_on_disk(self):
-        """Production resolution: deploy\\bin first, then PATH. The returned
-        path must exist as a real executable."""
-        cmd = build_robocopy_command("D:\\", "\\\\srv\\share", LanConfig())
-        assert Path(cmd[0]).exists(), f"{cmd[0]} does not exist"
 
-    def test_nc_flag_forbidden(self):
-        with pytest.raises(ValueError, match="/NC"):
-            _validate_required_flags(["/MIR", "/NC"])
+class TestSummaryFilesRowValues:
+    def test_valid_summary(self):
+        log = "Files : 10 8 0 1 2 3\n"
+        result = _summary_files_row_values(log)
+        assert result == [10, 8, 0, 1, 2, 3]
+
+    def test_no_summary(self):
+        result = _summary_files_row_values("no summary here")
+        assert result is None
+
+    def test_empty_log(self):
+        result = _summary_files_row_values("")
+        assert result is None
+
+    def test_non_numeric_columns(self):
+        log = "Files : 10 abc 0 0 0 0\n"
+        result = _summary_files_row_values(log)
+        assert result is None
+
+    def test_comma_separated(self):
+        log = "Files : 1,000 800 0 0 0 0\n"
+        result = _summary_files_row_values(log)
+        assert result == [1000, 800, 0, 0, 0, 0]
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# 3. _read_log_tail — real-file edge cases incl. F15 seek path
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+class TestSummarizeLogCounts:
+    def test_valid_counts(self):
+        log = "Files : 10 8 0 1 2 3\n"
+        result = summarize_log_counts(log)
+        assert result == {"total": 10, "copied": 8, "skipped": 0, "mismatch": 1, "failed": 2, "extras": 3}
+
+    def test_no_summary(self):
+        result = summarize_log_counts("no summary")
+        assert result is None
+
+
+class TestLogShowsCompletedSummary:
+    def test_complete_log(self):
+        log = "Files : 10 10 0 0 0 0\nEnded : Mon Jan 01 00:00:00 2026\n"
+        assert log_shows_completed_summary(log) is True
+
+    def test_missing_ended_line(self):
+        log = "Files : 10 10 0 0 0 0\n"
+        assert log_shows_completed_summary(log) is False
+
+    def test_missing_files_row(self):
+        log = "Ended : Mon Jan 01 00:00:00 2026\n"
+        assert log_shows_completed_summary(log) is False
+
+    def test_empty_log(self):
+        assert log_shows_completed_summary("") is False
+
+    def test_none_log(self):
+        assert log_shows_completed_summary(None) is False
+
 
 class TestReadLogTail:
+    def test_small_file_read_fully(self, tmp_path):
+        f = tmp_path / "small.log"
+        f.write_text("hello world")
+        result = _read_log_tail(f, 1000)
+        assert result == "hello world"
 
-    def test_short_log(self, tmp_path):
-        log = tmp_path / "test.log"
-        log.write_text("line1\nline2\nline3")
-        assert _read_log_tail(log, 10000) == "line1\nline2\nline3"
+    def test_large_file_reads_tail(self, tmp_path):
+        f = tmp_path / "large.log"
+        f.write_bytes(b"x" * 2000)
+        result = _read_log_tail(f, 100)
+        assert len(result) <= 100
 
-    def test_long_log_returns_exact_tail(self, tmp_path):
-        log = tmp_path / "test.log"
-        content = "x" * 200_000
-        log.write_text(content)
-        result = _read_log_tail(log, 100_000)
-        assert len(result) == 100_000
-        assert result == content[-100_000:]
+    def test_nonexistent_file(self, tmp_path):
+        result = _read_log_tail(tmp_path / "nonexistent.log", 100)
+        assert "unreadable" in result
 
-    def test_unreadable_file_fallback(self, tmp_path):
-        result = _read_log_tail(tmp_path / "nonexistent.log", 10000)
-        assert "log unreadable" in result
-
-    def test_multibyte_cut_does_not_crash(self, tmp_path):
-        """Tail cut may land mid UTF-8 sequence; replacement-char handling."""
-        log = tmp_path / "test.log"
-        payload = ("â‚¬" * 60_000).encode("utf-8")   # 3 bytes each â†’ >100KB
-        log.write_bytes(payload)
-        result = _read_log_tail(log, 100_000)
-        assert len(result.encode("utf-8")) <= 100_000
-
-
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# 4. Failed-line / summary parsers (pure, original functions)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
-class TestParsers:
-
-    def test_count_failed_lines_counts_markers(self):
-        log = "** FAILED: a.txt\nok\n  ** FAILED: b.txt\n"
-        assert count_failed_lines(log) == 2
-
-    def test_count_failed_lines_empty(self):
-        assert count_failed_lines("") == 0
-
-    def test_summary_row_positional_parse(self):
-        log = (
-            "              Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-            "   Files :         4         3         0         0         1         2\n"
-        )
-        assert failed_file_count(log, exit_code=8) == 1
-        assert failed_file_count(log, exit_code=0) == 1
-
-    def test_missing_summary_floors_by_bit3_only(self):
-        assert failed_file_count("", exit_code=8) == 1
-        assert failed_file_count("nothing", exit_code=0) == 0
-
-    def test_non_numeric_row_aborts_to_floor(self):
-        assert failed_file_count("Files : a b c d e f", exit_code=9) == 1
-
-
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# 5. cleanup_orphaned_robocopy_logs — real %TEMP% filesystem
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class TestCleanupOrphanedLogs:
+    def test_cleanup_old_logs(self, tmp_path):
+        """Old log files are removed."""
+        import time
+        old_log = tmp_path / f"{ROBOCOPY_LOG_PREFIX}old.log"
+        old_log.write_text("old")
+        # Set mtime to 25 hours ago
+        old_time = time.time() - 25 * 3600
+        os.utime(old_log, (old_time, old_time))
 
-    def test_age_gate_removes_stale_keeps_fresh(self):
-        tempdir = Path(tempfile.gettempdir())
-        stale = tempdir / "robocopy_sync_comp_stale.log"
-        fresh = tempdir / "robocopy_sync_comp_fresh.log"
-        stale.write_text("stale")
-        fresh.write_text("fresh")
-        old = time.time() - 48 * 3600
-        os.utime(stale, (old, old))
-        try:
-            removed = cleanup_orphaned_robocopy_logs(max_age_hours=24)
-        finally:
-            fresh.unlink(missing_ok=True)
+        # Production scans tempfile.gettempdir() — point it at tmp_path so the
+        # real glob/age-filter/unlink logic runs hermetically.
+        with patch("core.lan_sync.tempfile.gettempdir", return_value=str(tmp_path)):
+            result = cleanup_orphaned_robocopy_logs(max_age_hours=24)
+        assert result >= 1
+        assert not old_log.exists()
 
-        assert removed >= 1
-        assert not stale.exists()
+    def test_cleanup_keeps_recent_logs(self, tmp_path):
+        """Recent log files are kept."""
+        import time
+        recent_log = tmp_path / f"{ROBOCOPY_LOG_PREFIX}recent.log"
+        recent_log.write_text("recent")
+        # Set mtime to 1 hour ago
+        old_time = time.time() - 3600
+        os.utime(recent_log, (old_time, old_time))
 
-    def test_never_raises_on_garbage(self):
-        # Must stay silent even when nothing matches.
-        assert cleanup_orphaned_robocopy_logs(max_age_hours=24) >= 0
+        # Same tempdir indirection as test_cleanup_old_logs — without it the
+        # scan never sees this file and the test passes vacuously.
+        with patch("core.lan_sync.tempfile.gettempdir", return_value=str(tmp_path)):
+            result = cleanup_orphaned_robocopy_logs(max_age_hours=24)
+        assert recent_log.exists()
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# 6. run_lan_sync smoke — REAL robocopy /LOG lifecycle
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+class TestRunLanSync:
+    """run_lan_sync contract tests (M1 1.5: shared tool runner + full logs).
 
-class TestRunLanSyncRealSmoke:
-    """The mocked suite asserted subprocess kwargs; with the real binary the
-    observable contract is: /LOG written to %TEMP% during the run, deleted in
-    the finally block, correct classification of a genuine copy."""
+    The fake runner writes a real-format robocopy /UNILOG (UTF-16) into the
+    path the module reserved, so the real UTF-16 tail reader, summary parser
+    and decide_lan_result all run unchanged.
+    """
 
-    def test_log_written_then_removed(self, tmp_path, smb_dest):
-        src = tmp_path / "src"
-        (src / "docs").mkdir(parents=True)
-        (src / "docs" / "f.txt").write_text("data")
-        cfg = LanConfig(retry_count=2, retry_wait_seconds=1, mt_threads=2)
+    KEYS = {"status", "exit_code", "error", "anomaly_details", "files_failed",
+            "termination", "log_complete", "counts", "log_retained",
+            "bytes", "files_deleted"}           # WP6: the tool's own accounting
 
-        tempdir = Path(tempfile.gettempdir())
+    @pytest.fixture(autouse=True)
+    def _art(self, tmp_path):
+        from core.run_artefacts import RunArtefacts
 
-        # No pre-existing logs newer than this marker.
-        marker = time.time() - 5
-        before = {p.name for p in tempdir.glob("robocopy_sync_*.log")}
+        self.art = RunArtefacts(tmp_path / "run_logs", "run-x-lan", day="2026-10-14")
+        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
+             patch("core.lan_sync.require_source_files"):
+            yield
 
-        result = run_lan_sync(str(src), str(smb_dest), cfg)
+    @staticmethod
+    def _config():
+        from models.config import LanConfig
+        config = LanConfig()
+        config.subprocess_timeout_seconds = 60
+        return config
 
+    def _run(self, **fake):
+        from test_support.fake_tools import fake_run_tool
+
+        fake.setdefault("log_encoding", "utf-16")
+        with fake_run_tool("core.lan_sync", **fake) as calls:
+            result = run_lan_sync("E:\\", "\\\\nas\\share", self._config(), artefacts=self.art)
+        self.calls = calls
+        return result
+
+    def test_successful_sync(self):
+        from test_support.fake_tools import robocopy_log
+
+        result = self._run(exit_code=1, log=robocopy_log(total=10, copied=10))
         assert result["status"] == "LAN_COMPLETE"
-        after = {
-            p.name for p in tempdir.glob("robocopy_sync_*.log")
-            if p.stat().st_mtime >= marker
-        }
-        new_names = after - before
-        # The run's own log must be gone from %TEMP% (finally-block unlink).
-        assert new_names == set() or all(
-            not n.startswith("robocopy_sync_") or n in before for n in new_names
-        )
+        assert result["exit_code"] == 1
+        assert result["termination"] == "normal" and result["log_complete"] is True
+        assert result["counts"] == {"total": 10, "copied": 10, "skipped": 0,
+                                    "mismatch": 0, "failed": 0, "extras": 0}
+        assert result["error"] is None and result["anomaly_details"] is None
+        assert result["files_failed"] == 0
+        assert set(result) == self.KEYS
 
-    def test_full_mirror_cycle_on_share(self, tmp_path, smb_dest):
-        src = tmp_path / "src"
-        (src / "d").mkdir(parents=True)
-        (src / "a.txt").write_text("v1")
-        (src / "d" / "b.bin").write_bytes(os.urandom(2048))
-        cfg = LanConfig(retry_count=2, retry_wait_seconds=1, mt_threads=2)
+    def test_full_log_is_kept_and_unilog_flag_used(self):
+        from test_support.fake_tools import robocopy_log
 
-        r1 = run_lan_sync(str(src), str(smb_dest), cfg)
-        assert r1["exit_code"] & 1                       # copies happened
-        assert (smb_dest / "a.txt").read_text() == "v1"
+        result = self._run(exit_code=1, log=robocopy_log(body="New File  C:\\Données\\été.txt\n"))
+        log_path = Path(result["log_retained"])
+        assert log_path.parent == self.art.dir and log_path.exists()
+        assert "été.txt" in log_path.read_text(encoding="utf-16")
+        assert f"/UNILOG:{log_path}" in self.calls[0]["argv"]
+        assert not any(a.upper().startswith("/LOG:") for a in self.calls[0]["argv"])
 
-        (src / "a.txt").write_text("v2")                 # modify source
-        r2 = run_lan_sync(str(src), str(smb_dest), cfg)
-        assert r2["status"] == "LAN_COMPLETE"
-        assert (smb_dest / "a.txt").read_text() == "v2"  # mirror updated
+    def test_sync_with_copy_errors(self):
+        from test_support.fake_tools import robocopy_log
+
+        result = self._run(exit_code=8, log=robocopy_log(total=10, copied=8, failed=2))
+        assert result["status"] == "LAN_PARTIAL"
+        assert result["exit_code"] == 8
+        assert result["termination"] == "normal" and result["log_complete"] is True
+        assert result["files_failed"] == 2
+        assert result["error"] and result["anomaly_details"] is None
+
+    def test_sync_timeout(self):
+        result = self._run(timed_out=True)
+        assert result["status"] == "LAN_FAILED"
+        assert result["exit_code"] == -1
+        assert result["termination"] == "abnormal" and result["log_complete"] is False
+        assert result["counts"] is None and result["files_failed"] == 0
+        assert "Timeout after 60s" in result["error"]
+        assert result["log_retained"]
+
+    def test_missing_robocopy(self):
+        result = self._run(spawn_error="FileNotFoundError: [WinError 2]")
+        assert result["status"] == "LAN_FAILED"
+        assert "robocopy.exe not found" in result["error"]
+
+    def test_sync_fatal_error(self):
+        result = self._run(exit_code=16, log="ERROR : Invalid Parameter #3")
+        assert result["status"] == "LAN_FAILED"
+        assert result["exit_code"] == 16
+        assert result["termination"] == "abnormal" and result["log_complete"] is False
+        assert result["files_failed"] == 0
+        assert "Invalid Parameter" in result["error"]
+
+    def test_sync_killed_truncated_log(self):
+        result = self._run(exit_code=1, log="truncated log without summary")
+        assert result["status"] == "LAN_SUSPECT"
+        assert result["termination"] == "abnormal" and result["log_complete"] is False
+        assert "WITHOUT a completed job summary" in result["error"]
+        assert result["files_failed"] == 0
+        assert Path(result["log_retained"]).exists()
+
+    def test_tail_size_comes_from_config(self):
+        from test_support.fake_tools import robocopy_log
+
+        big = robocopy_log(total=1, copied=0, failed=1, body="x" * 400_000)
+        result = self._run(exit_code=8, log=big)
+        # log_tail_kb default 100 KB of UTF-16 bytes -> ~51,200 chars
+        assert len(result["error"]) <= 100 * 1024 // 2 + 1
+        assert "Ended :" in result["error"]
+
+

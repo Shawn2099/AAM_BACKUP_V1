@@ -2,7 +2,7 @@
 :: =======================================================================
 :: AAM Backup Automation V1 - SYSTEM SETUP (run ONCE per server)
 ::
-:: Run this BEFORE 06_install_services.ps1 on a fresh server.
+:: Run this FIRST on a fresh server (then 04_check_readiness.ps1, then 06_install_services.ps1).
 :: All steps are idempotent - safe to re-run if needed.
 ::
 :: What it does:
@@ -10,8 +10,9 @@
 ::   1. Enables Windows Long Path support (>260 chars)
 ::   2. Suppresses Windows Update auto-reboots during backup windows
 ::   3. Adds Microsoft Defender exclusions for project dir and transfer processes
-::   4. Opens Windows Firewall ports 4200 (Prefect) and 8080 (Dashboard)
-::   5. Downloads the isolated Google Cloud SDK to deploy/bin
+::   4. (no firewall change here - 06_install_services.ps1 opens the dashboard port)
+::   5. Downloads and unpacks the isolated Google Cloud SDK to deploy/bin
+::   6. Locks the code folder (only Administrators/SYSTEM may change it - the services run from it)
 ::
 :: Runtime: ~1-2 minutes (most time is SDK download + extraction, first run only)
 :: =======================================================================
@@ -54,7 +55,7 @@ echo ===================================================================
 :: the correct Python version - no manual Python install needed.
 :: ====================================================================
 echo.
-echo [0/3] Checking uv package manager...
+echo [0/6] Checking uv package manager...
 
 :: Check all known install locations
 set "UV_EXE="
@@ -93,12 +94,27 @@ if "%UV_EXE%"=="" (
 )
 echo [OK]   uv installed: %UV_EXE%
 
-:: Pre-cache Python 3.12 so first backup run is instant
-echo [....] Pre-caching Python 3.12 via uv ^(one-time download^)...
-"%UV_EXE%" python install 3.12 >nul 2>&1
-echo [OK]   Python 3.12 ready.
-
 :uv_done
+
+:: Python 3.12 goes to %ProgramData%\uv\python - NOT into this admin's user
+:: profile: the backup service account (plan WP16) must be able to read the
+:: interpreter the project's .venv is built on. Set machine-wide so the later
+:: `uv sync --frozen` (04_check_readiness.ps1) uses the same place.
+if exist "C:\Program Files\Python312\python.exe" (
+    echo [OK]   Python 3.12 installed for all users: C:\Program Files\Python312
+    goto :python_done
+)
+set "UV_PYTHON_INSTALL_DIR=%ProgramData%\uv\python"
+setx UV_PYTHON_INSTALL_DIR "%ProgramData%\uv\python" /M >nul
+echo [....] Installing Python 3.12 via uv into %UV_PYTHON_INSTALL_DIR% ^(one-time download^)...
+"%UV_EXE%" python install 3.12 >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python 3.12 install failed - check internet access, then re-run.
+    pause
+    exit /b 1
+)
+echo [OK]   Python 3.12 ready ^(readable by the service account^).
+:python_done
 
 
 :: ====================================================================
@@ -107,7 +123,7 @@ echo [OK]   Python 3.12 ready.
 :: rclone without this. Essential for deep accounting folder trees.
 :: ====================================================================
 echo.
-echo [1/3] Enabling Windows Long Path support ^(paths ^> 260 chars^)...
+echo [1/6] Enabling Windows Long Path support ^(paths ^> 260 chars^)...
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Long paths enabled.
@@ -124,7 +140,7 @@ if %ERRORLEVEL% equ 0 (
 :: are blocked until an Administrator manually approves.
 :: ====================================================================
 echo.
-echo [2/3] Suppressing Windows Update automatic reboots...
+echo [2/6] Suppressing Windows Update automatic reboots...
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Auto-reboot suppressed. Server will NOT reboot automatically after updates.
@@ -136,19 +152,25 @@ if %ERRORLEVEL% equ 0 (
 
 :: G9: the policy above only applies while a user is LOGGED ON - a headless
 :: backup server is almost never logged on, so it does not protect this box.
-:: Windows Update Active Hours do: reboots are forbidden 12:00-06:00 (18 h,
-:: the maximum allowed window), leaving only 06:00-12:00 for a pending
-:: reboot. Both backup windows (LAN 01:00, cloud 18:00-23:00) sit INSIDE the
-:: protected hours. Set Start=12, End=6 so protected = 12:00 to next 06:00.
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v Start /t REG_DWORD /d 12 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v End /t REG_DWORD /d 6 /f >nul 2>&1
-reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours" /v ActiveHoursSource /t REG_DWORD /d 2 /f >nul 2>&1
+:: Windows Update Active Hours do: reboots are forbidden inside them. Windows Server 2016
+:: allows at most 12 hours (Microsoft "waas-restart"): a longer window such as 12:00-06:00 (18 h)
+:: is INVALID and ignored (plan H2). Protected = 20:00 to next 08:00 (12 h), which covers the
+:: nightly LAN and cloud backups; a pending reboot can happen 08:00-20:00.
+:: The real values (checked on the trial box, plan H2): the Settings value
+:: HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings ActiveHoursStart/End, and the policy
+:: HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate SetActiveHours/ActiveHoursStart/End.
+:: (The older key ...\UX\ISM\ActiveHours does not exist on Windows.)
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" /v ActiveHoursStart /t REG_DWORD /d 20 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings" /v ActiveHoursEnd /t REG_DWORD /d 8 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v SetActiveHours /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ActiveHoursStart /t REG_DWORD /d 20 /f >nul 2>&1
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" /v ActiveHoursEnd /t REG_DWORD /d 8 /f >nul 2>&1
 if %ERRORLEVEL% equ 0 (
-    echo [OK]   Update Active Hours set to 12:00-06:00. Reboots can only happen 06:00-12:00.
+    echo [OK]   Update Active Hours set to 20:00-08:00 ^(12 h, the maximum^). Reboots can only happen 08:00-20:00.
 ) else (
     echo [WARN] Active Hours registry write failed. Set manually:
-    echo        HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\ISM\ActiveHours
-    echo        Start=12  End=6  ActiveHoursSource=2
+    echo        HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings
+    echo        ActiveHoursStart=20  ActiveHoursEnd=8
 )
 
 :: ====================================================================
@@ -158,7 +180,7 @@ if %ERRORLEVEL% equ 0 (
 :: monitoring to prevent CPU throttling and file locking.
 :: ====================================================================
 echo.
-echo [3/5] Adding Microsoft Defender exclusions for project directory and transfer processes...
+echo [3/6] Adding Microsoft Defender exclusions for project directory and transfer processes...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath '%PROJECT_DIR%' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'robocopy.exe', 'rclone.exe' -ErrorAction SilentlyContinue"
 if %ERRORLEVEL% equ 0 (
     echo [OK]   Antivirus exclusions added for: %PROJECT_DIR% and transfer processes.
@@ -170,18 +192,16 @@ if %ERRORLEVEL% equ 0 (
 )
 
 :: ====================================================================
-:: STEP 4: Windows Firewall Rules
-:: Opens inbound ports for the Prefect Server and Backup Dashboard so
-:: they can be accessed over the LAN.
+:: STEP 4: Windows Firewall
+:: This script opens NO port. 06_install_services.ps1 owns the firewall: it
+:: opens only the dashboard port, scoped to dashboard.firewall_remote_addresses
+:: (default LocalSubnet). The Prefect port 4200 has no login and is never
+:: opened (the server listens on 127.0.0.1 only). A rule created here for any
+:: address would undo that scope whenever this script is run again (A5).
 :: ====================================================================
 echo.
-echo [4/5] Configuring Windows Firewall rules for Prefect and Dashboard...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "New-NetFirewallRule -DisplayName 'AAM Backup Prefect' -Direction Inbound -LocalPort 4200 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue; New-NetFirewallRule -DisplayName 'AAM Backup Dashboard' -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue"
-if %ERRORLEVEL% equ 0 (
-    echo [OK]   Firewall rules added for ports 4200 and 8080.
-) else (
-    echo [WARN] Firewall rule creation failed. Please open TCP 4200 and 8080 manually.
-)
+echo [4/6] Firewall: nothing to do here - 06_install_services.ps1 opens the dashboard port (office network only).
+echo [OK]   No firewall rule created by this script.
 
 :: ====================================================================
 :: STEP 5: Isolated Google Cloud SDK
@@ -191,7 +211,7 @@ if %ERRORLEVEL% equ 0 (
 :: global gcloud SDK version changes.
 :: ====================================================================
 echo.
-echo [5/5] Checking Google Cloud SDK...
+echo [5/6] Checking Google Cloud SDK...
 
 :: 1. Check if gcloud is already in PATH
 where gcloud >nul 2>&1
@@ -229,23 +249,49 @@ if not exist "%GCLOUD_ZIP%" (
 echo [OK]   Download complete.
 
 :extract_instructions
-:: Instruct user to manually extract to avoid Antivirus hang
-echo.
-echo [*]    ACTION REQUIRED: Antivirus makes auto-extraction very slow.
-echo [*]    Please manually extract the downloaded file:
-echo [*]    %GCLOUD_ZIP%
-echo [*]    Extract it so the folder is: %PROJECT_DIR%\deploy\bin\google-cloud-sdk
-echo.
-echo [....] Opening the folder for you now...
-explorer "%PROJECT_DIR%\deploy\bin"
+if not exist "%SEVENZIP%" (
+    echo [WARN] 7za.exe is missing at %SEVENZIP% - cannot unpack the SDK automatically.
+    echo [WARN] Extract %GCLOUD_ZIP% by hand so that this file exists: %GCLOUD_CMD%
+    goto :gcloud_done
+)
+echo [....] Unpacking the SDK with 7za ^(antivirus can make this take a few minutes^)...
+"%SEVENZIP%" x "%GCLOUD_ZIP%" -o"%PROJECT_DIR%\deploy\bin" -y >nul
+if not exist "%GCLOUD_CMD%" (
+    echo [WARN] Unpacking did not produce %GCLOUD_CMD%.
+    echo [WARN] Delete %GCLOUD_ZIP% and run this script again, or extract it by hand
+    echo [WARN] so the folder is %PROJECT_DIR%\deploy\bin\google-cloud-sdk ^(not a folder inside a folder^).
+    goto :gcloud_done
+)
+echo [OK]   Google Cloud SDK ready: %GCLOUD_CMD%
 
 :gcloud_done
+
+:: ====================================================================
+:: STEP 6: Lock the code folder. AamPrefectServer and AamWatchdog run as LocalSystem FROM this folder: if a
+:: normal user could drop a .py file here, it would run as SYSTEM. Administrators and SYSTEM may change it;
+:: everyone else only reads (SIDs, so this also works on a non-English Windows). 06_install_services.ps1 then
+:: gives the backup account Modify on config.yaml and the folder itself (the FY switch writes next to it).
+:: ====================================================================
+echo.
+echo [6/6] Locking the code folder ^(Administrators + SYSTEM may change it, everyone else read-only^)...
+icacls "%PROJECT_DIR%" /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" /C /Q >nul
+if errorlevel 1 (
+    echo [WARN] Could not lock %PROJECT_DIR%. Do it by hand: only Administrators and SYSTEM may have write access.
+) else (
+    echo [OK]   %PROJECT_DIR% locked.
+)
+
+:: The time zone matters: a clean Windows Server defaults to Pacific time, and the Update Active Hours above,
+:: the robocopy and log times all follow it. 04_check_readiness.ps1 fails until it matches config.yaml.
+echo.
+for /f "delims=" %%Z in ('tzutil /g') do echo [INFO] Windows time zone now: %%Z
+echo        For an India office set it with:  tzutil /s "India Standard Time"  and then  w32tm /resync
 
 echo.
 echo ===================================================================
 echo   SYSTEM SETUP COMPLETE
 echo ===================================================================
-echo   Next step: Run 06_install_services.ps1 to install the 3 services.
+echo   Next step: create config.yaml ^(docs\INSTALL_FRESH.md step 9^), then run 04_check_readiness.ps1.
 echo ===================================================================
 echo.
 pause
