@@ -86,6 +86,15 @@ def test_a_later_run_without_the_flag_clears_the_item(db):  # noqa: F811
     assert "nas_left_on" not in {i["code"] for i in compute_attention(db, _cfg_manual(db))}
 
 
+def test_a_manual_lan_run_covers_both_active_fy_folders_in_one_run(lan_night):  # noqa: F811
+    """Owner decision 4 / card T5: the button runs every active folder (new FY first), one slot, one NAS decision."""
+    lan_night.env.cfg.lan.scheduled = False
+    flow.backup.fn("config.yaml", "lan")
+    fys = [fy for fy, _started in lan_night.seen]
+    assert len(fys) == 2 and len(set(fys)) == 2
+    assert {started for _fy, started in lan_night.seen} == {"2027-03-31T21:01:00+05:30"}
+
+
 def test_the_manual_loop_flags_a_nas_that_stays_on(lan_night):  # noqa: F811
     lan_night.env.cfg.lan.scheduled = False
     calls = []

@@ -104,7 +104,8 @@ def _tail_errors_first(text: str, lines: int) -> str:
 def _settings(config) -> list[str]:
     c = config
     return [
-        f"source {c.paths.source_drive} | LAN target {c.paths.lan_destination}",
+        f"source {c.paths.source_drive} | LAN target "
+        f"{c.paths.lan_destination if c.lan.enabled else '(LAN off)'}",
         f"LAN enabled {c.lan.enabled} | cloud enabled {c.cloud.enabled} "
         f"(bucket {c.cloud.bucket or '-'}) | WoL {c.wol.enabled} | "
         f"NAS shutdown after backup {c.lan.shutdown_after_backup}",

@@ -341,6 +341,21 @@ def _send_resolved_mail(db, config, fy: str, notify_fn) -> None:
         db._set_meta(_META_RESOLVED_SENT.format(fy=fy), pendulum.now(IST).isoformat())
 
 
+def _nightly_words(config) -> str:
+    """"the nightly backups" - or what is true when a leg has no nightly run (manual-only, owner 2026-11-23)."""
+    from core import manual_leg
+
+    names = {"cloud": "cloud", "lan": "NAS"}
+    nightly = [names[leg] for leg in names if manual_leg.is_nightly(config, leg)]
+    manual = [names[leg] for leg in names if manual_leg.is_manual_only(config, leg)]
+    if not manual:
+        return "the nightly backups copy both folders"
+    by_hand = f"the {' and '.join(manual)} backup does so whenever it is started by hand"
+    if not nightly:
+        return f"every backup copies both folders whenever it is started by hand ({by_hand})"
+    return f"the nightly {' and '.join(nightly)} backup copies both folders, and {by_hand}"
+
+
 def _send_start_mail(db, config, fy: str, configured: str, folder: Path, created: bool, when_iso: str,
                      notify_fn) -> None:
     from core.notify import AUDIENCE_REPORTS, AlertEvent
@@ -349,7 +364,7 @@ def _send_start_mail(db, config, fy: str, configured: str, folder: Path, created
     event = AlertEvent(
         key=f"overlap:start:{fy}", kind="INFO", mode="rollover",
         title=f"{fy} is now backed up as well",
-        message=(f"Since {format_ist(when_iso)} the nightly backups copy both folders: {configured} "
+        message=(f"Since {format_ist(when_iso)} {_nightly_words(config)}: {configured} "
                  f"(this year) and {fy} (next year, {folder}). The {fy} folder {how}. "
                  f"You can start saving next year's files in {fy} now; the backup never moves or "
                  f"changes your files. On 1 April the backups switch to {fy} by themselves."),
