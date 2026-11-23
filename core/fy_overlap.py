@@ -47,6 +47,7 @@ from models.config import AppConfig
 
 CURRENT = "current"
 EARLY = "early"
+OLD = "old"          # a year the rollover switched past that is not yet fully copied by every enabled leg
 
 _CANONICAL_FY = re.compile(r"^FY(\d{2})-(\d{2})$")
 _LAST_MONTH_OF_FY = 3        # March: the calendar month in which a financial year ends (April start)
@@ -152,10 +153,13 @@ def switch_pending(config: AppConfig, db, run_date: _date) -> bool:
 
 
 def active_folders(config: AppConfig, db, run_date: _date) -> list[str]:
-    """FY folders backed up in this run, in run order (new FY first)."""
+    """FY folders backed up in this run, in run order (new FY first). After the 1 April switch the old
+    year stays in the list, last, until every enabled leg has a confirmed full copy of it
+    (`unfinished_old_years`, owner decision 2026-11-23): only years named by a finished rollover journal."""
     configured = _configured(config)
     if configured is None:
         return [effective_fy_prefix(config.paths.source_drive)]
+    base = [configured]
     if config.rollover.overlap_enabled:
         nxt = next_fy(configured)
         # an activated early year stays active until the switch, even if early_start_month is raised later
@@ -164,8 +168,9 @@ def active_folders(config: AppConfig, db, run_date: _date) -> list[str]:
                 and run_date.month <= _LAST_MONTH_OF_FY and db.get_activation(nxt) is not None)
         if in_window(config, run_date) or switch_pending(config, db, run_date) or kept:
             if db.get_activation(nxt) is not None:
-                return [nxt, configured]
-    return [configured]
+                base = [nxt, configured]
+    old = [o["fy"] for o in unfinished_old_years(config, db) if o["fy"] not in base]
+    return base + old
 
 
 def folder_for(config: AppConfig, fy: str) -> str:
@@ -188,8 +193,108 @@ def folder_view(config: AppConfig, fy: str) -> AppConfig:
 
 
 def role_of(config: AppConfig, fy: str) -> str:
-    """'current' for the configured FY, 'early' for the one backed up ahead of the switch."""
-    return CURRENT if fy == _configured(config) else EARLY
+    """'current' for the configured FY, 'early' for the one backed up ahead of the switch, 'old' for a year
+    the switch already moved past that is still being copied (never anything else)."""
+    configured = _configured(config)
+    if fy == configured:
+        return CURRENT
+    try:
+        if configured is not None and fy == next_fy(configured):
+            return EARLY
+    except ValueError:
+        pass
+    return OLD
+
+
+# ---- old years that are not fully copied yet (owner decision 2026-11-23, plan 5.9) ---------------
+
+_META_YEAR_CLOSED = "fy_copy_closed:{fy}"
+_LEGS = ("cloud", "lan")
+LEG_WORDS = {"cloud": "Cloud", "lan": "LAN"}
+
+
+def year_end(fy: str) -> pendulum.DateTime:
+    """The instant a financial year ends: 1 April 00:00 IST of its second year ('FY26-27' -> 2027-04-01)."""
+    m = _CANONICAL_FY.match(fy.strip().upper())
+    if not m:
+        raise ValueError(f"not a financial-year name like 'FY26-27': {fy!r}")
+    return pendulum.datetime(2000 + int(m.group(1)) + 1, 4, 1, tz=IST)
+
+
+def year_closed(db, fy: str) -> bool:
+    """Was this year already settled (fully copied by every enabled leg, then closed)? Once it was, a leg
+    switched on later never re-opens it."""
+    return bool(db.get_meta(_META_YEAR_CLOSED.format(fy=fy)))
+
+
+def mark_year_closed(db, fy: str, at: str) -> None:
+    db.set_meta(_META_YEAR_CLOSED.format(fy=fy), at)
+
+
+def enabled_legs(config) -> tuple[str, ...]:
+    return tuple(leg for leg in _LEGS if getattr(config, leg).enabled)
+
+
+def copy_state(config, db, fy: str, confirmed=()) -> dict:
+    """Which enabled legs have a CONFIRMED full copy of `fy`: a run of that leg and FY with a status in
+    core.statuses.SUCCESS_STATUSES that STARTED after the year ended (a failed, partial, blocked, missing or
+    never-run sync does not count). Derived from run_history each time, so a crash or restart loses nothing.
+    `confirmed`: legs the caller has just seen succeed (the rollover's own final backups).
+    Returns {'fy', 'done': [legs], 'missing': [legs]}; a leg that is off is not required."""
+    floor = year_end(fy).isoformat()
+    done, missing = [], []
+    for leg in enabled_legs(config):
+        if leg in confirmed or db.leg_success_after(leg, floor, fy=fy):
+            done.append(leg)
+        else:
+            missing.append(leg)
+    return {"fy": fy, "done": done, "missing": missing}
+
+
+def switched_old_years(config, db) -> list[str]:
+    """Years named by a finished config switch (journal from_fy), oldest first, never the configured one
+    and never one already settled."""
+    configured = _configured(config)
+    seen: list[str] = []
+    for journal in db.rollover_journals():
+        fy = journal["from_fy"]
+        if (rj.is_finished(journal["steps"][rj.CONFIG_SWITCH]) and fy != configured
+                and fy not in seen and not year_closed(db, fy)):
+            seen.append(fy)
+    return seen
+
+
+def unfinished_old_years(config, db, confirmed: dict | None = None) -> list[dict]:
+    """[{'fy', 'done', 'missing'}] of every switched-past year that some enabled leg has not fully copied
+    yet; oldest first. A read-only derivation: nothing is stored for it. Trouble reading the journals
+    raises (callers fall back to the configured year alone and say so)."""
+    out = []
+    for fy in switched_old_years(config, db):
+        state = copy_state(config, db, fy, (confirmed or {}).get(fy, ()))
+        if state["missing"]:
+            out.append(state)
+    return out
+
+
+def not_fully_copied_text(fy: str, missing) -> str:
+    """The one wording the dashboard, the reports and the mails share."""
+    names = " and ".join(LEG_WORDS[leg] for leg in missing)
+    return f"{fy} is not yet fully copied to {names}"
+
+
+def not_fully_copied_advice(config, fy: str, missing) -> str:
+    """What brings the year to 'fully copied', per missing leg: a nightly leg does it by itself, a leg that is
+    started by hand needs a press of its button (the NAS has to be on for LAN)."""
+    from core import manual_leg
+
+    parts = []
+    for leg in missing:
+        if manual_leg.is_manual_only(config, leg):
+            extra = " (switch the NAS on first)" if leg == "lan" else ""
+            parts.append(f"start a {LEG_WORDS[leg]} backup from the dashboard{extra}; it copies {fy} as well")
+        else:
+            parts.append(f"the nightly {LEG_WORDS[leg]} backup copies {fy} as well and finishes it")
+    return "; ".join(parts)
 
 
 # ---- activation (OV-2.3) --------------------------------------------------------------------

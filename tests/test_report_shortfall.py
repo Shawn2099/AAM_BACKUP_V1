@@ -160,6 +160,11 @@ def test_closed_fy_with_a_switch_is_not_flagged_but_a_gap_before_it_is(db, tmp_p
     week = ReportPeriod.previous_week(at(2027, 4, 5, 8))        # Mon 29 Mar - Sun 4 Apr
     _nights(db, A, at(2027, 3, 20), at(2027, 3, 31))
     _nights(db, B, at(2027, 3, 20), at(2027, 4, 4))
+    # the final backup of the closing year (owner 2026-11-23: a year is closed only once every enabled leg has
+    # a confirmed full copy that started after the year ended; without it the report says so, see below)
+    m = _model(db, cfg, week, at(2027, 4, 5))
+    assert m["act"] is False and "FY26-27 is not yet fully copied to LAN" in m["headline"], m["headline"]
+    _row(db, A, at(2027, 4, 1, 1, 30))
     m = _model(db, cfg, week, at(2027, 4, 5))
     assert m["act"] is False and m["headline"] == "all backups OK", m["headline"]
     with db._lock:

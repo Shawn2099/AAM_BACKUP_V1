@@ -135,6 +135,11 @@ def test_after_the_switch_the_config_already_names_the_next_fy(tmp_path, db):
     d = _d(2027, 4, 3)
     assert ov.switch_pending(cfg, db, d) is False
     assert ov.in_window(cfg, d) is False                          # April is not early_start..March
+    # owner decision 2026-11-23: the old year stays tracked until every enabled leg fully copied it ...
+    assert ov.active_folders(cfg, db, d) == ["FY27-28", CFG_FY]
+    for leg, status in (("cloud", "CLOUD_COMPLETE"), ("lan", "LAN_COMPLETE")):    # ... then it is dropped
+        db.insert_run({"fy": CFG_FY, "run_id": f"final-{leg}", "mode": leg, "status": status,
+                       "started_at": "2027-04-01T06:00:00+05:30", "ended_at": "2027-04-01T06:30:00+05:30"})
     assert ov.active_folders(cfg, db, d) == ["FY27-28"]
 
 

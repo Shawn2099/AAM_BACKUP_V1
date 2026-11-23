@@ -72,24 +72,6 @@ def is_old(config, db, leg: str, now=None) -> bool:
     return ts is None or days > warn_after_days(config, leg)
 
 
-def lan_not_final_fy(db) -> str | None:
-    """The FY whose final NAS backup at the April rollover did not happen (manual-only NAS that was off),
-    until a successful LAN backup of that FY started after it (owner 2026-11-23). None otherwise."""
-    import json
-
-    try:
-        raw = db.get_meta("lan_final_missing")
-        rec = json.loads(raw) if raw else None
-        if not isinstance(rec, dict) or not rec.get("fy"):
-            return None
-        later = db.last_successful_run("lan", fy=rec["fy"])
-        if later and str(later.get("started_at") or "") > str(rec.get("at") or ""):
-            return None
-        return str(rec["fy"])
-    except Exception:  # noqa: BLE001 - unreadable = no note; the run rows still tell the truth
-        return None
-
-
 def mode_line(config, db, leg: str, now=None) -> dict | None:
     """The truth line for a leg that is off or manual-only; None for a nightly leg.
 
@@ -106,15 +88,28 @@ def mode_line(config, db, leg: str, now=None) -> dict | None:
     else:
         unit = "day" if days == 1 else "days"
         text = f"{name}: manual only, last backup {format_ist(ts)}, {days} {unit} ago"
-    unsynced = lan_not_final_fy(db) if leg == "lan" else None
-    if unsynced:
-        text += f"; {unsynced} was not final-synced to the NAS at the year switch"
-    return {"mode": MANUAL, "text": text, "soft_warn": is_old(config, db, leg, now) or bool(unsynced)}
+    return {"mode": MANUAL, "text": text, "soft_warn": is_old(config, db, leg, now)}
+
+
+def old_year_lines(config, db) -> list[dict]:
+    """One truth line per year the April switch moved past that is not yet fully copied by every enabled leg
+    (owner 2026-11-23): '<FY> is not yet fully copied to <LAN|Cloud>'. Never 'all OK' while one exists."""
+    from core import fy_overlap
+
+    try:
+        return [{"mode": "old_year", "fy": o["fy"], "soft_warn": True,
+                 "text": f"{fy_overlap.not_fully_copied_text(o['fy'], o['missing'])} "
+                         "(it stays in the backups until every copy is complete)"}
+                for o in fy_overlap.unfinished_old_years(config, db)]
+    except Exception:  # noqa: BLE001 - unreadable = no line; the run rows still tell the truth
+        return []
 
 
 def mode_lines(config, db, now=None) -> list[dict]:
-    """Truth lines for every leg that is off or manual-only, plus the 'nothing automatic' line."""
+    """Truth lines for every leg that is off or manual-only, the old years not fully copied yet, plus the
+    'nothing automatic' line."""
     out = [ln for leg in LEG_NAME if (ln := mode_line(config, db, leg, now))]
+    out.extend(old_year_lines(config, db))
     if nothing_automatic(config):
         out.append({"mode": "none_automatic", "soft_warn": True,
                     "text": "Nothing runs automatically: every backup is started by hand from "
@@ -123,4 +118,4 @@ def mode_lines(config, db, now=None) -> list[dict]:
 
 
 __all__ = ["LEG_NAME", "mode", "is_nightly", "is_manual_only", "nothing_automatic", "mode_line",
-           "mode_lines", "is_old", "last_success_age_days"]
+           "mode_lines", "old_year_lines", "is_old", "last_success_age_days"]

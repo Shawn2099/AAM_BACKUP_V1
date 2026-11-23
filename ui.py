@@ -692,8 +692,6 @@ def _active_fy_list() -> list[str]:
     configured = _configured_fy()
     try:
         cfg = _cfg()
-        if getattr(cfg.rollover, "overlap_enabled", True) is False:
-            return [configured]
         folders = list(fy_overlap.active_folders(cfg, get_db(), fy_overlap.run_date()))
         return folders or [configured]
     except Exception as e:  # noqa: BLE001 - the dashboard still renders / triggers for the configured FY
@@ -712,8 +710,12 @@ def _folders(db, cfg, prefect_state: dict) -> list[dict]:
     except Exception:  # noqa: BLE001 - the cards still render
         pending = {}
     out = []
+    try:
+        unfinished = {o["fy"]: o["missing"] for o in fy_overlap.unfinished_old_years(cfg, db)}
+    except Exception:  # noqa: BLE001 - the cards still render
+        unfinished = {}
     for fy in _active_fy_list():
-        role = fy_overlap.CURRENT if fy == configured else fy_overlap.EARLY
+        role = _fy_role(cfg, fy)
         try:
             activation = db.get_activation(fy)
         except Exception:  # noqa: BLE001
@@ -737,10 +739,20 @@ def _folders(db, cfg, prefect_state: dict) -> list[dict]:
             "role": role,
             "active_since": activation.get("activated_at") if activation else None,
             "active_since_formatted": format_ist(activation.get("activated_at")) if activation else None,
+            # an old year that is still being copied says plainly which copy lacks it (owner 2026-11-23)
+            "copy_note": (fy_overlap.not_fully_copied_text(fy, unfinished[fy]) if fy in unfinished else None),
             "cloud": legs["cloud"],
             "lan": legs["lan"],
         })
     return out
+
+
+def _fy_role(cfg, fy: str) -> str:
+    """current | early | old of one active FY (core.fy_overlap.role_of; the configured FY if unsure)."""
+    try:
+        return fy_overlap.role_of(cfg, fy)
+    except Exception:  # noqa: BLE001
+        return fy_overlap.CURRENT if fy == _configured_fy() else fy_overlap.EARLY
 
 
 def _leg_payload(db, cfg, leg: str, fy: str, role: str) -> dict:
@@ -1554,7 +1566,7 @@ def _active_fy_cards() -> list[dict]:
         except Exception:  # noqa: BLE001 - the card still renders
             activation = None
         since = activation.get("activated_at") if activation else None
-        out.append({"fy": fy, "role": fy_overlap.CURRENT if fy == configured else fy_overlap.EARLY,
+        out.append({"fy": fy, "role": _fy_role(_cfg(), fy),
                     "active_since": since, "active_since_formatted": format_ist(since) if since else None})
     return out
 
@@ -1861,7 +1873,7 @@ def _get_last_success(db: ManifestDB, mode: str, fy: str | None = None, role: st
     """Return ended_at timestamp of the last successful run for this mode (of `fy`, default the configured
     one). The configured FY falls back to an earlier FY's success (right after the April switch); the early
     FY has its own history only."""
-    if role == fy_overlap.EARLY:
+    if role in (fy_overlap.EARLY, fy_overlap.OLD):
         run = db.last_successful_run(mode, fy=fy)
     else:
         run = db.last_successful_run_or_earlier(mode, fy=fy or _configured_fy())
