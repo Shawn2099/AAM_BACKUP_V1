@@ -31,7 +31,7 @@ def test_the_default_and_the_purge_fallback_follow_the_model():
     assert model_default(MaintenanceConfig, "db_retention_days") == 730
     import inspect
     default = inspect.signature(ManifestDB.purge_old_runs).parameters["retention_days"].default
-    assert default == 90
+    assert default == 730
 
 
 def test_the_floor_is_the_30_day_report_window_plus_a_week():
