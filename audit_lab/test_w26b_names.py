@@ -241,6 +241,28 @@ def names_rig(sandbox, monkeypatch):
 
 
 # ── L2 ────────────────────────────────────────────────────────────────────────────
+def _assert_case_only_rename_recorded(src_c: Path, nas_c: Path, cloud_c: Path) -> None:
+    """RECORDED, expected NTFS behaviour (not a product defect): NTFS is case-insensitive and case-preserving,
+    and robocopy copies onto the existing destination entry without renaming it, so after the case-only rename
+    LEDGER.xlsx -> Ledger.xlsx the destination keeps the OLD spelling. (The lab's local 'cloud' is an NTFS folder
+    too, so it behaves the same; a real GCS bucket is case-sensitive.) What must hold: the destination still has
+    exactly ONE entry for the file (no duplicate, no loss), its content equals the source, and every other
+    name matches exactly."""
+    src_names = os.listdir(src_c)
+    for label, dest in (("NAS", nas_c), ("cloud", cloud_c)):
+        names = os.listdir(dest)
+        ledger = [n for n in names if n.lower() == L2_LEDGER.lower()]
+        assert len(ledger) == 1, f"{label}: expected ONE entry for the ledger file, got {ledger}"
+        assert (dest / ledger[0]).read_bytes() == (src_c / L2_LEDGER_RENAMED).read_bytes(), (
+            f"{label}: the ledger content differs from the source")
+        others_dest = sorted(n for n in names if n.lower() != L2_LEDGER.lower())
+        others_src = sorted(n for n in src_names if n.lower() != L2_LEDGER.lower())
+        assert others_dest == others_src, (label, others_dest, others_src)
+        if ledger[0] != L2_LEDGER_RENAMED:
+            print(f"[L2] {label} keeps the old-case name {ledger[0]!r} (source now {L2_LEDGER_RENAMED!r}): "
+                  "expected NTFS case-insensitivity, one entry, same content")
+
+
 def test_l2_unicode_case_normalization_churn(names_rig):
     rig = names_rig
     src_c = rig["src"] / "Clients"
@@ -273,8 +295,7 @@ def test_l2_unicode_case_normalization_churn(names_rig):
     assert {leg: len(v) for leg, v in rows2.items()} == {leg: before[leg] + 1 for leg in before}, rows2
     assert rows2["cloud"][0] in _CLOUD_COMPLETE, rows2
     assert rows2["lan"][0] in _OK, rows2
-    assert sorted(os.listdir(nas_c)) == sorted(os.listdir(src_c)), (os.listdir(nas_c), os.listdir(src_c))
-    assert sorted(os.listdir(cloud_c)) == sorted(os.listdir(src_c)), (os.listdir(cloud_c), os.listdir(src_c))
+    _assert_case_only_rename_recorded(src_c, nas_c, cloud_c)
 
     # run 3: nothing changed since run 2, so nothing may transfer
     log_lan_3_before, log_cloud_3_before = _log_set(rig, _LAN_ROBOCOPY_LOG), _log_set(rig, _CLOUD_RCLONE_LOG)
@@ -296,8 +317,7 @@ def test_l2_unicode_case_normalization_churn(names_rig):
     assert cloud_copied == 0, f"run 3 rclone copied {cloud_copied} object(s)"
 
     # both destinations: exact strings, and the audit clean on both legs
-    assert sorted(os.listdir(nas_c)) == sorted(os.listdir(src_c))
-    assert sorted(os.listdir(cloud_c)) == sorted(os.listdir(src_c))
+    _assert_case_only_rename_recorded(src_c, nas_c, cloud_c)
     audit_err = _audit(rig, "all")
     audits = _audit_status(rig, ("cloud", "lan"))
     assert audit_err is None, audit_err

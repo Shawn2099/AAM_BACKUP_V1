@@ -449,12 +449,12 @@ def _month_of_junction(r: Rig):
     return elsewhere, first_alert
 
 
-def test_p12_a_junction_is_never_used_and_the_owner_hears_once_after_24h(rig):
+def test_p12_a_junction_is_never_used_and_the_owner_hears_at_once(rig):
     elsewhere, first_alert = _month_of_junction(rig)
     assert rig.activations() == []                                  # never activated
     assert sorted(os.listdir(elsewhere)) == sorted(f"f{n}.xlsx" for n in range(10))   # nothing touched
     assert os.path.isjunction(rig.src / B)
-    assert first_alert == 3                                         # 24 h after the deferral of 1 Jan 06:00 = 2 Jan 06:00; first run beyond it
+    assert first_alert == 1                                         # LC2a: a link needs a person, so the first refusal (1 Jan 06:00) is mailed, no 24 h wait
     alerts = rig.notif("overlap:activation:")
     assert alerts and set(alerts) == {(f"overlap:activation:{B}", "ACTION_REQUIRED", "SENT")}
     assert "shortcut" in mail_text(rig.srv.messages[0])             # the mail says why

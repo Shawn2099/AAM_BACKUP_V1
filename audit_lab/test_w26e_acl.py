@@ -25,11 +25,44 @@ from audit_lab.test_w6_flow import _db_rows, rig  # noqa: F401 - the production-
 pytestmark = pytest.mark.timeout(1200)
 
 LAN_NOT_OK = ("LAN_PARTIAL", "LAN_FAILED")                    # card L7
+CLOUD_NOT_OK = ("CLOUD_FAILED", "CLOUD_BLOCKED")
 COMPLETE = ("LAN_COMPLETE", "LAN_NO_CHANGES_COMPLETE", "CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE")
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _restore_access(folder: Path, user: str) -> list[str]:
+    """Give the lab account its access back, whatever state the deny left the ACL in. The plain
+    `/remove:d` is tried first; it failed with 'Access is denied' in the 2026-11-23 run (the deny covers
+    READ_CONTROL, so the ACL cannot be edited), so the fallbacks are `icacls /reset /T`, then `takeown`
+    + a full-control grant + `/remove:d`. Success is judged by reading a file again, not by exit codes.
+    Returns what was tried (printed by the caller)."""
+    probe = next(iter(sorted(folder.glob("audit_*.txt"))), None)
+
+    def readable() -> bool:
+        try:
+            if probe is not None:
+                probe.read_bytes()
+            return True
+        except OSError:
+            return False
+
+    tried: list[str] = []
+    steps = (
+        ["icacls", str(folder), "/remove:d", user],
+        ["icacls", str(folder), "/reset", "/T"],
+        ["takeown", "/F", str(folder), "/R", "/D", "Y"],
+        ["icacls", str(folder), "/grant", f"{user}:(OI)(CI)F", "/T"],
+        ["icacls", str(folder), "/remove:d", user, "/T"],
+    )
+    for cmd in steps:
+        done = L.run(cmd)
+        tried.append(f"{' '.join(cmd[:3])} rc={done.returncode}")
+        if readable():
+            break
+    return tried
 
 
 def test_w26e_L7_acl_denied_subfolder_without_backup_mode(rig):
@@ -44,7 +77,7 @@ def test_w26e_L7_acl_denied_subfolder_without_backup_mode(rig):
     assert outside, "the rig must provide files outside Audit"
 
     denied = L.run(["icacls", str(audit), "/deny", f"{user}:(OI)(CI)R"])
-    cleanup = None
+    restore = None
     try:
         assert denied.returncode == 0, f"icacls deny failed: {denied.stdout}{denied.stderr}"
         # precondition: the deny really blocks the lab account from reading the subfolder
@@ -56,8 +89,9 @@ def test_w26e_L7_acl_denied_subfolder_without_backup_mode(rig):
         except Exception:  # noqa: BLE001 - a non-COMPLETE run raises by design
             pass
     finally:
-        cleanup = L.run(["icacls", str(audit), "/remove:d", user])
-    assert cleanup.returncode == 0, f"icacls cleanup failed: {cleanup.stdout}{cleanup.stderr}"
+        restore = _restore_access(audit, user)
+    print(f"[L7] ACL restore: {restore}")
+    (audit / "audit_0.txt").read_bytes()       # the deny is really gone (raises PermissionError otherwise)
 
     rows, _lan, _cloud = _db_rows(rig["cfg_path"])
     latest = {}
@@ -65,6 +99,9 @@ def test_w26e_L7_acl_denied_subfolder_without_backup_mode(rig):
         latest.setdefault(r["mode"], r["status"])
     assert "lan" in latest, "the LAN leg wrote no run_history row"
     assert latest["lan"] in LAN_NOT_OK, latest
+    # the cloud guard could not measure the unreadable folder (rclone size exit 6, "Audit: failed to open
+    # directory"), so the cloud leg must end FAILED or BLOCKED, never COMPLETE and never a "partial success"
+    assert latest.get("cloud") in CLOUD_NOT_OK, latest
     assert latest.get("cloud") not in COMPLETE, latest
 
     # files outside Audit are copied to the NAS, byte for byte
@@ -81,5 +118,5 @@ def test_w26e_L7_acl_denied_subfolder_without_backup_mode(rig):
              "an ACL-denied subfolder with use_backup_mode=false makes the LAN leg PARTIAL/FAILED, the cloud "
              "leg not COMPLETE, and the files outside the denied folder are still copied",
              f"lan={latest['lan']} | cloud={latest.get('cloud')} | outside files={len(outside)} "
-             f"copied={len(outside) - len(missing) - len(different)} | icacls cleanup rc={cleanup.returncode}",
+             f"copied={len(outside) - len(missing) - len(different)} | ACL restore={restore}",
              "OK — LAN not COMPLETE, cloud not COMPLETE, outside-Audit files copied")

@@ -206,6 +206,7 @@ _META_DEFERRED_REASON = "overlap_deferred_reason:{fy}"   # the CURRENT reason of
 _META_RESOLVED_SENT = "overlap_resolved_sent:{fy}"
 _META_CREATED_PENDING = "overlap_created_pending:{fy}"   # folder this app just created, activation not yet recorded
 _SECONDS_PER_HOUR = 3600
+_UNUSABLE_FOLDER_CODE = "AAM-ROL-06"   # "Files in the new year are not backed up yet": the early folder is refused
 
 
 def _result(state: str, fy: str | None, reason: str) -> dict:
@@ -244,10 +245,12 @@ def _find_canonical(parent: Path, fy: str) -> Path | None:
     return None
 
 
-def _defer(db, config, fy: str, reason: str, notify_fn, fault_code: str | None = None) -> dict:
+def _defer(db, config, fy: str, reason: str, notify_fn, fault_code: str | None = None,
+           immediate: bool = False) -> dict:
     """Not activated now: remember when this started and why, and, after activation_alert_after_hours, tell
     the owner - again every alerts.stale_repeat_hours while it stays deferred (overlap review D3), at once
-    when the reason changes. Nothing in the folders was touched."""
+    when the reason changes. `immediate`: a cause only a person can fix (a link or a file where the folder
+    should be): tell the owner on the first refusal, not after the wait (LC2a). Nothing in the folders was touched."""
     now = pendulum.now(IST)
     key = _META_FIRST_DEFERRED.format(fy=fy)
     first_raw = db._meta(key)
@@ -262,7 +265,7 @@ def _defer(db, config, fy: str, reason: str, notify_fn, fault_code: str | None =
     with contextlib.suppress(Exception):          # only feeds the dashboard item; never stops the alert
         db._set_meta(_META_DEFERRED_REASON.format(fy=fy), reason)
     hours = config.rollover.activation_alert_after_hours
-    if (now - first).total_seconds() > hours * _SECONDS_PER_HOUR:
+    if immediate or (now - first).total_seconds() > hours * _SECONDS_PER_HOUR:
         sent_raw = db._meta(_META_ALERT_SENT.format(fy=fy))
         last_reason = db._meta(_META_ALERT_REASON.format(fy=fy))
         changed = bool(sent_raw) and bool(last_reason) and last_reason != reason
@@ -315,7 +318,9 @@ def _send_deferred_alert(db, config, fy: str, reason: str, notify_fn, fault_code
         title=f"{fy} is not being backed up yet",
         message=(f"Next year's folder ({fy}) is not being backed up because {reason}. "
                  f"{configured} is still backed up every night as usual, so nothing is lost. "
-                 f"The backup tries again at every run and starts on its own once the problem is gone."),
+                 f"The backup tries again at every run and starts on its own once the problem is gone."
+                 + (f" Until it is fixed, {fy} will not be backed up at all, so files saved there exist "
+                    f"on the server only." if fault_code == _UNUSABLE_FOLDER_CODE else "")),
         fault_code=fault_code, fy=fy,
         cooldown_hours=0)          # the repeat spacing (alerts.stale_repeat_hours) is decided in _defer
     res = _call_notify(config, db, event, notify_fn)
@@ -410,9 +415,10 @@ def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
         if existing is not None and _is_link(existing):
             return _defer(db, config, fy,
                           f"{existing} is a shortcut (link), not a real folder, and the backup refuses to use it",
-                          notify_fn)
+                          notify_fn, fault_code=_UNUSABLE_FOLDER_CODE, immediate=True)
         if existing is not None and not existing.is_dir():
-            return _defer(db, config, fy, f"{existing} exists but is not a folder", notify_fn)
+            return _defer(db, config, fy, f"{existing} exists but is not a folder", notify_fn,
+                          fault_code=_UNUSABLE_FOLDER_CODE, immediate=True)
 
         created = existing is None
         pending_key = _META_CREATED_PENDING.format(fy=fy)

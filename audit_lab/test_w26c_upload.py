@@ -26,7 +26,14 @@ from audit_lab.test_w6_flow import _db_rows, rig  # noqa: F401 - the production-
 pytestmark = pytest.mark.timeout(1200)
 
 CLOUD_COMPLETE = ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE")
-CLOUD_NOT_OK = ("CLOUD_SUSPECT", "CLOUD_PARTIAL")       # card L4 / L5: "run 1 is PARTIAL/SUSPECT"
+# card L4 / L5: run 1 must not be COMPLETE. The product's honest answer to an rclone exit code (6 = source
+# size changed, 1 = file in use) is CLOUD_FAILED; SUSPECT/PARTIAL are accepted too. What is asserted besides:
+# never COMPLETE, the run raised, a FAILURE alert went out, and nothing was lost (run 2 converges).
+CLOUD_NOT_OK = ("CLOUD_FAILED", "CLOUD_SUSPECT", "CLOUD_PARTIAL")
+
+
+def _failure_alerts(rig, since: int) -> list:
+    return [a[1] for a in rig["alerts"][since:] if len(a) > 1 and getattr(a[1], "kind", None) == "FAILURE"]
 MIB = 1 << 20
 
 
@@ -123,6 +130,7 @@ def test_w26c_L4_file_growing_during_upload(rig, monkeypatch):
 
     monkeypatch.setattr(cs, "run_tool", _run_tool_starting_writer)
 
+    alerts_before = len(rig["alerts"])
     try:
         run1_exc = None
         try:
@@ -142,6 +150,8 @@ def test_w26c_L4_file_growing_during_upload(rig, monkeypatch):
     assert run1, "run 1 wrote no cloud run_history row"
     assert run1[0]["status"] in CLOUD_NOT_OK, (run1[0]["status"], run1_exc)
     assert run1[0]["status"] not in CLOUD_COMPLETE
+    assert run1_exc is not None, "a not-COMPLETE run must raise, never end as a Prefect success"
+    assert _failure_alerts(rig, alerts_before), "no failure alert for the run that did not complete"
 
     # run 2: the writer is stopped, the source is static
     flow.backup(config_path=str(rig["cfg_path"]), mode="cloud")
@@ -174,17 +184,22 @@ def test_w26c_L5_exclusively_locked_file_cloud_leg(rig):
 
     handle = win32file.CreateFile(
         str(locked), win32file.GENERIC_READ, 0, None, win32file.OPEN_EXISTING, 0, None)
+    alerts_before = len(rig["alerts"])
+    run1_exc = None
     try:
         try:
             flow.backup(config_path=str(rig["cfg_path"]), mode="cloud")
-        except Exception:  # noqa: BLE001 - a non-COMPLETE run raises by design
-            pass
+        except Exception as exc:  # noqa: BLE001 - a non-COMPLETE run raises by design
+            run1_exc = exc
     finally:
         win32file.CloseHandle(handle)
 
     run1 = _cloud_rows(rig["cfg_path"])
     assert run1, "run 1 wrote no cloud run_history row"
     assert run1[0]["status"] in CLOUD_NOT_OK, run1[0]["status"]
+    assert run1[0]["status"] not in CLOUD_COMPLETE
+    assert run1_exc is not None, "a not-COMPLETE run must raise, never end as a Prefect success"
+    assert _failure_alerts(rig, alerts_before), "no failure alert for the run that did not complete"
     named = _logs_mentioning(runtime, "lock.xlsx")
     assert named, "the locked file is not named in any run log"
 

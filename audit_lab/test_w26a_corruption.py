@@ -7,7 +7,7 @@ Same-size, same-mtime corruption of ONE file on BOTH destinations:
       and modification time still match the source (what robocopy and rclone compare);
     * the next LAN backup therefore copies nothing, and is COMPLETE by design;
     * the weekly integrity audit (rclone check, hash based) must catch the divergence on
-      BOTH legs, naming Tax/a.xlsx, and raise a FAILURE mail.
+      BOTH legs, naming Tax/a.xlsx, and raise exactly one alert mail (ACTION_REQUIRED) plus red dashboard items.
 
 Oracle: our own MD5 of the source file against the destination files (labconf.md5),
 never the product's audit verdict. Expected values come from the card.
@@ -136,8 +136,21 @@ def test_w26a_same_size_same_mtime_corruption_is_caught_by_the_weekly_audit(rig,
             assert row["status"] == "VERIFICATION_FAILED", f"{leg} audit: {row}"
             assert REL in (row["detail"] or ""), f"{leg} audit does not name {REL}: {row['detail']!r}"
 
-    kinds = [a[1].kind for a in rig["alerts"] if len(a) > 1]
-    assert "FAILURE" in kinds, f"no FAILURE mail for the audit divergence: {kinds}"
+    # The product's choice (flow._audit_alert_kind): a real divergence is ACTION_REQUIRED, never switchable
+    # (a person must look: "do not delete anything, forward to support"). FAILURE would also be acceptable, so
+    # the test asserts what matters: EXACTLY ONE alert mail for the audit, of a human-attention kind, and a red
+    # dashboard item per leg.
+    audit_mails = [a[1] for a in rig["alerts"] if len(a) > 1 and str(getattr(a[1], "key", "")).startswith("audit:")]
+    kinds = [e.kind for e in audit_mails]
+    assert len(audit_mails) == 1, f"expected exactly one audit alert mail, got {[(e.key, e.kind) for e in audit_mails]}"
+    assert kinds[0] in ("ACTION_REQUIRED", "FAILURE"), f"audit alert kind {kinds[0]}"
+    from core import attention
+    from models.config import load_config
+    with _db(cfg_path) as m:
+        items = attention.compute_attention(m, load_config(str(cfg_path)))
+    red = {i["code"] for i in items if i["level"] == attention.RED}
+    for leg in ("lan", "cloud"):
+        assert f"audit:{FY}:{leg}" in red, f"no red dashboard item for the {leg} audit: {sorted(red)}"
 
     # the oracle: our own MD5, computed here, still shows both destinations differ from the source
     assert L.md5(nas_xlsx) != src_md5 and L.md5(remote_xlsx) != src_md5
@@ -147,5 +160,5 @@ def test_w26a_same_size_same_mtime_corruption_is_caught_by_the_weekly_audit(rig,
              "Tax/a.xlsx is caught by the weekly MD5 audit on both legs; the LAN backup stays COMPLETE by design",
              f"LAN baseline + cloud COMPLETE | corrupted byte 100 on both copies, mtime restored | "
              f"next LAN run LAN_COMPLETE | audit lan={'VERIFICATION_FAILED'} cloud={'VERIFICATION_FAILED'} "
-             f"both detail name {REL} | FAILURE mails={kinds.count('FAILURE')}",
+             f"both detail name {REL} | audit alert mails={len(audit_mails)} kind={kinds[0]} + red items on both legs",
              "OK - the MD5 audit catches same-size/same-mtime corruption on both legs")
