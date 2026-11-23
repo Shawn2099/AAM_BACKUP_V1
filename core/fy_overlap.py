@@ -479,3 +479,70 @@ def load_final_copy(db, to_fy: str) -> dict | None:
         return {"final_copy": saved["final_copy"], "forced_legs": list(saved.get("forced_legs") or []),
                 "final_status": dict(saved.get("final_status") or {})}
     return None
+
+
+# ── B8 reports: the FY of a row, the last good copy of one FY ──────────────────────────────────────────────
+
+
+def _instant(value) -> pendulum.DateTime:
+    """A stored time as an instant (a value without an offset is IST); raises when unreadable."""
+    from core.time_utils import IST as _IST
+
+    return pendulum.parse(str(value), tz=_IST)
+
+
+def row_fy_or_default(row: dict, configured: str, closed_at: str | None) -> str:
+    """The FY a run row really backed up (B8 D8-2): its own FY (`row_fy`), else the configured FY - or the
+    FY before it when the overlap of `configured` was closed (`closed_at`) and the row started before that."""
+    fy = row_fy(row)
+    if fy:
+        return fy
+    if closed_at:
+        try:
+            if _instant(row.get("started_at")) < _instant(closed_at):
+                return prev_fy(configured)
+        except Exception:  # noqa: BLE001 - an unreadable time keeps the configured FY
+            return configured
+    return configured
+
+
+def _newest(rows: list[dict]) -> dict | None:
+    best, best_at = None, None
+    for row in rows:
+        try:
+            at = _instant(row.get("started_at"))
+        except Exception:  # noqa: BLE001 - an unreadable time sorts first
+            at = pendulum.datetime(1970, 1, 1)
+        if best is None or at > best_at:
+            best, best_at = row, at
+    return best
+
+
+def last_good_of_fy(db, leg: str, fy: str, configured: str, closed_at: str | None) -> dict | None:
+    """The newest successful run of `leg` that backed up `fy` (B8 D8-8), or None.
+
+    Configured FY: the newer of the unsuffixed last success and the `-<configured>` suffixed one; after a
+    switch (`closed_at`) the unsuffixed row counts only when it maps to the configured FY. The next FY: its
+    suffixed rows. Any other FY: the newest success of the history that maps to it. With no overlap record
+    this is exactly `db.last_successful_run(leg)`."""
+    from core.statuses import SUCCESS_STATUSES
+    from core.time_utils import IST as _IST
+
+    if fy == configured:
+        found = []
+        plain = db.last_successful_run(leg)
+        if plain and (closed_at is None or row_fy_or_default(plain, configured, closed_at) == configured):
+            found.append(plain)
+        suffixed = db.last_successful_run(leg, fy=configured)
+        if suffixed:
+            found.append(suffixed)
+        return _newest(found)
+    if fy == next_fy(configured):
+        return db.last_successful_run(leg, fy=fy)
+    try:
+        end = _instant(closed_at) if closed_at else pendulum.now(_IST)
+    except Exception:  # noqa: BLE001
+        end = pendulum.now(_IST)
+    rows = db.get_runs_between(pendulum.datetime(2000, 1, 1, tz=_IST), end, mode=leg)
+    return _newest([r for r in rows if r.get("status") in SUCCESS_STATUSES
+                    and row_fy_or_default(r, configured, closed_at) == fy])

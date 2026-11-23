@@ -122,20 +122,52 @@ def _facts(config) -> dict:
             "leg_name": "backup"}
 
 
+def _data_safety_context(config, db):
+    """(configured FY, closed_at, active next FY, error) for the "Is my data safe?" lines (B8 D8-14).
+    configured is None when the FY is unknown (then the lines are the baseline ones)."""
+    from core import fy_overlap, fy_rollover
+
+    source = getattr(getattr(config, "paths", None), "source_drive", None)
+    if db is None or not isinstance(source, str):
+        return None, None, None, False
+    configured = fy_rollover.configured_fy(source, None)
+    if configured is None:
+        return None, None, None, False
+    try:
+        active = fy_overlap.active_next_fy(config, db)
+        record = db.overlap_record(configured)
+    except Exception:  # noqa: BLE001 - an unreadable record is said in the mail, never guessed
+        return configured, None, None, True
+    closed_at = record.get("ended_at") if isinstance(record, dict) else None
+    return configured, closed_at, (active[0] if active else None), False
+
+
 def _data_safety(config, db, now) -> list[str]:
+    from core import fy_overlap
+
     lines = ["Your files on the server: never changed or deleted by the backup."]
+    configured, closed_at, nxt, error = _data_safety_context(config, db)
     for leg in ("lan", "cloud"):
         if not getattr(config, leg).enabled:
             continue
-        try:
-            last = db.last_successful_run(leg) if db is not None else None
-        except Exception:  # noqa: BLE001
-            last = None
-        if last:
-            when = last.get("ended_at") or last.get("started_at")
-            lines.append(f"{LEG_LABEL[leg]}: last good copy {_when(when)} ({_age(when, now)}).")
-        else:
-            lines.append(f"{LEG_LABEL[leg]}: no good copy recorded yet.")
+        for fy in ((configured, nxt) if nxt else (None,)):
+            try:
+                if db is None:
+                    last = None
+                elif fy is not None or (configured is not None and closed_at is not None):
+                    last = fy_overlap.last_good_of_fy(db, leg, fy or configured, configured, closed_at)
+                else:
+                    last = db.last_successful_run(leg)
+            except Exception:  # noqa: BLE001
+                last = None
+            name = LEG_LABEL[leg] + (f" ({fy})" if fy else "")
+            if last:
+                when = last.get("ended_at") or last.get("started_at")
+                lines.append(f"{name}: last good copy {_when(when)} ({_age(when, now)}).")
+            else:
+                lines.append(f"{name}: no good copy recorded yet.")
+    if error:
+        lines.append("The next financial year's backup state could not be read - it may not be backed up.")
     return lines
 
 
