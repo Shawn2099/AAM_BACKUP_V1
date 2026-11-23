@@ -202,6 +202,8 @@ HELP: dict[str, tuple[str, str]] = {
     "dashboard.link_cache_seconds": ("Look up the dashboard address in emails every", ""),
     "dashboard.config_refresh_seconds": ("Dashboard re-reads settings every", ""),
     "dashboard.trigger_wait_seconds": ("Wait for a started run", "Before the page answers; the run continues."),
+    "dashboard.manual_start_max_wait_minutes": ("A manual start may begin at most this late", "Later than this it is recorded as Missed and nothing is touched."),
+    "dashboard.agent_max_silence_seconds": ("Backup service counts as stopped after being silent for", "A manual start is refused then."),
     "dashboard.history_nights": ("Nights shown on the dashboard strip", ""),
     "dashboard.apply_delay_seconds": ("Restart this long after pressing Apply", ""),
     "dashboard.apply_force_exit_seconds": ("Force the restart if the service has not stopped after", ""),

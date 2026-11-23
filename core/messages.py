@@ -52,6 +52,10 @@ SCHEDULER_NOT_ANSWERING = act(
     "Try again in a minute",
     "The scheduler is not answering, so the dashboard cannot tell whether a backup is already "
     "running. Nothing was started")
+SERVICE_NOT_RUNNING = act(
+    "Start the backup service (or ask support to), then try again",
+    "The backup service is not running, nothing was started")
+
 
 
 def leg_name(leg: str) -> str:

@@ -497,6 +497,47 @@ def _scheduled_lateness_seconds() -> float:
         return 0.0
 
 
+def _manual_start_delay_seconds() -> float:
+    """F1: how long ago a MANUAL (button) flow run was requested when it actually begins. A run queued while
+    the backup service was down would otherwise start whenever the service returns, at an unplanned time.
+    0 for scheduled runs (plan I2 handles those), outside a flow run, and when the time is unreadable."""
+    try:
+        from prefect.context import FlowRunContext
+        ctx = FlowRunContext.get()
+        run = ctx.flow_run if ctx else None
+        if run is None or getattr(run, "auto_scheduled", None) is not False or run.expected_start_time is None:
+            return 0.0
+        return max(0.0, time.time() - run.expected_start_time.timestamp())
+    except Exception as e:  # noqa: BLE001 - unreadable means "on time" here (the endpoint guard is layer 1)
+        logger.warning(f"Manual request time unknown ({e}); not checking how late the start is")
+        return 0.0
+
+
+def _refuse_stale_manual_start(config, mode: str, folders: list[str]) -> None:
+    """F1 layer 2: a manual run that begins later than dashboard.manual_start_max_wait_minutes after the
+    button was pressed is NOT executed: one <LEG>_MISSED row per leg and folder, no slot, no NAS wake, no
+    copy; the flow fails (PartialRun) so Prefect never shows it as completed."""
+    delay = _manual_start_delay_seconds()
+    if delay <= 0:
+        return
+    limit = config.dashboard.manual_start_max_wait_minutes * 60
+    if delay <= limit:
+        return
+    minutes = int(delay // 60)
+    error = (f"This manual backup was requested {minutes} minutes before it could start (the backup service "
+             f"was not running), which is more than the {config.dashboard.manual_start_max_wait_minutes} minutes "
+             "allowed. Nothing was changed and the NAS was not woken. Press the button again when you want it.")
+    logger.warning(error)
+    started_at = now_iso()
+    legs = [leg for leg, on in (("cloud", mode in ("cloud", "all") and config.cloud.enabled),
+                                ("lan", mode in ("lan", "all") and config.lan.enabled)) if on]
+    for leg in legs:
+        for fy in folders:
+            _record_run(fy_overlap.folder_view(config, fy), _stable_run_id(leg, fy), leg, started_at,
+                        f"{leg.upper()}_MISSED", -1, error)
+    raise PartialRun(f"Manual run not started: {error}")
+
+
 def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget: RunBudget,
                          reserve_s: float, late_s: float, monotonic_start: float | None,
                          shared_budget: bool = False) -> None:
@@ -3660,6 +3701,9 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             raise ValueError(f"FY {fy} is not being backed up right now (active: {', '.join(folders)}); "
                              "refusing to run it.")
         folders = [fy]
+
+    if folders:
+        _refuse_stale_manual_start(config, mode, folders)
 
     try:
         # ── Cloud ──

@@ -1151,6 +1151,15 @@ class DashboardConfig(StrictModel):
         default=180, ge=0, le=600,
         description="A manual start waits this long for the run's first result before "
                     "answering (the run continues afterwards)")
+    manual_start_max_wait_minutes: int = Field(
+        default=30, ge=5, le=1440,
+        description="A manual start that begins later than this many minutes after the button "
+                    "was pressed is not run: it is recorded as Missed and nothing is touched "
+                    "(the NAS is never woken for it)")
+    agent_max_silence_seconds: int = Field(
+        default=120, ge=30, le=3600,
+        description="A manual start is refused when the backup service has not asked for work "
+                    "for this long (it is not running)")
     history_nights: int = Field(
         default=30, ge=7, le=90,
         description="The dashboard shows one mark per night for this many nights")
