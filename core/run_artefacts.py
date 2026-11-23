@@ -12,6 +12,10 @@ Layout::
 id is unchanged; retention still removes whole day folders. A tool call outside a run keeps the
 plain run-id folder and numbered files.)
 
+A next-FY overlap pass (run id ending `-FYxx-yy`, plan section 2.3 / A3b) adds its FY to the folder
+and to every file name, between the leg and the step: `<ts>_<leg>_<short id>_FYxx-yy/` holding
+`<ts>_<leg>_FYxx-yy_<step>.log`, so a mailed log says which year it is. Configured-FY names are unchanged.
+
 Nothing here decides backup outcomes; it only preserves evidence. Writing
 artefacts must never break a backup: failures are logged and the run is
 marked `degraded` in the manifest instead of raising.
@@ -36,7 +40,7 @@ from core.time_utils import IST, now_iso
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _DOT_RUNS = re.compile(r"\.{2,}")
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_RUN_DIR = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+)_[A-Za-z0-9]+(?:_FY\d{2}-\d{2})?$")
+_RUN_DIR = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+)_[A-Za-z0-9]+(_FY\d{2}-\d{2})?$")
 _FY_TAIL = re.compile(r"-(FY\d{2}-\d{2})$")   # a next-FY pass id ends with its FY (plan 2.3)
 _LEGS = ("cloud", "lan", "audit", "rollover")
 MANIFEST_NAME = "manifest.json"
@@ -82,8 +86,10 @@ class RunArtefacts:
         self.root = Path(root)
         self.run_id = run_id
         if leg and day != "adhoc":
-            self._prefix = f"{started.format('YYYY-MM-DD_HHmm')}_{leg}"
-            self.dir = self.root / day / f"{self._prefix}_{_safe(str(run_id)[:8])}{fy_tail}"
+            # the FY of a next-FY pass sits between the leg and the step (A3b); "" for the configured FY
+            stamp_leg = f"{started.format('YYYY-MM-DD_HHmm')}_{leg}"
+            self._prefix = f"{stamp_leg}{fy_tail}"
+            self.dir = self.root / day / f"{stamp_leg}_{_safe(str(run_id)[:8])}{fy_tail}"
         else:
             self._prefix = None
             self.dir = self.root / day / _safe(run_id)
@@ -117,7 +123,7 @@ class RunArtefacts:
             obj._manifest = {"run_id": d.name, "created_at": now_iso(),
                              "degraded": False, "notes": [], "artefacts": []}
         match = _RUN_DIR.match(d.name)
-        obj._prefix = match.group(1) if match else None
+        obj._prefix = (match.group(1) + (match.group(2) or "")) if match else None
         seqs = [int(p.name[:2]) for p in d.iterdir() if p.name[:2].isdigit()]
         obj._seq = max(seqs, default=0)
         return obj

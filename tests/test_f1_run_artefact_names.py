@@ -83,7 +83,8 @@ def test_next_fy_pass_folder_ends_with_its_fy(tmp_path):
     a = RunArtefacts(tmp_path, PASS_ID, started=STARTED)
     assert a.dir == tmp_path / "2026-10-18" / "2026-10-18_2100_lan_3f2a9c1e_FY27-28"
     assert a.run_id == PASS_ID
-    assert a.new_path("robocopy-sync", "log").name == "2026-10-18_2100_lan_robocopy-sync.log"
+    # the FY sits between the leg and the step, so a log attached to a mail says which year it is (A3b)
+    assert a.new_path("robocopy-sync", "log").name == "2026-10-18_2100_lan_FY27-28_robocopy-sync.log"
 
 
 @pytest.mark.parametrize("leg", ["cloud", "lan"])
@@ -95,7 +96,7 @@ def test_leg_is_read_before_the_fy_tail(tmp_path, leg):
 def test_audit_pass_folder_has_the_audit_leg_and_fy(tmp_path):
     a = RunArtefacts(tmp_path, "abcdef12-0000-0000-0000-000000000000-cloud-full-FY27-28", started=STARTED)
     assert a.dir.name == "2026-10-18_2100_audit-cloud_abcdef12_FY27-28"
-    assert a.new_path("rclone-check", "log").name == "2026-10-18_2100_audit-cloud_rclone-check.log"
+    assert a.new_path("rclone-check", "log").name == "2026-10-18_2100_audit-cloud_FY27-28_rclone-check.log"
 
 
 def test_configured_and_next_fy_passes_in_the_same_minute_get_two_folders(tmp_path):
@@ -112,8 +113,26 @@ def test_reopening_a_next_fy_folder_keeps_the_file_prefix_and_does_not_reuse_a_n
     taken.write_text("x")
     b = RunArtefacts.open(str(a.dir))
     again = b.new_path("robocopy", "log")
-    assert again != taken and again.name.startswith("2026-10-18_2100_lan_robocopy")
-    assert b.new_path("health", "txt").name == "2026-10-18_2100_lan_health.txt"
+    assert again != taken and again.name.startswith("2026-10-18_2100_lan_FY27-28_robocopy")
+    assert b.new_path("health", "txt").name == "2026-10-18_2100_lan_FY27-28_health.txt"
+
+
+def test_configured_fy_file_names_are_unchanged_next_to_a_next_fy_folder(tmp_path):
+    first = RunArtefacts(tmp_path, RUN_ID, started=STARTED)
+    assert first.new_path("robocopy", "log").name == "2026-10-18_2100_lan_robocopy.log"
+
+
+def test_next_fy_file_names_carry_the_fy_after_the_leg_for_every_leg(tmp_path):
+    for leg in ("cloud", "lan"):
+        a = RunArtefacts(tmp_path, f"abcdef12-0000-0000-0000-000000000000-{leg}-FY27-28", started=STARTED)
+        assert a.new_path("rclone-sync", "log").name == f"2026-10-18_2100_{leg}_FY27-28_rclone-sync.log"
+
+
+def test_next_fy_names_survive_a_reopen_with_the_fy_kept(tmp_path):
+    a = RunArtefacts(tmp_path, PASS_ID, started=STARTED)
+    a.new_path("robocopy", "log").write_text("x")
+    reopened = RunArtefacts.open(str(a.dir))
+    assert reopened.new_path("robocopy", "log").name == "2026-10-18_2100_lan_FY27-28_robocopy-2.log"
 
 
 def test_purge_removes_a_day_folder_holding_next_fy_passes(tmp_path):
@@ -122,3 +141,12 @@ def test_purge_removes_a_day_folder_holding_next_fy_passes(tmp_path):
     old = a.dir.parent
     os.utime(old, (0, 0))
     assert purge_older_than(tmp_path, 30, glob="*") == 1 and not old.exists()
+
+
+def test_readers_still_find_next_fy_files(tmp_path):
+    # the support bundle collects a run folder by walking it, not by name: the FY file names are found
+    from core.support_bundle import _log_files
+    a = RunArtefacts(tmp_path, PASS_ID, started=STARTED)
+    a.new_path("robocopy", "log").write_text("x")
+    names = [p.name for p in _log_files(a.dir)]
+    assert "2026-10-18_2100_lan_FY27-28_robocopy.log" in names

@@ -90,7 +90,7 @@ New keyword parameters, both defaulting to baseline behaviour: `fy_pass: FyPass 
 | Paths, cloud prefix, guard FY, verify, LAN dest | `E:\FY26-27`, `gs://bucket/FY26-27`, `\\nas\backup\FY26-27` | `E:\FY27-28`, `gs://bucket/FY27-28`, `\\nas\backup\FY27-28` | all tasks read `config.paths.*`; `_effective_fy_prefix` `flow.py:102` |
 | run_id | `<flow-run>-cloud` (unchanged) | `<flow-run>-cloud-FY27-28` | `backup()`; `_stable_run_id` `flow.py:130` unchanged |
 | run_history row | mode `cloud`/`lan`, statuses unchanged, + `"fy"` in metrics | same mode/statuses, suffixed run_id, + `"fy"`, `"overlap": true` | `_record_run` `flow.py:2173`; RUNNING row `start_run_row` `core/backup_repository.py:122` (status built from mode, so mode stays the leg) |
-| Run-log folder | `<date>_<HHmm>_cloud_<id8>` (unchanged) | `<date>_<HHmm>_cloud_<id8>_FY27-28` | `core/run_artefacts.py:39` (`_RUN_DIR` optional `_FYxx-yy` tail), `_leg_of` `:49` strips the suffix first, `__init__` `:71-76` appends it |
+| Run-log folder and file names (A3b) | folder `<date>_<HHmm>_cloud_<id8>`, files `<date>_<HHmm>_cloud_<step>.log` (unchanged) | folder `<date>_<HHmm>_cloud_<id8>_FY27-28`, files `<date>_<HHmm>_cloud_FY27-28_<step>.log` (the FY sits between the leg and the step, so a mailed log says which year it is) | `core/run_artefacts.py` (`_RUN_DIR` regex with the FY group, `_leg_of` strips the suffix first, `__init__` builds `_prefix` with the FY tail, `open()` keeps it); readers walk the folder by name (`core/support_bundle.py` `_log_files`), so they are unaffected |
 | Prefect artifact key | `cloud-backup-summary` | `cloud-backup-summary-fy27-28` | `flow.py:1378`, `flow.py:1414` (key becomes a parameter) |
 | Slot + `backup.lock` | per pipeline, unchanged | per pipeline, unchanged (passes are sequential) | `_pipeline_slot` `flow.py:494`, `_backup_slot` `:194` |
 | Alert keys | unchanged (`backup:cloud:<status>`, `blocked:cloud`, `missed:cloud`, `recovered:cloud`) | `backup:cloud:FY27-28:<status>`, `blocked:cloud:FY27-28`, `missed:cloud:FY27-28`, `recovered:cloud:FY27-28` | `_send_run_alert` `:325`, `_open_block_request` `:1082`, `_missed_if_no_budget` `:450`, `_send_recovery_if_needed` `:355`, slot timeout `:516`; all prefixes already in `alert_class.KNOWN_PREFIXES` |
@@ -344,7 +344,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
   `E:\FY26-27` -> `E:\FY27-28` (not `E:FY27-28`, not `E:/FY27-28`), `\\nas\backup\FY26-27` -> `\\nas\backup\FY27-28`,
   the per-pass config passes `AppConfig` cross-field validation when re-validated, cloud-only placeholder kept, other
   sections identical; `ensure_nas_folder` parent = `\\nas\backup`; `row_fy` fallbacks.
-- [x] **A3 Run-log folder names.** extend `tests/test_f1_run_artefact_names.py`: suffixed id -> `..._FY27-28` folder,
+- [x] **A3 Run-log folder names.** (A3b, owner request after A6: the FY also goes into the file names, section 2.3.) extend `tests/test_f1_run_artefact_names.py`: suffixed id -> `..._FY27-28` folder,
   re-open keeps the file prefix, two passes in the same minute get two folders, `purge_older_than` unaffected.
 - [x] **A4 DB filters, final copy, approvals, records.** `tests/test_fy_overlap_db.py`: each `fy=` method with suffixed
   and unsuffixed rows; `guard_baseline` sees both passes of its FY; `final_copy_since` (status set, `guards.fy`,
