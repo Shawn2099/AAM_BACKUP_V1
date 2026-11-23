@@ -61,6 +61,21 @@ class GuardResult:
     def passed(self) -> bool:
         return self.verdict == PASS
 
+    @property
+    def approvable(self) -> bool:
+        """False when no person may approve this block (the target itself is wrong)."""
+        return self.fault_code not in NOT_APPROVABLE_CODES
+
+
+# A block whose cause is the TARGET (not mounted / unreachable, this very server, or a marker
+# missing on a folder that holds files) is fixed at the NAS, never approved: a mirror onto the
+# wrong place can delete files there (owner decision B, 2026-11-23). The next backup clears it.
+NOT_APPROVABLE_CODES = frozenset({"AAM-NAS-01", "AAM-NAS-07", "AAM-NAS-10"})
+
+
+def code_approvable(code: str | None) -> bool:
+    return code not in NOT_APPROVABLE_CODES
+
 
 def _pass(guard: str, reason: str, **metrics) -> GuardResult:
     return GuardResult(guard, PASS, reason, metrics)
@@ -226,7 +241,9 @@ def g4_destination_identity(destination: str, last_success_destination: str | No
             return _block(
                 name,
                 f"Destination {destination} is on THIS machine ({', '.join(sorted(local_hit))}). "
-                "A backup on the same machine does not protect against its loss.",
+                "A backup on the same machine does not protect against its loss. "
+                "Do NOT approve. Fix the backup target setting so it points at the NAS; "
+                "the next backup clears this by itself.",
                 "AAM-NAS-07", **metrics,
             )
     if last_success_destination and _norm_dest(last_success_destination) != _norm_dest(destination):
@@ -255,14 +272,17 @@ def g5_canary(canary_present: bool | None, destination_has_files: bool | None,
         return _block(
             name,
             f"Mount marker .AAM_TARGET_MOUNTED is missing on {destination}, which already "
-            "holds files. Someone may have changed the share. Approve only if you have "
-            "confirmed this is the correct backup location (the marker will be recreated).",
+            "holds files. The share may be the wrong disk or folder, or not mounted properly. "
+            "Do NOT approve. Fix the cause (mount or restore the NAS share, check the path); "
+            "the next backup clears this by itself.",
             "AAM-NAS-10", **metrics,
         )
     return _block(
         name,
         f"Mount marker .AAM_TARGET_MOUNTED is missing on the empty destination "
-        f"{destination}. Approve to initialise this location as the backup target.",
+        f"{destination}. If this is the new NAS or folder you expected, approving creates the "
+        "marker file there and the first copy then runs. Check first that the path is the "
+        "right NAS folder; if it is not, do not approve.",
         "AAM-NAS-09", **metrics,
     )
 

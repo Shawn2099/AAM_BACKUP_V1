@@ -114,7 +114,9 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
     _f("AAM-NAS-07", "Backup target is on this server", ACTION, (SUPPORT,),
        "The backup target {dest} is a disk of the server itself, not the NAS. A copy on "
        "the same machine does not protect you, so we stopped.",
-       "Do NOT approve.", _FORWARD + " The backup target setting is wrong."),
+       "Do NOT approve. This cannot be approved on the dashboard.",
+       "Fix the cause: the backup target setting is wrong and must point at the NAS. "
+       "The next backup clears this by itself.", _FORWARD),
     _f("AAM-NAS-08", "Backup target changed", ACTION, (YOU,),
        "The backup target changed since the last good backup. We stopped to make sure "
        "your files go to the right place.",
@@ -123,12 +125,16 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
     _f("AAM-NAS-09", "New, empty backup target", ACTION, (YOU,),
        "The backup target {dest} is new and empty. This is expected after setting up a "
        "new NAS or folder. Before the first full copy we need your OK.",
-       "If this is the new NAS/folder you expected: approve on the dashboard "
-       "(type the words shown there)."),
+       "Check that the path is the new NAS folder you expected. If it is, approve on the "
+       "dashboard (type the words shown there): approving creates the marker file there and "
+       "the first copy then runs.",
+       "If it is not the right folder: do not approve; call support."),
     _f("AAM-NAS-10", "Wrong disk or folder on the NAS", ACTION, (SUPPORT,),
        "{dest} has files but not the backup's marker file, so it may be a different disk "
        "or folder. We stopped so we do not overwrite it.",
-       "Do NOT approve.", _FORWARD),
+       "Do NOT approve. This cannot be approved on the dashboard.",
+       "Fix the cause (mount or restore the NAS share, check the path). The next backup "
+       "clears this by itself.", _FORWARD),
     _f("AAM-NAS-11", "NAS is not storing files reliably", PROBLEM, (IT, SUPPORT),
        "We saved a small test file on the NAS but could not read the same content back. "
        "Nothing was copied.",

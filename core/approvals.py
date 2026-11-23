@@ -95,6 +95,32 @@ def evaluate_request(request: dict | None, *, leg: str, blocked: list, fy: str, 
     return ApprovalDecision(True, "approval covers every blocked guard")
 
 
+NOT_APPROVABLE_MESSAGE = (
+    "This block is about the backup target itself (not mounted or unreachable, this same "
+    "server, or the wrong folder), so it cannot be approved. Fix the cause (mount or restore "
+    "the NAS share, check the path); the next backup clears this by itself.")
+
+
+def entry_approvable(entry: dict) -> bool:
+    """May a person approve this blocked guard? Entries stored before the flag existed are
+    judged by the fault code, else by the measured G5 numbers; anything else stays approvable."""
+    from core.guards import code_approvable
+    if "approvable" in entry:
+        return bool(entry["approvable"])
+    if entry.get("fault_code"):
+        return code_approvable(entry["fault_code"])
+    if entry.get("guard") == "G5_CANARY":
+        m = entry.get("metrics") or {}
+        return not (m.get("canary_present") is None or
+                    (m.get("canary_present") is False and m.get("destination_has_files")))
+    return True
+
+
+def request_approvable(guards: list[dict] | None) -> bool:
+    """A request can be approved only when EVERY blocked guard in it can."""
+    return all(entry_approvable(g) for g in guards or [])
+
+
 def phrase_matches(expected: str, typed: str) -> bool:
     if not isinstance(typed, str):
         return False

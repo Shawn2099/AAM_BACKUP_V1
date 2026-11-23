@@ -624,7 +624,10 @@ function approvalCard(a) {
     html += '<h2>' + leg + ' blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
     html += '<ul>' + reasons + '</ul>';
     html += '<p class="fine">' + (a.leg === 'rollover' ? 'Nothing was changed.' : 'Nothing was copied or deleted.') + ' Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';
-    if (a.status === 'PENDING') {
+    if (a.status === 'PENDING' && a.approvable === false) {
+        html += '<p><b>' + escHtml(a.not_approvable_note) + '</b></p>';
+        html += '<button class="btn-secondary" onclick="approvalAction(\'' + id + '\', \'dismiss\')">Dismiss</button>';
+    } else if (a.status === 'PENDING') {
         html += '<p>To run this <b>once</b> anyway, type <code>' + escHtml(a.phrase) + '</code> and approve. The backup re-checks first and stops again if anything got worse.</p>';
         html += '<input id="phrase-' + id + '" type="text" autocomplete="off" placeholder="' + escHtml(a.phrase) + '"><br>';
         html += '<button class="btn-danger" onclick="approvalAction(\'' + id + '\', \'approve\')">Approve this backup once</button> ';

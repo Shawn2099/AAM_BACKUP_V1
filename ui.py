@@ -1007,7 +1007,10 @@ def _approval_view(req: dict) -> dict:
     keys = ("approval_id", "leg", "status", "created_at", "blocked_run_id", "fy",
             "guards", "phrase", "approved_at", "approved_by", "expires_at")
     # one word confirms every approval, including requests stored with an older, longer phrase
-    return {**{k: req.get(k) for k in keys}, "phrase": approvals.APPROVE_PHRASE, "expired": expired}
+    approvable = approvals.request_approvable(req.get("guards"))
+    return {**{k: req.get(k) for k in keys}, "phrase": approvals.APPROVE_PHRASE, "expired": expired,
+            "approvable": approvable,
+            "not_approvable_note": None if approvable else "Do NOT approve. " + approvals.NOT_APPROVABLE_MESSAGE}
 
 
 def _load_open_approval(approval_id: str) -> dict:
@@ -1077,6 +1080,10 @@ async def approve_blocked_run(approval_id: str, request: Request):
     if not approvals.phrase_matches(approvals.APPROVE_PHRASE, typed):
         raise HTTPException(status_code=400,
                             detail=messages.act(f"Type {approvals.APPROVE_PHRASE} exactly, then press Approve", "The word typed did not match"))
+    if not approvals.request_approvable(req.get("guards")):
+        raise HTTPException(status_code=409, detail=messages.act(
+            "Fix the cause (mount or restore the NAS share, check the path); the next backup clears this by itself",
+            "This block is about the backup target itself, so it cannot be approved"))
     if req.get("fy") and req["fy"] not in _active_fy_list():
         raise HTTPException(status_code=409, detail=messages.act(
             "Dismiss this request; approve the one for the current financial year instead",
