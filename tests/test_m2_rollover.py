@@ -126,7 +126,9 @@ def _cfg():
     cfg.paths.database_path = ":memory:"
     cfg.cloud.enabled = True
     cfg.lan.enabled = True
-    cfg.rollover = RolloverConfig()
+    # the FY overlap (B1) is off here: these tests cover the plain rollover, and with the default on the real
+    # date after 31 Dec would reach the real clock check (plan section 9, default-on note)
+    cfg.rollover = RolloverConfig(overlap_enabled=False)
     cfg.health = HealthConfig()
     return cfg
 

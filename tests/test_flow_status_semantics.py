@@ -26,6 +26,8 @@ def _make_config():
     cfg.firm_name = "TestCA"
     cfg.paths.database_path = ":memory:"
     cfg.paths.source_drive = "E:\\DATA\\FY26-27"
+    # FY overlap (B1) off: a default-on overlap would reach the real clock check after 31 Dec
+    cfg.rollover.overlap_enabled = False
     cfg.paths.gcs_key_path = "/tmp/key.json"
     cfg.maintenance.sqlite_busy_timeout_ms = 30000
     cfg.maintenance.sqlite_vacuum_freelist_threshold = 10000

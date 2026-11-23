@@ -24,6 +24,9 @@ def _cfg(tmp_path, **run_logs) -> AppConfig:
         wol={"enabled": False}, cloud={"enabled": False},
         dashboard={},
         notifications={"send_on_failure": False},
+        # the FY overlap (B1) is off: this file tests retention, and a default-on overlap would reach the real
+        # clock check after 31 Dec (plan section 9, default-on note)
+        rollover={"overlap_enabled": False},
         run_logs=run_logs or {},
     )
 

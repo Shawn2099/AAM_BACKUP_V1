@@ -22,7 +22,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import alert_class, approvals, faults, fy_rollover, guards, permissions, report, statuses
+from core import alert_class, approvals, faults, fy_overlap, fy_rollover, guards, permissions, report, statuses
 from core.rclone_errors import find_transport_failure
 from core.backup_repository import (
     record_run_history,
@@ -2371,6 +2371,9 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
     config = load_config(config_path)
     db = ManifestDB.from_config(config)
     try:
+        # FY overlap (plan section 3): add the next year on its activation day, before the alarm below (which
+        # then sees the placeholder-only folder). Never raises; a waiting clock is mailed inside.
+        fy_overlap.activate_if_due(config, db)
         _alarm_unprotected_new_fy(config, db)     # first: the blocked days below raise before the end
         return _rollover_resume(config, config_path, approval_id, db)
     finally:

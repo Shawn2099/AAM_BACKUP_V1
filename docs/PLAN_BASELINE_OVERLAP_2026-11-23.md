@@ -360,7 +360,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
 
 **Part B - overlap wiring**
 
-- [ ] **B1 Activation.** `tests/test_fy_overlap_activation.py` (fakes for `check_clock`, `notify`; `pendulum.travel_to`):
+- [x] **B1 Activation.** `tests/test_fy_overlap_activation.py` (fakes for `check_clock`, `notify`; `pendulum.travel_to`):
   Dec 30 not due; Dec 31 due -> folder + placeholder + record + one INFO mail; Jan 1 catch-up; second call no-op;
   crash after the folder -> rerun completes; crash after the record -> nothing redone; clock UNVERIFIED -> nothing
   created, WARNING, ACTION_REQUIRED next day, then success once proven; system clock behind -> nothing;

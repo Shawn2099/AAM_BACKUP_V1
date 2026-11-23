@@ -3,18 +3,28 @@
 While two financial years are active (the configured year plus the next one, from the activation day until the
 April switch) every backup pass runs the unchanged pipeline once per year. This module holds the pure helpers
 the passes and the rollover share: year arithmetic, the per-pass config, ids with an FY suffix, row FY lookup and
-the NAS folder rule. Nothing here reads or writes the database.
+the NAS folder rule. Only `activate_if_due` (section 3, the daily rollover check) writes: the next year's source
+folder and its activation record. The pure helpers never touch the database.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 from pathlib import Path
 
+import pendulum
+from loguru import logger
+
+from core import fy_rollover
 from core.fy_rollover import _child_path, _fy_name, _parent_path
 from core.guards import MOUNT_MARKER
+from core.health import CLOCK_OK, check_clock
+from core.notify import AUDIENCE_REPORTS, AlertEvent, notify
+from core.run_artefacts import RunArtefacts
+from core.time_utils import get_fy_prefix, now_iso
 
 # ensure_nas_folder() outcomes
 NAS_CREATED = "created"            # folder missing: made, marker written
@@ -150,3 +160,112 @@ def ensure_nas_folder(lan_root: str, fy: str) -> str:
         marker.touch()
         return NAS_MARKED
     return NAS_NEEDS_APPROVAL
+
+
+# activate_if_due() outcomes
+ACTIVATED = "activated"               # folder + placeholder made, record written, INFO mail sent
+ALREADY_ACTIVE = "already_active"     # the record exists: nothing to do
+DISABLED = "disabled"                 # rollover.overlap_enabled is false
+NO_FY_FOLDER = "no_fy_folder"         # the source folder is not a financial-year folder
+NOT_DUE = "not_due"                   # before rollover.overlap_activate_on
+REFUSED_STATE = "refused_state"       # CLOCK_BEHIND or JUMP: never activated (the rollover check alerts)
+CLOCK_UNPROVEN = "clock_unproven"     # the clock is not OK: nothing created, mail AAM-ROL-07
+REFUSED_LINK = "refused_link"         # the next year's folder is a link or junction
+FOLDER_FAILED = "folder_failed"       # the folder could not be made (mail AAM-ROL-07 with the reason)
+FAILED = "failed"                     # an unexpected error: logged, the daily check goes on
+
+NOT_ADDED_FAULT = "AAM-ROL-07"        # "Next financial year not added yet - clock not proven"
+
+
+def _is_link_or_junction(path: str) -> bool:
+    return os.path.islink(path) or os.path.isjunction(path)
+
+
+def activate_if_due(config, db, now: dt.datetime | None = None) -> str:
+    """Add the next financial year to the backups once it is due (plan section 3, decision D-2).
+
+    Called by the daily rollover check before the unprotected-files alarm. Idempotent: the activation record
+    `db_meta['overlap:<next FY>']` is written last, so a crash before it is repeated safely the next morning.
+    Creates only the SOURCE folder (+ placeholder); the NAS folder is made by the next-year LAN pass. Acts only on a
+    proven clock (`check_clock`, the rollover's own check); otherwise mails and waits. Never raises: an unexpected
+    error is logged and returns FAILED.
+    """
+    try:
+        return _activate(config, db, now if now is not None else pendulum.now(IST))
+    except Exception as e:  # noqa: BLE001 - the daily check must go on
+        logger.warning(f"FY overlap activation check failed: {type(e).__name__}: {e}")
+        return FAILED
+
+
+def _activate(config, db, now: dt.datetime) -> str:
+    rollover = config.rollover
+    if not rollover.overlap_enabled:
+        return DISABLED
+    configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+    if configured is None:
+        return NO_FY_FOLDER
+    nxt = next_fy(configured)
+    if db.overlap_record(nxt) is not None:
+        return ALREADY_ACTIVE
+    today = now.astimezone(IST).date()
+    activate_on = activation_date(configured, rollover.overlap_activate_on)
+    if today < activate_on:
+        return NOT_DUE
+    kind = fy_rollover.classify_rollover(configured, get_fy_prefix(today))
+    if kind not in (fy_rollover.NONE, fy_rollover.FORWARD):
+        logger.warning(f"FY overlap: {nxt} not activated - the clock says {kind} against {configured}; "
+                       "the rollover check reports it")
+        return REFUSED_STATE
+
+    health = config.health
+    clock = check_clock(
+        max_skew_seconds=health.max_clock_skew_seconds,
+        connection_timeout=health.clock_check_timeout_seconds,
+        ntp_server=health.ntp_server,
+        w32tm_timeout_s=health.w32tm_timeout_seconds,
+        artefacts=RunArtefacts.ephemeral("overlap-clock"),
+    )
+    if clock.state != CLOCK_OK:
+        _not_added(config, configured, nxt, today, activate_on,
+                   f"the server clock could not be proven correct ({clock.state}: {clock.reason})")
+        return CLOCK_UNPROVEN
+
+    source_root = _parent_path(config.paths.source_drive)
+    new_source = _child_path(source_root, nxt)
+    if _is_link_or_junction(new_source):
+        _not_added(config, configured, nxt, today, activate_on,
+                   f"the folder {new_source} is a link or junction, not a folder")
+        return REFUSED_LINK
+    try:
+        fy_rollover.create_source_folder(source_root, nxt, rollover.source_placeholder_name)
+    except OSError as e:
+        _not_added(config, configured, nxt, today, activate_on,
+                   f"the folder {new_source} could not be made ({e})")
+        return FOLDER_FAILED
+
+    db.set_overlap_record(nxt, {
+        "activated_at": now_iso(),
+        "from_fy": configured,
+        "source_folder": new_source,
+        "clock": clock.to_metrics(),
+    })
+    notify(config, AlertEvent(
+        key=f"rollover:activated:{nxt}", kind="INFO", mode="rollover",
+        title=f"{nxt} is added to the backups",
+        message=(f"From today {nxt} is backed up as well as {configured}. Files saved in {new_source} are "
+                 f"backed up from the next backup run; its NAS folder is made by the first NAS backup of {nxt}."),
+        occurred_at=now_iso(), audience=AUDIENCE_REPORTS))
+    return ACTIVATED
+
+
+def _not_added(config, configured: str, nxt: str, today: dt.date, activate_on: dt.date, reason: str) -> None:
+    """The waiting mail: WARNING on the activation day, ACTION_REQUIRED from the next day (plan section 3)."""
+    kind = "WARNING" if today == activate_on else "ACTION_REQUIRED"
+    notify(config, AlertEvent(
+        key=f"rollover:activation:{nxt}", kind=kind, mode="rollover",
+        title=f"{nxt} is not added to the backups yet",
+        message=(f"{nxt} is not added to the backups yet: {reason}. Until then only {configured} is backed up, "
+                 f"and files saved in the {nxt} folder are not backed up. The check repeats every morning; "
+                 "'Run FY rollover now' on the dashboard tries again."),
+        occurred_at=now_iso(), fault_code=NOT_ADDED_FAULT,
+        cooldown_hours=config.alerts.stale_repeat_hours))
