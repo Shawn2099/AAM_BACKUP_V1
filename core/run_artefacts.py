@@ -36,7 +36,8 @@ from core.time_utils import IST, now_iso
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _DOT_RUNS = re.compile(r"\.{2,}")
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_RUN_DIR = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+)_[A-Za-z0-9]+$")
+_RUN_DIR = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{4}_[a-z-]+)_[A-Za-z0-9]+(?:_FY\d{2}-\d{2})?$")
+_FY_TAIL = re.compile(r"-(FY\d{2}-\d{2})$")   # a next-FY pass id ends with its FY (plan 2.3)
 _LEGS = ("cloud", "lan", "audit", "rollover")
 MANIFEST_NAME = "manifest.json"
 
@@ -46,9 +47,20 @@ def _safe(name: str) -> str:
     return cleaned[:120] or "unnamed"
 
 
+def _split_fy(run_id: str) -> tuple[str, str]:
+    """(id without its FY tail, folder tail): `<uuid>-cloud-FY27-28` -> (`<uuid>-cloud`, `_FY27-28`);
+    an id without a tail -> (id, "")."""
+    match = _FY_TAIL.search(run_id)
+    if match:
+        return run_id[:match.start()], f"_{match.group(1)}"
+    return run_id, ""
+
+
 def _leg_of(run_id: str) -> str | None:
     """cloud | lan | rollover from a run id `<uuid>-<mode>`; audit-cloud | audit-lan from an audit
-    id `<uuid>-<mode>-<scope>`; None for anything else (plain folder)."""
+    id `<uuid>-<mode>-<scope>`; None for anything else (plain folder). A next-FY pass id
+    (`...-FY27-28`) is read without its FY tail."""
+    run_id, _ = _split_fy(run_id)
     parts = run_id.rsplit("-", 2)
     if len(parts) == 3 and parts[1] in ("cloud", "lan") and parts[2] in ("full", "quick"):
         return f"audit-{parts[1]}"
@@ -66,11 +78,12 @@ class RunArtefacts:
         started = started or pendulum.now(IST)
         day = day or started.format("YYYY-MM-DD")
         leg = _leg_of(str(run_id))
+        _, fy_tail = _split_fy(str(run_id))
         self.root = Path(root)
         self.run_id = run_id
         if leg and day != "adhoc":
             self._prefix = f"{started.format('YYYY-MM-DD_HHmm')}_{leg}"
-            self.dir = self.root / day / f"{self._prefix}_{_safe(str(run_id)[:8])}"
+            self.dir = self.root / day / f"{self._prefix}_{_safe(str(run_id)[:8])}{fy_tail}"
         else:
             self._prefix = None
             self.dir = self.root / day / _safe(run_id)

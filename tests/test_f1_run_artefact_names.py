@@ -72,3 +72,53 @@ def test_audit_ids_get_an_audit_leg_name(tmp_path):
     assert a.dir.name == "2026-10-18_2100_audit-cloud_abcdef12"
     assert a.new_path("rclone-check", "log").name == "2026-10-18_2100_audit-cloud_rclone-check.log"
     assert RunArtefacts.open(str(a.dir)).new_path("x", "log").name.startswith("2026-10-18_2100_audit-cloud_x")
+
+
+# A3 (FY overlap, docs/PLAN_BASELINE_OVERLAP_2026-11-23.md section 2.3): a next-FY pass has an id with a
+# `-FYxx-yy` tail; its run-log folder carries the FY, the file names keep the leg prefix.
+PASS_ID = RUN_ID + "-FY27-28"
+
+
+def test_next_fy_pass_folder_ends_with_its_fy(tmp_path):
+    a = RunArtefacts(tmp_path, PASS_ID, started=STARTED)
+    assert a.dir == tmp_path / "2026-10-18" / "2026-10-18_2100_lan_3f2a9c1e_FY27-28"
+    assert a.run_id == PASS_ID
+    assert a.new_path("robocopy-sync", "log").name == "2026-10-18_2100_lan_robocopy-sync.log"
+
+
+@pytest.mark.parametrize("leg", ["cloud", "lan"])
+def test_leg_is_read_before_the_fy_tail(tmp_path, leg):
+    a = RunArtefacts(tmp_path, f"abcdef12-0000-0000-0000-000000000000-{leg}-FY27-28", started=STARTED)
+    assert a.dir.name == f"2026-10-18_2100_{leg}_abcdef12_FY27-28"
+
+
+def test_audit_pass_folder_has_the_audit_leg_and_fy(tmp_path):
+    a = RunArtefacts(tmp_path, "abcdef12-0000-0000-0000-000000000000-cloud-full-FY27-28", started=STARTED)
+    assert a.dir.name == "2026-10-18_2100_audit-cloud_abcdef12_FY27-28"
+    assert a.new_path("rclone-check", "log").name == "2026-10-18_2100_audit-cloud_rclone-check.log"
+
+
+def test_configured_and_next_fy_passes_in_the_same_minute_get_two_folders(tmp_path):
+    first = RunArtefacts(tmp_path, RUN_ID, started=STARTED)
+    second = RunArtefacts(tmp_path, PASS_ID, started=STARTED)
+    assert first.dir != second.dir and first.dir.is_dir() and second.dir.is_dir()
+    assert first.new_path("robocopy", "log").parent == first.dir
+    assert second.new_path("robocopy", "log").parent == second.dir
+
+
+def test_reopening_a_next_fy_folder_keeps_the_file_prefix_and_does_not_reuse_a_name(tmp_path):
+    a = RunArtefacts(tmp_path, PASS_ID, started=STARTED)
+    taken = a.new_path("robocopy", "log")
+    taken.write_text("x")
+    b = RunArtefacts.open(str(a.dir))
+    again = b.new_path("robocopy", "log")
+    assert again != taken and again.name.startswith("2026-10-18_2100_lan_robocopy")
+    assert b.new_path("health", "txt").name == "2026-10-18_2100_lan_health.txt"
+
+
+def test_purge_removes_a_day_folder_holding_next_fy_passes(tmp_path):
+    a = RunArtefacts(tmp_path, PASS_ID, started=STARTED)
+    a.new_path("robocopy", "log").write_text("x")
+    old = a.dir.parent
+    os.utime(old, (0, 0))
+    assert purge_older_than(tmp_path, 30, glob="*") == 1 and not old.exists()
