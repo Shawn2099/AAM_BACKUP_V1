@@ -297,3 +297,13 @@ offers only **Dismiss**.
 - While the agent is down the dashboard is down too, so mail is the only channel. Nothing alerts you if the
   watchdog itself is down, and a server that is switched off sends nothing (accepted risk; check the server if you
   hear nothing for a long time).
+
+### 8.6 Start next year's folder early (Settings button)
+
+Settings, FY card: **Create next year's folder now (force FY activation)**. Use it only when next year's files
+must be saved before 1 January (a client sends next year's papers early). Switch the NAS on first: the button never wakes it.
+It creates next year's folder on the NAS (with its marker) and in the source folder, and from then on both years are
+backed up until the switch on 1 April. It does not switch the year and deletes nothing. A folder that already exists with the
+right name (FY27-28) is used as it is; a wrongly spelled one (FY 27-28, FY2027-28) is refused: rename it and press again.
+A NAS folder that has files but no marker is left untouched (block NAS-10, see 8.3). Pressing twice changes nothing
+and says so. It is refused while a backup is running, when the NAS is off, or when overlap is switched off in config.yaml.

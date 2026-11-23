@@ -582,6 +582,33 @@ async function loadRollover() {
     renderRolloverSteps(d.journal);
     document.getElementById('ro-approval').style.display = d.approval_pending ? 'block' : 'none';
     document.getElementById('btn-rollover').disabled = !authEnabled || !d.can_run || d.running || d.running === null;
+    loadEarlyActivation(d);
+}
+
+let earlyState = null;
+async function loadEarlyActivation(roll) {
+    try {
+        const resp = await fetch('/api/rollover/early');
+        if (!resp.ok) return;
+        earlyState = await resp.json();
+        document.getElementById('early-message').textContent = earlyState.message || '';
+        document.getElementById('btn-early').disabled =
+            !authEnabled || !earlyState.can_run || !!(roll && (roll.running || roll.running === null));
+    } catch (e) { /* the button stays disabled */ }
+}
+
+async function runEarlyActivation() {
+    if (!earlyState || !window.confirm(earlyState.confirm)) return;
+    const btn = document.getElementById('btn-early');
+    btn.disabled = true;
+    try {
+        const resp = await fetch('/api/rollover/early', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        showToast(data.detail || ('HTTP ' + resp.status), resp.ok ? 'success' : 'error');
+    } catch (e) {
+        showToast('Try again, and ask support if it keeps failing. Next year\'s folder could not be created: ' + e, 'error');
+    }
+    loadRollover();
 }
 
 async function runRollover() {

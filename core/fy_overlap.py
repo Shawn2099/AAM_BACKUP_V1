@@ -152,6 +152,18 @@ def switch_pending(config: AppConfig, db, run_date: _date) -> bool:
     return not switched
 
 
+FORCED_META = "overlap:forced:{fy}"     # db_meta: the owner forced this activation early (dashboard button)
+
+
+def _forced(db, fy: str) -> bool:
+    """Was `fy` activated by the owner's "Create next year's folder now" button (so it stays active until the
+    switch even outside the January..March window)?"""
+    try:
+        return bool(db.get_meta(FORCED_META.format(fy=fy)))
+    except Exception:  # noqa: BLE001 - an unreadable flag only means the normal window rules apply
+        return False
+
+
 def active_folders(config: AppConfig, db, run_date: _date) -> list[str]:
     """FY folders backed up in this run, in run order (new FY first). After the 1 April switch the old
     year stays in the list, last, until every enabled leg has a confirmed full copy of it
@@ -165,7 +177,8 @@ def active_folders(config: AppConfig, db, run_date: _date) -> list[str]:
         # an activated early year stays active until the switch, even if early_start_month is raised later
         # (owner decision D12 a); in_window itself still honours the month for activation timing
         kept = (calendar_fy(run_date) == configured
-                and run_date.month <= _LAST_MONTH_OF_FY and db.get_activation(nxt) is not None)
+                and (run_date.month <= _LAST_MONTH_OF_FY or _forced(db, nxt))
+                and db.get_activation(nxt) is not None)
         if in_window(config, run_date) or switch_pending(config, db, run_date) or kept:
             if db.get_activation(nxt) is not None:
                 base = [nxt, configured]
@@ -483,12 +496,14 @@ def _send_start_mail(db, config, fy: str, configured: str, folder: Path, created
 
 
 def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
-                             clock_check=None, notify_fn=None) -> dict:
+                             clock_check=None, notify_fn=None, force: bool = False) -> dict:
     """Start backing up next year's folder when it is time (plan 5.1). Idempotent, needs no backup slot,
     never raises. Returns {'state': not_needed | already_active | activated | deferred, 'fy', 'reason'}.
 
     clock_check() -> object with .state/.reason (default: health.check_clock from config.health.*);
     notify_fn(config, event, db) (default: core.notify.notify). Every call re-checks a deferred activation.
+    `force` (only `force_early_activation`, the owner's dashboard button) skips the January..March / switch
+    timing check; every other rule (clock proof, link refusal, adoption, marker) is the same.
     """
     from core.health import CLOCK_OK
     from core.manifest import ManifestDB
@@ -500,7 +515,7 @@ def ensure_overlap_activated(config: AppConfig, run_date: _date, db=None, *,
         if db is None:
             db = ManifestDB.from_config(config)
         configured = _configured(config)
-        if configured is None or not (in_window(config, run_date) or switch_pending(config, db, run_date)):
+        if configured is None or not (force or in_window(config, run_date) or switch_pending(config, db, run_date)):
             return _result(NOT_NEEDED, None, "overlap is off or it is not the time for it")
         fy = next_fy(configured)
         if db.get_activation(fy) is not None:
@@ -770,3 +785,110 @@ def ensure_overlap_nas_folder(config: AppConfig, fy: str, *, established: bool =
         logger.warning(f"FY overlap NAS folder check for {fy} failed: {e}")
         return {"state": "unreachable", "fy": fy, "path": str(nas) if nas else None,
                 "reason": f"{type(e).__name__}: {e}"}
+
+
+# ---- forced early activation (owner decision 2026-11-23, Settings button) ------------------------
+
+REFUSED = "refused"
+
+
+def _early_result(state: str, fy: str | None, message: str, nas: dict | None = None) -> dict:
+    return {"state": state, "fy": fy, "message": message, "nas": nas}
+
+
+def early_state(config: AppConfig, db, run_date: _date) -> dict:
+    """What the Settings button "Create next year's folder now" may do: {'can_run', 'state', 'fy', 'message'}.
+    state is 'ready', 'already_active' or 'refused'. Pure reading, creates nothing."""
+    configured = _configured(config)
+    if configured is None:
+        return {"can_run": False, "state": REFUSED, "fy": None,
+                "message": "The source / NAS folders do not end in an FY folder (e.g. FY26-27), so there is "
+                           "no next year's folder to create."}
+    fy = next_fy(configured)
+    if not config.rollover.overlap_enabled:
+        return {"can_run": False, "state": REFUSED, "fy": fy,
+                "message": "Switched off: rollover.overlap_enabled is false in config.yaml on the server."}
+    activation = db.get_activation(fy)
+    if activation is not None:
+        return {"can_run": False, "state": "already_active", "fy": fy,
+                "message": f"{fy} is already backed up as well (since "
+                           f"{format_ist(activation.get('activated_at'))}). Nothing to do."}
+    if calendar_fy(run_date) != configured and not switch_pending(config, db, run_date):
+        return {"can_run": False, "state": REFUSED, "fy": fy,
+                "message": f"Not possible: the server date belongs to {calendar_fy(run_date)}, not to the "
+                           f"backups' year {configured}. Check the server date, or use Run FY rollover now."}
+    return {"can_run": True, "state": "ready", "fy": fy,
+            "message": f"{fy} is not backed up yet. It can be started now instead of on 1 January."}
+
+
+def _misnamed_next_year(config: AppConfig, fy: str) -> str | None:
+    """A folder next to the year folders (source and, when the NAS leg is on, the NAS) that is clearly next
+    year's but spelled in a way the backup does not use ('FY 27-28', 'FY2027-28'): its path, else None."""
+    parents = [Path(_parent_path(config.paths.source_drive))]
+    if config.lan.enabled:
+        parents.append(Path(_parent_path(config.paths.lan_destination)))
+    for parent in parents:
+        if not parent.is_dir():
+            continue
+        for entry in parent.iterdir():
+            if (entry.name.upper() != fy.upper() and _FY_LOOKING.search(entry.name)
+                    and suggested_name(entry.name).upper() == fy.upper()):
+                return str(entry)
+    return None
+
+
+def force_early_activation(config: AppConfig, db, *, run_date: _date | None = None,
+                           clock_check=None, notify_fn=None) -> dict:
+    """Start backing up next year's folder NOW (the owner's button), through the same code as the normal
+    January activation (`ensure_overlap_activated`, then `ensure_overlap_nas_folder`). Idempotent. Never
+    wakes the NAS, never switches the year, never deletes. Never raises.
+    Returns {'state': activated | already_active | refused, 'fy', 'message', 'nas'}."""
+    try:
+        run_date = run_date or globals()["run_date"]()
+        st = early_state(config, db, run_date)
+        fy = st["fy"]
+        if st["state"] == "already_active":
+            return _early_result(ALREADY_ACTIVE, fy, st["message"])
+        if not st["can_run"]:
+            return _early_result(REFUSED, fy, st["message"])
+        wrong = _misnamed_next_year(config, fy)
+        if wrong:
+            return _early_result(REFUSED, fy, f"Not started: {wrong} looks like next year's folder but is not "
+                                              f"named {fy} (capital FY, two-digit years, a dash, no spaces). "
+                                              f"Rename it to {fy} and press again.")
+        if config.lan.enabled:
+            nas_parent = Path(folder_view(config, fy).paths.lan_destination).parent
+            if not nas_parent.is_dir():
+                return _early_result(REFUSED, fy, f"Not started: the NAS share {nas_parent} cannot be reached. "
+                                                  "Switch the NAS on and press again (this button never "
+                                                  "wakes the NAS). Nothing was changed.")
+        from core.health import CLOCK_OK
+        clock = (clock_check or (lambda: _default_clock_check(config)))()
+        if clock.state != CLOCK_OK:
+            return _early_result(REFUSED, fy, "Not started: the server's clock could not be proven correct "
+                                              f"({clock.state}: {clock.reason}). Nothing was changed.")
+        res = ensure_overlap_activated(config, run_date, db, clock_check=lambda: clock, notify_fn=notify_fn,
+                                       force=True)
+        if res["state"] == ALREADY_ACTIVE:
+            return _early_result(ALREADY_ACTIVE, fy, f"{fy} is already backed up as well. Nothing changed.")
+        if res["state"] != ACTIVATED:
+            return _early_result(REFUSED, fy, f"Not started: {res['reason']}. The backup keeps retrying; "
+                                              "fix the cause and press again.")
+        with contextlib.suppress(Exception):
+            db.set_meta(FORCED_META.format(fy=fy), pendulum.now(IST).isoformat())
+        nas = ensure_overlap_nas_folder(config, fy) if config.lan.enabled else None
+        text = (f"{fy} is now backed up as well as {_configured(config)}: {res['reason']}. The year is not "
+                "switched and nothing is deleted; the cloud folder appears at the next backup.")
+        if nas is not None:
+            if nas["state"] == "needs_confirmation":
+                text += (f" The NAS folder {nas['path']} holds files but has no {MOUNT_MARKER} marker, so it was "
+                         "left untouched (marker not written) and the NAS backup of that year will stop and ask "
+                         "(it cannot be approved from the dashboard: check that it is the right folder).")
+            elif nas["state"] == "unreachable":
+                text += f" The NAS folder could not be prepared now ({nas['reason']}); the NAS backup does it."
+            else:
+                text += f" NAS folder: {nas['reason']}."
+        return _early_result(ACTIVATED, fy, text, nas)
+    except Exception as e:  # noqa: BLE001 - a button press never raises into the dashboard
+        logger.exception("Forced FY activation failed")
+        return _early_result(REFUSED, None, f"Not started: {type(e).__name__}: {e}")

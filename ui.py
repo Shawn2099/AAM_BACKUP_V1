@@ -1605,6 +1605,44 @@ async def run_rollover_now(request: Request):
     return _trigger_result("FY rollover", flow_run, noun="check")
 
 
+# ---- BEGIN "Create next year's folder now" (forced FY activation, owner decision 2026-11-23) ----------
+
+def _early_confirm_text(fy: str | None) -> str:
+    return (f"Create next year's folder ({fy}) now?\n\n"
+            "This creates the folder on the NAS (with its .AAM_TARGET_MOUNTED marker) and the source folder, "
+            "and the cloud folder appears at the next backup. From then on BOTH the current and the next "
+            "year are backed up until the switch on 1 April.\n\n"
+            "It does not switch the year and does not delete anything. An existing folder with the right name "
+            "is used as it is. Needs the NAS to be switched on.")
+
+
+@app.get("/api/rollover/early")
+async def early_activation_status(request: Request):
+    """Whether the Settings button 'Create next year's folder now' may be pressed, and why not."""
+    _require_auth(request)
+    st = fy_overlap.early_state(_cfg(), get_db(), fy_overlap.run_date())
+    return {**st, "confirm": _early_confirm_text(st["fy"])}
+
+
+@app.post("/api/rollover/early")
+async def run_early_activation(request: Request):
+    """Force the early activation of next year's folder through the normal activation code. Refused while
+    any backup / rollover / safety check runs; idempotent."""
+    _require_settings_rights(request)
+    cfg = _cfg()
+    async with _trigger_lock():
+        detail = await _busy_detail("rollover") or _settings_lock_busy()
+        if detail:
+            return JSONResponse({"status": "already_running", "detail": detail}, status_code=400)
+        result = await asyncio.to_thread(fy_overlap.force_early_activation, cfg, get_db())
+    logger.warning(f"Forced FY activation ({result['fy']}): {result['state']} by {_approval_actor(request)}")
+    if result["state"] == fy_overlap.REFUSED:
+        raise HTTPException(status_code=409, detail=result["message"])
+    return {"status": result["state"], "detail": result["message"], "fy": result["fy"]}
+
+# ---- END "Create next year's folder now" ----------------------------------------------------------
+
+
 @app.post("/api/settings/test-email")
 def send_test_email(request: Request):
     """Send a test email through the real alert path (recorded like every email),
