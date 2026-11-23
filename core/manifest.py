@@ -1686,23 +1686,74 @@ class ManifestDB:
                                 "started_at": started_at, "error_message": reason})
         return changed
 
-    def purge_old_runs(self, retention_days: int = model_default(MaintenanceConfig, "db_retention_days")):
-        """Delete run_history entries older than retention_days.
+    # Estimated bytes of one run_history row = the lengths of its text columns + this overhead
+    # (integers, the two indexes, page slack). An estimate on purpose: the budget bounds the HISTORY,
+    # not the whole file (file_entries, the file catalogue, is far larger and is never purged).
+    _RUN_ROW_OVERHEAD_BYTES = 100
 
-        Keeps file_entries intact — only purges the run log to prevent
-        unbounded DB growth over years of daily runs.
+    def purge_old_runs(self, retention_days: int = model_default(MaintenanceConfig, "db_retention_days"),
+                       max_mb: float = model_default(MaintenanceConfig, "db_retention_max_mb")) -> dict:
+        """Bound the run history by SIZE (config.maintenance.db_retention_max_mb), oldest rows first.
 
-        Conditionally VACUUMs when the freelist exceeds self.vacuum_freelist_threshold
-        pages (~4 MB at default of 1000), per SQLite best practices.
-        Override via config.maintenance.sqlite_vacuum_freelist_threshold.
+        Rule: while the run history is larger than `max_mb`, delete the oldest rows, and only rows that are
+        (a) older than `retention_days` (a floor: a younger row is never deleted) and (b) not protected.
+        Under budget nothing is deleted, however old. Protected: *_RUNNING rows, the newest row and the newest
+        successful row per (mode, fy) (the guards' baseline). Only run_history is touched: file_entries,
+        approvals, incidents, rollover journals, db_meta and the rest are never deleted here.
+        If only protected / floor rows remain and the history is still over budget, ONE warning is logged
+        (no mail: nothing is lost; the owner can raise the budget).
+
+        Conditionally VACUUMs when the freelist exceeds self.vacuum_freelist_threshold pages (~4 MB at
+        default of 1000). Override via config.maintenance.sqlite_vacuum_freelist_threshold.
+        Returns {"deleted", "size_bytes", "budget_bytes", "over_budget"}.
         """
+        from core.statuses import SUCCESS_STATUSES
+
+        budget = int(max_mb * 1024 * 1024)
+        row_bytes = (
+            "(length(run_id) + length(mode) + length(fy) + length(started_at) + length(status)"
+            " + COALESCE(length(ended_at), 0) + COALESCE(length(error_message), 0)"
+            f" + COALESCE(length(extended_metrics), 0) + {self._RUN_ROW_OVERHEAD_BYTES})")
+        success = sorted(SUCCESS_STATUSES)
+        ph = ",".join("?" for _ in success)
         with self._lock:
             conn = self._get_conn()
-            cutoff = cutoff_iso(retention_days)
-            conn.execute(
-                "DELETE FROM run_history WHERE started_at < ?",
-                (cutoff,),
-            )
+            total = conn.execute(f"SELECT COALESCE(SUM({row_bytes}), 0) FROM run_history").fetchone()[0]
+            size = total
+            deleted = 0
+            if total > budget:
+                cutoff = cutoff_iso(retention_days)
+                candidates = conn.execute(
+                    f"SELECT r.id, {row_bytes} FROM run_history r "
+                    "WHERE r.started_at < ? AND r.status NOT LIKE '%!_RUNNING' ESCAPE '!' "
+                    "AND r.started_at < (SELECT MAX(x.started_at) FROM run_history x "
+                    "                    WHERE x.mode = r.mode AND x.fy = r.fy) "
+                    f"AND NOT (r.status IN ({ph}) AND r.started_at = ("
+                    "    SELECT MAX(y.started_at) FROM run_history y "
+                    f"    WHERE y.mode = r.mode AND y.fy = r.fy AND y.status IN ({ph}))) "
+                    "ORDER BY r.started_at, r.id",
+                    (cutoff, *success, *success)).fetchall()
+                doomed = []
+                for row_id, nbytes in candidates:
+                    if size <= budget:
+                        break
+                    doomed.append(row_id)
+                    size -= nbytes
+                for i in range(0, len(doomed), 500):
+                    chunk = doomed[i:i + 500]
+                    conn.execute(f"DELETE FROM run_history WHERE id IN ({','.join('?' for _ in chunk)})", chunk)
+                deleted = len(doomed)
+                if deleted:
+                    logger.info(f"DB maintenance: deleted {deleted} run history row(s), oldest first "
+                                f"(history was ~{total // 1024} KB, now ~{size // 1024} KB, budget "
+                                f"{budget // 1024} KB, rows younger than {retention_days} days kept)")
+            over = size > budget
+            if over:
+                logger.warning(f"DB maintenance: the run history (~{size // 1024} KB) is over its size budget "
+                               f"({budget // 1024} KB, maintenance.db_retention_max_mb) but only rows younger "
+                               f"than {retention_days} days or protected rows are left - nothing more can be "
+                               f"deleted. Raise the budget if this keeps appearing.")
+            conn.commit()
             conn.execute("PRAGMA optimize")
             conn.execute("ANALYZE")
             freelist = conn.execute("PRAGMA freelist_count").fetchone()
@@ -1716,3 +1767,4 @@ class ManifestDB:
                 )
             else:
                 conn.commit()
+        return {"deleted": deleted, "size_bytes": size, "budget_bytes": budget, "over_budget": over}

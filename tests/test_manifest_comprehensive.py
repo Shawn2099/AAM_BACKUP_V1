@@ -143,10 +143,14 @@ class TestManifestDBOperations:
             started="2020-01-01T00:00:00",
             ended="2020-01-01T01:00:00",
         ))
+        db.insert_run(_run(mode="cloud", status="CLOUD_COMPLETE", started="2020-01-02T00:00:00",
+                           ended="2020-01-02T01:00:00"))
+        # size rule: under the budget nothing is purged, however old
         db.purge_old_runs(retention_days=30)
-        runs = db.get_recent_runs(10, fy=FY)
-        # Old run should be purged
-        assert len(runs) == 0
+        assert len(db.get_recent_runs(10, fy=FY)) == 2
+        # over a (tiny) budget the oldest unprotected row goes; the newest is protected
+        db.purge_old_runs(retention_days=30, max_mb=0.0001)
+        assert len(db.get_recent_runs(10, fy=FY)) == 1
 
     def test_wal_checkpoint(self, db):
         """WAL checkpoint doesn't crash."""

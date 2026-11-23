@@ -238,8 +238,12 @@ HELP: dict[str, tuple[str, str]] = {
     "alerts.support_log_tail_lines": ("Log lines in the support report", ""),
     "maintenance.concurrency_wait_seconds": ("How long a backup waits for the previous one", ""),
     "maintenance.sqlite_synchronous": ("Database safety level", ""),
-    "maintenance.db_retention_days": ("Keep backup history for",
-                                      "At least 35 days: the monthly report and the safety checks read it."),
+    "maintenance.db_retention_days": ("Never delete backup history younger than",
+                                      "At least 35 days: the monthly report and the safety checks read it. "
+                                      "Older history is deleted only when it is over the size limit below."),
+    "maintenance.db_retention_max_mb": ("Backup history size limit (MB)",
+                                        "Oldest history is deleted only when it grows beyond this. "
+                                        "The latest and last successful run of each backup are always kept."),
     "maintenance.log_retention_days": ("Keep program logs for", ""),
     "maintenance.orphan_robocopy_log_max_age_hours": ("Delete leftover copy logs after",
                                                       "Logs left behind by a stopped copy."),
