@@ -254,6 +254,10 @@ async function updateStatus() {
         document.getElementById('stat-cloud-files').innerText = Number(data.manifest.cloud_files).toLocaleString();
         document.getElementById('stat-fy-prefix').innerText = data.fy_prefix;
 
+        ['cloud', 'lan'].forEach(function (l) {
+            var m = data[l] && data[l].mode, el = document.getElementById('mode-' + l);
+            if (el && m && m.text) { el.textContent = m.text; el.style.color = m.soft_warn ? '#b45309' : ''; }
+        });
         const cardCloud = document.getElementById('card-cloud');
         const badgeCloud = document.getElementById('badge-cloud');
         const descCloud = document.getElementById('desc-cloud');
@@ -278,7 +282,7 @@ async function updateStatus() {
                 }
                 if (data.cloud.last_run) { descCloud.innerText = (cloudUnknown ? 'Status unavailable — ' : '') + data.cloud.last_run.status_description; lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
                 else if (cloudUnknown) { descCloud.innerText = 'Status unavailable — could not reach Prefect API.'; }
-                else { descCloud.innerText = 'No backup has run yet. The first one starts at the scheduled time.'; lastCloud.innerText = 'Last backup: none yet'; }
+                else { descCloud.innerText = (data.cloud.mode && data.cloud.mode.mode === 'manual') ? 'No backup has run yet. Press the button to start one.' : 'No backup has run yet. The first one starts at the scheduled time.'; lastCloud.innerText = 'Last backup: none yet'; }
                 if (isCloudRunning) { descCloud.innerText = 'Copying files to the cloud now.'; }
                 const cloudClass = isCloudRunning ? 'running' : (cloudUnknown ? 'unknown' : (data.cloud.last_run ? safeCategory(data.cloud.last_run.status_category) : 'unknown'));
                 cardCloud.className = 'dest tone-' + toneOf(cloudClass); badgeCloud.className = 'pill tone-' + toneOf(cloudClass);
@@ -309,7 +313,7 @@ async function updateStatus() {
                 }
                 if (data.lan.last_run) { descLan.innerText = (lanUnknown ? 'Status unavailable — ' : '') + data.lan.last_run.status_description; lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
                 else if (lanUnknown) { descLan.innerText = 'Status unavailable — could not reach Prefect API.'; }
-                else { descLan.innerText = 'No backup has run yet. The first one starts at the scheduled time.'; lastLan.innerText = 'Last backup: none yet'; }
+                else { descLan.innerText = (data.lan.mode && data.lan.mode.mode === 'manual') ? 'No backup has run yet. Press the button to start one.' : 'No backup has run yet. The first one starts at the scheduled time.'; lastLan.innerText = 'Last backup: none yet'; }
                 if (isLanRunning) { descLan.innerText = 'Copying files to the office NAS now.'; }
                 const lanClass = isLanRunning ? 'running' : (lanUnknown ? 'unknown' : (data.lan.last_run ? safeCategory(data.lan.last_run.status_category) : 'unknown'));
                 cardLan.className = 'dest tone-' + toneOf(lanClass); badgeLan.className = 'pill tone-' + toneOf(lanClass);

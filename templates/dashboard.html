@@ -59,7 +59,7 @@
                 <article class="dest tone-idle" id="card-lan">
                     <h2><span>Office copy (NAS) <span class="help" title="A copy of your files on the storage box in your office.">?</span></span> <span class="pill tone-idle" id="badge-lan">Loading...</span></h2>
                     <p class="lead" id="desc-lan">Fetching status...</p>
-                    <div class="facts"><p id="last-lan">Last backup: Loading...</p><p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p></div>
+                    <div class="facts"><p id="last-lan">Last backup: Loading...</p>{% if lan_nightly %}<p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p>{% else %}<p class="schedule-line" id="mode-lan">{{ 'LAN: off' if not lan_enabled else 'LAN: manual only' }}</p>{% endif %}</div>
                     <p class="safety" id="safety-lan">Safety check: ...</p>
                     <div class="strip" id="strip-lan" aria-label="Last nights"></div>
                     <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
@@ -78,7 +78,7 @@
                 <article class="dest tone-idle" id="card-cloud">
                     <h2><span>Online copy (cloud) <span class="help" title="A copy kept safely on Google's servers, away from your office.">?</span></span> <span class="pill tone-idle" id="badge-cloud">Loading...</span></h2>
                     <p class="lead" id="desc-cloud">Fetching status...</p>
-                    <div class="facts"><p id="last-cloud">Last backup: Loading...</p><p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p></div>
+                    <div class="facts"><p id="last-cloud">Last backup: Loading...</p>{% if cloud_nightly %}<p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p>{% else %}<p class="schedule-line" id="mode-cloud">{{ 'Cloud: off' if not cloud_enabled else 'Cloud: manual only' }}</p>{% endif %}</div>
                     <p class="safety" id="safety-cloud">Safety check: ...</p>
                     <div class="strip" id="strip-cloud" aria-label="Last nights"></div>
                     <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
