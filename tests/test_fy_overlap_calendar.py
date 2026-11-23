@@ -18,6 +18,7 @@ for an unscheduled leg). A strict xfail that starts passing fails the run, so th
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -27,17 +28,15 @@ import pendulum
 import pytest
 import yaml
 from cronsim import CronSim
+from test_calendar_simulation import Calendar, _at, _unc
 
 import flow
-from core import fy_overlap
+from core import fy_overlap, overdue, statuses
 from core import fy_rollover as fr
-from core import overdue
-from core import statuses
 from core.attention import compute_attention
 from core.manifest import ManifestDB
 from core.time_utils import IST
 from models.config import load_config
-from test_calendar_simulation import Calendar, WorldClock, _at, _unc
 from test_support.sandbox_config import _config_dict
 
 pytest.importorskip("time_machine")   # pendulum.travel_to needs it
@@ -103,10 +102,8 @@ class OverlapCalendar(Calendar):
         """A person presses 'Run backup' on the leg's card at `when` (no approval)."""
         with pendulum.travel_to(when, freeze=True):
             self.via = f"manual-{leg}"
-            try:
+            with contextlib.suppress(Exception):   # a failed pass ends the Prefect run FAILED: the calendar goes on
                 flow.backup.fn(config_path=self.cfg_path, mode=leg)
-            except Exception:   # noqa: BLE001
-                pass
 
 
 def _make_site(tmp_path: Path, fy: str, *, lan_scheduled: bool = True) -> Path:
@@ -243,8 +240,10 @@ def test_every_run_gets_the_passes_the_calendar_says_across_three_cycles(tmp_pat
         sw = _at(_start_year(cur) + 1, 4, 1, 6)
         with OverlapCalendar(cfg) as cal:
             records = []
-            cal.run(start, end, after_each=lambda w, j: records.append(
-                (w, j, _record_of(cfg, nxt) is not None)))
+
+            def note_activation(when, job, cfg=cfg, nxt=nxt, records=records):
+                records.append((when, job, _record_of(cfg, nxt) is not None))
+            cal.run(start, end, after_each=note_activation)
 
             first = next(w for w, j, has in records if has)
             assert first == act, (cur, first)
