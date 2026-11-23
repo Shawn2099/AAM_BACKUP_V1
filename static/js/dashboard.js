@@ -8,15 +8,28 @@ function showToast(message, type = 'info') {
     setTimeout(() => { toast.classList.remove('shown'); setTimeout(() => { toast.remove(); }, 300); }, 5000);
 }
 
+function resetTriggerButton(btn, mode) {
+    btn.removeAttribute('disabled'); btn.style.pointerEvents = ''; btn.style.opacity = '';
+    btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup';
+}
+
+// F4: one text for every LAN backup button (classic and per-FY): what it wakes, copies, deletes (the NAS copy is
+// a mirror: files deleted at the source are deleted there too) and switches off, following the settings.
+function lanConfirmText(forFy, wol, shutdown) {
+    var steps = [];
+    if (wol === 'yes') steps.push('wakes the NAS');
+    steps.push('copies the changes');
+    steps.push('deletes from the NAS copy the files you deleted at the source (the NAS is kept as an exact mirror)');
+    if (shutdown === 'yes') steps.push('switches the NAS off afterwards');
+    return 'Start the office NAS backup' + (forFy ? ' of ' + forFy : '') + ' now? It ' + steps.join(', ') + '.';
+}
+
 async function triggerBackup(event, mode) {
     event.preventDefault();
     const btnInfo = document.getElementById('btn-' + mode);
-    var lanSteps = [];
-    if (btnInfo && btnInfo.dataset.wol === 'yes') lanSteps.push('wakes the NAS');
-    lanSteps.push('copies the changes');
-    if (btnInfo && btnInfo.dataset.shutdown === 'yes') lanSteps.push('switches the NAS off afterwards');
+    const ds = btnInfo ? btnInfo.dataset : {};
     const confirmMsg = mode === 'cloud' ? 'Start the online backup now?'
-        : 'Start the office NAS backup now? It ' + lanSteps.join(', ') + '.';
+        : lanConfirmText('', ds.wol, ds.shutdown);
     if (!confirm(confirmMsg)) return;
     const btn = document.getElementById('btn-' + mode);
     if (!btn) return;
@@ -24,9 +37,13 @@ async function triggerBackup(event, mode) {
     try {
         const response = await fetch('/trigger/' + mode, { method: 'POST' });
         const data = await response.json();
+        // F3: every answer re-enables the button first. A run that finished inside the wait is no longer
+        // running, so updateStatus would never touch a button left at 'Starting...'; a run that is still
+        // going is switched to 'Running...' by updateStatus right after.
+        resetTriggerButton(btn, mode);
         if (response.ok) { showToast(data.detail || 'Leave this page open to follow it. The backup started.', 'success'); }
-        else { showToast(data.detail || 'Try again, and ask support if it keeps failing. The backup did not start.', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
-    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
+        else { showToast(data.detail || 'Try again, and ask support if it keeps failing. The backup did not start.', 'error'); }
+    } catch (err) { showToast('Check your connection and try again. The page could not reach the server (' + err.message + ').', 'error'); resetTriggerButton(btn, mode); }
     await updateStatus();
 }
 
@@ -482,8 +499,10 @@ document.addEventListener('click', function(ev) {
     else if (b.dataset.verify) triggerFyVerify(b.dataset.verify, b.dataset.fy, b);
 });
 async function triggerFyBackup(leg, fy, btn) {
-    var what = leg === 'cloud' ? 'the online backup' : 'the office NAS backup';
-    if (!confirm('Start ' + what + ' of ' + fy + ' now?')) return;
+    var box = document.getElementById('fy-cards');
+    var ds = box ? box.dataset : {};
+    var text = leg === 'cloud' ? 'Start the online backup of ' + fy + ' now?' : lanConfirmText(fy, ds.wol, ds.shutdown);
+    if (!confirm(text)) return;
     btn.disabled = true; btn.innerText = 'Starting...';
     try {
         var response = await fetch('/trigger/' + leg + '?fy=' + encodeURIComponent(fy), { method: 'POST' });

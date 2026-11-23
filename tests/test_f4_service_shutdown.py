@@ -34,6 +34,8 @@ tests must stay hermetic — they never touch a live service).
 import re
 from pathlib import Path
 
+import pytest
+
 INSTALLER = Path(__file__).resolve().parents[1] / "deploy" / "06_install_services.ps1"
 
 SERVICE_VARS = {
@@ -147,3 +149,18 @@ def test_venv_python_process_chain():
         assert app == "$VenvPython", f"{svc_var}: Application must be $VenvPython"
     s = _settings()
     assert s["AamBackupAgent"]["AppParameters"] == "launch.py"
+
+
+# F8 (Windows compatibility review 2026-11-23): PYTHONUTF8=1 on every service, nothing else lost.
+def _env_extra_lines(text: str, var: str) -> str:
+    m = re.search(r"&\s*\$NSSM\s+set\s+\$" + var + r"\s+AppEnvironmentExtra((?:[^\n]*`\r?\n)*[^\n]*)", text)
+    assert m, var
+    return m.group(1)
+
+
+@pytest.mark.parametrize("var", ["SVC_SERVER", "SVC_AGENT", "SVC_WATCHDOG"])
+def test_every_service_gets_utf8_mode_and_keeps_its_other_settings(var):
+    block = _env_extra_lines(INSTALLER.read_text(encoding="utf-8"), var)
+    assert '"PYTHONUTF8=1"' in block
+    for kept in ("PREFECT_HOME=$PrefectHome", "PREFECT_API_URL=http://127.0.0.1:4200/api", "AAM_CONFIG=$ConfigFile"):
+        assert kept in block, f"{var} lost {kept}"

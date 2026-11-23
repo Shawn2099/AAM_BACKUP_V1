@@ -34,7 +34,7 @@
     <div id="attention-banner"></div>
     <div id="approvals-container"></div>
 
-    <section id="fy-cards" hidden>
+    <section id="fy-cards" data-wol="{{ 'yes' if lan_wol else 'no' }}" data-shutdown="{{ 'yes' if lan_shutdown else 'no' }}" hidden>
         <h2>Where your files go - one card per financial year</h2>
         <div id="fy-card-list"></div>
     </section>

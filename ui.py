@@ -379,6 +379,15 @@ def _trigger_timeout(request: Request) -> float:
     return _dash("trigger_wait_seconds")
 
 
+def _flow_run_statuses(run_id: str) -> list[str]:
+    """Statuses of the run rows this flow run wrote (empty when unknown: the plain 'ended as' text is used)."""
+    try:
+        return get_db().statuses_of_flow_run(run_id)
+    except Exception as e:  # noqa: BLE001 - the answer must still be given
+        logger.warning(f"Could not read the outcome of flow run {run_id}: {e}")
+        return []
+
+
 def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
     run_id = str(flow_run.id)
     state = getattr(flow_run, "state", None)
@@ -396,6 +405,20 @@ def _trigger_result(label: str, flow_run, noun: str = "backup") -> JSONResponse:
                 "flow_run_id": run_id,
                 "detail": messages.act("Start it again when you are ready", f"The {label} {noun} was cancelled", f"run {run_id}"),
             }, status_code=409)
+        # F5: a guard BLOCK and a PARTIAL run are failed Prefect runs; say what happened and where to go
+        categories = {statuses.category(s) for s in _flow_run_statuses(run_id)}
+        if "blocked" in categories:
+            return JSONResponse({
+                "status": "failed", "outcome": "blocked", "flow_run_id": run_id,
+                "detail": messages.act("Open the pending decision on this page and approve or dismiss it",
+                                       f"The {label} {noun} was stopped for your safety", f"run {run_id}"),
+            }, status_code=500)
+        if "partial" in categories:
+            return JSONResponse({
+                "status": "failed", "outcome": "partial", "flow_run_id": run_id,
+                "detail": messages.act("Open Recent backups on this page to see what was left out",
+                                       f"The {label} {noun} was only partly done", f"run {run_id}"),
+            }, status_code=500)
         return JSONResponse({
             "status": "failed",
             "flow_run_id": run_id,
@@ -808,6 +831,42 @@ async def _refuse_if_busy(target: str) -> JSONResponse | None:
     return JSONResponse({"status": "already_running", "detail": detail}, status_code=400)
 
 
+async def _agent_serving(deployment: str) -> bool | None:
+    """F1: is a backup service asking Prefect for this deployment's runs right now? A served deployment's
+    `last_polled` is refreshed by every poll of the service; when it is older than
+    `dashboard.agent_max_silence_seconds` (or never set, or the deployment is gone) nobody would pick up a
+    manual run, which would sit SCHEDULED and start whenever the service returns. Tri-state: True / False /
+    None (Prefect does not answer: callers fail closed with the scheduler-not-answering 503)."""
+    from prefect.exceptions import ObjectNotFound
+    try:
+        async with get_client() as client:
+            dep = await client.read_deployment_by_name(deployment)
+    except ObjectNotFound:
+        return False
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Failed to read deployment {deployment}: {e}")
+        return None
+    polled = getattr(dep, "last_polled", None)
+    if polled is None:
+        return False
+    if polled.tzinfo is None:
+        polled = polled.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - polled).total_seconds() <= _dash("agent_max_silence_seconds")
+
+
+_agent_serving_real = _agent_serving
+
+
+async def _refuse_if_service_down(deployment: str) -> JSONResponse | None:
+    serving = await _agent_serving(deployment)
+    if serving is None:
+        raise HTTPException(status_code=503, detail=messages.SCHEDULER_NOT_ANSWERING)
+    if serving:
+        return None
+    return JSONResponse({"status": "service_not_running", "detail": messages.SERVICE_NOT_RUNNING},
+                        status_code=503)
+
+
 @app.post("/trigger/cloud")
 async def trigger_cloud(request: Request):
     _require_auth(request)
@@ -822,6 +881,9 @@ async def trigger_cloud(request: Request):
     busy = await _refuse_if_busy("cloud")
     if busy is not None:
         return busy
+    down = await _refuse_if_service_down("aam-backup/backup-cloud")
+    if down is not None:
+        return down
     # G15: await the actual deployment run creation before answering. The
     # old code returned 200 via background_tasks BEFORE arun_deployment
     # resolved — a missing deployment (e.g. after a serve() crash-loop) or an
@@ -855,6 +917,9 @@ async def trigger_lan(request: Request):
     busy = await _refuse_if_busy("lan")
     if busy is not None:
         return busy
+    down = await _refuse_if_service_down("aam-backup/backup-lan")
+    if down is not None:
+        return down
     try:
         flow_run = await arun_deployment(
             name="aam-backup/backup-lan",
@@ -932,6 +997,10 @@ async def _ensure_leg_idle(leg: str) -> None:
 async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
     leg = req["leg"]
     label, deployment, _ = _APPROVAL_TARGETS[leg]
+    # F1: no service to pick the run up -> start nothing; the approval stays APPROVED and /run retries it
+    down = await _refuse_if_service_down(deployment)
+    if down is not None:
+        return down
     try:
         flow_run = await arun_deployment(
             name=deployment,

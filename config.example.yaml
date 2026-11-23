@@ -317,6 +317,12 @@ dashboard:
   # A manual start waits this long for the run's first result before the page
   # answers; the run continues afterwards (0-600 seconds)
   trigger_wait_seconds: 180
+  # A manual start that begins later than this many minutes after the button was pressed
+  # is not run; it is recorded as Missed and the NAS is never woken for it (5-1440)
+  manual_start_max_wait_minutes: 30
+  # A manual start is refused when the backup service has not asked for work for this long,
+  # seconds (30-3600)
+  agent_max_silence_seconds: 120
   # The dashboard shows one mark per night for this many nights (7-90)
   history_nights: 30
   # "Apply changes" on the Settings page restarts the backup service this long after

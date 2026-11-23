@@ -120,7 +120,8 @@ each FY folder is backed up for 15 months (its own 12 plus January-March before 
 ### 3.2 Cloud pipeline: `flow._run_cloud_pipeline()`
 
 ```
-with _backup_slot(config):                     concurrency slot + backup.lock (acquire_lock)
+(slot held by `_run_leg_folders`, ONCE per leg around every FY folder: concurrency slot + backup.lock
+ acquire_lock; the pipeline runs with slot_held=True; a direct call without it takes the slot itself)
 │
 ├─ before_dict = ManifestDB.get_cloud_synced_entries()      (for "files copied" metric)
 ├─ artefacts   = _open_run_artefacts()  → run_logs\<day>\<date>_<HHmm>_<leg>_<id>\   (full logs folder)
@@ -163,7 +164,7 @@ with _backup_slot(config):                     concurrency slot + backup.lock (a
 ### 3.3 LAN pipeline: `flow._run_lan_pipeline()`
 
 ```
-with _backup_slot(config):
+(slot held by `_run_leg_folders`, ONCE per leg around every FY folder; slot_held=True; the NAS is woken only AFTER the slot is held)
 │
 ├─ artefacts = _open_run_artefacts()
 ├─ phase "pre"
@@ -172,7 +173,7 @@ with _backup_slot(config):
 │   │      already on 445? → done · else magic packet ×wake_retry_count,
 │   │      poll 445 every ping_interval up to wake_timeout, then stability_wait
 │   ├─ lan_preflight_task (1 retry) → core/lan_preflight.run_lan_dry_run()
-│   │      SMB 445 probe (HARD-CODED 2 s × 4 ≈ 15 s — replaced in M2 2.5)
+│   │      SMB 445 probe (`core/smb_ready`: `wol.smb_connect_timeout_seconds` × `lan.preflight_smb_attempts`, wait `lan.preflight_smb_wait_seconds`)
 │   │      canary \\nas\…\.AAM_TARGET_MOUNTED must be a file
 │   │      robocopy /L /MIR … (exit < 8 = ok)
 │   └─ lan_snapshot_before_task → core/lan_manifest.walk_lan_destination()
@@ -332,6 +333,12 @@ GET  /status      last runs (status_label/category/description from core/statuse
                   last success, integrity (latest_audit), manifest counts, Prefect run state
 GET  /health      unauthenticated (always "healthy" today — WP9)
 POST /trigger/cloud | /trigger/lan | /trigger/verify/{mode}[?fy=FY27-28]   → prefect arun_deployment (fy must be active)
+  manual-start safety (F1): the backup triggers and the approved re-run answer 503 "the backup service is not running, nothing was started"
+  and create NO run when no service has polled the deployment for `dashboard.agent_max_silence_seconds` (Prefect `last_polled`; API silent = the
+  usual scheduler-not-answering 503). Second layer in `flow.backup`: a manual run that begins more than `dashboard.manual_start_max_wait_minutes`
+  after it was requested (service stopped between the check and the start, or died with the run queued) is recorded <LEG>_MISSED per folder
+  and fails; no slot, no WoL, no copy. Why both: the endpoint check cannot see a service that dies a moment later or a run created by other
+  means; the flow check cannot stop the 'started' answer or the queued run. Together no hidden queued run can wake the NAS later.
 GET  /report/weekly|monthly          HTML download
 POST /trigger/report/*/email         send now
 auth: always on - dashboard password (`dashboard.login_password_hash`) → session cookie; Advanced password (`dashboard.admin_password_hash`) → second cookie; sessions carry the fingerprint of the hash they were opened with (a change or reset ends older sessions); no hash = 'not set up' page, nothing opens; rate limits in memory

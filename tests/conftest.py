@@ -120,3 +120,15 @@ def _dashboard_test_client(request, monkeypatch):
 
     monkeypatch.setattr(TestClient, "__init__", signed_in_init)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _backup_service_is_serving(monkeypatch):
+    """F1: the manual-start endpoints ask Prefect whether a backup service polls the deployment. Tests that
+    do not care about that answer 'yes'; tests of the check use ui._agent_serving_real."""
+    import ui
+
+    async def serving(deployment):
+        return True
+
+    monkeypatch.setattr(ui, "_agent_serving", serving)
