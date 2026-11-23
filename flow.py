@@ -467,6 +467,14 @@ def _pass_metrics(fy_pass, *, cloud: bool = False) -> dict:
     return metrics
 
 
+def _pass_row_metrics(fy_pass, leg: str) -> str | None:
+    """extended_metrics JSON of a row that never reached the pipeline body (MISSED, SLOT_TIMEOUT), None for
+    the baseline call: the row still says which FY it belongs to (review F5)."""
+    if fy_pass is None:
+        return None
+    return _merge_metrics(None, **_pass_metrics(fy_pass, cloud=leg == "cloud"))
+
+
 def _artifact_kwargs(fy_pass, base: str) -> dict:
     """The Prefect summary key: only the next-FY pass has its own (plan 2.3); otherwise the task's default."""
     if fy_pass is not None and fy_pass.extra:
@@ -549,7 +557,7 @@ def _scheduled_lateness_seconds() -> float:
 
 def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget: RunBudget,
                          reserve_s: float, late_s: float, monotonic_start: float | None, *,
-                         fy: str | None = None, title_fy: str | None = None) -> None:
+                         fy: str | None = None, title_fy: str | None = None, fy_pass=None) -> None:
     """Plan I2: a run that starts with no budget left (less than the time its last steps need)
     would run into office hours. Record <LEG>_MISSED and send ONE warning per leg (the stable
     key `missed:<leg>` keeps several missed nights at boot from sending one email each), then
@@ -570,7 +578,7 @@ def _missed_if_no_budget(config, leg: str, run_id: str, started_at: str, budget:
                  "scheduled run continues.")
     logger.warning(error)
     _record_run(config, run_id, leg, started_at, status, -1, error,
-                monotonic_start=monotonic_start)
+                extended_metrics=_pass_row_metrics(fy_pass, leg), monotonic_start=monotonic_start)
     notify(config, AlertEvent(
         key=f"missed:{leg}{_fy_key_part(fy)}", kind="WARNING", mode=leg,
         title=f"{_leg_title(leg, title_fy or fy)} backup night missed", message=error, status=status,
@@ -600,7 +608,7 @@ def _slot_stuck(config, exc: BaseException) -> bool:
 
 @contextmanager
 def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
-                   monotonic_start: float | None = None, **scope):
+                   monotonic_start: float | None = None, fy_pass=None, **scope):
     """RUNNING row, then the backup slot. If the slot (or the watchdog lock)
     cannot be obtained, the row becomes *_SLOT_TIMEOUT ("could not start")
     and the error is re-raised - previously no row was written at all.
@@ -618,6 +626,7 @@ def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
                 _record_run(
                     config, run_id, leg, started_at, status, -1,
                     f"Backup could not start: {detail}",
+                    extended_metrics=_pass_row_metrics(fy_pass, leg),
                     monotonic_start=monotonic_start,
                 )
             except Exception as rec_err:  # noqa: BLE001
@@ -1668,8 +1677,8 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
         _budget_origin(budget_start, monotonic_start) - late_seconds)
     _missed_if_no_budget(config, "cloud", run_id, started_at, budget,
                          config.budget.cloud_verify_reserve_minutes * 60, late_seconds,
-                         monotonic_start, **scope)
-    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start, **scope):
+                         monotonic_start, fy_pass=fy_pass, **scope)
+    with _pipeline_slot(config, "cloud", run_id, started_at, monotonic_start, fy_pass=fy_pass, **scope):
         fy_prefix = _effective_fy_prefix(config)
 
         # Apply config-driven retries to tasks that benefit from retrying
@@ -2054,8 +2063,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         _budget_origin(budget_start, monotonic_start) - late_seconds)
     _missed_if_no_budget(config, "lan", run_id, started_at, budget,
                          config.budget.lan_post_reserve_minutes * 60, late_seconds,
-                         monotonic_start, **scope)
-    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start, **scope):
+                         monotonic_start, fy_pass=fy_pass, **scope)
+    with _pipeline_slot(config, "lan", run_id, started_at, monotonic_start, fy_pass=fy_pass, **scope):
 
         # Apply config-driven retries to tasks that benefit from retrying
         preflight = lan_preflight_task.with_options(

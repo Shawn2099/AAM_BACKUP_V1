@@ -442,3 +442,45 @@ class TestBlockRequestOfAPass:
         ev = notify.call_args.args[1]
         assert ev.key == "blocked:cloud:FY27-28" and ev.fy == "FY27-28"
         assert ev.title == "CLOUD (FY27-28) backup blocked - approval needed"
+
+
+# ── MISSED and SLOT_TIMEOUT rows carry the pass's FY (review F5) ───────────────────────────────────
+
+class TestRowsThatNeverStartCarryTheFy:
+    def _row_metrics(self, env):
+        raw = env.record_run.call_args.kwargs.get("extended_metrics")
+        assert raw, "the row has no extended_metrics"
+        return json.loads(raw)
+
+    def test_cloud_missed_row_of_the_next_fy(self):
+        with cloud_env() as env:
+            with pytest.raises(flow.PartialRun):
+                flow._run_cloud_pipeline(NEXT_CLOUD, CLOUD_BASE, STARTED, time.monotonic(),
+                                         budget_start=time.monotonic() - 3601, fy_pass=next_pass())
+        assert self._row_metrics(env)["fy"] == "FY27-28"
+        assert self._row_metrics(env)["overlap"] is True
+
+    def test_lan_missed_row_of_the_next_fy(self, tmp_path):
+        cfg = make_config("E:\\FY27-28", str(tmp_path / "FY27-28"))
+        with lan_env() as env:
+            with pytest.raises(flow.PartialRun):
+                flow._run_lan_pipeline(cfg, LAN_BASE, STARTED, time.monotonic(),
+                                       budget_start=time.monotonic() - 3601, allow_shutdown=False,
+                                       fy_pass=next_pass(cfg))
+        assert self._row_metrics(env)["fy"] == "FY27-28"
+        assert self._row_metrics(env)["overlap"] is True
+
+    def test_cloud_slot_timeout_row_of_the_next_fy(self):
+        with cloud_env() as env, patch("flow._backup_slot", side_effect=TimeoutError("slot wait ran out")):
+            with pytest.raises(TimeoutError):
+                flow._run_cloud_pipeline(NEXT_CLOUD, CLOUD_BASE, STARTED, time.monotonic(),
+                                         fy_pass=next_pass())
+        assert env.record_run.call_args.args[4] == "CLOUD_SLOT_TIMEOUT"
+        assert self._row_metrics(env)["fy"] == "FY27-28"
+        assert self._row_metrics(env)["overlap"] is True
+
+    def test_baseline_rows_stay_without_metrics(self):
+        with cloud_env() as env, patch("flow._backup_slot", side_effect=TimeoutError("slot wait ran out")):
+            with pytest.raises(TimeoutError):
+                flow._run_cloud_pipeline(CUR_CLOUD, CLOUD_BASE, STARTED, time.monotonic())
+        assert env.record_run.call_args.kwargs.get("extended_metrics") is None
