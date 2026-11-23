@@ -1,0 +1,39 @@
+# Release break-it session - PART 6 (newest; read Parts 1-5 first)
+
+Written 2026-11-23 (morning). Owner rules in force: Haiku for everything except fixes (Sonnet in a worktree); Opus only for decisions/final verification; merge `git merge --no-ff` only (never squash/force-push); push regularly; repo is PUBLIC (scan added lines first); document every finding here; DB/reports must show the actual truth; the system clock is never changed. Owner goal: when confident, merge everything and push to a NEW branch named `production-release` (nothing pushed there yet).
+
+## Pushed
+`fy-overlap` pushed to origin up to `a87243e` (full unit suite on it: 4089 passed, 21 skipped, 2 xfailed). Merged locally AFTER that push (not pushed yet, full suite re-run in progress, output `agent_runs/unit_full_after_wave3.txt`): `d33835f` (stale approval + NSSM), `307e597` (size retention), `9876499` (D15).
+
+## Done this part
+- **L1/L2/L3 live defects fixed and merged** (`11b984d`, `06f2104`): RECOVERED mail after an undelivered failure alert (says the alert was lost); watchdog digest of undelivered alerts (keys `alerts.undelivered_digest_max_age_hours` 72/0..336, `alerts.undelivered_digest_retry_minutes` 30/5..1440); fresh-DB alarm (reuses the existing `created_at` meta; alert key `db:recreated`, prefix `db:` registered in `core/alert_class.py`, commit `a87243e`; it also turns /health 503 until acknowledged); AAM-NAS-01 label for an unreachable share; RESOLVED mail when config.yaml is valid again (marker `watchdog_invalid_config.sent` removed even if delivery fails).
+- **Stale pending approval** (`02ddc18`): a successful run for the same leg+FY marks an older PENDING approval SUPERSEDED (in `ManifestDB.insert_run`; rollover approvals clear only on a successful rollover run). Found live: the old G4 approval kept /health at 503 after the operator fixed the cause.
+- **NSSM** (`21f3cbc`): `AppKillProcessTree 1` set explicitly for the three services. `deploy/08_uninstall_services.bat` keeps going after a force kill, BUT prints "COMPLETE - fully removed" even if `nssm remove` failed (not fixed).
+- **Size-based DB retention** (`37a32ab`): `maintenance.db_retention_max_mb` default 5, bounds 1..500. `db_retention_days` is now a FLOOR (never delete younger). Oldest run rows go first only while over budget; never deleted: RUNNING rows, newest row and newest success per (mode, fy). Budget measures the run_history text size (estimate), NOT the db file (file_entries is far larger). Over budget with nothing eligible: one WARNING, no mail. Reports cannot misreport within 35 days; a future report window longer than the floor could miss purged nights (nothing uses that today). OWNER MAY ASK for a file-size budget instead.
+- **D15 fixed** (`fd853f4`, merge `9876499`): the rollover does not open the G6 request while the leg's own guard approval is PENDING and never approved; it records ROLLOVER_BLOCKED, mails AAM-ROL-02 (key `blocked:rollover`) and the switch stays blocked. Caveat: "leg approval given" = any approved request of that leg+FY; a later different block of the same leg+FY goes straight to G6.
+- **Finding B (old-schema DB at boot)**: owner says the real deploy is a fresh install, so it is MOOT (accepted). Test `test_launch_exits_before_prefect_serve_on_old_schema` stays xfail.
+
+## Prefect stop investigation (Haiku, read-only) - NOT SOLVED
+- Prefect service's own NSSM settings cap its stop at ~45 s (Console/Window/Threads 15000 each, then tree kill); AppRestartDelay/Throttle do not apply.
+- `AamBackupAgent` DependOnService=AamPrefectServer; its stop windows are Skip=6, Console=180000 (deliberate: cancel in-flight runs). `Stop-Service -Force` on Prefect stops the agent first, so up to +180 s. Normal agent stop observed: 10 s (LS9).
+- The two "did not reach Stopped within 150 s" lines in LIVE_RESULTS.md came from LS8 scripts (elevq 061/062): they sent `Stop-Service -NoWait -Force` to all three services with errors hidden (`-ea 0`) and AamPrefectServer never showed StopPending (python pid unchanged), so this may be a SCRIPT/measurement artefact, not a service defect.
+- Other facts: process tree NSSM -> venv launcher -> real python (no uvicorn children). Prefect log shows a poison event (UNIQUE on task_run_state) retried every ~5 s ("Dropping event after 6 failed attempts"), test-DB state, harmless. An older F4 note documents a stop hang from online log rotation (now off).
+- Ranked causes: (1) NSSM/SCM not finishing after the kill (plausible, unreproduced); (2) agent dependency cascade (mechanism confirmed, contribution unconfirmed); (3) script artefact; (4) Prefect own shutdown (max ~45 s).
+- PROPOSED SAFE EXPERIMENT (run only when the stack is idle, after the live wave): stop Watchdog, then Agent (expect 2-10 s), then time `Stop-Service AamPrefectServer` polling every 1 s (expect <= ~50 s, python gone at ~45 s); restore Prefect (wait /api/health 200), Agent, Watchdog. Reading: Prefect StopPending >50 s with python gone = NSSM hang; agent step >30 s = cascade; Prefect still Running after the call = script problem.
+- PROPOSED FIX: live scripts must stop in dependency order, never hide errors, treat "still Running after N s" as a failure. Owner decision if the agent's 180 s Console window should change (deliberate, left alone). The Opus L3 acceptance ("NSSM settings explain it") is only half right: accept only after the experiment.
+
+## New use case from the owner (2026-11-23) - IN PROGRESS
+The client may DISABLE the scheduled LAN backup (cloud-only by schedule) and start LAN backups by hand from the dashboard: that must wake the backup server (WoL) if needed, run backup + verify, then shut the server down. Concerns to verify: false alarms (overdue, red banner, 'action needed ... no backup record' report rule, rollover/overlap logic) for a LAN leg that is off ON PURPOSE, vs hidden real problems; manual run after weeks away; both FY folders during an overlap; rollover/April-1 switch with no LAN schedule; WoL/shutdown when the server is already on / slot busy / shutdown fails. A Haiku agent writes `docs/INVESTIGATION_CLOUD_ONLY_MANUAL_LAN_2026-11-23.md` (read-only code investigation, ranked suspected defects, test cards). Then: Haiku writes/runs the cards, Sonnet fixes confirmed defects, owner decision if a new config key (e.g. a manual-only LAN mode) is needed.
+
+## Still running / TODO
+1. Haiku live wave 2 on the test stack (stack update to the newest code, LS8b (now moot), LS7a, LS7b, LS5 if safe); results go to `C:\AAMTest\live\LIVE_RESULTS.md` under 'Wave 2'. Its stack update used the code of that time; update again to include the post-`a87243e` merges before further live steps.
+2. Full unit suite on `9876499`; if green: secret scan, `git push origin fy-overlap`.
+3. Prefect stop experiment (above), after the live wave.
+4. Cloud-only / manual-LAN: investigation -> test cards -> fixes.
+5. 15 never-run lab tests (`audit_lab/test_w26a..e`, `test_w27a/b`), then the full audit lab (~90 min); never while a live step runs.
+6. Audit of ALL mail contents (owner request; do once all logic is in place: wording, truthfulness, recipients, no secrets).
+7. Opus final verification vs the release gate; owner report; then merge into branch `production-release` (new branch, `--no-ff`, push, no force).
+8. Cleanup (test services, user `aamtest`, share, bucket `aam-backup-qa-bilcvx`, RESTORE the AAMMerger services (still stopped and disabled), worktrees `C:\AAMTest\code` and `.claude\worktrees\agent-*`, SMTP sink).
+
+## Open owner items (unchanged unless noted)
+D4, D13, wording of the April-1 rollover mail and the reboot ACTION NEEDED mail, late LAN_MISSED dating, restore-engine default `forbidden_paths`, alert-controls steps D-G not in code, rotate the old password in public git history, uninstall script false "COMPLETE". Not verifiable here: real Windows Server 2016/2019, real NAS power-off, real mail provider.
