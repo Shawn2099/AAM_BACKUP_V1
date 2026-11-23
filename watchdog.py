@@ -26,14 +26,14 @@ HOW IT WORKS
       → Defer up to MAX_TRANSFER_DEFERRALS (default 240 × 2 min = 8 h).
         A legitimate transfer (max 6 h by subprocess_timeout_seconds) is
         never cut short. At the cap with a PID-live lock owner, log a
-        file/log-only CRITICAL and keep deferring (never unlink a live
+        CRITICAL, send one mail and keep deferring (never unlink a live
         lock, never restart under it). Only a dead/absent lock owner
         proceeds to restart.
     - Signal B (lock only, no transfer process): lock file exists + PID alive
       but no rclone/robocopy detected. Expected between rclone calls
       (verify/manifest/report phases) — defer indefinitely while the owner
-      is PID-live; at the MAX_DEFERRALS cap (~30 min) log a file/log-only
-      CRITICAL and keep deferring. A PID-dead/reused lock is not a live
+      is PID-live; at the MAX_DEFERRALS cap (~30 min) log a
+      CRITICAL, send one mail and keep deferring. A PID-dead/reused lock is not a live
       backup: it is treated as no-backup and collected via restart/boot-heal.
    - No lock and no transfer process → restart promptly.
    - If no backup → restarts the stack IN ORDER (WP13): stop AamBackupAgent
@@ -312,14 +312,18 @@ def _start_allowed(service: str) -> bool:
 _attention_raised = False
 
 
-def _notify(event_kwargs: dict) -> None:
+def _notify(event_kwargs: dict) -> str | None:
+    """Send one watchdog alert through core.notify. Returns the delivery status (SENT, FAILED, ...) or
+    None when it could not even be attempted. Never raises."""
     try:
         from core.notify import AlertEvent, notify
         from models.config import CONFIG_PATH, load_config
 
-        notify(load_config(CONFIG_PATH), AlertEvent(mode="watchdog", **event_kwargs))
+        result = notify(load_config(CONFIG_PATH), AlertEvent(mode="watchdog", **event_kwargs))
+        return getattr(result, "status", None)
     except Exception as e:
         logger.warning(f"Watchdog alert delivery skipped/failed: {e}")
+        return None
 
 
 def _degraded_mail_settings(raw: dict):
@@ -414,6 +418,80 @@ def _critical(key: str, title: str, message: str, status: str,
     _attention_raised = True
 
 
+# -- "The service was down and the watchdog restarted it" (Wave 2 follow-up, owner approved) --
+# A self-healed outage must not be invisible: when the watchdog actually starts / restarts a service it
+# sends ONE WARNING mail, and ONE RECOVERED once the service answers again. Bounded per service by
+# alerts.repeat_cooldown_hours (a flapping service sends one pair per window, never a storm); the
+# START_SUPPRESSED mail is separate and unchanged. Reuses the existing alert-class switches
+# (WARNING = problem and warning emails, RECOVERED = resolved emails).
+_SERVICE_PLAIN = {
+    "AamPrefectServer": "backup scheduler",
+    "AamBackupAgent": "backup program",
+    "stack": "backup program and its scheduler",
+}
+_down_since: dict[str, float] = {}         # service key -> monotonic time the outage was first seen
+_restart_mailed: dict[str, float] = {}     # service key -> monotonic time of its last WARNING mail attempt
+_pending_recovery: dict[str, str] = {}     # service key -> plain name, waiting for the RECOVERED mail
+
+
+def _note_down(key: str) -> None:
+    """Remember when this service was first seen down (the first call wins until recovery)."""
+    _down_since.setdefault(key, time.monotonic())
+
+
+def _restart_cooldown_seconds() -> float:
+    try:
+        from models.config import CONFIG_PATH, AlertsConfig, load_config, model_default
+        try:
+            hours = load_config(CONFIG_PATH).alerts.repeat_cooldown_hours
+        except Exception:  # noqa: BLE001 - an unreadable config must not stop the bound from working
+            hours = model_default(AlertsConfig, "repeat_cooldown_hours")
+        return float(hours) * 3600
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Restart-mail cooldown unknown ({e}); using 12 hours")
+        return 12 * 3600.0
+
+
+def _alert_restarted(key: str, plain: str | None = None) -> None:
+    """The watchdog just started / restarted the service `key`: one WARNING mail (bounded per service).
+    Never raises."""
+    try:
+        plain = plain or _SERVICE_PLAIN.get(key, key)
+        now = time.monotonic()
+        cooldown = _restart_cooldown_seconds()
+        last = _restart_mailed.get(key)
+        if last is not None and cooldown > 0 and now - last < cooldown:
+            logger.info(f"{plain} restarted again within the repeat window - no further restart mail")
+            return
+        since = _down_since.get(key) or _down_since.get(WATCHED_SERVICE) or now
+        minutes = max(1, round((now - since) / 60))
+        status = _notify({
+            "key": f"watchdog:restarted:{key}", "kind": "WARNING",
+            "title": f"The {plain} was restarted automatically",
+            "message": (f"The {plain} on the server was down for about {minutes} "
+                        f"minute{'s' if minutes != 1 else ''} and was restarted automatically. "
+                        "No action is needed unless it repeats."),
+            "status": "SERVICE_RESTARTED", "fault_code": "AAM-SVC-05"})
+        _restart_mailed[key] = now
+        if status is not None and status not in ("DISABLED", "SUPPRESSED"):
+            _pending_recovery[key] = plain
+    except Exception as e:  # noqa: BLE001 - a mail problem never breaks the watchdog loop
+        logger.warning(f"Restart mail skipped/failed: {e}")
+
+
+def _send_restart_recoveries() -> None:
+    """The service answers again: one RECOVERED mail for every restart mail that was sent. Never raises."""
+    for key, plain in list(_pending_recovery.items()):
+        _pending_recovery.pop(key, None)       # one attempt: notify records a failed delivery itself
+        try:
+            _notify({"key": f"recovered:watchdog:restarted:{key}", "kind": "RECOVERED",
+                     "title": f"The {plain} is running again",
+                     "message": f"The {plain} is running again after the automatic restart.",
+                     "status": "RECOVERED", "cooldown_hours": 0})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Restart RECOVERED mail skipped/failed: {e}")
+
+
 _healthy_marked_at = 0.0
 
 
@@ -442,6 +520,8 @@ def _mark_healthy() -> None:
 def _send_recovered_if_needed() -> None:
     global _attention_raised
     _mark_healthy()
+    _send_restart_recoveries()
+    _down_since.clear()
     if not _attention_raised:
         return
     _notify({"key": "watchdog:recovered", "kind": "RECOVERED",
@@ -613,6 +693,7 @@ def _restart_stack() -> bool:
     1051 while the agent runs (production logs), so the agent goes first.
     """
     logger.error(f"Restarting {AGENT_SERVICE} + {WATCHED_SERVICE} in order")
+    _note_down(WATCHED_SERVICE)
     for service in (AGENT_SERVICE, WATCHED_SERVICE):
         if not _stop_and_wait(service):
             return False
@@ -640,6 +721,7 @@ def _restart_stack() -> bool:
                       fault_code="AAM-SVC-04")
             return False
     logger.info("Restart complete: server RUNNING, API healthy, agent RUNNING")
+    _alert_restarted("stack")
     return True
 
 
@@ -714,6 +796,8 @@ def main() -> None:
                 # run and nothing else reports it (the server looks perfectly
                 # fine). Monitor it directly.
                 agent_state = _service_state(AGENT_SERVICE)
+                if agent_state not in ("RUNNING", ""):
+                    _note_down(AGENT_SERVICE)
                 if agent_state != "STOP_PENDING":
                     pending_since.pop(AGENT_SERVICE, None)
                 if agent_state == "RUNNING":
@@ -727,7 +811,8 @@ def main() -> None:
                     logger.info(f"{AGENT_SERVICE} is {agent_state} - waiting for NSSM to finish the transition")
                 elif agent_state == "STOPPED":
                     if _start_allowed(AGENT_SERVICE):
-                        _start_service(AGENT_SERVICE)
+                        if _start_service(AGENT_SERVICE):
+                            _alert_restarted(AGENT_SERVICE)
                     else:
                         _critical(
                             f"start_suppressed:{AGENT_SERVICE}", f"{AGENT_SERVICE} is stopped",
@@ -745,6 +830,7 @@ def main() -> None:
 
             # ── Unhealthy ────────────────────────────────────────────────────────
             failures += 1
+            _note_down(WATCHED_SERVICE)
             logger.warning(
                 f"Prefect API unreachable - failure {failures}/{FAILURE_THRESHOLD}"
             )
@@ -768,8 +854,8 @@ def main() -> None:
                     if lock_held:
                         # Live lock owner: NEVER unlink a PID-live lock and NEVER
                         # restart under it — a second backup must not overlap a
-                        # live one. File/log-only CRITICAL (watchdog_svc.log);
-                        # not emailed, not shown in the dashboard.
+                        # live one. CRITICAL in the log, plus ONE ACTION_REQUIRED mail
+                        # per lock owner (_alert_wedged_lock).
                         logger.critical(
                             f"Prefect API has been unhealthy for {failures} checks and a "
                             f"transfer process has been detected for {transfer_deferrals} deferrals "
@@ -837,8 +923,8 @@ def main() -> None:
                 if lock_deferrals >= MAX_DEFERRALS:
                     # lock_held here means the owner PID + creation time is
                     # confirmed alive: NEVER unlink a live lock and NEVER
-                    # restart under it. File/log-only CRITICAL
-                    # (watchdog_svc.log); not emailed, not in the dashboard.
+                    # restart under it. CRITICAL in the log, plus ONE
+                    # ACTION_REQUIRED mail per lock owner (_alert_wedged_lock).
                     # (A PID-dead/reused lock never reaches this branch:
                     # _is_backup_running() reports it stale, so the loop
                     # treats it as no-backup and boot-heal collects it.)
@@ -899,7 +985,8 @@ def main() -> None:
                 # service is never revived by Windows on its own, so the old code
                 # waited here forever. Start it directly (circuit-breaker guarded).
                 if _start_allowed(WATCHED_SERVICE):
-                    _start_service(WATCHED_SERVICE)
+                    if _start_service(WATCHED_SERVICE):
+                        _alert_restarted(WATCHED_SERVICE)
                     failures = 0
                 else:
                     _critical(

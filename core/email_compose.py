@@ -223,8 +223,8 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
 
     # a blocked run's own numbers are plain words ("would delete 1,240 of 5,800 files");
     # every other message is technical and stays in the support block
-    details = _clip(event.message, config) if (fault and str(event.status).endswith("_BLOCKED")
-                                and event.message) else None
+    details = _clip(event.message, config) if (fault and event.message and (
+        str(event.status).endswith("_BLOCKED") or event.status == "SERVICE_RESTARTED")) else None
     who_list = fault.who if fault else ()
     who = ("you" if faults.YOU in who_list or not who_list
            else "fix by " + " or ".join(WHO[w] for w in who_list if w in WHO))

@@ -210,6 +210,7 @@ in the report CSV and in the email.
 | AAM-SVC-02 | Backup program stuck | The backup program did not stop or restart properly. | Support | Forward to support now. |
 | AAM-SVC-03 | Automatic restarts paused | The backup program restarted {n} times in one hour; automatic restarts are paused to avoid a loop. No backups run until fixed. | Support | Forward to support now. |
 | AAM-SVC-04 | Scheduler not responding | The part that starts backups on time did not answer and could not be repaired automatically. | Support | Forward to support now. |
+| AAM-SVC-05 | Backup program restarted automatically | WARNING. Part of the backup program on the server was down and the server restarted it automatically; the mail names the part and says "down about N minutes". Files not changed. | Nobody → Support | Nothing needed; one RESOLVED mail follows. Tell support if it repeats. |
 | AAM-RPT-01 | *(retired, plan C P1)* | No longer sent: a period with no backup is reported by the weekly / monthly report itself ("action needed: ... no backup ran"). Kept in the catalogue only so old references resolve. | - | - |
 
 Dashboard-only (cannot be emailed, by definition): **AAM-MAIL-01 Alert emails are not being delivered**

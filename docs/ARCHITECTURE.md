@@ -362,6 +362,14 @@ All tunables: config `watchdog:`. Own log: logs/watchdog_app.log.
 Stale-leg mails parse the attention code `stale:<fy>:<leg>` and are suppressed per (leg, FY) (§3.4).
 Every CRITICAL → core.notify (ACTION_REQUIRED, mode watchdog) → red banner
 until a RECOVERED notification follows.
+A service the watchdog actually started / restarted (agent or server `sc start`, or the ordered
+restart) is no longer silent: ONE WARNING mail `watchdog:restarted:<service|stack>` (fault AAM-SVC-05,
+status SERVICE_RESTARTED, plain name + "down about N minutes", "no action needed unless it repeats")
+and ONE RECOVERED `recovered:watchdog:restarted:<key>` once the API answers and the agent is RUNNING.
+Bounded per service by alerts.repeat_cooldown_hours (a flapping service sends one pair per window;
+kept in watchdog memory); a mail failure never breaks the loop; classes reuse the existing switches
+(WARNING = notifications.send_on_failure, RECOVERED = alerts.send_resolved - no new key). The
+START_SUPPRESSED CRITICAL is unchanged. (A lock-cap CRITICAL also sends ONE mail per lock owner.)
 ```
 
 ### 5.6 Interruption — a reboot or power cut mid-run resumes on the next run

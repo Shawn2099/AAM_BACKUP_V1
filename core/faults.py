@@ -333,6 +333,11 @@ CATALOG: dict[str, Fault] = {f.code: f for f in (
        "The part that starts the backups on time did not answer and could not be "
        "repaired automatically.",
        "Forward this email to support now."),
+    _f("AAM-SVC-05", "Backup program restarted automatically", WARNING, (NOBODY, SUPPORT),
+       "Part of the backup program on the server was down and the server restarted it "
+       "automatically. Your files were not changed.",
+       "Nothing is needed. You get one more email when it is running again.",
+       "Tell support if you get this email again and again."),
     _f("AAM-RPT-01", "No backups recorded", ACTION, (SUPPORT,),
        "No backup ran at all in this period. Backups are not starting.",
        "Forward this email to support now."),

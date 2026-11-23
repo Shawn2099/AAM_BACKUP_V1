@@ -231,6 +231,8 @@ def alerts(monkeypatch):
     sent = []
     monkeypatch.setattr(wd, "_notify", lambda ev: sent.append(ev))
     monkeypatch.setattr(wd, "_attention_raised", False)
+    for state in (wd._down_since, wd._restart_mailed, wd._pending_recovery):
+        state.clear()
     return sent
 
 
@@ -241,7 +243,8 @@ class TestRestartStack:
         assert wd._restart_stack() is True
         assert stack.log == [("stop", wd.AGENT_SERVICE), ("stop", wd.WATCHED_SERVICE),
                              ("start", wd.WATCHED_SERVICE), ("start", wd.AGENT_SERVICE)]
-        assert alerts == []
+        # a self-healed outage is no longer silent: exactly one WARNING (no CRITICAL)
+        assert [(a["kind"], a["key"]) for a in alerts] == [("WARNING", "watchdog:restarted:stack")]
 
     def test_refused_stop_is_a_critical_with_the_sc_reason(self, monkeypatch, alerts):
         stack = FakeStack(monkeypatch, {wd.AGENT_SERVICE: "RUNNING", wd.WATCHED_SERVICE: "RUNNING"},
