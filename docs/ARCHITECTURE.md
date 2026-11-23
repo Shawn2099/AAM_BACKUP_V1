@@ -49,8 +49,8 @@ pass for a backup to run, to count as successful, and to be verified.**
 
 | Deployment (serve.py) | Flow function (flow.py) | Default cron | What it does |
 |---|---|---|---|
-| `aam-backup/backup-cloud` | `backup(mode="cloud")` | `0 18 * * *` | rclone sync to GCS + size check |
-| `aam-backup/backup-lan` | `backup(mode="lan")` | `0 1 * * *` | WoL → robocopy /MIR to NAS → shutdown |
+| `aam-backup/backup-cloud` | `backup(mode="cloud")` | `0 18 * * *` | rclone sync to GCS + size check (no cron when `cloud.scheduled` is false, section 5.9) |
+| `aam-backup/backup-lan` | `backup(mode="lan")` | `0 1 * * *` | WoL → robocopy /MIR to NAS → shutdown (no cron when `lan.scheduled` is false, section 5.9) |
 | `weekly-report/weekly-report` | `weekly_report_flow` | `0 8 * * MON` | email report of the previous calendar week (Mon-Sun) + CSV |
 | `monthly-report/monthly-report` | `monthly_report_flow` | `30 8 1 * *` | email report of the previous calendar month + CSV |
 | `rollover-check/rollover-check` | `rollover_check_flow` | `0 6 * * *` | **log retention** + the FY rollover resumer (§5.2) |
@@ -424,6 +424,30 @@ producer (flow, watchdog, rollover, reports, password change)
 
 ---
 
+### 5.9 Manual-only legs: `lan.scheduled` / `cloud.scheduled` (owner 2026-11-23)
+
+A leg (`cloud`, `lan`) is in one of three modes, decided in ONE place, `core/manual_leg.py`:
+`off` (`<leg>.enabled` false), `nightly` (enabled and `scheduled` true, today's behaviour, the default) and
+`manual` (enabled, `scheduled` false: started from the dashboard button only). Every schedule-based check asks
+`manual_leg.is_nightly()`; every truth line comes from `manual_leg.mode_line()` / `mode_lines()`.
+
+| Area | `manual` mode rule |
+|---|---|
+| `serve.py` / `launch._reconcile_disabled_legs` | the `backup-<leg>` deployment stays registered (the button uses it) but with NO cron (`_nightly_schedules`); at every start the reconcile deletes schedules left on it by an earlier boot (and resumes it if paused). Not treated like a disabled leg |
+| `models.config` | the leg is left out of the schedule-budget check (`_schedule_fits_the_budgets`) |
+| `core/attention` (banner, `/health`, watchdog C6) | no `stale:` / `first_run:` item and no "schedule cannot be read" item for the leg; `leg_timing` returns state `manual` (no due / overdue time). Instead: AMBER `manual_old:<leg>` (never succeeded, or last success older than `<leg>.on_demand_warn_after_days`), AMBER `manual_not_final:lan` (see rollover), AMBER `manual:none_automatic` when every enabled leg is manual. A FAILED manual run is still a real `last_run:` item |
+| Dashboard | `/status` `<leg>.mode` = `{mode, text, soft_warn}`: "LAN: manual only, last backup <date>, N days ago" (amber after the warn days); "LAN: off" for a disabled leg; the "Next scheduled backup" line shows only for a nightly leg; the button works (WoL, backup, verify, shutdown for LAN) |
+| Reports (weekly / monthly / dashboard download) | no `scheduled` count, no shortfall ("N of M nights have no backup record") and no "no backup ran" for the leg; a "mode notes" block under the table states every off / manual-only leg and "Nothing runs automatically ..." when all are manual; an old manual backup makes the headline `note: ...` (amber, `act` false, no "all backups OK") |
+| Rollover final backup (1 April) | the final backups still run. LAN: a NAS that cannot be reached or woken (fault `AAM-NAS-01/02`, `faults.NAS_UNREACHABLE_CODES`) at that moment is EXPECTED: the LAN pipeline gets `nas_offline_expected=True` (run row `LAN_FAILED` + metric, no failure mail), `final_status["lan"]` becomes `LAN_NOT_REACHED`, G6 does not judge it, the switch proceeds, the rollover run row carries `lan_final_not_reached=<FY>`, `db_meta.lan_final_missing` remembers the FY (dashboard / report line "<FY> was not final-synced to the NAS" until a LAN backup of that FY succeeds) and ONE WARNING mail `rollover:<FY>:lan_not_final` is sent. Guard blocks and every other failure still block (G1-G6 as today). Cloud: a manual-only cloud leg behaves exactly as today, a real failure blocks |
+| Weekly audit | still wakes the NAS. LAN unreachable (same fault codes) = row `AUDIT_INCOMPLETE` ("not run: the NAS is not reachable (LAN is manual only)") with no alert mail and no flow failure; any other audit failure alerts as today. Cloud audit unchanged |
+| Manual LAN run | covers both active FY folders under one slot, one wake, one shutdown decision; after a SUCCESS the NAS is always shut down (no "was on" flag). A failed manual run that left the NAS answering on SMB records `nas_left_on` on its last run row: AMBER `nas_left_on` item (cleared by the next run). Failure mail text says "the next manual backup will re-sync" (`flow._next_run_words`) |
+| Mails | `_next_text` does not promise an automatic next run for a manual leg; the FY activation mail names which backups copy both folders; `email_compose._facts`, `notify._nas_host` and the support bundle ignore the placeholder NAS path when `lan.enabled` is false |
+
+Config notes: `lan.enabled: false` still needs a UNC `paths.lan_destination` (placeholder) and `wol.enabled: false`
+(`wol.enabled` defaults to true and then needs MAC + IP); not relaxed (reported to the owner).
+
+---
+
 ## 6. File-by-file map
 
 ### Entry points
@@ -443,6 +467,7 @@ producer (flow, watchdog, rollover, reports, password change)
 ### `core/` — business logic
 | Module | Responsibility | Called by |
 |---|---|---|
+| `manual_leg.py` | leg mode (off / nightly / manual), last-success age, truth lines for manual-only / off legs (section 5.9) | attention, report, ui, serve, launch, flow, email_compose |
 | `health.py` | pre-backup checks (source exists/listable/free space, binaries, key, clock) | `flow.health_check_task` (+ SeBackupPrivilege via `permissions` for LAN) |
 | `cloud_preflight.py` | source probe + GCS probe | `cloud_preflight_task` |
 | `cloud_sync.py` | rclone sync build/run/classify | `cloud_sync_task`, `fy_rollover` |
@@ -515,9 +540,9 @@ producer (flow, watchdog, rollover, reports, password change)
 | Section | Controls | Main consumers |
 |---|---|---|
 | `paths` | source, NAS destination, runtime dir, GCS key | everything |
-| `lan` | robocopy retries/wait/threads/timeout, flow retries, shutdown policy, `log_tail_kb`, dry-run timeout, `use_backup_mode` (/ZB), `min_free_dest_gb`, `privilege_check_timeout_seconds` | lan_sync, lan_preflight, permissions, flow |
+| `lan` | `scheduled` (true; false = manual only, section 5.9), `on_demand_warn_after_days` (30, 1-365), robocopy retries/wait/threads/timeout, flow retries, shutdown policy, `log_tail_kb`, dry-run timeout, `use_backup_mode` (/ZB), `min_free_dest_gb`, `privilege_check_timeout_seconds` | lan_sync, lan_preflight, permissions, flow |
 | `wol` | enable, MAC, NAS IP, broadcast, wake timing, `shutdown_*` (delay, command timeout, verify window, closed probes) | wol, smb_ready, shutdown |
-| `cloud` | bucket/project/class, bandwidth, transfers/checkers, all rclone timeouts, flow retries, `error_tail_lines`, `dry_run_timeout_seconds`, `write_probe_enabled` | cloud_*, permissions |
+| `cloud` | `scheduled` (true; false = manual only, section 5.9), `on_demand_warn_after_days` (30, 1-365), bucket/project/class, bandwidth, transfers/checkers, all rclone timeouts, flow retries, `error_tail_lines`, `dry_run_timeout_seconds`, `write_probe_enabled` | cloud_*, permissions |
 | `schedule` | 6 cron expressions + timezone; at load, `core.budget.schedule_problems` (cronsim, 1 year) refuses any slot-job start whose budget could run past the next slot job's start + `maintenance.concurrency_wait_seconds` (WP14) | serve.py, models.config |
 | `budget` | per-job run budgets `cloud/lan/audit_max_hours` (from job start, slot wait included) + `cloud_verify_reserve_minutes`, `lan_post_reserve_minutes`. The long steps get `RunBudget.cap(...)`: cloud upload = rclone `--max-duration`, robocopy / checks = timeout. Budget stop = `*_PARTIAL` + `budget_stopped` (cloud: not verified, not recorded as bucket state), audit = `AUDIT_INCOMPLETE`; `extended_metrics.budget` on every run. Manual override: `backup(budget_hours=...)` | flow, core/budget |
 | `notifications` | SMTP host/port/security/auth/timeout/retries, `recipients` (the ALERTS list) and `report_recipients` (the REPORTS list), enable flags | report, notify |
