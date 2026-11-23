@@ -3205,7 +3205,21 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
 
     # FY overlap (plan 2.2): the passes of this run, the configured FY first. Without an active
     # overlap there is one pass and every call is the baseline call (fy_pass None, no FY keywords).
-    active = fy_overlap.active_passes(config, lambda fy: _overlap_record(config, fy))
+    overlap_unchecked = ""   # the next FY, when its activation record could not be read (review F2)
+    try:
+        active = fy_overlap.active_passes(config, lambda fy: _overlap_record(config, fy))
+    except Exception as e:  # noqa: BLE001 - a database that cannot be read never blocks the configured FY's backup
+        logger.error(f"FY overlap: the next FY's activation record could not be read ({e}) - this run backs up "
+                     "the configured FY only; the flow ends FAILED so the next FY is not dropped silently")
+        active = []
+        try:
+            configured = fy_rollover.configured_fy(config.paths.source_drive, config.paths.lan_destination)
+            overlap_unchecked = fy_overlap.next_fy(configured) if configured else "the next financial year"
+        except Exception:  # noqa: BLE001 - only names the year in the message
+            overlap_unchecked = "the next financial year"
+        if fy is not None:
+            raise ValueError(f"{fy} could not be checked: the FY overlap record could not be read ({e}); "
+                             "refusing to run.") from e
     overlap_on = len(active) > 1
     if fy is not None:
         wanted = fy.upper()
@@ -3283,6 +3297,11 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
                 except Exception as e:
                     earlier_completed = False
                     excs.append(e)
+
+        if overlap_unchecked:
+            excs.append(RuntimeError(
+                f"{overlap_unchecked} could not be checked (the FY overlap record could not be read), so "
+                "only the configured FY was backed up this run. Open the dashboard; the next run checks again."))
 
         # ── Summary ──
         if excs:

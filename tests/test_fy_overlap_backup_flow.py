@@ -42,9 +42,10 @@ def _run_result(status):
 
 
 @contextlib.contextmanager
-def backup_env(cfg, *, cloud=None, lan=None, lateness=0.0, reloads=None, record=True):
+def backup_env(cfg, *, cloud=None, lan=None, lateness=0.0, reloads=None, record=True, record_error=None):
     """`cloud` / `lan`: {FY or "baseline": outcome}; an outcome is a status string or an exception to raise.
-    record: whether the activation record of the next year exists (the fake database answers with it)."""
+    record: whether the activation record of the next year exists (the fake database answers with it).
+    record_error: opening the database for that record raises this."""
     cloud = cloud or {}
     lan = lan or {}
     calls = []
@@ -75,6 +76,8 @@ def backup_env(cfg, *, cloud=None, lan=None, lateness=0.0, reloads=None, record=
             p("flow.load_config", side_effect=reloads)
         db = p("flow.ManifestDB")
         db.from_config.return_value = db.return_value
+        if record_error is not None:
+            db.from_config.side_effect = record_error
         db.return_value.overlap_record.side_effect = (
             lambda fy: ACTIVATION_RECORD if fy == "FY27-28" and record else None)
         cloud_run = p("flow._run_cloud_pipeline", side_effect=pipeline("cloud", cloud, "CLOUD_COMPLETE"))
@@ -232,6 +235,25 @@ class TestRaceGuard:
         with backup_env(cfg, reloads=reload) as env:
             backup.fn(CONFIG_PATH, "all")
         assert order(env) == [("cloud", "FY26-27")]
+
+
+# ── the activation record cannot be read (review F2) ─────────────────────────────────────────────
+
+class TestOverlapCheckFailure:
+    def test_a_database_error_still_backs_up_the_configured_fy_and_the_flow_fails(self):
+        with backup_env(owner_config(), record_error=OSError("database is locked")) as env:
+            with pytest.raises(ExceptionGroup) as info:
+                backup.fn(CONFIG_PATH, "all")
+        assert order(env) == [("cloud", "baseline"), ("lan", "baseline")]   # exactly the baseline calls
+        assert set(env.calls[0].kwargs) == {"approval_id", "budget_hours", "late_seconds"}
+        [err] = info.value.exceptions
+        assert "FY27-28" in str(err) and "could not be checked" in str(err)
+
+    def test_an_fy_run_is_refused_when_the_record_cannot_be_read(self):
+        with backup_env(owner_config(), record_error=OSError("database is locked")) as env:
+            with pytest.raises(ValueError, match="could not be checked"):
+                backup.fn(CONFIG_PATH, "all", fy="FY27-28")
+        assert env.calls == []
 
 
 # ── overlap off: exactly today's single call ─────────────────────────────────────────────────────
