@@ -349,3 +349,17 @@ def label_and_help(key: str, technical: str) -> tuple[str, str]:
         label, help_text = HELP[key]
         return label, help_text
     return key, technical
+
+
+def leg_plan(config, leg: str) -> str:
+    """One plain sentence for the install check: is this backup off, manual only, or scheduled
+    (config only; `leg` is "lan" or "cloud")."""
+    from core.time_utils import cron_to_human
+
+    section = getattr(config, leg)
+    if not section.enabled:
+        return "switched off"
+    if section.scheduled is False:
+        return "runs only when you press Run backup"
+    cron = getattr(config.schedule, f"{leg}_cron")
+    return f"runs on its schedule ({cron_to_human(cron, config.schedule.timezone)})"

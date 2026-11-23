@@ -60,6 +60,9 @@ def main(config_path: str = None) -> int:
     print(f"  - Source: {config.paths.source_drive}")
     print(f"  - LAN Destination: {config.paths.lan_destination} (Enabled: {config.lan.enabled})")
     print(f"  - Cloud Bucket: {config.cloud.bucket} (Enabled: {config.cloud.enabled})")
+    from core.config_help import leg_plan
+    print(f"  - Office NAS copy: {leg_plan(config, 'lan')}")
+    print(f"  - Online copy: {leg_plan(config, 'cloud')}")
 
     if config.wol.enabled:
         print(f"  - WOL Target: {config.wol.server_ip} ({config.wol.mac_address})")

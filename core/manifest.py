@@ -1310,9 +1310,12 @@ class ManifestDB:
                 stamp = old.get(f"{leg}_since")
             else:
                 stamp = since or now_iso()
-            record[f"{leg}_since"] = stamp
             # the per-leg `scheduled` switch in effect (plan section 5); absent = scheduled
-            record[f"{leg}_scheduled"] = schedule.get(f"{leg}_scheduled", True) is not False
+            flag = schedule.get(f"{leg}_scheduled", True) is not False
+            if old is not None and flag != old[f"{leg}_scheduled"]:
+                stamp = since or now_iso()  # DC3: a flip of the flag starts the leg's clock
+            record[f"{leg}_since"] = stamp
+            record[f"{leg}_scheduled"] = flag
         self._set_meta("schedule_in_effect", json.dumps(record))
 
     def get_schedule_in_effect(self) -> dict | None:

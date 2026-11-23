@@ -17,6 +17,12 @@ paths:
   runtime_dir: 'C:\BackupAgent'                           # logs, database, locks (outside the code folder)
   gcs_key_path: 'C:\AAMBackup\deploy\keys\aam-gcs-key.json'   # <-- the Google service-account key file you downloaded
 
+# WHICH BACKUPS RUN, AND HOW - the same three choices for lan: and cloud: below
+#   enabled: false                    = this backup is OFF (never runs, no alerts about it)
+#   enabled: true,  scheduled: true   = runs by itself on its schedule (schedule: lan_cron / cloud_cron)
+#   enabled: true,  scheduled: false  = manual only: runs when you press "Run backup" on the dashboard
+# Cloud only = lan.enabled: false. NAS only = cloud.enabled: false. Both = both true.
+# At least one switched-on backup must be scheduled (the settings are refused otherwise).
 lan:
   enabled: true                                           # false = cloud only (the NAS path above is then an unused placeholder)
   scheduled: true                                         # false = manual only (Run backup on the dashboard)

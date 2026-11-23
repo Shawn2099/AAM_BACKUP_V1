@@ -249,7 +249,7 @@ def _cancel_orphaned_runs():
     asyncio.run(_cancel())
 
 
-def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
+def _reconcile_disabled_legs(config, legs: dict | None = None, manual: set[str] | None = None) -> dict:
     """P2-SCHED: make server-side deployment state match the enabled flags.
 
     For each backup leg:
@@ -266,6 +266,9 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
             is not given.
         legs: Optional explicit {deployment_name: enabled} override used by
             tests/isolated reconciliation of specific deployments.
+        manual: Deployment names of enabled legs that are manual only
+            (`scheduled: false`); any cron a previous boot left on them is deleted.
+            Default: derived from the config.
     """
     import asyncio
 
@@ -280,6 +283,12 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
             "backup-lan": bool(getattr(config.lan, "enabled", False)),
             "backup-cloud": bool(getattr(config.cloud, "enabled", True)),
             "integrity-audit": audit_enabled,
+        }
+
+    if manual is None:
+        manual = {
+            name for name, section in (("backup-lan", config.lan), ("backup-cloud", config.cloud))
+            if getattr(section, "enabled", False) and getattr(section, "scheduled", True) is False
         }
 
     flow_map = {
@@ -310,6 +319,12 @@ def _reconcile_disabled_legs(config, legs: dict | None = None) -> dict:
                     results[dep_name] = (
                         "active" if enabled else "already-paused"
                     )
+                if enabled and dep_name in manual:
+                    stale = list(getattr(dep, "schedules", None) or [])
+                    for sched in stale:
+                        await client.delete_deployment_schedule(dep.id, sched.id)
+                    if stale and results[dep_name] == "active":
+                        results[dep_name] = "cron removed (manual only)"
         return results
 
     try:

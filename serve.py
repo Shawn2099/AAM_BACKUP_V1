@@ -26,6 +26,8 @@ def _deployments():
     registered it - see launch._reconcile_disabled_legs(); otherwise the
     Prefect scheduler keeps firing the stale deployment forever (observed
     2026-08-23: backup-lan fired at 21:00 and completed doing nothing).
+    A leg that is enabled but `scheduled: false` (manual only) IS registered, with schedules=[]
+    (never None): it has no cron and runs only when started from the dashboard.
     """
     config = load_config(CONFIG_PATH)
     tz = config.schedule.timezone
@@ -37,9 +39,10 @@ def _deployments():
             backup.to_deployment(
                 name="backup-cloud",
                 parameters={"config_path": CONFIG_PATH, "mode": "cloud"},
-                schedules=[Cron(config.schedule.cloud_cron, tz)],
+                schedules=[Cron(config.schedule.cloud_cron, tz)] if config.cloud.scheduled else [],
                 tags=["production", "cloud"],
-                description="Daily cloud backup - rclone sync to GCS (asia-south1)",
+                description=("Daily cloud backup - rclone sync to GCS (asia-south1)" if config.cloud.scheduled
+                             else "Manual-only cloud backup - runs when started from the dashboard"),
             )
         )
 
@@ -48,9 +51,10 @@ def _deployments():
             backup.to_deployment(
                 name="backup-lan",
                 parameters={"config_path": CONFIG_PATH, "mode": "lan"},
-                schedules=[Cron(config.schedule.lan_cron, tz)],
+                schedules=[Cron(config.schedule.lan_cron, tz)] if config.lan.scheduled else [],
                 tags=["production", "lan"],
-                description="Daily LAN backup - robocopy /MIR, includes WoL and auto-shutdown",
+                description=("Daily LAN backup - robocopy /MIR, includes WoL and auto-shutdown" if config.lan.scheduled
+                             else "Manual-only lan backup - runs when started from the dashboard"),
             )
         )
 
@@ -116,6 +120,8 @@ def _record_schedule_in_effect(config) -> None:
         try:
             db.set_schedule_in_effect({"cloud_cron": config.schedule.cloud_cron,
                                        "lan_cron": config.schedule.lan_cron,
+                                       "cloud_scheduled": config.cloud.scheduled,
+                                       "lan_scheduled": config.lan.scheduled,
                                        "timezone": config.schedule.timezone})
         finally:
             db.close()
