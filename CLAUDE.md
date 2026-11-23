@@ -124,3 +124,18 @@ This project is indexed by GitNexus as **AAM_BACKUP_V1** (26672 symbols, 64677 r
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Build process for agent-built work (owner, 2026-11-24, binding)
+
+- **Model split:** Haiku subagents build; Sonnet fixes what testing finds; Opus only verifies and makes high-level decisions (plan, test matrix, review).
+- **Small chunks:** give a Haiku builder ONE small, concrete chunk at a time (one function or one narrow behaviour, a few files, one commit), never a whole plan Part. Smaller chunks mean fewer hallucinations and easier review. Each chunk names the exact files, the plan section and the test-matrix rows it covers.
+- **Tests and code come from different agents:** the agent that writes the tests never writes the code for the same chunk, and the reverse (two separate Haiku subagents are enough). The test agent works from the plan and the test matrix only and must see its tests fail on the old code; the code agent then makes them pass and may not weaken or edit those tests (a wrong test goes back to the test agent or to Opus).
+- **Opus writes the reference first:** before a Part is built, an Opus subagent reads the plan/architecture and the real code and writes the end-case list and test matrix for that Part (`docs/TESTMATRIX_<part>_<date>.md`): each row = scenario, inputs, expected result, which layer tests it. Builders and test writers use that file as their reference, not their own guesses; new cases found later are added to it.
+- Every Part ends with a full unit-suite run and an Opus review of the diff, including mutation checks of the key conditions, before the next Part starts.
+
+### Escalation and scope guard (owner, 2026-11-24, binding)
+
+- **Haiku -> Sonnet:** if a Haiku agent cannot make a failing test pass after 2 attempts, freeze that chunk immediately (no third try, no workaround) and escalate it to Sonnet with the failing output.
+- **Sonnet -> Opus:** if Sonnet cannot fix the bug, or the fix needs a change to an interface, signature, data shape or schema that Opus defined in the plan or test matrix, Sonnet stops and sends the chunk back to Opus. Nobody below Opus changes an Opus-defined interface or schema.
+- **Scope flag:** every chunk states the files and the approximate number of lines Opus scoped. Before accepting a Haiku commit or patch, compare `git diff --stat` with that scope; a commit that touches significantly more lines or files than scoped, or any file outside the scoped list, is flagged and reviewed (by Opus) before it counts. Small models sometimes "fix" a failing test by deleting or loosening assertions, skipping or xfail-ing it, or editing unrelated modules, so the reviewer also checks that no assertion was removed or weakened, no test was newly skipped, and no unscoped module changed.
+- Tests written by the test agent are frozen to the code agent: if a test looks wrong, the code agent reports it, it does not edit it.
