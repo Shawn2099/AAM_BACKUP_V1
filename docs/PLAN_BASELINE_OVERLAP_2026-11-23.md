@@ -354,7 +354,7 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
 - [x] **A5 Alerts per FY.** `tests/test_fy_overlap_alerts.py`: `AlertEvent.fy=None` records today's mode; a FY27-28
   RECOVERED does not close a FY26-27 incident and vice versa; cooldown per group; watchdog parses
   `stale:cloud:FY27-28`; `test_alert_class.py` scan green; AAM-ROL-07 in the fault catalog.
-- [ ] **A6 `scheduled` keys + statuses set.** `tests/test_manual_only_leg.py` (part 1): defaults true; no enabled leg
+- [x] **A6 `scheduled` keys + statuses set.** `tests/test_manual_only_leg.py` (part 1): defaults true; no enabled leg
   scheduled -> refused; budget validator skips an unscheduled leg (a schedule that only fits without it is accepted);
   `FINAL_COPY_STATUSES` in `core/statuses.py`.
 

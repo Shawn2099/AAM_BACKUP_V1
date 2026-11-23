@@ -34,6 +34,9 @@ paths:
 # ═══════════════════════════════════════════════════
 lan:
   enabled: true
+  # true = the nightly schedule runs this backup. false = manual only: it runs when you press
+  # "Run backup" on the dashboard (the schedule is kept). At least one switched-on backup must be true.
+  scheduled: true
   # Robocopy /R — retries per failed file
   retry_count: 3
   # Robocopy /W — seconds to wait between retries
@@ -121,6 +124,8 @@ wol:
 # ═══════════════════════════════════════════════════
 cloud:
   enabled: true
+  # true = the nightly schedule runs this backup. false = manual only (see lan.scheduled).
+  scheduled: true
   bucket: "your-gcs-bucket-name"
   project_number: "YOUR_GCP_PROJECT_NUMBER"
   # GCS region — must match the bucket's region

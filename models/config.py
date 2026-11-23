@@ -131,6 +131,11 @@ class PathsConfig(StrictModel):
 
 class LanConfig(StrictModel):
     enabled: bool = True
+    scheduled: bool = Field(
+        default=True,
+        description="Run the NAS backup by its schedule. false = manual only (the cron is kept; the "
+                    "backup runs when started from the dashboard). Needs at least one scheduled leg.",
+    )
     retry_count: int = Field(default=3, ge=1, le=10)
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
@@ -302,6 +307,11 @@ class WolConfig(StrictModel):
 
 class CloudConfig(StrictModel):
     enabled: bool = True
+    scheduled: bool = Field(
+        default=True,
+        description="Run the cloud backup by its schedule. false = manual only (the cron is kept; the "
+                    "backup runs when started from the dashboard). Needs at least one scheduled leg.",
+    )
     # C-A: in-rclone duration cap. None = auto (subprocess timeout minus a
     # 300s margin); 0 disables the flag entirely; explicit value wins.
     max_duration_seconds: int | None = Field(
@@ -1200,9 +1210,10 @@ class AppConfig(StrictModel):
         from core.budget import schedule_problems
 
         jobs = {}
-        if self.cloud.enabled:
+        # a manual-only leg (scheduled: false) has no cron job in the schedule (plan section 5)
+        if self.cloud.enabled and self.cloud.scheduled:
             jobs["cloud"] = (self.schedule.cloud_cron, self.budget.cloud_max_hours * 3600)
-        if self.lan.enabled:
+        if self.lan.enabled and self.lan.scheduled:
             jobs["lan"] = (self.schedule.lan_cron, self.budget.lan_max_hours * 3600)
         jobs["audit"] = (self.schedule.audit_cron, self.budget.audit_max_hours * 3600)
         problems = schedule_problems(jobs, self.schedule.timezone,
@@ -1227,6 +1238,9 @@ class AppConfig(StrictModel):
             raise ValueError("Choose the Google Cloud key file, or switch the cloud backup off. The cloud backup cannot sign in without it.")
         if not self.lan.enabled and not self.cloud.enabled:
             raise ValueError("Switch on the LAN backup or the cloud backup. With both off, nothing is backed up.")
+        if not ((self.lan.enabled and self.lan.scheduled) or (self.cloud.enabled and self.cloud.scheduled)):
+            raise ValueError("Set at least one switched-on backup to run by its schedule (scheduled). With every "
+                             "switched-on backup set to manual only, nothing would ever back up by itself.")
 
         # FY Mismatch Safety Guard:
         # Prevent mirroring FY24-25 into FY23-24 if a human typo occurs.

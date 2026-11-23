@@ -19,6 +19,7 @@ paths:
 
 lan:
   enabled: true                                           # false = cloud only (the NAS path above is then an unused placeholder)
+  scheduled: true                                         # false = manual only (Run backup on the dashboard)
   shutdown_after_backup: false                            # keep false until the NAS shutdown test was done WITH the owner at the NAS
 
 wol:
@@ -28,6 +29,7 @@ wol:
 
 cloud:
   enabled: true                                           # false = NAS only
+  scheduled: true                                         # false = manual only (Run backup on the dashboard)
   bucket: "FILL-IN-BUCKET-NAME"                           # <-- FILL IN
   project_number: "123456789012"                          # <-- FILL IN (Google Cloud project NUMBER)
   location: "asia-south1"                                 # <-- the bucket's region

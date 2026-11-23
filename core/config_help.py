@@ -89,6 +89,9 @@ HELP: dict[str, tuple[str, str]] = {
 
     # ── LAN ──
     "lan.enabled": ("Back up to the NAS", "Copy the files to the NAS in the office."),
+    "lan.scheduled": ("Back up to the NAS on its schedule",
+                      "Off = the NAS backup runs only when you press Run backup on the dashboard. "
+                      "The schedule is kept, so switch it back on to return to the nightly run."),
     "lan.shutdown_after_backup": ("Switch the NAS off after the backup",
                                   "Saves power: the NAS is switched on for the backup and off again."),
     "lan.shutdown_on_all_retries_exhausted": ("Switch the NAS off even if the backup failed", ""),
@@ -129,6 +132,9 @@ HELP: dict[str, tuple[str, str]] = {
 
     # ── cloud ──
     "cloud.enabled": ("Back up to Google Cloud", "Copy the files to Google Cloud."),
+    "cloud.scheduled": ("Back up to Google Cloud on its schedule",
+                        "Off = the cloud backup runs only when you press Run backup on the dashboard. "
+                        "The schedule is kept, so switch it back on to return to the nightly run."),
     "cloud.bandwidth_limit": ("Upload speed limit", "Keeps the office internet usable during the upload."),
     "cloud.bucket": ("Cloud storage name (bucket)", "Set up once by the support team."),
     "cloud.project_number": ("Google project number", "Set up once by the support team."),
