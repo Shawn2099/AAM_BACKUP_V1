@@ -30,6 +30,7 @@ _GUARD_FRACTION = {"mass_delete": 0.15, "shrink": 0.25}
 TYPES = ("Invoices", "Returns", "Statements", "Correspondence", "Workpapers")
 _EXT_WEIGHTS = (("pdf", 55), ("txt", 15), ("xlsx", 20), ("bin", 10))
 _UNICODE_TAGS = ("résumé", "Übersicht", "ക്ലയിന്റ്", "報告")
+RENAME_MAX_SHARE = 0.10  # a folder rename may touch at most this share of the tree's files
 SEED_NOW = dt.date(2000, 1, 1)  # default mtime day of seeded files (deterministic)
 
 SHARED_REL = "Clients/shared.txt"
@@ -293,6 +294,11 @@ def apply_day(root, day: dt.date, seed, role: str = ROLE_CONFIGURED, adverse: st
     if role == ROLE_CONFIGURED and _first_wednesday(day):
         clients = [c for c in sorted(root_p.iterdir())
                    if c.is_dir() and not _is_link(c) and c.name not in _SPECIAL_TOP]
+        # A real office renames one small client folder, never most of the tree. In a tiny or
+        # single-client tree (a new FY folder grown from scratch) there is no such folder, so the
+        # rename is skipped (it renamed 316 of 319 files and tripped AAM-DEL-01 for a whole year).
+        limit = RENAME_MAX_SHARE * len(_regular_files(root_p))
+        clients = [c for c in clients if len(_regular_files(c)) <= limit]
         if clients:
             src = clients[rng.randrange(len(clients))]
             dst = safe_path(root_p, f"{src.name}_r{day.strftime('%y%m')}")

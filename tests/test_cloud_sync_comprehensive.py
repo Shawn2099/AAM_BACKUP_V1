@@ -275,9 +275,9 @@ class TestBuildRcloneSyncCommand:
         cmd = _build()
         assert "--max-delete" not in cmd
 
-    def test_no_track_renames(self):
-        cmd = _build()
-        assert "--track-renames" not in cmd
+    def test_track_renames_on_by_default_and_switchable(self):
+        assert "--track-renames" in _build()
+        assert "--track-renames" not in _build(track_renames=False)
 
     def test_max_duration_flag(self):
         cmd = _build(max_duration_seconds=3600)

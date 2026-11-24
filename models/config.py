@@ -161,6 +161,16 @@ class LanConfig(StrictModel):
     # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the
     # scale this deployment targets, aborting a healthy backup before it started.
     dry_run_timeout_seconds: int = Field(default=900, ge=60, le=7200, description="Timeout for the robocopy /L preflight dry-run (seconds)")
+    rclone_measure_timeout_seconds: int = Field(
+        default=1800, ge=60, le=14400,
+        description="Timeout for the rclone dry-run that measures planned deletions before the "
+                    "mirror (seconds); it may hash renamed files over SMB, so it is longer than "
+                    "dry_run_timeout_seconds")
+    track_renames: bool = Field(
+        default=True,
+        description="The mass-delete guard (G3) measurement of the LAN mirror uses rclone "
+                    "--track-renames, so a renamed folder is a move, not planned deletions. "
+                    "(The robocopy mirror itself still deletes and copies a renamed folder.)")
     preflight_smb_attempts: int = Field(
         default=8, ge=1, le=60,
         description="LAN preflight: SMB port-445 reachability attempts before failing "
@@ -372,6 +382,12 @@ class CloudConfig(StrictModel):
         default=2, ge=0, le=10,
         description="(max 10: a wide window makes the upload skip same-size edits) rclone --modify-window for the upload, the after-upload check and the "
                     "difference report (seconds); 2 = NTFS modification-time granularity")
+    track_renames: bool = Field(
+        default=True,
+        description="rclone --track-renames: a renamed or moved file is moved on the "
+                    "destination, not deleted and uploaded again. Used by the cloud upload and "
+                    "by the cloud mass-delete guard (G3) measurement (the LAN leg has "
+                    "lan.track_renames).")
     sync_retries_sleep_seconds: int = Field(
         default=30, ge=1, le=600,
         description="rclone --retries-sleep for the upload and its dry-run (seconds); set "

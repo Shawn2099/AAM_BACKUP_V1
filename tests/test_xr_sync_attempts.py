@@ -281,13 +281,13 @@ def _cloud_guards(planned, destination_now, already_deleted, approval=None, appr
     db.guard_baseline.return_value = None
     db.get_approval.return_value = approval
     db.mark_approval_used.return_value = True
-    dry = {"status": "CLOUD_COMPLETE", "planned_deletes": planned}
+    dry = {"planned_deletes": planned, "error": None}
     with patch("flow.ManifestDB") as mdb, \
             patch("flow.temp_rclone_config"), \
             patch("flow.now_iso", return_value=LATER), \
             patch("flow.guards.first_regular_file", return_value="E:\\DATA\\a.txt"), \
             patch("flow.count_objects", side_effect=[2000, destination_now]), \
-            patch("flow.run_cloud_sync", return_value=dry):
+            patch("flow.measure_planned_deletes", return_value=dry):
         mdb.from_config.return_value = db
         try:
             out = flow.cloud_guards_task.fn(_cloud_guard_cfg(), "FY26-27",

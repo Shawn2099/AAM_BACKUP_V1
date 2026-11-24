@@ -462,22 +462,33 @@ def _fake_cfg_cm():
 
 @pytest.mark.parametrize("exit_code,log,expected", [
     (0, _RCLONE_DRY_RUN_LOG, 3),
-    (9, _RCLONE_DRY_RUN_LOG, 3),          # nothing to copy, deletes still planned
     (7, _RCLONE_DRY_RUN_LOG, None),       # did not complete -> unknown
     (0, _RCLONE_DRY_RUN_LOG + '\n{"level":"error","msg":"listing failed"}', None),
 ])
-def test_run_cloud_sync_dry_run_reports_planned_deletes(tmp_path, exit_code, log, expected):
-    from core.cloud_sync import run_cloud_sync
+def test_measure_planned_deletes_reports_planned_deletes(tmp_path, exit_code, log, expected):
+    from core.cloud_sync import measure_planned_deletes
     from test_support.fake_tools import fake_run_tool
 
-    (tmp_path / "f.txt").write_text("x")
-    with patch("core.cloud_sync.temp_rclone_config", _fake_cfg_cm()), \
-         fake_run_tool("core.cloud_sync", exit_code=exit_code, log=log) as calls:
-        res = run_cloud_sync(source=str(tmp_path), bucket="b", fy_prefix="FY26-27",
-                             gcs_key_path="/k", project_number="1",
-                             storage_class="STANDARD", dry_run=True)
-    assert "--dry-run" in calls[0]["argv"] and "--max-delete" not in calls[0]["argv"]
+    with fake_run_tool("core.cloud_sync", exit_code=exit_code, log=log) as calls:
+        res = measure_planned_deletes(str(tmp_path), "aam_gcs:b/FY26-27", config_path="/c",
+                                      fast_list=True)
+    argv = calls[0]["argv"]
+    for flag in ("--dry-run", "--use-json-log", "--track-renames", "--fast-list", "--modify-window"):
+        assert flag in argv
+    assert "--max-delete" not in argv
     assert res["planned_deletes"] == expected
+
+
+def test_measure_planned_deletes_lan_flags_no_fast_list_and_excludes(tmp_path):
+    from core.cloud_sync import measure_planned_deletes
+    from test_support.fake_tools import fake_run_tool
+
+    with fake_run_tool("core.cloud_sync", exit_code=0, log="") as calls:
+        measure_planned_deletes(str(tmp_path), "//nas/share", excludes=("a", "b"),
+                                track_renames=False)
+    argv = calls[0]["argv"]
+    assert "--fast-list" not in argv and "--track-renames" not in argv and "--config" not in argv
+    assert [argv[i + 1] for i, x in enumerate(argv) if x == "--exclude"] == ["a", "b"]
 
 
 def test_real_sync_passes_max_delete(tmp_path):
@@ -543,11 +554,11 @@ def _run_cloud_guards(cfg, source_files, dest_files, planned, baseline=None):
             raise v
         return v
 
-    dry = {"status": "CLOUD_COMPLETE", "error": None, "planned_deletes": planned}
+    dry = {"error": None, "planned_deletes": planned}
     with patch("flow.ManifestDB") as mdb, \
          patch("flow.temp_rclone_config", _fake_cfg_cm()), \
          patch("flow.count_objects", side_effect=fake_count), \
-         patch("flow.run_cloud_sync", return_value=dry) as run_sync:
+         patch("flow.measure_planned_deletes", return_value=dry) as run_sync:
         mdb.from_config.return_value = db
         try:
             return flow.cloud_guards_task.fn(cfg, "FY26-27", None), run_sync
@@ -559,7 +570,8 @@ def test_cloud_guards_pass_and_return_backstop(tmp_path):
     rec, run_sync = _run_cloud_guards(_cloud_cfg(tmp_path), 1000, 1000, 3,
                                       baseline={"fy": "FY26-27", "source_file_count": 990,
                                                 "destination": "gs://bkt/FY26-27"})
-    assert run_sync.call_args.kwargs["dry_run"] is True
+    assert run_sync.call_args.kwargs["fast_list"] is True
+    assert "track_renames" in run_sync.call_args.kwargs
     assert rec["destination"] == "gs://bkt/FY26-27"
     assert rec["source_file_count"] == 1000 and rec["destination_files"] == 1000
     assert rec["max_delete"] == 100           # min(500 files, 10 % of 1000)

@@ -394,6 +394,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--retention-days", type=int, default=None)
     ap.add_argument("--no-overlap", action="store_true")
     ap.add_argument("--n-deletes", action="store_true", help="churn deletes files in the next-FY folder (trips G3)")
+    ap.add_argument("--approve-del-after-days", type=int, default=None, metavar="N",
+                    help="the simulated owner approves a pending AAM-DEL-01 (G3 mass delete) block once it is "
+                         "N simulated days old; default off (lanes that test the block must stay blocked)")
     legs = ap.add_mutually_exclusive_group()
     legs.add_argument("--cloud-only", action="store_true")
     legs.add_argument("--lan-only", action="store_true")
@@ -904,6 +907,7 @@ class Scenario:
     injections: tuple = ()
     overrides: tuple = ()                  # cal.DayOverride pairs / mapping (cloud_down, clock_unproven)
     n_deletes: bool = False                # churn may delete files even in a tiny tree (keeps F-NEW-G3-SMALL-N)
+    approve_del_after_days: int | None = None   # the simulated owner approves AAM-DEL-01 after N days (None = never)
 
 
 def load_prod_facts(prod_config: Path | None) -> dict:
@@ -1043,7 +1047,8 @@ class LaneHooks:
                  prod_config: Path | None = None, prod_api: str | None = None, prod_raw: dict | None = None,
                  outages: Iterable[cal.Outage] = (), scenario: Scenario | None = None,
                  has_backup_privilege: bool | None = False, activate_on: str = "12-31",
-                 n_deletes: bool = False, sleep: Callable[[float], None] = time.sleep,
+                 n_deletes: bool = False, approve_del_after_days: int | None = None,
+                 sleep: Callable[[float], None] = time.sleep,
                  code_root: Path | None = None, resume: bool = False, mode: str = "both"):
         self.real = RealTime()
         self.resume = bool(resume)
@@ -1076,6 +1081,8 @@ class LaneHooks:
         self.has_backup_privilege = has_backup_privilege
         self.activate_on = activate_on
         self.n_deletes = bool(n_deletes or getattr(self.scenario, "n_deletes", False))
+        self.approve_del_after_days = (approve_del_after_days if approve_del_after_days is not None
+                                       else getattr(self.scenario, "approve_del_after_days", None))
         self.sleep = sleep
         self.rig = None
         self._stack = contextlib.ExitStack()
@@ -1149,6 +1156,7 @@ class LaneHooks:
                     retention_days=a.retention_days, overlay=a.overlay, expected_commit=a.expected_commit,
                     prod_config=a.prod_config, prod_api=a.prod_api, outages=_parse_outages(a.outage),
                     scenario=scenario, n_deletes=a.n_deletes, code_root=getattr(a, "code_root", None),
+                    approve_del_after_days=getattr(a, "approve_del_after_days", None),
                     resume=getattr(a, "resume", False), mode=lane_mode(a))
         hooks.cli_args = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(a).items()
                           if k != "scenario_obj"}
@@ -1740,9 +1748,11 @@ class LaneHooks:
             for e in day.events:
                 if e.at == ev.at and e.kind == ev.kind and e.fy:
                     rig.ensure_prefix(e.fy)
-            out.flow = rig.run_flow("backup", at=ev.at, scheduled_at=sched, mode="cloud")
+            out.flow = rig.run_flow("backup", at=ev.at, scheduled_at=sched, mode="cloud",
+                                    **self._owner_approval(day, base))
         elif base == cal.LAN:
-            out.flow = rig.run_flow("backup", at=ev.at, scheduled_at=sched, mode="lan")
+            out.flow = rig.run_flow("backup", at=ev.at, scheduled_at=sched, mode="lan",
+                                    **self._owner_approval(day, base))
             self.lan_flows += 1
         elif base == cal.ROLLOVER_CHECK:
             out.flow = rig.run_flow("rollover", at=ev.at, scheduled_at=sched)
@@ -1762,6 +1772,43 @@ class LaneHooks:
         shut = len(rig.seams.shutdown_calls) - spy[1]
         arch = len(rig.seams.archive_calls) - spy[2]
         self._event_checks(day, ev, out, wake, shut, arch)
+
+    def _owner_approval(self, day: cal.Day, leg: str) -> dict:
+        """Play the owner: approve the oldest pending AAM-DEL-01 (G3_MASS_DELETE) request of `leg` once it is
+        `approve_del_after_days` simulated days old, and hand its id to the flow like the dashboard's approved
+        re-run does. Off unless asked for; every approval is logged to events.jsonl. Other guards are never
+        approved here."""
+        n = self.approve_del_after_days
+        if n is None:
+            return {}
+        from core import approvals
+        from core.manifest import ManifestDB
+        from core.time_utils import now_iso
+
+        cfg = self.rig.load_config()
+        db = ManifestDB.from_config(cfg)
+        try:
+            for req in db.open_approvals():
+                guards = [g.get("guard") for g in req["guards"]]
+                if req["leg"] != leg or "G3_MASS_DELETE" not in guards:
+                    continue
+                if set(guards) - {"G3_MASS_DELETE"}:
+                    continue                                   # a mixed block needs a human
+                if req["status"] == approvals.PENDING:
+                    age = (day.date - dt.datetime.fromisoformat(str(req["created_at"])).date()).days
+                    if age < n:
+                        continue
+                    at = now_iso()
+                    if not db.approve_request(req["approval_id"], approved_by="livebox-owner", approved_at=at,
+                                              expires_at=approvals.expires_at(at, cfg.approvals.expiry_hours)):
+                        continue
+                    _jsonl(self.ev_dir / "events.jsonl", {
+                        "event": "owner_approval", "day": day.date.isoformat(), "leg": leg, "fy": req.get("fy"),
+                        "approval_id": req["approval_id"], "guard": "G3_MASS_DELETE", "age_days": age})
+                return {"approval_id": req["approval_id"]}
+        finally:
+            db.close()
+        return {}
 
     # ------------------------------------------------------------------ per-event checks
     def _event_checks(self, day, ev, out: EventOutcome, wake: int, shut: int, arch: int) -> None:

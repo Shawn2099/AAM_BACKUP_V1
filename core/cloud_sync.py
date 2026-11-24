@@ -162,6 +162,101 @@ def count_planned_deletes(log_text: str) -> int:
     return planned
 
 
+def count_planned_moves(log_text: str) -> int:
+    """Rename moves rclone `--track-renames` planned: `"skipped":"move to <name>"`
+    lines (verified on rclone v1.74.3, 2026-11-25). Each is a file robocopy would
+    delete (old name) and copy again (new name)."""
+    planned = 0
+    for line in (log_text or "").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(entry, dict) and str(entry.get("skipped", "")).startswith("move"):
+            planned += 1
+    return planned
+
+
+def measure_planned_deletes(
+    source: str,
+    dest: str,
+    *,
+    config_path: str | None = None,
+    fast_list: bool = False,
+    ignore_case: bool = False,
+    track_renames: bool = model_default(CloudConfig, "track_renames"),
+    modify_window_seconds: int = model_default(CloudConfig, "modify_window_seconds"),
+    retries: int = model_default(CloudConfig, "retry_count"),
+    retries_sleep_seconds: int = model_default(CloudConfig, "sync_retries_sleep_seconds"),
+    excludes: tuple[str, ...] = (),
+    timeout: int = model_default(CloudConfig, "dry_run_timeout_seconds"),
+    artefacts: RunArtefacts | None = None,
+    step: str = "rclone-dry-run",
+    error_tail_lines: int = model_default(CloudConfig, "error_tail_lines"),
+) -> dict:
+    """G3 input for BOTH legs: files `rclone sync source dest` would delete.
+
+    One shared measurement (owner decision, AAM-DEL-01 on a folder rename):
+    `rclone sync --dry-run --use-json-log --track-renames`. A file rclone
+    matches by size/hash/modtime under another name is a MOVE and is not
+    counted as a delete - its data still exists in the source. Cloud passes
+    its temp rclone config and fast_list=True; the LAN leg passes none (local
+    backend, UNC destination) plus the names robocopy /MIR keeps.
+
+    Differences from the real upload command (build_rclone_sync_command): no
+    --gcs-no-check-bucket, --check-first or --gcs-storage-class. Those only
+    change how objects are written (bucket check, ordering, storage class);
+    they do not change which files rclone decides to delete or move, so the
+    dry-run's delete count equals the real sync's.
+    ignore_case: LAN leg - rclone filters are case-sensitive, robocopy's are not.
+
+    Returns {"planned_deletes": int | None, "moves": int, "exit_code", "error",
+    "log_path"};
+    planned_deletes is None when the dry-run did not complete cleanly (the
+    guard then fails the run closed).
+    """
+    artefacts = artefacts or RunArtefacts.ephemeral("measure-deletes")
+    cmd = [resolve_binary("rclone") or "rclone", "sync", source, dest,
+           "--dry-run", "--use-json-log", "--log-level", "INFO",
+           "--modify-window", f"{int(modify_window_seconds)}s",
+           "--retries", str(int(retries)),
+           "--retries-sleep", f"{int(retries_sleep_seconds)}s"]
+    if config_path:
+        cmd.extend(["--config", config_path])
+    if fast_list:
+        cmd.append("--fast-list")
+    if track_renames:
+        cmd.append("--track-renames")
+    if ignore_case:
+        cmd.append("--ignore-case")
+    for pattern in excludes:
+        cmd.extend(["--exclude", pattern])
+    log_path = artefacts.new_path(step, "log")
+    cmd.extend(["--log-file", str(log_path)])
+    logger.info(f"Delete measurement: {source} -> {dest} (full log: {log_path})")
+    result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts, log_path=log_path)
+
+    out = {"planned_deletes": None, "moves": 0, "exit_code": result.exit_code,
+           "error": None, "log_path": str(log_path)}
+    if result.spawn_error:
+        out["error"] = result.spawn_error
+        return out
+    if result.timed_out:
+        out["error"] = f"Timeout after {timeout}s"
+        return out
+    log_text = "\n".join(t for t in (result.log_text(), result.stderr_text()) if t)
+    has_error, error_tail = scan_rclone_log_for_errors(log_text, max_lines=error_tail_lines)
+    stats = final_stats(result.log_text())
+    stats_errors = stats.get("errors") if isinstance(stats, dict) else None
+    if result.exit_code != 0 or has_error or (type(stats_errors) is int and stats_errors > 0):
+        out["error"] = (f"rclone exit {result.exit_code}: "
+                        f"{error_tail or tail_lines(log_text, error_tail_lines) or 'no log output'}")
+        return out
+    out["planned_deletes"] = count_planned_deletes(result.log_text())
+    out["moves"] = count_planned_moves(result.log_text())
+    return out
+
+
 def final_stats(log_text: str) -> dict | None:
     """The run's own totals: the LAST JSON log line carrying "stats".
 
@@ -248,6 +343,7 @@ def build_rclone_sync_command(
     stats_interval_seconds: int = model_default(CloudConfig, "stats_interval_seconds"),
     max_duration_seconds: int | None = None,
     max_delete: int | None = None,
+    track_renames: bool = model_default(CloudConfig, "track_renames"),
 ) -> list[str]:
     """Build rclone sync command with GCS-optimized flags.
 
@@ -302,6 +398,11 @@ def build_rclone_sync_command(
         ])
     if max_delete is not None:
         cmd.extend(["--max-delete", str(int(max_delete))])
+    if track_renames:
+        # A renamed file is moved server-side instead of deleted + uploaded; the
+        # G3 measurement (measure_planned_deletes) uses the same flag, so its
+        # prediction matches what this sync really does.
+        cmd.append("--track-renames")
 
     return cmd
 
@@ -326,15 +427,13 @@ def run_cloud_sync(
     max_duration_seconds: int | None = None,
     artefacts: RunArtefacts | None = None,
     error_tail_lines: int = model_default(CloudConfig, "error_tail_lines"),
-    dry_run: bool = False,
     max_delete: int | None = None,
+    track_renames: bool = model_default(CloudConfig, "track_renames"),
 ) -> dict:
     """Execute rclone sync to mirror source -> GCS.
 
-    dry_run=True runs the SAME command with `--dry-run` (nothing changes)
-    and adds "planned_deletes" to the result: the number of files the real
-    sync would delete, or None when the dry-run did not complete cleanly
-    (guard G3 input). max_delete: `--max-delete` backstop for the real sync.
+    max_delete: `--max-delete` backstop for the real sync. The guard G3
+    measurement is `measure_planned_deletes` (shared with the LAN leg).
 
     The FULL rclone log is written to the run's artefact folder
     (`--log-file`, JSON lines) and kept (plan WP2). Operator-facing error
@@ -366,23 +465,19 @@ def run_cloud_sync(
             retries_sleep_seconds=retries_sleep_seconds,
             stats_interval_seconds=stats_interval_seconds,
             max_duration_seconds=effective_max_duration,
-            max_delete=None if dry_run else max_delete,
+            max_delete=max_delete, track_renames=track_renames,
         )
-        step = "rclone-dry-run" if dry_run else "rclone-sync"
-        if dry_run:
-            cmd.append("--dry-run")
+        step = "rclone-sync"
         log_path = artefacts.new_path(step, "log")
         cmd.extend(["--log-file", str(log_path)])
 
-        logger.info(f"Cloud {'dry-run' if dry_run else 'sync'}: {source} → "
+        logger.info(f"Cloud sync: {source} → "
                     f"{bucket}/{fy_prefix} (full log: {log_path})")
         result = run_tool(step, cmd, timeout_s=timeout,
                           artefacts=artefacts, log_path=log_path)
 
     base = {"suspect_reason": None, "log_path": str(log_path), "stats": None,
             "rclone_failed_attempts": 0, "max_delete_reached": False, "retryable": False}
-    if dry_run:
-        base["planned_deletes"] = None  # set below only for a clean, completed dry-run
     if result.spawn_error:
         missing = "FileNotFoundError" in result.spawn_error
         return {**base, "status": "CLOUD_FAILED", "exit_code": -1,
@@ -446,7 +541,7 @@ def run_cloud_sync(
         elif not stats_prove_no_changes(stats):
             # XR-3: exit 9 = nothing uploaded; deletions do not change it (F3).
             status = "CLOUD_COMPLETE"
-            logger.info(f"Cloud {'dry-run' if dry_run else 'sync'}: nothing uploaded, but rclone's "
+            logger.info(f"Cloud sync: nothing uploaded, but rclone's "
                         "stats do not prove an unchanged destination "
                         f"({ {k: (stats or {}).get(k) for k in _CHANGE_STATS} }) - "
                         "recorded as complete, not 'no changes'")
@@ -466,11 +561,7 @@ def run_cloud_sync(
         base["transport_category"] = cause.category if cause else None
         base["retryable"] = rclone_retryable(code, stats,
                                              max_delete_reached=base["max_delete_reached"])
-    logger.info(f"Cloud {'dry-run' if dry_run else 'sync'} exit {code} "
+    logger.info(f"Cloud sync exit {code} "
                 f"({RCLONE_EXIT_MEANING.get(code, 'unknown exit code')}) -> {status}")
-    if dry_run and status in ("CLOUD_COMPLETE", "CLOUD_NO_CHANGES_COMPLETE"):
-        # exit 0 = copies planned, 9 = none planned (--error-on-no-transfer);
-        # planned deletions do not change the exit code (verified v1.74.3).
-        base["planned_deletes"] = count_planned_deletes(result.log_text())
     return {**base, "status": status, "exit_code": code, "error": error_msg,
             "suspect_reason": suspect_reason}

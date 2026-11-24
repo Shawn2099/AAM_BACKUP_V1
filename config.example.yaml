@@ -77,6 +77,12 @@ lan:
   # Timeout for the robocopy /L dry run that counts planned deletions before the
   # mirror (seconds, 60–7200)
   dry_run_timeout_seconds: 900
+  # Timeout for the rclone dry run that counts planned deletions for the mass-delete
+  # guard; it may hash renamed files over SMB (seconds, 60-14400)
+  rclone_measure_timeout_seconds: 1800
+  # The mass-delete guard counts a renamed file as a move, not a deletion (rclone
+  # --track-renames; the robocopy mirror itself still deletes + copies it)
+  track_renames: true
   # Before the dry run: how many times to try the NAS on port 445, and the pause
   # between tries (each try waits up to wol.smb_connect_timeout_seconds)
   preflight_smb_attempts: 8
@@ -186,6 +192,9 @@ cloud:
   # difference report: file times closer than this count as equal (2 = NTFS granularity;
   # 0-10 - a wider window would make the upload skip same-size edits)
   modify_window_seconds: 2
+  # rclone --track-renames: a renamed/moved file is moved, not deleted + uploaded again;
+  # also used by the cloud mass-delete guard (G3) measurement
+  track_renames: true
   # rclone --retries-sleep (seconds) for the upload and its dry-run (1-600)
   sync_retries_sleep_seconds: 30
   # rclone --stats: a progress line in the upload log every N seconds (1-3600)

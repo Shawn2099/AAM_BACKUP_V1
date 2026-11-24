@@ -39,7 +39,7 @@ from core.cloud_reporter import (
     get_cloud_size,
 )
 from core.budget import BudgetExceeded, RunBudget, late_seconds as seconds_late
-from core.cloud_sync import resolve_max_duration_seconds, run_cloud_sync
+from core.cloud_sync import measure_planned_deletes, resolve_max_duration_seconds, run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.health import CLOCK_OK, check_clock, pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
@@ -734,8 +734,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     """Data-safety guards G1-G4 before rclone sync (plan WP3, M2 2.2).
 
     Measures with rclone itself: `rclone size` of source and destination,
-    `rclone sync --dry-run` for planned deletions (same command as the
-    real sync). A measurement that could not be taken FAILS the run
+    `measure_planned_deletes` (rclone sync --dry-run --track-renames, shared
+    with the LAN leg) for planned deletions. A measurement that could not be taken FAILS the run
     (retried next night); a guard verdict BLOCKs it for a human. The
     record's "max_delete" is the --max-delete backstop for the real sync.
     already_deleted (XR-1): deletions of earlier attempts of this run - G3
@@ -778,24 +778,22 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     if first_file:
         # A source without files is already blocked by G1; its dry-run would
         # only plan the deletion of everything.
-        dry = run_cloud_sync(
-            source=source, bucket=bucket, fy_prefix=fy_prefix,
-            gcs_key_path=config.paths.gcs_key_path, location=config.cloud.location,
-            project_number=config.cloud.project_number,
-            bwlimit=config.cloud.bandwidth_limit, retries=config.cloud.retry_count,
-            storage_class=config.cloud.storage_class, transfers=config.cloud.transfers,
-            checkers=config.cloud.checkers, buffer_size=config.cloud.buffer_size,
-            modify_window_seconds=config.cloud.modify_window_seconds,
-            retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds,
-            stats_interval_seconds=config.cloud.stats_interval_seconds,
-            timeout=config.cloud.dry_run_timeout_seconds, max_duration_seconds=0,
-            artefacts=artefacts, error_tail_lines=config.cloud.error_tail_lines,
-            dry_run=True,
-        )
+        with temp_rclone_config(
+            config.paths.gcs_key_path, config.cloud.location,
+            config.cloud.project_number, config.cloud.storage_class,
+        ) as rclone_conf:
+            dry = measure_planned_deletes(
+                source, remote, config_path=rclone_conf, fast_list=True,
+                track_renames=config.cloud.track_renames,
+                modify_window_seconds=config.cloud.modify_window_seconds,
+                retries=config.cloud.retry_count,
+                retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds,
+                timeout=config.cloud.dry_run_timeout_seconds,
+                artefacts=artefacts, error_tail_lines=config.cloud.error_tail_lines)
         if dry.get("planned_deletes") is None:
             raise RuntimeError(
                 f"Cloud guard measurement failed: rclone sync --dry-run did not complete "
-                f"cleanly ({dry.get('status')}): {dry.get('error')}")
+                f"cleanly: {dry.get('error')}")
         results.append(guards.g3_mass_delete(
             dry["planned_deletes"], destination_files,
             limits.max_delete_files, limits.max_delete_percent,
@@ -836,6 +834,15 @@ def cloud_access_task(config, run_id: str, artefacts_dir: str | None = None):
             RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-access"),
             error_tail_lines=config.cloud.error_tail_lines,
         )
+
+
+def lan_deletes_of(result: dict, rename_moves: int) -> int | None:
+    """robocopy deletions of one attempt that count as data deletions for G3's
+    already_deleted: `files_deleted` minus the rename moves the guard measured
+    (their old-name half is deleted but the data lives on under the new name).
+    None = unknown (fail closed)."""
+    deleted = result.get("files_deleted")
+    return max(0, deleted - int(rename_moves)) if type(deleted) is int else None
 
 
 def _sync_with_retries(leg: str, *, run_once, remeasure, deletes_of, retryable,
@@ -965,6 +972,7 @@ def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
         error_tail_lines=config.cloud.error_tail_lines,
         max_delete=max_delete,
+        track_renames=config.cloud.track_renames,
     )
     stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
     if stopped:
@@ -1149,6 +1157,53 @@ def lan_preflight_task(config, artefacts_dir: str | None = None):
     if not result["ok"]:
         raise faults.coded(RuntimeError(f"LAN preflight failed: {result['error']}"),
                            "AAM-LAN-01")
+    # G3 input: the shared rclone measurement replaces robocopy's "*EXTRA File"
+    # count so a renamed folder is a move, not a mass delete (owner decision).
+    # The real LAN sync stays robocopy /MIR, which has NO rename detection: it
+    # still deletes and re-copies a renamed folder. That is accepted - the
+    # source keeps the data - but the guard no longer blocks the night on it.
+    # Genuine deletions (source files really gone) are still counted.
+    result["robocopy_planned_deletes"] = result["planned_deletes"]
+    measured = measure_planned_deletes(
+        config.paths.source_drive, config.paths.lan_destination,
+        track_renames=config.lan.track_renames,
+        # rclone filters are case-sensitive, robocopy's are not ("$Recycle.Bin" on 2016)
+        ignore_case=True,
+        modify_window_seconds=config.cloud.modify_window_seconds,
+        retries=config.cloud.retry_count,
+        retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds,
+        # what robocopy /MIR keeps (same names as the /L command in lan_preflight)
+        excludes=(".AAM_TARGET_MOUNTED", permissions.PROBE_PATTERN,
+                  "System Volume Information/**", "$RECYCLE.BIN/**"),
+        timeout=config.lan.rclone_measure_timeout_seconds,
+        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
+        step="rclone-lan-dry-run", error_tail_lines=config.cloud.error_tail_lines)
+    if measured["planned_deletes"] is None:
+        failure = (f"LAN guard measurement failed: rclone sync --dry-run did not complete "
+                   f"cleanly: {measured['error']}")
+        try:
+            source_empty = guards.first_regular_file(
+                config.paths.source_drive, guards.SOURCE_IGNORE_NAMES) is None
+        except OSError:
+            source_empty = False   # unreadable source: fail closed with the measurement error
+        if source_empty:
+            # Empty/missing source: G1 must give the owner's message first
+            # (lan_guards_task runs G1, then raises this).
+            result["planned_deletes"] = None
+            result["rclone_measure_error"] = failure
+            return result
+        raise faults.coded(RuntimeError(failure), "AAM-LAN-01")
+    moves = int(measured.get("moves") or 0)
+    robo = result["robocopy_planned_deletes"]
+    # robocopy deletes everything rclone would delete PLUS the old-name half of
+    # every rename; anything beyond that is a delete rclone did not see.
+    if robo is not None and robo > measured["planned_deletes"] + moves:
+        raise faults.coded(RuntimeError(
+            f"LAN guard measurement inconsistent: robocopy /L would delete {robo} file(s) but "
+            f"rclone sees only {measured['planned_deletes']} deletion(s) + {moves} rename move(s) "
+            "- the two listings disagree, refusing to mirror"), "AAM-LAN-01")
+    result["planned_deletes"] = measured["planned_deletes"]
+    result["rclone_moves"] = moves
     return result
 
 
@@ -1281,16 +1336,24 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
     dest = config.paths.lan_destination
     counts = (dry_run or {}).get("counts")
     planned_deletes = (dry_run or {}).get("planned_deletes")
+    if (dry_run or {}).get("rclone_measure_error"):
+        # the rclone measurement failed on a source without files: G1 speaks first
+        g1 = guards.g1_source_has_files(
+            guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES), source)
+        approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, [g1])
+        guards.enforce("lan", [g1], approved_guards=approved, fy=fy_prefix, **approval_record)
+        raise faults.coded(RuntimeError(dry_run["rclone_measure_error"]), "AAM-LAN-01")
     if not counts or planned_deletes is None:
         raise RuntimeError(
             "LAN guard measurement failed: the robocopy /L job summary is missing or "
             "unreadable, so planned deletions cannot be counted - refusing to mirror")
-    if planned_deletes > counts["extras"]:
+    robocopy_deletes = dry_run.get("robocopy_planned_deletes", planned_deletes)
+    if robocopy_deletes is not None and robocopy_deletes > counts["extras"]:
         # Every listed *EXTRA File is also in the Extras column; more lines
-        # than the column means the listing cannot be trusted.
+        # than the column means robocopy's own listing cannot be trusted.
         raise RuntimeError(
             f"LAN guard measurement failed: robocopy /L listing is inconsistent "
-            f"({planned_deletes} '*EXTRA File' lines but Extras column = "
+            f"({robocopy_deletes} '*EXTRA File' lines but Extras column = "
             f"{counts['extras']}) - refusing to mirror")
     if destination_files is None:
         raise RuntimeError(
@@ -2122,6 +2185,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 # completed now that the NAS is awake - before G5 looks for the mount marker
                 _complete_pending_rollover_nas_folder(config)
             dry_run = preflight(config, artefacts_dir)
+            # rename moves the guard measured: robocopy counts their old-name half in
+            # files_deleted, which is not a deletion of data (see deletes_of below)
+            rename_moves = {"n": int(dry_run.get("rclone_moves") or 0)}
             before_dict = lan_snapshot_before_task(config)
             guard_record = lan_guards_task(
                 config, _effective_fy_prefix(config), dry_run,
@@ -2135,6 +2201,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             def remeasure(already_deleted: int) -> dict:
                 nonlocal guard_record
                 fresh = preflight(config, artefacts_dir)
+                rename_moves["n"] = int(fresh.get("rclone_moves") or 0)
                 listing = lan_snapshot_before_task(config)
                 guard_record = lan_guards_task(
                     config, _effective_fy_prefix(config), fresh,
@@ -2148,8 +2215,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 "lan",
                 run_once=lambda: sync(config, artefacts_dir, budget=budget),
                 remeasure=remeasure,
-                deletes_of=lambda r: (r.get("files_deleted")
-                                      if type(r.get("files_deleted")) is int else None),
+                # only deletions beyond the rename moves count towards G3's already_deleted:
+                # a retry after a half-mirrored renamed folder must not re-block
+                deletes_of=lambda r: lan_deletes_of(r, rename_moves["n"]),
                 retryable=lambda r: (r.get("status") == "LAN_FAILED"
                                      and not r.get("timed_out")),
                 max_attempts=config.lan.max_attempts,

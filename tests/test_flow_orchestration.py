@@ -184,11 +184,13 @@ class TestWolCheckTask:
 
 
 class TestLanPreflightTask:
-    @patch("flow.run_lan_dry_run", return_value={"ok": True, "exit_code": 0, "error": None})
-    def test_success_returns_result(self, mock_dry):
+    @patch("flow.measure_planned_deletes", return_value={"planned_deletes": 0, "error": None})
+    @patch("flow.run_lan_dry_run", return_value={"ok": True, "exit_code": 0, "error": None,
+                                                  "planned_deletes": 0})
+    def test_success_returns_result(self, mock_dry, mock_measure):
         config = MagicMock()
         result = lan_preflight_task.fn(config)
-        assert result["ok"] is True
+        assert result["ok"] is True and result["planned_deletes"] == 0
 
     @patch("flow.run_lan_dry_run", return_value={"ok": False, "exit_code": 16, "error": "path not found"})
     def test_failure_raises(self, mock_dry):

@@ -344,8 +344,8 @@ def test_approved_cloud_mass_delete_backstop_is_the_remeasured_count(tmp_path):
     with patch("flow.ManifestDB") as mdb, patch("flow.now_iso", return_value=LATER), \
          patch("flow.temp_rclone_config", fake_cfg), \
          patch("flow.count_objects", side_effect=lambda t, *a, **k: counts[t]), \
-         patch("flow.run_cloud_sync", return_value={"status": "CLOUD_COMPLETE",
-                                                    "planned_deletes": 600}):
+         patch("flow.measure_planned_deletes", return_value={"planned_deletes": 600,
+                                                             "error": None}):
         mdb.from_config.return_value = db
         rec = flow.cloud_guards_task.fn(cfg, "FY26-27", None, approval_id="a1", run_id="r2")
     assert rec["approved_guards"] == ["G3_MASS_DELETE"]
