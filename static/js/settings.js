@@ -561,6 +561,29 @@ function renderRolloverSteps(journal) {
     });
 }
 
+// The April switch needs a final copy of the closing FY on every required leg (d.final_copy, plan section 4).
+function renderFinalCopy(fc) {
+    const list = document.getElementById('ro-final-copy');
+    if (!list) return;
+    list.textContent = '';
+    if (!fc) { list.style.display = 'none'; return; }
+    list.style.display = 'block';
+    [['cloud', 'Cloud'], ['lan', 'NAS']].forEach(function (pair) {
+        const leg = fc[pair[0]];
+        if (!leg || !leg.required) return;
+        const li = document.createElement('li');
+        if (leg.done) {
+            const from = leg.source === 'check' ? "this morning's check" : 'an earlier run';
+            li.textContent = pair[1] + ': done (' + (leg.done_at || 'time unknown') + ', ' + from + ')';
+        } else if (leg.outstanding) {
+            li.textContent = pair[1] + ': outstanding - ' + (leg.hint || 'run the backup of the closing year');
+        } else {
+            return;
+        }
+        list.appendChild(li);
+    });
+}
+
 async function loadRollover() {
     const resp = await fetch('/api/rollover');
     if (resp.status === 401) { window.location.href = '/login'; return; }
@@ -576,6 +599,9 @@ async function loadRollover() {
         ? 'A rollover check is running right now.'
         : d.message + (d.running === null && d.can_run
             ? ' (The scheduler (Prefect) is not reachable, so it cannot be started right now.)' : '');
+    const ov = document.getElementById('ro-overlap');
+    if (ov) ov.textContent = (d.overlap && d.overlap.note) ? d.overlap.note : '';
+    renderFinalCopy(d.final_copy);
     renderRolloverSteps(d.journal);
     document.getElementById('ro-approval').style.display = d.approval_pending ? 'block' : 'none';
     document.getElementById('btn-rollover').disabled = !authEnabled || !d.can_run || d.running || d.running === null;

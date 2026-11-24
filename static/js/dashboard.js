@@ -8,21 +8,30 @@ function showToast(message, type = 'info') {
     setTimeout(() => { toast.classList.remove('shown'); setTimeout(() => { toast.remove(); }, 300); }, 5000);
 }
 
-async function triggerBackup(event, mode) {
+// The four cards: the configured FY of each copy and, while the overlap is active, the next FY (B9).
+var _CARD_KEYS = ['cloud', 'lan', 'cloud-next', 'lan-next'];
+var _overlapActive = false;
+var _configuredFy = '';
+function _dkey(key) { return key.replace('-', '_'); }
+function fyTag(fy, cardFy) { return fy && fy !== cardFy ? ' (' + fy + ')' : ''; }
+
+async function triggerBackup(event, key) {
     event.preventDefault();
-    const btnInfo = document.getElementById('btn-' + mode);
+    var mode = key.split('-')[0];
+    const btnInfo = document.getElementById('btn-' + key);
+    var fy = btnInfo && btnInfo.dataset.fy ? btnInfo.dataset.fy : '';
     var lanSteps = [];
     if (btnInfo && btnInfo.dataset.wol === 'yes') lanSteps.push('wakes the NAS');
     lanSteps.push('copies the changes');
     if (btnInfo && btnInfo.dataset.shutdown === 'yes') lanSteps.push('switches the NAS off afterwards');
-    const confirmMsg = mode === 'cloud' ? 'Start the online backup now?'
-        : 'Start the office NAS backup now? It ' + lanSteps.join(', ') + '.';
+    const confirmMsg = mode === 'cloud' ? 'Start the online backup' + (fy ? ' of ' + fy : '') + ' now?'
+        : 'Start the office NAS backup' + (fy ? ' of ' + fy : '') + ' now? It ' + lanSteps.join(', ') + '.';
     if (!confirm(confirmMsg)) return;
-    const btn = document.getElementById('btn-' + mode);
+    const btn = btnInfo;
     if (!btn) return;
     btn.style.pointerEvents = 'none'; btn.style.opacity = '0.5'; btn.innerText = 'Starting...';
     try {
-        const response = await fetch('/trigger/' + mode, { method: 'POST' });
+        const response = await fetch('/trigger/' + mode + (fy ? '?fy=' + encodeURIComponent(fy) : ''), { method: 'POST' });
         const data = await response.json();
         if (response.ok) { showToast(data.detail || 'Leave this page open to follow it. The backup started.', 'success'); }
         else { showToast(data.detail || 'Try again, and ask support if it keeps failing. The backup did not start.', 'error'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + mode.charAt(0).toUpperCase() + mode.slice(1) + ' Backup'; }
@@ -69,7 +78,7 @@ function setServerUnreachable(down, why) {
             ' (' + why + '). The information below may be out of date.';
     }
     setHero('unknown', 'Backup status is unavailable', 'This page cannot reach the backup server right now.');
-    ['cloud', 'lan'].forEach(function(mode) {
+    _CARD_KEYS.forEach(function(mode) {
         var card = document.getElementById('card-' + mode);
         var badge = document.getElementById('badge-' + mode);
         var desc0 = document.getElementById('desc-' + mode);
@@ -83,7 +92,7 @@ function setSessionExpired(expired) {
     if (banner) banner.style.display = expired ? 'block' : 'none';
     if (!expired) return;
     setHero('unknown', 'Sign in again to see your backups', 'Your session has expired.');
-    ['cloud', 'lan'].forEach(function(mode) {
+    _CARD_KEYS.forEach(function(mode) {
         var badge = document.getElementById('badge-' + mode);
         var desc = document.getElementById('desc-' + mode);
         var card = document.getElementById('card-' + mode);
@@ -154,7 +163,14 @@ function setHero(tone, line, sub) {
     }
 }
 function renderHero(data) {
-    var legs = [['cloud', 'The cloud backup'], ['lan', 'The office NAS backup']].filter(function(l) {
+    var active = !!(data.overlap && data.overlap.active);
+    var legs = [['cloud', 'The cloud backup'], ['lan', 'The office NAS backup']];
+    if (active) {
+        legs = legs.map(function(l) { return [l[0], l[1] + ' of ' + (data[l[0]] && data[l[0]].fy)]; })
+            .concat([['cloud_next', 'The cloud backup of ' + (data.cloud_next && data.cloud_next.fy)],
+                     ['lan_next', 'The office NAS backup of ' + (data.lan_next && data.lan_next.fy)]]);
+    }
+    legs = legs.filter(function(l) {
         return data[l[0]] && data[l[0]].enabled !== false;
     });
     if (!legs.length) { setHero('unknown', 'Backups are switched off', 'Both backups are disabled in the settings.'); return; }
@@ -205,109 +221,29 @@ async function updateStatus() {
         renderAttention(data.attention);
         renderHero(data);
 
-        // The server decides whether a leg is on time, late or overdue from ITS schedule (a weekly plan
-        // is not "late" after a day): data.<leg>.timing.state.
-        function agoClass(state) {
-            if (state === 'overdue') return 'critical-ago';
-            if (state === 'late' || state === 'catching_up' || state === 'waiting') return 'warn-ago';
-            return 'success-ago';
-        }
-        function agoPrefix(state) {
-            if (state === 'overdue') return 'Overdue - ';
-            if (state === 'late') return 'Late - ';
-            return '';
-        }
-
-        function showLastSuccess(mode, lastSuccess) {
-            var el = document.getElementById(mode + '-last-success');
-            if (!el) return;
-            if (!lastSuccess) {
-                el.textContent = '! No successful backup yet';
-                el.className = 'critical-ago';
-                return;
-            }
-            if (isNaN(new Date(lastSuccess).getTime())) {
-                el.textContent = '! No successful backup yet';
-                el.className = 'critical-ago';
-                return;
-            }
-            var timing = (data[mode] && data[mode].timing) || {};
-            var cls = agoClass(timing.state);
-            var prefix = agoPrefix(timing.state);
-            var fullDate = formatFullDate(lastSuccess);
-            el.textContent = prefix + 'Last success: ' + fullDate;
-            el.className = cls;
-        }
+        _overlapActive = !!(data.overlap && data.overlap.active);
+        _configuredFy = data.fy_prefix || '';
+        var nextRow = document.getElementById('dests-next');
+        if (nextRow) nextRow.hidden = !(data.overlap && data.overlap.active);
+        var legsLine = document.getElementById('legs-summary');
+        if (legsLine) legsLine.textContent = (data.legs && data.legs.summary) || '';
+        if (legsLine && !legsLine.textContent && data.cloud.enabled === false && data.lan.enabled === false) legsLine.textContent = 'Both copies are switched off.';
 
         document.getElementById('stat-lan-files').innerText = Number(data.manifest.lan_files).toLocaleString();
         document.getElementById('stat-cloud-files').innerText = Number(data.manifest.cloud_files).toLocaleString();
         document.getElementById('stat-fy-prefix').innerText = data.fy_prefix;
+        // the file counters hold the configured FY only
+        var lanLabel = document.getElementById('stat-lan-label'), cloudLabel = document.getElementById('stat-cloud-label');
+        if (lanLabel) lanLabel.textContent = 'Files on the office NAS' + (_overlapActive ? ' (' + data.fy_prefix + ')' : '');
+        if (cloudLabel) cloudLabel.textContent = 'Files in the cloud' + (_overlapActive ? ' (' + data.fy_prefix + ')' : '');
 
-        const cardCloud = document.getElementById('card-cloud');
-        const badgeCloud = document.getElementById('badge-cloud');
-        const descCloud = document.getElementById('desc-cloud');
-        const lastCloud = document.getElementById('last-cloud');
-        const btnCloud = document.getElementById('btn-cloud');
-        if (cardCloud && badgeCloud && descCloud && lastCloud) {
-            const integCloud = document.getElementById('integrity-cloud');
-            if (integCloud) integCloud.innerText = integrityText(data.cloud.integrity);
-            if (data.cloud.enabled === false) {
-                badgeCloud.innerText = 'Disabled'; badgeCloud.className = 'pill tone-idle';
-                cardCloud.className = 'dest tone-idle';
-                descCloud.innerText = 'Cloud backup is disabled in configuration.';
-                if (btnCloud) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.innerText = 'Disabled'; }
-                showLastSuccess('cloud', data.cloud.last_success);
-            } else {
-                const isCloudRunning = data.cloud.running;
-                const cloudUnknown = data.cloud.run_state === 'unknown';
-                badgeCloud.innerText = isCloudRunning ? 'Running' : (cloudUnknown ? 'Unknown' : (data.cloud.last_run ? data.cloud.last_run.status_label : 'No backup yet'));
-                if (btnCloud) {
-                    if (isCloudRunning) { btnCloud.setAttribute('disabled', 'disabled'); btnCloud.style.pointerEvents = 'none'; btnCloud.style.opacity = '0.5'; btnCloud.innerText = 'Running...'; }
-                    else if (btnCloud.innerText !== 'Starting...') { btnCloud.removeAttribute('disabled'); btnCloud.style.pointerEvents = ''; btnCloud.style.opacity = ''; btnCloud.innerText = 'Run Cloud Backup'; }
-                }
-                if (data.cloud.last_run) { descCloud.innerText = (cloudUnknown ? 'Status unavailable — ' : '') + data.cloud.last_run.status_description; lastCloud.innerText = 'Last backup: ' + data.cloud.last_run_formatted; }
-                else if (cloudUnknown) { descCloud.innerText = 'Status unavailable — could not reach Prefect API.'; }
-                else { descCloud.innerText = 'No backup has run yet. The first one starts at the scheduled time.'; lastCloud.innerText = 'Last backup: none yet'; }
-                if (isCloudRunning) { descCloud.innerText = 'Copying files to the cloud now.'; }
-                const cloudClass = isCloudRunning ? 'running' : (cloudUnknown ? 'unknown' : (data.cloud.last_run ? safeCategory(data.cloud.last_run.status_category) : 'unknown'));
-                cardCloud.className = 'dest tone-' + toneOf(cloudClass); badgeCloud.className = 'pill tone-' + toneOf(cloudClass);
-                showLastSuccess('cloud', data.cloud.last_success);
-            }
-        }
-        const cardLan = document.getElementById('card-lan');
-        const badgeLan = document.getElementById('badge-lan');
-        const descLan = document.getElementById('desc-lan');
-        const lastLan = document.getElementById('last-lan');
-        const btnLan = document.getElementById('btn-lan');
-        if (cardLan && badgeLan && descLan && lastLan) {
-            const integLan = document.getElementById('integrity-lan');
-            if (integLan) integLan.innerText = integrityText(data.lan.integrity);
-            if (data.lan.enabled === false) {
-                badgeLan.innerText = 'Disabled'; badgeLan.className = 'pill tone-idle';
-                cardLan.className = 'dest tone-idle';
-                descLan.innerText = 'LAN backup is disabled in configuration.';
-                if (btnLan) { btnLan.setAttribute('disabled', 'disabled'); btnLan.innerText = 'Disabled'; }
-                showLastSuccess('lan', data.lan.last_success);
-            } else {
-                const isLanRunning = data.lan.running;
-                const lanUnknown = data.lan.run_state === 'unknown';
-                badgeLan.innerText = isLanRunning ? 'Running' : (lanUnknown ? 'Unknown' : (data.lan.last_run ? data.lan.last_run.status_label : 'No backup yet'));
-                if (btnLan) {
-                    if (isLanRunning) { btnLan.setAttribute('disabled', 'disabled'); btnLan.style.pointerEvents = 'none'; btnLan.style.opacity = '0.5'; btnLan.innerText = 'Running...'; }
-                    else if (btnLan.innerText !== 'Starting...') { btnLan.removeAttribute('disabled'); btnLan.style.pointerEvents = ''; btnLan.style.opacity = ''; btnLan.innerText = 'Run LAN Backup'; }
-                }
-                if (data.lan.last_run) { descLan.innerText = (lanUnknown ? 'Status unavailable — ' : '') + data.lan.last_run.status_description; lastLan.innerText = 'Last backup: ' + data.lan.last_run_formatted; }
-                else if (lanUnknown) { descLan.innerText = 'Status unavailable — could not reach Prefect API.'; }
-                else { descLan.innerText = 'No backup has run yet. The first one starts at the scheduled time.'; lastLan.innerText = 'Last backup: none yet'; }
-                if (isLanRunning) { descLan.innerText = 'Copying files to the office NAS now.'; }
-                const lanClass = isLanRunning ? 'running' : (lanUnknown ? 'unknown' : (data.lan.last_run ? safeCategory(data.lan.last_run.status_category) : 'unknown'));
-                cardLan.className = 'dest tone-' + toneOf(lanClass); badgeLan.className = 'pill tone-' + toneOf(lanClass);
-                showLastSuccess('lan', data.lan.last_success);
-            }
-        }
+        _CARD_KEYS.forEach(function(key) {
+            var d = data[_dkey(key)];
+            if (d) renderLegCard(key, d);
+        });
         if (data.health && !data.health.error) { document.getElementById('health-info').innerText = 'Source: ' + data.health.source_free_gb + ' GB free | FY: ' + data.fy_prefix; }
         renderLegVisuals(data);
-        renderHistory(data.recent_runs);
+        renderHistory(data.recent_runs, data);
     } catch (err) {
         setServerUnreachable(true, 'no answer');
         var now = Date.now(); if (now - _lastStatusErr > 30000) { console.error('Failed to update status dynamically:', err); _lastStatusErr = now; }
@@ -316,11 +252,101 @@ async function updateStatus() {
 setInterval(updateStatus, 2000);
 window.addEventListener('DOMContentLoaded', updateStatus);
 
+// The server decides whether a leg is on time, late or overdue from ITS schedule (a weekly plan
+// is not "late" after a day): d.timing.state. A leg that only runs by hand is 'manual': never late.
+function agoClass(state) {
+    if (state === 'overdue') return 'critical-ago';
+    if (state === 'late' || state === 'catching_up' || state === 'waiting') return 'warn-ago';
+    return 'success-ago';
+}
+function agoPrefix(state) {
+    if (state === 'overdue') return 'Overdue - ';
+    if (state === 'late') return 'Late - ';
+    return '';
+}
+function showLastSuccess(key, d, cardFy) {
+    var el = document.getElementById(key + '-last-success');
+    if (!el) return;
+    var isNext = key.indexOf('-next') > 0;
+    if (!d.last_success || isNaN(new Date(d.last_success).getTime())) {
+        el.textContent = isNext ? '! No successful backup of ' + cardFy + ' yet' : '! No successful backup yet';
+        el.className = 'critical-ago';
+        return;
+    }
+    var timing = d.timing || {};
+    el.textContent = agoPrefix(timing.state) + 'Last success: ' + formatFullDate(d.last_success) + fyTag(d.last_success_fy, cardFy);
+    el.className = agoClass(timing.state);
+}
+function renderLegCard(key, d) {
+    var leg = key.split('-')[0], isNext = key.indexOf('-next') > 0;
+    var card = document.getElementById('card-' + key);
+    var badge = document.getElementById('badge-' + key);
+    var desc = document.getElementById('desc-' + key);
+    var last = document.getElementById('last-' + key);
+    var btn = document.getElementById('btn-' + key);
+    if (!card || !badge || !desc || !last) return;
+    var cardFy = d.fy;
+    var word = leg === 'cloud' ? 'Cloud' : 'LAN';
+    var titleFy = document.getElementById('title-fy-' + key);
+    if (titleFy) titleFy.textContent = _overlapActive && cardFy ? ' - ' + cardFy : '';
+    var fyData = _overlapActive && cardFy ? cardFy : '';
+    if (btn) btn.dataset.fy = fyData;
+    var vbtn = document.getElementById('btn-verify-' + key);
+    if (vbtn) vbtn.dataset.fy = fyData;
+    var sched = document.getElementById('sched-' + key);
+    if (sched && d.schedule_text) {
+        sched.textContent = d.schedule_text + (d.scheduled !== d.scheduled_setting ? ' (changes after the restart)' : '');
+    }
+    var integ = document.getElementById('integrity-' + key);
+    if (integ) integ.innerText = integrityText(d.integrity) + fyTag(d.integrity && d.integrity.fy, cardFy);
+    var files = document.getElementById('files-' + key);
+    if (files) files.textContent = d.last_run && d.last_run.total_files != null
+        ? 'Files in this copy (last run): ' + Number(d.last_run.total_files).toLocaleString() : '';
+    if (d.enabled === false) {
+        badge.innerText = 'Disabled'; badge.className = 'pill tone-idle';
+        card.className = 'dest tone-idle';
+        desc.innerText = word + ' backup is disabled in configuration.';
+        if (btn) { btn.setAttribute('disabled', 'disabled'); btn.innerText = 'Disabled'; }
+        showLastSuccess(key, d, cardFy);
+        return;
+    }
+    var isRunning = d.running;
+    var unknown = d.run_state === 'unknown';
+    var queued = d.run_state === 'queued';
+    var scheduled = d.scheduled !== false;
+    var firstPending = isNext && !d.last_run && !isRunning && !queued && !unknown;
+    badge.innerText = isRunning ? 'Running' : (queued ? 'Waiting' : (unknown ? 'Unknown'
+        : (d.last_run ? d.last_run.status_label : (firstPending && scheduled ? 'First backup pending' : 'No backup yet'))));
+    if (btn) {
+        if (isRunning || queued || d.leg_busy) {
+            btn.setAttribute('disabled', 'disabled'); btn.style.pointerEvents = 'none'; btn.style.opacity = '0.5';
+            btn.innerText = isRunning ? 'Running...' : (queued ? 'Waiting...' : 'Busy...');
+        } else if (btn.innerText !== 'Starting...') {
+            btn.removeAttribute('disabled'); btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerText = 'Run ' + word + ' Backup';
+        }
+    }
+    if (d.last_run) {
+        desc.innerText = (unknown ? 'Status unavailable — ' : '') + d.last_run.status_description;
+        last.innerText = 'Last backup: ' + d.last_run_formatted + fyTag(d.last_run.fy, cardFy);
+    } else if (unknown) { desc.innerText = 'Status unavailable — could not reach Prefect API.'; }
+    else if (firstPending) {
+        desc.innerText = scheduled ? cardFy + ' is backed up from the next scheduled backup (with ' + _configuredFy + ').'
+            : 'Not backed up yet - press Run backup';
+        last.innerText = 'Last backup: none yet';
+    }
+    else { desc.innerText = 'No backup has run yet. The first one starts at the scheduled time.'; last.innerText = 'Last backup: none yet'; }
+    if (queued) { desc.innerText = d.run_note || 'Waits for the other backup to finish.'; }
+    if (isRunning) { desc.innerText = leg === 'cloud' ? 'Copying files to the cloud now.' : 'Copying files to the office NAS now.'; }
+    var cls = isRunning ? 'running' : ((unknown || queued) ? 'unknown' : (d.last_run ? safeCategory(d.last_run.status_category) : 'unknown'));
+    card.className = 'dest tone-' + toneOf(cls); badge.className = 'pill tone-' + toneOf(cls);
+    showLastSuccess(key, d, cardFy);
+}
+
 // ── Where-your-files-go visuals ──────────────────────────────────────────
 function legClass(d) {
     if (!d || d.enabled === false) return 'unknown';
     if (d.running) return 'running';
-    if (d.run_state === 'unknown') return 'unknown';
+    if (d.run_state === 'unknown' || d.run_state === 'queued') return 'unknown';
     return d.last_run ? safeCategory(d.last_run.status_category) : 'unknown';
 }
 function safetyText(integrity) {
@@ -342,8 +368,8 @@ function renderStrip(mode, nights) {
     }).join('');
 }
 function renderLegVisuals(data) {
-    ['cloud', 'lan'].forEach(function(mode) {
-        var d = data[mode];
+    _CARD_KEYS.forEach(function(mode) {
+        var d = data[_dkey(mode)];
         var wire = document.getElementById('wire-' + mode);
         if (wire) wire.setAttribute('class', 'wire tone-' + toneOf(legClass(d)));
         renderStrip(mode, d && d.nights);
@@ -359,14 +385,17 @@ function renderLegVisuals(data) {
 
 // ── Safety check (read-only audit): start it by hand, show that it is running ─
 var _VERIFY_NAME = { lan: 'the office copy', cloud: 'the online copy', all: 'both copies' };
-async function triggerVerify(mode) {
-    var msg = 'Run the safety check on ' + _VERIFY_NAME[mode] + ' now?\n\nIt compares every file with your original and can take several hours. '
+async function triggerVerify(key) {
+    var mode = key.split('-')[0];
+    var vbtn = document.getElementById('btn-verify-' + key);
+    var fy = vbtn && vbtn.dataset.fy ? vbtn.dataset.fy : '';
+    var msg = 'Run the safety check on ' + _VERIFY_NAME[mode] + (fy ? ' (' + fy + ')' : '') + ' now?\n\nIt compares every file with your original and can take several hours. '
         + 'Nothing is changed. Backups wait until it has finished.';
     if (!confirm(msg)) return;
-    var btn = document.getElementById('btn-verify-' + mode);
+    var btn = vbtn;
     if (btn) { btn.disabled = true; btn.innerText = 'Starting...'; }
     try {
-        var response = await fetch('/trigger/verify/' + mode, { method: 'POST' });
+        var response = await fetch('/trigger/verify/' + mode + (fy ? '?fy=' + encodeURIComponent(fy) : ''), { method: 'POST' });
         var data = await response.json();
         if (response.status === 409 && data.status === 'backup_first') {
             // The check never backs up by itself: tell the person, let them choose.
@@ -375,7 +404,7 @@ async function triggerVerify(mode) {
                 if (btn) { btn.disabled = false; btn.innerText = mode === 'all' ? 'Check both copies now' : 'Check now'; }
                 return;
             }
-            response = await fetch('/trigger/verify/' + mode + '?anyway=1', { method: 'POST' });
+            response = await fetch('/trigger/verify/' + mode + '?anyway=1' + (fy ? '&fy=' + encodeURIComponent(fy) : ''), { method: 'POST' });
             data = await response.json();
         }
         showToast(data.detail || (response.ok ? 'The result appears on each copy when it finishes. The safety check started.' : 'Try again later. The safety check did not start.'), response.ok ? 'success' : 'error');
@@ -383,12 +412,14 @@ async function triggerVerify(mode) {
     await updateStatus();
 }
 function updateVerifyUi(data) {
-    var busyBackup = !!((data.cloud && data.cloud.running) || (data.lan && data.lan.running));
+    var busyBackup = !!['cloud', 'lan', 'cloud_next', 'lan_next'].some(function(k) {
+        return data[k] && (data[k].running || data[k].leg_busy);
+    });
     var checking = !!data.verify_running;
-    ['lan', 'cloud', 'all'].forEach(function(mode) {
+    ['lan', 'cloud', 'all', 'lan-next', 'cloud-next'].forEach(function(mode) {
         var btn = document.getElementById('btn-verify-' + mode);
         if (!btn) return;
-        var leg = data[mode];
+        var leg = data[_dkey(mode)];
         var off = mode !== 'all' && leg && leg.enabled === false;
         btn.disabled = off || checking || busyBackup;
         btn.innerText = checking ? 'Checking...' : (mode === 'all' ? 'Check both copies now' : 'Check now');
@@ -412,7 +443,7 @@ function toggleRun(idx) {
     li.classList.toggle('open');
     li.querySelector('.run-head').setAttribute('aria-expanded', li.classList.contains('open'));
 }
-function renderHistory(runs) {
+function renderHistory(runs, data) {
     var list = document.getElementById('history-list');
     if (!list || !runs) return;
     if (!runs.length) {
@@ -451,7 +482,8 @@ function renderHistory(runs) {
             + '<p class="run-tech">Status: ' + escHtml(r.status) + '</p>';
         html += '<li class="run tone-' + tone + (open[idx] ? ' open' : '') + '" id="run-' + idx + '">'
             + '<button class="run-head" aria-expanded="' + (open[idx] ? 'true' : 'false') + '" onclick="toggleRun(' + idx + ')">'
-            + '<span class="run-main"><strong>' + (_MODE_NAME[safeMode] || 'Backup') + '</strong> '
+            + '<span class="run-main"><strong>' + (_MODE_NAME[safeMode] || 'Backup')
+            + (data && r.fy && r.fy !== data.fy_prefix ? ' (' + escHtml(r.fy) + ')' : '') + '</strong> '
             + '<span class="state-word">' + escHtml(r.status_label || r.status) + '</span>'
             + '<small>' + escHtml(summary) + '</small></span>'
             + '<span class="run-when">' + escHtml(r.started_at) + '</span></button>'
@@ -471,6 +503,7 @@ function approvalCard(a) {
     var reasons = (a.guards || []).map(function(g) { return '<li>' + escHtml(g.reason) + '</li>'; }).join('');
     var id = escHtml(a.approval_id);
     var html = '<div class="approval-card ' + (a.status === 'APPROVED' ? 'approved' : 'pending') + '">';
+    if (_overlapActive && a.fy && a.leg !== 'rollover') leg += ' (' + a.fy + ')';
     html += '<h2>' + leg + ' blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
     html += '<ul>' + reasons + '</ul>';
     html += '<p class="fine">' + (a.leg === 'rollover' ? 'Nothing was changed.' : 'Nothing was copied or deleted.') + ' Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';

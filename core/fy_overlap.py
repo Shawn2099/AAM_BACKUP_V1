@@ -363,6 +363,84 @@ def active_next_fy(config, db) -> tuple[str, dict] | None:
     return None
 
 
+def configured_of(config) -> str | None:
+    """The configured FY (the source folder's FY), or None when the config has no folder paths."""
+    paths = getattr(config, "paths", None)
+    source = getattr(paths, "source_drive", None)
+    if not isinstance(source, str):
+        return None
+    return fy_rollover.configured_fy(source, getattr(paths, "lan_destination", None))
+
+
+def active_fys(config, db) -> list[str]:
+    """The FYs backed up at the moment (B9 K1): [] without an FY folder, [configured], plus the next FY while
+    the overlap is active. Database errors propagate (the caller fails closed)."""
+    configured = configured_of(config)
+    if configured is None:
+        return []
+    active = active_next_fy(config, db)
+    return [configured] + ([active[0]] if active else [])
+
+
+def activation_pending(config, db, today: dt.date) -> tuple[str, dt.date] | None:
+    """(next FY, activation day) when the overlap is on, no activation record exists and the activation day has
+    come (B9 K2; the rule of the banner item `rollover:activation`), else None."""
+    rollover = getattr(config, "rollover", None)
+    configured = configured_of(config)
+    activate_on_text = getattr(rollover, "overlap_activate_on", None)
+    if getattr(rollover, "overlap_enabled", None) is not True or configured is None             or not isinstance(activate_on_text, str):
+        return None
+    nxt = next_fy(configured)
+    if db.overlap_record(nxt) is not None:
+        return None
+    activate_on = activation_date(configured, activate_on_text)
+    if today < activate_on:
+        return None
+    if fy_rollover.classify_rollover(configured, get_fy_prefix(today)) not in (fy_rollover.NONE, fy_rollover.FORWARD):
+        return None
+    return nxt, activate_on
+
+
+def _day(day: dt.date) -> str:
+    return f"{day.day} {day.strftime('%b %Y')}"
+
+
+def overlap_state(config, db, today: dt.date) -> dict:
+    """The overlap as the dashboard shows it (B9 K3). Reads the database only; never files or the network."""
+    rollover = getattr(config, "rollover", None)
+    enabled = getattr(rollover, "overlap_enabled", None) is True
+    configured = configured_of(config)
+    out = {"enabled": enabled, "active": False, "configured_fy": configured, "next_fy": None, "activates_on": None,
+           "activated_at": None, "ended_at": None, "activation_pending": False, "note": None}
+    if configured is None:
+        return out
+    nxt = next_fy(configured)
+    out["next_fy"] = nxt
+    activate_on_text = getattr(rollover, "overlap_activate_on", None)
+    on_day = activation_date(configured, activate_on_text) if isinstance(activate_on_text, str) else None
+    out["activates_on"] = on_day.isoformat() if on_day else None
+    if not enabled:
+        out["note"] = "Backing up the next financial year in advance is switched off."
+        return out
+    record = db.overlap_record(nxt)
+    own = db.overlap_record(configured)          # the record that made the configured FY (the April switch)
+    if isinstance(own, dict):
+        out["activated_at"], out["ended_at"] = own.get("activated_at"), own.get("ended_at")
+    if isinstance(record, dict) and not record.get("ended_at"):
+        out.update(active=True, activated_at=record.get("activated_at"), ended_at=None)
+        out["note"] = (f"{configured} and {nxt} are both backed up until the April switch "
+                       f"(since {_when(record.get('activated_at'))}).")
+        return out
+    pending = activation_pending(config, db, today)
+    if pending is not None:
+        out["activation_pending"] = True
+        out["note"] = (f"{nxt} is not added to the backups yet (it was due on {_day(pending[1])}). "
+                       "The daily check retries every morning; press 'Run FY rollover now' to try at once.")
+    elif on_day is not None:
+        out["note"] = f"{nxt} will be added to the backups on {_day(on_day)}."
+    return out
+
+
 def _when(iso: str | None) -> str:
     """A stored time as the office reads it (IST, e.g. '1 Apr 2027, 14:00')."""
     if not iso:

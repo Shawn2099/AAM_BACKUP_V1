@@ -27,6 +27,23 @@
     <a class="btn" id="hero-action" href="#history" hidden>See what happened</a>
 </div></section>
 
+{% macro next_card(cid, key, leg, title, help) %}
+                <article class="dest tone-idle" id="{{ cid }}">
+                    <h2><span>{{ title }}<span id="title-fy-{{ key }}"></span> <span class="help" title="{{ help }}">?</span></span> <span class="pill tone-idle" id="badge-{{ key }}">Loading...</span></h2>
+                    <p class="lead" id="desc-{{ key }}">Fetching status...</p>
+                    <div class="facts"><p id="last-{{ key }}">Last backup: Loading...</p><p class="schedule-line" id="sched-{{ key }}"></p></div>
+                    <p class="safety" id="safety-{{ key }}">Safety check: ...</p>
+                    <div class="strip" id="strip-{{ key }}" aria-label="Last nights"></div>
+                    <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
+                    <footer>
+                        <details><summary>Details</summary><div class="more"><p id="{{ key }}-last-success">Last success: Loading...</p><p id="integrity-{{ key }}">Integrity: Loading...</p><p id="files-{{ key }}"></p></div></details>
+                        <button class="btn-secondary small verify-btn" id="btn-verify-{{ key }}" data-leg="{{ leg }}" onclick="triggerVerify('{{ key }}')" title="Compares every file in this copy with your original. Nothing is changed.">Check now</button>
+                        <form onsubmit="triggerBackup(event, '{{ key }}')">
+                            <button class="btn-trigger btn-{{ leg }}" id="btn-{{ key }}" {% if leg == 'lan' %}data-wol="{{ 'yes' if lan_wol else 'no' }}" data-shutdown="{{ 'yes' if lan_shutdown else 'no' }}" {% endif %}disabled>Loading...</button>
+                        </form>
+                    </footer>
+                </article>
+{% endmacro %}
 <div class="page">
 <main>
     <div id="server-banner" class="banner red" style="display:none"></div>
@@ -36,6 +53,7 @@
 
     <section>
         <h2>Where your files go</h2>
+        <p class="rail-note" id="legs-summary"></p>
         <div class="route">
             <div class="source">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
@@ -52,9 +70,9 @@
             </div>
             <div class="dests">
                 <article class="dest tone-idle" id="card-lan">
-                    <h2><span>Office copy (NAS) <span class="help" title="A copy of your files on the storage box in your office.">?</span></span> <span class="pill tone-idle" id="badge-lan">Loading...</span></h2>
+                    <h2><span>Office copy (NAS)<span id="title-fy-lan"></span> <span class="help" title="A copy of your files on the storage box in your office.">?</span></span> <span class="pill tone-idle" id="badge-lan">Loading...</span></h2>
                     <p class="lead" id="desc-lan">Fetching status...</p>
-                    <div class="facts"><p id="last-lan">Last backup: Loading...</p><p class="schedule-line">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p></div>
+                    <div class="facts"><p id="last-lan">Last backup: Loading...</p><p class="schedule-line" id="sched-lan">Next scheduled backup: {{ lan_schedule or 'Not configured' }}</p></div>
                     <p class="safety" id="safety-lan">Safety check: ...</p>
                     <div class="strip" id="strip-lan" aria-label="Last nights"></div>
                     <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
@@ -71,9 +89,9 @@
                     </footer>
                 </article>
                 <article class="dest tone-idle" id="card-cloud">
-                    <h2><span>Online copy (cloud) <span class="help" title="A copy kept safely on Google's servers, away from your office.">?</span></span> <span class="pill tone-idle" id="badge-cloud">Loading...</span></h2>
+                    <h2><span>Online copy (cloud)<span id="title-fy-cloud"></span> <span class="help" title="A copy kept safely on Google's servers, away from your office.">?</span></span> <span class="pill tone-idle" id="badge-cloud">Loading...</span></h2>
                     <p class="lead" id="desc-cloud">Fetching status...</p>
-                    <div class="facts"><p id="last-cloud">Last backup: Loading...</p><p class="schedule-line">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p></div>
+                    <div class="facts"><p id="last-cloud">Last backup: Loading...</p><p class="schedule-line" id="sched-cloud">Next scheduled backup: {{ cloud_schedule or 'Not configured' }}</p></div>
                     <p class="safety" id="safety-cloud">Safety check: ...</p>
                     <div class="strip" id="strip-cloud" aria-label="Last nights"></div>
                     <div class="strip-cap"><span>Earlier</span><span>Last night</span></div>
@@ -91,6 +109,10 @@
                 </article>
             </div>
         </div>
+        <div class="dests dests-next" id="dests-next" hidden>
+            {{ next_card('card-lan-next', 'lan-next', 'lan', 'Office copy (NAS)', 'A copy of your files on the storage box in your office.') }}
+            {{ next_card('card-cloud-next', 'cloud-next', 'cloud', 'Online copy (cloud)', "A copy kept safely on Google's servers, away from your office.") }}
+        </div>
     </section>
 
     <section id="history">
@@ -102,8 +124,8 @@
 <aside>
     <section>
         <div class="rail-h">At a glance</div>
-        <div class="stat"><span>Files on the office NAS</span><b id="stat-lan-files">...</b></div>
-        <div class="stat"><span>Files in the cloud</span><b id="stat-cloud-files">...</b></div>
+        <div class="stat"><span id="stat-lan-label">Files on the office NAS</span><b id="stat-lan-files">...</b></div>
+        <div class="stat"><span id="stat-cloud-label">Files in the cloud</span><b id="stat-cloud-files">...</b></div>
         <div class="stat"><span>Financial year</span><b id="stat-fy-prefix">{{ fy_prefix }}</b></div>
         <div class="stat"><span>Free space on main drive</span><b id="stat-free">...</b></div>
     </section>

@@ -56,6 +56,15 @@ def _schedule_in_effect(db, config) -> dict | None:
         return None
 
 
+def leg_scheduled(db, config, leg: str) -> bool:
+    """Does the scheduler in effect run this leg on its cron (B9 Q6, shared with C2)? The flag the scheduler
+    recorded wins (absent = scheduled); without a record the configured `<leg>.scheduled` (default true)."""
+    sched = _schedule_in_effect(db, config)
+    if isinstance(sched, dict) and f"{leg}_scheduled" in sched:
+        return sched[f"{leg}_scheduled"] is not False
+    return getattr(getattr(config, leg, None), "scheduled", True) is not False
+
+
 def _later(a: str | None, b: str | None) -> str | None:
     both = [t for t in (a, b) if t]
     return max(both, key=lambda t: pendulum.parse(t).timestamp()) if both else None
@@ -371,15 +380,11 @@ def _activation_item(db, config, now) -> dict | None:
     if getattr(rollover, "overlap_enabled", None) is not True or configured is None \
             or not isinstance(activate_on_text, str):
         return None
-    nxt = fy_overlap.next_fy(configured)
-    if db.overlap_record(nxt) is not None:
-        return None
     today = pendulum.instance(now).in_timezone(IST).date()
-    activate_on = fy_overlap.activation_date(configured, activate_on_text)
-    if today < activate_on:
-        return None
-    if fy_rollover.classify_rollover(configured, get_fy_prefix(today)) not in (fy_rollover.NONE, fy_rollover.FORWARD):
-        return None                       # the clock is behind or jumped: the rollover check alerts
+    pending = fy_overlap.activation_pending(config, db, today)
+    if pending is None:
+        return None                       # not due, already added, or the clock is behind: the rollover check alerts
+    nxt, activate_on = pending
     mail = db.last_notification(f"rollover:activation:{nxt}")
     mailed = mail is not None and pendulum.parse(mail["created_at"]).in_timezone(IST).date() >= activate_on
     if today == activate_on and not mailed:
@@ -411,6 +416,22 @@ def _overlap_off_item(db, config) -> dict | None:
     return _item(RED, f"overlap_off:{nxt}",
                  act("Switch 'back up the next financial year' on again in Settings",
                      f"Files saved in {nxt} are no longer backed up"))
+
+
+def row_fy_label(db, config, row: dict | None) -> str | None:
+    """The FY a shown row belongs to, for the dashboard labels (B9 K4, Q5). None while no overlap ever happened
+    for the configured FY (baseline: no labels)."""
+    configured = _configured(config)
+    if configured is None or not row:
+        return None
+    if fy_overlap.active_next_fy(config, db) is None and not isinstance(db.overlap_record(configured), dict):
+        return None
+    own = fy_overlap.row_fy(row)
+    if own:
+        return own
+    if _before_switch(db, configured, row):
+        return fy_overlap.prev_fy(configured)
+    return configured
 
 
 def _unknown_item() -> dict:

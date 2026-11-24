@@ -36,7 +36,7 @@ from prefect.deployments import arun_deployment
 
 from core import (admin_auth, alert_class, app_restart, messages, night_strip, approvals, config_edit, faults, fy_overlap, fy_rollover, rollover_journal,
                   statuses)
-from core.attention import RED, compute_attention, leg_timing
+from core.attention import RED, compute_attention, leg_scheduled, leg_timing, row_fy_label
 from core.manifest import ManifestDB
 from core.time_utils import IST, cron_to_human, format_ist, get_fy_prefix, now_iso
 
@@ -219,9 +219,18 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
     validation tightened. limit=200: >20 queued runs previously could hide
     an active one from this check.
     """
+    runs = await _read_active_runs()
+    if runs is None:
+        return None
+    now = datetime.now(timezone.utc)
+    return any(_run_counts_as_active(run, pipeline, now) for run in runs)
+
+
+async def _read_active_runs() -> list | None:
+    """The RUNNING / PENDING / SCHEDULED flow runs of Prefect (limit 200), or None when the API is unreachable."""
     try:
         async with get_client() as client:
-            runs = await client.read_flow_runs(
+            return await client.read_flow_runs(
                 flow_run_filter=FlowRunFilter(
                     state=FlowRunFilterState(
                         type=FlowRunFilterStateType(
@@ -234,40 +243,56 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
     except Exception as e:
         logger.error(f"Failed to query Prefect API: {e}")
         return None
-    for run in runs:
-        tags = run.tags or []
-        parameters = run.parameters or {}
-        # Exclude read-only integrity audits from hijacking backup status
-        if "integrity" in tags:
-            continue
-        run_mode = parameters.get("mode", "")
-        if not (pipeline in tags or run_mode == pipeline or run_mode == "all"):
-            continue
-        state = getattr(run, "state", None)
-        state_type = getattr(state, "type", None) or getattr(run, "state_type", None)
-        if state_type in (StateType.RUNNING, StateType.PENDING):
-            return True
-        if state_type == StateType.SCHEDULED:
-            # F2: a just-triggered run is SCHEDULED until the runner picks it
-            # up (~poll frequency). Count only due-now runs as active so a
-            # double-click cannot create a duplicate backup, while future
-            # cron-scheduled runs never block manual triggers.
-            nxt = getattr(run, "next_scheduled_start_time", None)
-            if nxt is None:
-                return True
-            try:
-                now = datetime.now(timezone.utc)
-                nxt_dt = nxt if nxt.tzinfo else nxt.replace(tzinfo=timezone.utc)
-                if nxt_dt <= now + timedelta(seconds=60):
-                    return True
-            except Exception:
-                return True
-            continue
-        # Fail-closed (H3): an unrecognized/missing state on a matching run
-        # must not read as idle — refusing a trigger is safe, a duplicate
-        # backup is not.
+
+
+def _run_counts_as_active(run, pipeline: str, now: datetime) -> bool:
+    """Does this Prefect flow run count as an active backup run of `pipeline` (B9 K5, the matcher of
+    `_prefect_has_active_run`)?"""
+    tags = run.tags or []
+    parameters = run.parameters or {}
+    # Exclude read-only integrity audits from hijacking backup status
+    if "integrity" in tags:
+        return False
+    run_mode = parameters.get("mode", "")
+    if not (pipeline in tags or run_mode == pipeline or run_mode == "all"):
+        return False
+    state = getattr(run, "state", None)
+    state_type = getattr(state, "type", None) or getattr(run, "state_type", None)
+    if state_type in (StateType.RUNNING, StateType.PENDING):
         return True
-    return False
+    if state_type == StateType.SCHEDULED:
+        # F2: a just-triggered run is SCHEDULED until the runner picks it
+        # up (~poll frequency). Count only due-now runs as active so a
+        # double-click cannot create a duplicate backup, while future
+        # cron-scheduled runs never block manual triggers.
+        nxt = getattr(run, "next_scheduled_start_time", None)
+        if nxt is None:
+            return True
+        try:
+            nxt_dt = nxt if nxt.tzinfo else nxt.replace(tzinfo=timezone.utc)
+            return nxt_dt <= now + timedelta(seconds=60)
+        except Exception:
+            return True
+    # Fail-closed (H3): an unrecognized/missing state on a matching run
+    # must not read as idle - refusing a trigger is safe, a duplicate
+    # backup is not.
+    return True
+
+
+async def _active_leg_runs(pipeline: str) -> list[dict] | None:
+    """The active runs of one leg with their `fy` parameter and start time (B9 K6); None when Prefect cannot
+    be reached."""
+    runs = await _read_active_runs()
+    if runs is None:
+        return None
+    now = datetime.now(timezone.utc)
+    out = []
+    for run in runs:
+        if not _run_counts_as_active(run, pipeline, now):
+            continue
+        started = getattr(run, "start_time", None) or getattr(run, "expected_start_time", None)
+        out.append({"fy": (run.parameters or {}).get("fy"), "started_at": started.isoformat() if started else None})
+    return out
 
 
 async def _is_verify_running() -> bool | None:
@@ -330,6 +355,46 @@ def _run_state_fields(state: bool | None) -> dict:
     else:
         run_state = "unknown"
     return {"running": state is True, "run_state": run_state}
+
+
+def _is_running_row(row: dict | None) -> bool:
+    return bool(row) and row.get("status") in statuses.RUNNING_STATUSES
+
+
+def _before(row: dict | None, started_at: str | None) -> bool:
+    """Did this row start before the run started (its pass of that run has not begun)? Unknown = not begun."""
+    stamp = row.get("started_at") if row else None
+    if not stamp or not started_at:
+        return True
+    try:
+        return pendulum.parse(stamp) < pendulum.parse(started_at)
+    except Exception:  # noqa: BLE001 - an odd stored time must not hide a running pass
+        return True
+
+
+def _card_run_state(card_fy: str, extra: bool, active_runs: list[dict] | None, last_row: dict | None) -> dict:
+    """Running state of one FY card while the overlap is active (B9 K7, Q1). `active_runs` = the leg's active
+    Prefect runs (None = Prefect unreachable); `extra` = the next-FY card; `last_row` = that FY's last run row.
+    `running` stays a strict bool; `leg_busy` = the leg has any active run."""
+    if active_runs is None:
+        return {"running": False, "run_state": "unknown", "leg_busy": False, "run_note": None}
+    if not active_runs:
+        return {"running": False, "run_state": "idle", "leg_busy": False, "run_note": None}
+    state, note = "idle", None
+    if any(r.get("fy") == card_fy for r in active_runs):
+        state = "running"
+    else:
+        all_fy = [r for r in active_runs if not r.get("fy")]
+        if all_fy:
+            if extra:
+                if _is_running_row(last_row):
+                    state = "running"
+                else:
+                    state = "queued"
+                    note = f"Waits for the {fy_overlap.prev_fy(card_fy)} backup to finish"
+            elif _is_running_row(last_row) or any(_before(last_row, r.get("started_at")) for r in all_fy):
+                state = "running"
+    return {"running": state == "running", "run_state": state, "leg_busy": True, "run_note": note}
 
 
 # ── Trigger pipeline (via Prefect deployment API) ────────────
@@ -522,6 +587,12 @@ async def status(request: Request):
     except Exception:
         return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
 
+    configured_fy = fy_rollover.effective_fy_prefix(cfg.paths.source_drive)
+    overlap = _overlap_view(cfg, db)
+    active = overlap.get("active") is True
+    nxt_fy = overlap.get("next_fy")
+    labels = active or _has_overlap_record(db, configured_fy)
+
     recent_runs = []
     for r in runs:
         err_msg = r.get("error_message") or ""
@@ -536,53 +607,47 @@ async def status(request: Request):
             "files_failed": r.get("files_failed", 0),
             "duration": f"{r.get('duration_seconds', 0):.0f}s" if r.get("duration_seconds") else "-",
             "error": err_msg,
-            "extended_metrics": r.get("extended_metrics", "")
+            "extended_metrics": r.get("extended_metrics", ""),
+            "fy": _row_label(db, cfg, r) if labels else None,
         })
 
-    cloud_last_run = _last_run_summary(db, "cloud")
-    lan_last_run = _last_run_summary(db, "lan")
-
-    # H3: None (Prefect unreachable) degrades to running=False + run_state
-    # "unknown". The boolean type is load-bearing — dashboard.js polls this
-    # every 2 s and does truthiness on it.
-    cloud_fields = _run_state_fields(await _is_running("cloud"))
-    lan_fields = _run_state_fields(await _is_running("lan"))
+    flags = {leg: leg_scheduled(db, cfg, leg) for leg in ("cloud", "lan")}
+    cards: dict = {}
+    for leg in ("cloud", "lan"):
+        enabled = getattr(cfg, leg).enabled
+        active_runs = None
+        if active and enabled:
+            # one Prefect query per leg returns the active runs with their `fy` (B9 Q1)
+            active_runs = await _active_leg_runs(leg)
+            fields = _card_run_state(configured_fy, False, active_runs, db.last_run(leg))
+        else:
+            # H3: None (Prefect unreachable) degrades to running=False + run_state "unknown". The boolean
+            # type is load-bearing - dashboard.js polls this every 2 s and does truthiness on it.
+            fields = _run_state_fields(await _is_running(leg))
+            fields = {**fields, "leg_busy": fields["running"], "run_note": None}
+        setting = getattr(getattr(cfg, leg), "scheduled", True)
+        cards[leg] = _leg_card(db, cfg, leg, card_fy=configured_fy, db_fy=None, run_fields=fields,
+                               scheduled=flags[leg], scheduled_setting=setting, labels=labels)
+        if active and enabled and nxt_fy:
+            nfields = _card_run_state(nxt_fy, True, active_runs, db.last_run(leg, fy=nxt_fy))
+            cards[f"{leg}_next"] = _leg_card(db, cfg, leg, card_fy=nxt_fy, db_fy=nxt_fy, run_fields=nfields,
+                                             scheduled=flags[leg], scheduled_setting=setting, labels=labels)
     # the manual / weekly safety check (read-only audit); None (Prefect unreachable) shows as "not running"
     verify_running = (await _is_verify_running()) is True
 
     return JSONResponse({
         "firm": cfg.firm_name,
-        "fy_prefix": fy_rollover.effective_fy_prefix(cfg.paths.source_drive),
+        "fy_prefix": configured_fy,
         "attention": _attention(db, cfg),
         "verify_running": verify_running,
         "schedule": {
             "cloud_cron": cron_to_human(cfg.schedule.cloud_cron, cfg.schedule.timezone),
             "lan_cron": cron_to_human(cfg.schedule.lan_cron, cfg.schedule.timezone),
         },
-        "cloud": {
-            **cloud_fields,
-            "enabled": cfg.cloud.enabled,
-            "last_run": cloud_last_run,
-            "last_success": _get_last_success(db, "cloud"),
-            "timing": _leg_timing(db, cfg, "cloud"),
-            "last_run_formatted": format_ist(cloud_last_run["started_at"]) if cloud_last_run else "No data",
-            # Integrity status is a SEPARATE fact from the backup result:
-            # VERIFIED only after a passing audit; NOT_VERIFIED when no
-            # audit has run; VERIFICATION_FAILED on divergence. A COMPLETE
-            # backup does NOT imply VERIFIED.
-            "integrity": _integrity_summary(db, "cloud"),
-            "nights": _nights(db, "cloud", cfg),
-        },
-        "lan": {
-            **lan_fields,
-            "enabled": cfg.lan.enabled,
-            "last_run": lan_last_run,
-            "last_success": _get_last_success(db, "lan"),
-            "timing": _leg_timing(db, cfg, "lan"),
-            "last_run_formatted": format_ist(lan_last_run["started_at"]) if lan_last_run else "No data",
-            "integrity": _integrity_summary(db, "lan"),
-            "nights": _nights(db, "lan", cfg),
-        },
+        **cards,
+        "overlap": overlap,
+        "legs": _legs_plan(cfg, {f"{leg}_scheduled": flags[leg] for leg in flags}, active,
+                           (configured_fy, nxt_fy) if active and nxt_fy else None),
         "manifest": {
             "lan_files": db.file_count("lan_status"),
             "cloud_files": db.file_count("cloud_status"),
@@ -592,22 +657,139 @@ async def status(request: Request):
     })
 
 
-def _nights(db, mode: str, cfg) -> list[dict]:
-    """One mark per night for the dashboard strip (core/night_strip.py)."""
+def _overlap_view(cfg, db) -> dict:
+    """The overlap block of /status (B9 K13): `fy_overlap.overlap_state` for today (IST). A record that cannot
+    be read shows as active=None with the error type (the banner carries the RED item)."""
+    try:
+        return fy_overlap.overlap_state(cfg, db, pendulum.now(IST).date())
+    except Exception as e:  # noqa: BLE001 - fail visible, never blank the dashboard
+        logger.warning(f"The overlap state could not be read: {e}")
+        enabled = getattr(getattr(cfg, "rollover", None), "overlap_enabled", None) is True
+        return {"enabled": enabled, "active": None, "error": type(e).__name__}
+
+
+def _has_overlap_record(db, configured_fy: str) -> bool:
+    """True when the overlap record that made the configured FY exists (the first year after a switch)."""
+    try:
+        return isinstance(db.overlap_record(configured_fy), dict)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _row_label(db, cfg, row: dict | None) -> str | None:
+    try:
+        return row_fy_label(db, cfg, row)
+    except Exception as e:  # noqa: BLE001 - a label is never worth a failed status call
+        logger.warning(f"The FY of a row could not be read: {e}")
+        return None
+
+
+def _fy_kw(fy: str | None) -> dict:
+    return {} if fy is None else {"fy": fy}
+
+
+def _leg_card(db, cfg, leg: str, *, card_fy: str, db_fy: str | None, run_fields: dict, scheduled: bool,
+              scheduled_setting: bool, labels: bool) -> dict:
+    """One backup card of /status (B9 K11): baseline keys plus fy, schedule and label fields (I1).
+    `db_fy` None = the configured FY's rows; `labels` = name the real FY of a row (Q5)."""
+    last_run = _last_run_summary(db, leg, db_fy)
+    success_row = _last_success_row(db, leg, db_fy)
+    integrity = _integrity_summary(db, leg, db_fy)
+    last_run_row = db.last_run(leg, **_fy_kw(db_fy)) if labels and last_run else None
+    if last_run is not None:
+        last_run["fy"] = _row_label(db, cfg, last_run_row) if labels else None
+    integrity["fy"] = None
+    if labels:
+        try:
+            audit = db.latest_audit(leg, **_fy_kw(db_fy))
+        except Exception:  # noqa: BLE001
+            audit = None
+        integrity["fy"] = _row_label(db, cfg, audit) if isinstance(audit, dict) else None
+    schedule = cfg.schedule
+    cron = schedule.cloud_cron if leg == "cloud" else schedule.lan_cron
+    return {
+        **run_fields,
+        "enabled": getattr(cfg, leg).enabled,
+        "last_run": last_run,
+        "last_success": success_row.get("ended_at") if success_row else None,
+        "timing": _leg_timing(db, cfg, leg, fy=db_fy, scheduled=scheduled),
+        "last_run_formatted": format_ist(last_run["started_at"]) if last_run else "No data",
+        # Integrity status is a SEPARATE fact from the backup result:
+        # VERIFIED only after a passing audit; NOT_VERIFIED when no
+        # audit has run; VERIFICATION_FAILED on divergence. A COMPLETE
+        # backup does NOT imply VERIFIED.
+        "integrity": integrity,
+        "nights": _nights(db, leg, cfg, card_fy if labels else None),
+        "fy": card_fy,
+        "scheduled": scheduled,
+        "scheduled_setting": scheduled_setting,
+        "schedule_text": ("Next scheduled backup: " + cron_to_human(cron, schedule.timezone)) if scheduled
+                         else "Runs only when you press Run backup",
+        "last_success_fy": (_row_label(db, cfg, success_row) if labels and success_row else None),
+    }
+
+
+def _legs_plan(cfg, sched: dict | None, overlap_active: bool, fys: tuple[str, str] | None) -> dict:
+    """Which copies are in use and how (B9 K12, Q7): per leg scheduled | manual | off, and one sentence."""
+    state = {}
+    for leg in ("cloud", "lan"):
+        leg_cfg = getattr(cfg, leg)
+        if not leg_cfg.enabled:
+            state[leg] = "off"
+        elif isinstance(sched, dict) and f"{leg}_scheduled" in sched:
+            state[leg] = "scheduled" if sched[f"{leg}_scheduled"] is not False else "manual"
+        else:
+            state[leg] = "scheduled" if getattr(leg_cfg, "scheduled", True) is not False else "manual"
+    cloud, lan = state["cloud"], state["lan"]
+    names = {"cloud": "online copy", "lan": "office NAS copy"}
+
+    def only(leg, mode):
+        text = f"Only the {names[leg]} is in use"
+        if mode == "scheduled":
+            return text + f" (the {names['lan' if leg == 'cloud' else 'cloud']} is switched off)."
+        return text + ", and it runs only when you press Run backup."
+
+    if cloud == "off" and lan == "off":
+        summary = "No copy is switched on."
+    elif cloud == "off":
+        summary = only("lan", lan)
+    elif lan == "off":
+        summary = only("cloud", cloud)
+    elif cloud == lan == "scheduled":
+        summary = "Both copies run every night on their schedule."
+    elif cloud == lan == "manual":
+        summary = "Both copies run only when you press Run backup."
+    else:
+        auto, hand = ("cloud", "lan") if cloud == "scheduled" else ("lan", "cloud")
+        summary = (f"The {names[auto]} runs on its schedule; the {names[hand]} runs only when you press "
+                   "Run backup.")
+    if overlap_active and fys:
+        summary += f" Until the April switch both {fys[0]} and {fys[1]} are backed up."
+    return {"cloud": cloud, "lan": lan, "summary": summary}
+
+
+def _nights(db, mode: str, cfg, card_fy: str | None = None) -> list[dict]:
+    """One mark per night for the dashboard strip (core/night_strip.py). `card_fy` None = every row of the
+    leg; a value keeps the rows of that FY only (B9 Q4, the same rule as the labels)."""
     try:
         days = cfg.dashboard.history_nights
         end = pendulum.now(IST).add(days=1).start_of("day")
-        return night_strip.build(db.get_runs_between(end.subtract(days=days), end, mode),
-                                 days=days)
+        rows = db.get_runs_between(end.subtract(days=days), end, mode)
+        if card_fy is not None:
+            rows = [r for r in rows if row_fy_label(db, cfg, r) == card_fy]
+        return night_strip.build(rows, days=days)
     except Exception as e:  # noqa: BLE001 - the strip is decoration; never break the status call
         logger.warning(f"Night strip could not be built for {mode}: {e}")
         return []
 
 
-def _leg_timing(db, cfg, leg: str) -> dict:
-    """on_time | late | overdue | waiting | catching_up for the leg's card (core.attention.leg_timing)."""
+def _leg_timing(db, cfg, leg: str, fy: str | None = None, scheduled: bool = True) -> dict:
+    """on_time | late | overdue | waiting | catching_up for the leg's card (core.attention.leg_timing);
+    `manual` for a leg that only runs when someone presses the button (never late)."""
+    if not scheduled:
+        return {"state": "manual", "due_at": None, "overdue_at": None}
     try:
-        return leg_timing(db, cfg, leg)
+        return leg_timing(db, cfg, leg, **_fy_kw(fy))
     except Exception as e:  # noqa: BLE001 - the card is decoration; the banner has the truth
         logger.warning(f"Leg timing could not be evaluated for {leg}: {e}")
         return {"state": "on_time", "due_at": None, "overdue_at": None}
@@ -645,6 +827,33 @@ async def health():
                          "warnings": warnings})
 
 
+_FY_PARAM = re.compile(r"^FY\d{2}-\d{2}$")
+
+
+def _requested_fy(request: Request, cfg) -> tuple[str | None, JSONResponse | None]:
+    """The `?fy=` of a trigger (B9 K15, Q2): (None, None) without one. A bad name is 400, an FY that is not
+    backed up at the moment 409, an unreadable active set 503 (fail closed)."""
+    raw = (request.query_params.get("fy") or "").strip()
+    if not raw:
+        return None, None
+    fy = raw.upper()
+    if not _FY_PARAM.match(fy):
+        return None, JSONResponse({"status": "bad_fy", "detail": messages.act(
+            "Use a name like FY26-27", f"'{raw}' is not a financial year")}, status_code=400)
+    try:
+        active = fy_overlap.active_fys(cfg, get_db())
+    except Exception as e:  # noqa: BLE001 - fail closed
+        logger.error(f"The financial years backed up could not be read: {e}")
+        return None, JSONResponse({"status": "fy_unknown", "detail": messages.act(
+            "Try again in a minute", "The financial years backed up at the moment could not be read")},
+            status_code=503)
+    if fy not in active:
+        return None, JSONResponse({"status": "fy_not_active", "detail": messages.act(
+            "Refresh the page", f"{fy} is not backed up at the moment (backed up: {', '.join(active) or 'none'})")},
+            status_code=409)
+    return fy, None
+
+
 @app.post("/trigger/cloud")
 async def trigger_cloud(request: Request):
     _require_auth(request)
@@ -653,6 +862,9 @@ async def trigger_cloud(request: Request):
         raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     if not _cfg().cloud.enabled:
         return JSONResponse({"status": "disabled", "detail": messages.leg_off("cloud")}, status_code=409)
+    fy, refused = _requested_fy(request, _cfg())
+    if refused is not None:
+        return refused
     cloud_running = await _is_running("cloud")
     if cloud_running is None:
         # H3: fail-CLOSED. The old code treated an unreachable API as
@@ -672,6 +884,7 @@ async def trigger_cloud(request: Request):
         flow_run = await arun_deployment(
             name="aam-backup/backup-cloud",
             timeout=_trigger_timeout(request),
+            **({"parameters": {"fy": fy}} if fy else {}),
         )
     except Exception as e:
         logger.error(f"Manual cloud trigger failed: {e}")
@@ -680,7 +893,7 @@ async def trigger_cloud(request: Request):
              "detail": messages.could_not_start("cloud backup", e)},
             status_code=500,
         )
-    return _trigger_result("Cloud", flow_run)
+    return _trigger_result(f"Cloud ({fy})" if fy else "Cloud", flow_run)
 
 
 @app.post("/trigger/lan")
@@ -691,6 +904,9 @@ async def trigger_lan(request: Request):
         raise HTTPException(status_code=429, detail=messages.TOO_MANY_REQUESTS)
     if not _cfg().lan.enabled:
         return JSONResponse({"status": "disabled", "detail": messages.leg_off("lan")}, status_code=409)
+    fy, refused = _requested_fy(request, _cfg())
+    if refused is not None:
+        return refused
     lan_running = await _is_running("lan")
     if lan_running is None:
         raise HTTPException(
@@ -703,6 +919,7 @@ async def trigger_lan(request: Request):
         flow_run = await arun_deployment(
             name="aam-backup/backup-lan",
             timeout=_trigger_timeout(request),
+            **({"parameters": {"fy": fy}} if fy else {}),
         )
     except Exception as e:
         logger.error(f"Manual LAN trigger failed: {e}")
@@ -711,7 +928,7 @@ async def trigger_lan(request: Request):
              "detail": messages.could_not_start("LAN backup", e)},
             status_code=500,
         )
-    return _trigger_result("LAN", flow_run)
+    return _trigger_result(f"LAN ({fy})" if fy else "LAN", flow_run)
 
 
 # ── Approvals for BLOCKED runs (plan §6.2, owner DEC-3) ──────
@@ -774,13 +991,38 @@ async def _ensure_leg_idle(leg: str) -> None:
         raise HTTPException(status_code=409, detail=messages.leg_running(leg))
 
 
+def _approval_params(req: dict) -> dict:
+    """The parameters of an approved re-run (B9 K18, Q3). While the overlap is active a request that names an
+    FY re-runs that FY's pass; otherwise exactly `{"approval_id"}`. A request for the next FY while that FY is
+    not backed up is refused (409) and an unreadable active set fails closed (503)."""
+    params = {"approval_id": req["approval_id"]}
+    fy = req.get("fy")
+    if req.get("leg") == "rollover" or not fy:
+        return params
+    cfg = _cfg()
+    try:
+        active = fy_overlap.active_next_fy(cfg, get_db())
+    except Exception as e:  # noqa: BLE001 - fail closed
+        logger.error(f"The financial years backed up could not be read: {e}")
+        raise HTTPException(status_code=503, detail=messages.act(
+            "Try again in a minute", "The financial years backed up at the moment could not be read")) from e
+    if active is not None:
+        return {**params, "fy": fy}
+    configured = fy_overlap.configured_of(cfg)
+    if configured and fy == fy_overlap.next_fy(configured):
+        raise HTTPException(status_code=409, detail=messages.act(
+            "Dismiss this request", f"This request is for {fy}, which is not backed up at the moment"))
+    return params
+
+
 async def _start_approved_run(req: dict, request: Request) -> JSONResponse:
     leg = req["leg"]
     label, deployment, _ = _APPROVAL_TARGETS[leg]
+    params = _approval_params(req)
     try:
         flow_run = await arun_deployment(
             name=deployment,
-            parameters={"approval_id": req["approval_id"]},
+            parameters=params,
             timeout=_trigger_timeout(request),
         )
     except Exception as e:
@@ -814,6 +1056,7 @@ async def approve_blocked_run(approval_id: str, request: Request):
         raise HTTPException(status_code=400,
                             detail=messages.act(f"Type {approvals.APPROVE_PHRASE} exactly, then press Approve", "The word typed did not match"))
     await _ensure_leg_idle(req["leg"])
+    _approval_params(req)          # refuse a request for an FY that is not backed up BEFORE approving it
     approved_at = now_iso()
     actor = _approval_actor(request)
     if not get_db().approve_request(
@@ -836,6 +1079,7 @@ async def run_approved_backup(approval_id: str, request: Request):
         raise HTTPException(status_code=409, detail=messages.act("Wait for the next blocked backup and approve it again",
                                                     f"This approval expired at {req['expires_at']}"))
     await _ensure_leg_idle(req["leg"])
+    _approval_params(req)
     return await _start_approved_run(req, request)
 
 
@@ -1243,6 +1487,10 @@ async def rollover_status(request: Request):
     journal = _open_rollover_journal()
     if journal is not None:           # an unfinished rollover can always be continued
         state = {**state, "can_run": True, "message": _unfinished_rollover_message(journal)}
+    overlap = _overlap_view(cfg, get_db())
+    if overlap.get("activation_pending") and not state["can_run"]:
+        # the next FY is due but not added yet: the normal check activates it first (plan section 3)
+        state = {**state, "can_run": True, "message": overlap["note"]}
     last = get_db().last_run("rollover")
     approval = next((a for a in get_db().open_approvals() if a["leg"] == "rollover"), None)
     # plan section 4 / B4: while the overlap is active, what each leg still needs for the April switch
@@ -1254,7 +1502,7 @@ async def rollover_status(request: Request):
         logger.warning(f"Could not read the final-copy state for the rollover card: {e}")
         final_copy = None
     return {
-        "configured_fy": configured, "current_fy": current, **state, "final_copy": final_copy,
+        "configured_fy": configured, "current_fy": current, **state, "final_copy": final_copy, "overlap": overlap,
         "journal": None if journal is None else {
             "from_fy": journal["from_fy"], "to_fy": journal["to_fy"],
             "steps": rollover_journal.describe_steps(journal)},
@@ -1269,6 +1517,14 @@ async def rollover_status(request: Request):
     }
 
 
+def _activation_is_pending(cfg) -> bool:
+    """The next FY is due to be added but is not (B9 Q9): the manual rollover check is allowed."""
+    try:
+        return fy_overlap.activation_pending(cfg, get_db(), pendulum.now(IST).date()) is not None
+    except Exception:  # noqa: BLE001 - unreadable = not allowed (the old rule)
+        return False
+
+
 @app.post("/api/rollover/run")
 async def run_rollover_now(request: Request):
     """Start the normal rollover check now (e.g. the automatic one failed or the
@@ -1278,7 +1534,7 @@ async def run_rollover_now(request: Request):
     configured = fy_rollover.configured_fy(cfg.paths.source_drive, cfg.paths.lan_destination)
     current = get_fy_prefix()
     state = fy_rollover.manual_run_state(configured, current, _finished_journal(configured, current))
-    if not state["can_run"] and _open_rollover_journal() is None:
+    if not state["can_run"] and _open_rollover_journal() is None and not _activation_is_pending(cfg):
         raise HTTPException(status_code=409, detail=state["message"])
     running = await _is_running("rollover")
     if running is None:
@@ -1337,7 +1593,7 @@ def settings_history(request: Request):
 # audit is already running.
 
 
-def _backup_first_question(cfg, mode: str) -> str | None:
+def _backup_first_question(cfg, mode: str, fy: str | None = None) -> str | None:
     """Why "Check now" should wait for a backup, or None. The check never backs up by itself: this
     only informs and the person chooses. Advisory, so any failure here lets the check start (the
     check classifies files that are not backed up yet, so it stays safe)."""
@@ -1349,7 +1605,7 @@ def _backup_first_question(cfg, mode: str) -> str | None:
         for leg in ("lan", "cloud"):
             if mode not in (leg, "all") or not getattr(cfg, leg).enabled:
                 continue
-            last = db.last_successful_run(leg)
+            last = db.last_successful_run(leg, **_fy_kw(fy))
             started = last.get("started_at") if isinstance(last, dict) else None
             name = "LAN" if leg == "lan" else "cloud"
             if not started:
@@ -1382,6 +1638,9 @@ async def trigger_verify(mode: str, request: Request):
         return JSONResponse({"status": "disabled", "detail": messages.leg_off("cloud", "checked")}, status_code=409)
     if mode == "all" and not (cfg.lan.enabled or cfg.cloud.enabled):
         return JSONResponse({"status": "disabled", "detail": messages.act("Switch on the LAN or the cloud backup in Settings, then try again", "Both are turned off, so there is nothing to check")}, status_code=409)
+    fy, refused = _requested_fy(request, cfg)
+    if refused is not None:
+        return refused
     for leg in ("lan", "cloud"):
         running = await _is_running(leg)
         if running is None:
@@ -1400,13 +1659,14 @@ async def trigger_verify(mode: str, request: Request):
     if verifying:
         return JSONResponse({"status": "already_running", "detail": messages.act("Wait for the running safety check to finish", "Only one can run at a time")}, status_code=400)
     if request.query_params.get("anyway") != "1":
-        ask = _backup_first_question(cfg, mode)
+        # the configured FY is asked about as always; a next FY asks about its own last backup (Q10)
+        ask = _backup_first_question(cfg, mode, fy if fy and fy != fy_overlap.configured_of(cfg) else None)
         if ask:
             return JSONResponse({"status": "backup_first", "detail": ask}, status_code=409)
     try:
         flow_run = await arun_deployment(
             name="integrity-audit/integrity-audit",
-            parameters={"mode": mode},
+            parameters={"mode": mode, **({"fy": fy} if fy else {})},
             timeout=_trigger_timeout(request),
         )
     except Exception as e:
@@ -1417,7 +1677,7 @@ async def trigger_verify(mode: str, request: Request):
             status_code=500,
         )
     label = {"lan": "LAN", "cloud": "Cloud", "all": "Full"}[mode]
-    return _trigger_result(label, flow_run, noun="verification")
+    return _trigger_result(f"{label} ({fy})" if fy else label, flow_run, noun="verification")
 
 
 # ── Report endpoints ────────────────────────────────────────
@@ -1558,22 +1818,27 @@ def _serve_report(days: int, period: str) -> Response:
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _get_last_success(db: ManifestDB, mode: str) -> str | None:
+def _last_success_row(db: ManifestDB, mode: str, fy: str | None = None) -> dict | None:
+    """The last successful run row of this mode; `fy` = one next-FY pass (None = configured FY)."""
+    return db.last_successful_run(mode, **_fy_kw(fy))
+
+
+def _get_last_success(db: ManifestDB, mode: str, fy: str | None = None) -> str | None:
     """Return ended_at timestamp of the last successful run for this mode."""
-    run = db.last_successful_run(mode)
+    run = _last_success_row(db, mode, fy)
     if run:
         return run.get("ended_at")
     return None
 
 
-def _integrity_summary(db: ManifestDB, mode: str) -> dict:
+def _integrity_summary(db: ManifestDB, mode: str, fy: str | None = None) -> dict:
     """Return the integrity-verification status for a mode.
 
     Backup result and integrity are separate facts: a COMPLETE backup with
     no audit yet reports NOT_VERIFIED (never implied VERIFIED).
     """
     try:
-        audit = db.latest_audit(mode)
+        audit = db.latest_audit(mode, **_fy_kw(fy))
     except Exception:
         audit = None
     if not isinstance(audit, dict):
@@ -1608,10 +1873,15 @@ def _status_fields(run: dict) -> dict:
     }
 
 
-def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
-    run = db.last_run(mode)
+def _last_run_summary(db: ManifestDB, mode: str, fy: str | None = None) -> dict | None:
+    run = db.last_run(mode, **_fy_kw(fy))
     if not run:
         return None
+    try:
+        metrics = json.loads(run.get("extended_metrics") or "{}")
+    except (TypeError, ValueError):
+        metrics = {}
+    total_files = metrics.get("total_files") if isinstance(metrics, dict) else None
     err_msg = run.get("error_message") or ""
     if len(err_msg) > 2000:
         err_msg = err_msg[:2000] + "..."
@@ -1624,6 +1894,7 @@ def _last_run_summary(db: ManifestDB, mode: str) -> dict | None:
         "duration": f"{run.get('duration_seconds', 0):.0f}s" if run.get("duration_seconds") else "?",
         "error": err_msg,
         "ended_at": run.get("ended_at", ""),
+        "total_files": total_files,
     }
 
 
