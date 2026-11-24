@@ -156,6 +156,16 @@ class LanConfig(StrictModel):
     preflight_retry_delay_seconds: int = Field(
         default=30, ge=5, le=3600, description="Seconds between LAN preflight tries")
     mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
+    transfers: int = Field(default=4, ge=1, le=32, description="rclone --transfers for the NAS mirror: files copied at the same time")
+    checkers: int = Field(default=4, ge=1, le=32, description="rclone --checkers for the NAS mirror and its arrival check: files compared at the same time")
+    modify_window_seconds: int = Field(
+        default=2, ge=0, le=10,
+        description="rclone --modify-window for the NAS mirror: file times this close count as equal "
+                    "(NTFS/SMB time granularity is 2 s)")
+    error_tail_lines: int = Field(
+        default=100, ge=1, le=10000,
+        description="Most error lines (and failed file paths) of the rclone NAS mirror log carried "
+                    "into results and alerts; the full log is always kept in run_logs")
     log_tail_kb: int = Field(default=100, ge=4, le=10240, description="Size of the robocopy log tail (KB) used for the result decision and carried into alerts/DB; the full log is always kept in run_logs")
     # F8: the preflight /L walk scales with dataset size (1M files ~= 5-10 min
     # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the

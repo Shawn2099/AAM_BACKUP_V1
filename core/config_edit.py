@@ -55,7 +55,7 @@ _RISKY_KEYS = frozenset({
     # data safety
     "lan.use_backup_mode", "health.clock_unverified_policy", "cloud.write_probe_enabled",
     # what counts as "unchanged": a wide window skips same-size edits
-    "cloud.modify_window_seconds", "audit.modify_window_seconds",
+    "cloud.modify_window_seconds", "audit.modify_window_seconds", "lan.modify_window_seconds",
     # silence a whole kind of alert email (the dashboard still shows the problem)
     "notifications.send_on_failure", "alerts.send_decision_needed", "alerts.send_overdue",
     "alerts.send_action_needed", "alerts.send_resolved", "alerts.send_info",
@@ -135,6 +135,7 @@ _UNITS = {
     "wol.shutdown_verify_closed_probes": "checks in a row", "watchdog.failure_threshold": "checks in a row",
     "watchdog.max_deferrals": "times", "watchdog.max_transfer_deferrals": "times",
     "watchdog.max_starts_per_window": "starts", "lan.mt_threads": "threads",
+    "lan.transfers": "files at once", "lan.checkers": "files at once", "lan.error_tail_lines": "lines",
     "cloud.transfers": "files at once", "cloud.checkers": "files at once", "audit.checkers": "files at once",
     "cloud.error_tail_lines": "lines", "alerts.body_max_chars": "characters",
     "alerts.support_log_tail_lines": "lines",

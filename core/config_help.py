@@ -106,6 +106,12 @@ HELP: dict[str, tuple[str, str]] = {
     "lan.preflight_retries": ("Pre-check retries", "How often the check before copying is repeated if it fails."),
     "lan.preflight_retry_delay_seconds": ("Wait between pre-check retries", ""),
     "lan.mt_threads": ("Files copied at the same time", "More is faster but busier for the NAS."),
+    "lan.transfers": ("NAS files copied at the same time", "More is faster but busier for the NAS."),
+    "lan.checkers": ("NAS files compared at the same time", "Used when comparing the source with the NAS."),
+    "lan.modify_window_seconds": ("Time difference treated as equal (NAS)",
+                                  "Files whose times differ by no more than this are not copied again. "
+                                  "A wide window skips same-size edits."),
+    "lan.error_tail_lines": ("Error lines in NAS alerts", "How many error lines and failed file names are kept in results and alerts."),
     "lan.log_tail_kb": ("Log excerpt size", "How much of the copy log is shown in alerts."),
     "lan.dry_run_timeout_seconds": ("Time for the pre-check", "Before copying, the program checks what would change."),
     "lan.rclone_measure_timeout_seconds": ("Time for the delete count",

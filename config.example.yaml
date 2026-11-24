@@ -65,6 +65,14 @@ lan:
   preflight_retry_delay_seconds: 30
   # Robocopy /MT — parallel copy threads
   mt_threads: 4
+  # rclone --transfers for the NAS mirror: files copied at the same time (1-32)
+  transfers: 4
+  # rclone --checkers for the NAS mirror and its arrival check (1-32)
+  checkers: 4
+  # rclone --modify-window for the NAS mirror (seconds, 0-10); NTFS/SMB times are 2 s apart
+  modify_window_seconds: 2
+  # Most error lines / failed file paths of the NAS mirror log carried into results and alerts (1-10000)
+  error_tail_lines: 100
   # Robocopy /ZB backup mode: also copies files the account cannot open normally.
   # Needs the "Back up files and directories" right (SeBackupPrivilege) for the
   # backup service account; every LAN run checks it first. false = no /ZB.

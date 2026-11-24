@@ -10,6 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from core import cloud_sync
 from core.guards import require_source_files
 from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
@@ -566,3 +567,140 @@ def run_lan_sync(
         "bytes": summarize_log_bytes(decision_tail),
         "files_deleted": scan_robocopy_log(log_path)[0],
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# rclone LAN mirror (plan P1): builder and exit decision. The robocopy code
+# above is removed in chunk C10a.
+# ═══════════════════════════════════════════════════════════════
+
+# Never synced to the NAS: our mount marker, our write-probe files, NTFS system folders.
+LAN_EXCLUDES = (
+    ".AAM_TARGET_MOUNTED",
+    PROBE_PATTERN,
+    "System Volume Information/**",
+    "$RECYCLE.BIN/**",
+)
+
+
+def build_lan_rclone_command(
+    config: LanConfig,
+    source: str,
+    dest: str,
+    log_path: str,
+    *,
+    max_delete: int | None = None,
+    dry_run: bool = False,
+    combined_path: str | None = None,
+    max_duration_s: int | None = None,
+) -> list[str]:
+    """argv of the LAN `rclone sync` (plan P1 2.1).
+
+    Real sync: --max-delete (0 is emitted too) and, when the budget limits the
+    run, --max-duration with a SOFT cutoff; the G1 backstop refuses an empty
+    source. Dry-run (the plan measurement): the same argv plus --dry-run and
+    --combined, without --max-delete/--max-duration/--cutoff-mode, so the
+    measurement describes exactly what the real sync decides.
+    """
+    if not dry_run:
+        require_source_files(source)  # G1 backstop
+    cmd = [
+        resolve_binary("rclone") or "rclone", "sync", source, dest,
+        "--check-first", "--create-empty-src-dirs", "--skip-links", "--ignore-case",
+        "--modify-window", f"{int(config.modify_window_seconds)}s",
+        "--transfers", str(int(config.transfers)),
+        "--checkers", str(int(config.checkers)),
+        "--retries", str(int(config.retry_count)),
+        "--retries-sleep", f"{int(config.retry_wait_seconds)}s",
+        "--use-json-log", "--log-level", "INFO",
+        "--log-file", str(log_path),
+    ]
+    for pattern in LAN_EXCLUDES:
+        cmd.extend(["--exclude", pattern])
+    if config.track_renames:
+        cmd.append("--track-renames")
+    if dry_run:
+        cmd.append("--dry-run")
+        if combined_path:
+            cmd.extend(["--combined", str(combined_path)])
+        return cmd
+    if max_delete is not None:
+        cmd.extend(["--max-delete", str(int(max_delete))])
+    if max_duration_s:
+        cmd.extend(["--max-duration", f"{int(max_duration_s)}s", "--cutoff-mode", "SOFT"])
+    return cmd
+
+
+# rclone exit codes that never happen on a LAN mirror we start (plan 2.2 row 3).
+_LAN_UNEXPECTED_EXITS = frozenset({2, 3, 7, 8, 9})
+_LAN_PARTIAL_EXITS = frozenset({1, 4, 6})
+
+
+def decide_lan_rclone_result(
+    exit_code,
+    log_text: str,
+    *,
+    error_tail_lines: int = model_default(LanConfig, "error_tail_lines"),
+) -> dict:
+    """Pure decision of a finished LAN `rclone sync` (plan P1 2.2, rows in order).
+
+    Returns {status, reason, stats, abnormal, retryable, max_delete_reached,
+    time_limit_stopped, files_failed, failed_paths, deletes_held, error}.
+    A locked file is LAN_PARTIAL (rclone deletes nothing after a read error);
+    PARTIAL is never retried. Only exit 5 without a fatal error is retryable.
+    """
+    stats = cloud_sync.final_stats(log_text)
+    out = {
+        "status": "LAN_FAILED", "reason": None, "stats": stats, "abnormal": False,
+        "retryable": False, "max_delete_reached": False, "time_limit_stopped": False,
+        "files_failed": 0, "failed_paths": [], "deletes_held": False, "error": None,
+    }
+
+    def done(status: str, reason: str, **extra) -> dict:
+        out.update(status=status, reason=reason, **extra)
+        if status != "LAN_COMPLETE":
+            out["error"] = reason
+        return out
+
+    if type(exit_code) is not int or exit_code < 0:
+        return done("LAN_FAILED", f"rclone exit code unusable: {exit_code!r}", abnormal=True)
+    meaning = cloud_sync.RCLONE_EXIT_MEANING.get(exit_code, "unknown exit code")
+    if cloud_sync.max_delete_reached(log_text):
+        return done("LAN_FAILED", f"rclone exit {exit_code}: --max-delete backstop reached "
+                    "(more deletions than the guard allowed)", max_delete_reached=True)
+    if exit_code in _LAN_UNEXPECTED_EXITS or exit_code not in (0, 1, 4, 5, 6, 10):
+        note = ": unexpected on LAN" if exit_code == 9 else ""
+        return done("LAN_FAILED", f"rclone exit {exit_code} ({meaning}){note}")
+    if exit_code != 0 and stats is None:
+        return done("LAN_FAILED", f"rclone exit {exit_code} ({meaning}) and no final stats: "
+                    "the outcome is unknown", abnormal=True)
+
+    has_error, error_tail = cloud_sync.scan_rclone_log_for_errors(log_text, max_lines=error_tail_lines)
+    stats_errors = stats.get("errors") if isinstance(stats, dict) else None
+    errors_n = stats_errors if type(stats_errors) is int else 0
+
+    if exit_code == 0:
+        if stats is None:
+            return done("LAN_SUSPECT", "rclone exited 0 but wrote no final stats: rclone did not finish")
+        if errors_n == 0 and not has_error:
+            changed = any(stats.get(k) != 0 for k in ("transfers", "deletes", "renames"))
+            return done("LAN_COMPLETE", "mirror complete" if changed else "no changes")
+        return done("LAN_SUSPECT", "rclone exited 0 but reported errors: "
+                    f"{errors_n} in its final stats; {error_tail or 'ERROR lines in the log'}")
+    if exit_code == 10:
+        return done("LAN_PARTIAL", "rclone stopped at its time limit (--max-duration)",
+                    time_limit_stopped=True)
+    if stats.get("fatalError") is True:
+        return done("LAN_FAILED", f"rclone exit {exit_code} ({meaning}): fatal error"
+                    + (f": {error_tail}" if error_tail else ""))
+    if exit_code == 5:
+        return done("LAN_FAILED", f"rclone exit 5 ({meaning})"
+                    + (f": {error_tail}" if error_tail else ""), retryable=True)
+    # exits 1, 4, 6: some files could not be copied
+    paths = cloud_sync.failed_object_paths(log_text, error_tail_lines)
+    held = cloud_sync.deletes_were_held(log_text)
+    failed = max(errors_n, 1)
+    reason = f"rclone exit {exit_code}: {failed} file(s) could not be copied"
+    if paths:
+        reason += f": {', '.join(paths)}"
+    return done("LAN_PARTIAL", reason, files_failed=failed, failed_paths=paths, deletes_held=held)

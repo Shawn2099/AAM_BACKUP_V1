@@ -69,6 +69,31 @@ def count_failed_attempts(log_text: str) -> int:
                if e is not None and _ATTEMPT_FAILED.match(str(e.get("msg", ""))))
 
 
+def _final_attempt_start(entries: list) -> int:
+    """Index after which the log lines belong to the FINAL attempt (XR-4).
+
+    The final attempt starts after the PREVIOUS "Attempt k/N failed" marker
+    (or after the last one when a later "succeeded" notice follows it);
+    -1 when rclone never retried.
+    """
+    last_failed = max((i for i, (_, e) in enumerate(entries)
+                       if e is not None and _ATTEMPT_FAILED.match(str(e.get("msg", "")))),
+                      default=None)
+    earlier_failed = None
+    if last_failed is not None:
+        succeeded_after = any(
+            e is not None and _ATTEMPT_SUCCEEDED.match(str(e.get("msg", "")))
+            for _, e in entries[last_failed + 1:])
+        if succeeded_after:
+            earlier_failed = last_failed
+        else:
+            earlier_failed = max((i for i, (_, e) in enumerate(entries[:last_failed])
+                                  if e is not None
+                                  and _ATTEMPT_FAILED.match(str(e.get("msg", "")))),
+                                 default=None)
+    return -1 if earlier_failed is None else earlier_failed
+
+
 def scan_rclone_log_for_errors(log_text: str, max_lines: int = model_default(CloudConfig, "error_tail_lines")) -> tuple[bool, str]:
     """Scan rclone's --use-json-log stream for ERROR/CRITICAL signals of the
     FINAL attempt (XR-4).
@@ -86,23 +111,7 @@ def scan_rclone_log_for_errors(log_text: str, max_lines: int = model_default(Clo
     attempt's verdict and is kept with that attempt's errors.
     """
     entries = list(_json_entries(log_text))
-    last_failed = max((i for i, (_, e) in enumerate(entries)
-                       if e is not None and _ATTEMPT_FAILED.match(str(e.get("msg", "")))),
-                      default=None)
-    # The final attempt starts after the PREVIOUS failed marker, if any.
-    earlier_failed = None
-    if last_failed is not None:
-        succeeded_after = any(
-            e is not None and _ATTEMPT_SUCCEEDED.match(str(e.get("msg", "")))
-            for _, e in entries[last_failed + 1:])
-        if succeeded_after:
-            earlier_failed = last_failed
-        else:
-            earlier_failed = max((i for i, (_, e) in enumerate(entries[:last_failed])
-                                  if e is not None
-                                  and _ATTEMPT_FAILED.match(str(e.get("msg", "")))),
-                                 default=None)
-    start = -1 if earlier_failed is None else earlier_failed
+    start = _final_attempt_start(entries)
     bad_lines: list[str] = []
     for i, (line, entry) in enumerate(entries):
         if entry is None:
@@ -175,6 +184,86 @@ def count_planned_moves(log_text: str) -> int:
         if isinstance(entry, dict) and str(entry.get("skipped", "")).startswith("move"):
             planned += 1
     return planned
+
+
+def combined_counts(path) -> dict:
+    """Count the lines of an rclone `--combined` file by their first character.
+
+    Keys "=", "*", "+", "-", "!" and "?" (any other first character). Streams
+    the file (memory stays flat for millions of files). Combined lists files
+    only, never folders (rclone v1.74.3, plan P1 C0b).
+    """
+    counts = {key: 0 for key in ("=", "*", "+", "-", "!", "?")}
+    with open(path, encoding="utf-8", errors="replace", newline=None) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            counts[line[0] if line[0] in counts else "?"] += 1
+    return counts
+
+
+def _copy_entries(log_text: str) -> list[dict]:
+    return [e for _, e in _json_entries(log_text)
+            if e is not None and e.get("skipped") == "copy"]
+
+
+def planned_copy_count(log_text: str) -> int:
+    """Files a real sync would copy, from a `--dry-run` JSON log."""
+    return len(_copy_entries(log_text))
+
+
+def planned_copy_bytes(log_text: str) -> int | None:
+    """Bytes a real sync would copy: the sum of the `size` of every planned copy.
+
+    None when any copy entry has no int size, so the free-space check fails
+    closed instead of trusting a partial sum.
+    """
+    total = 0
+    for entry in _copy_entries(log_text):
+        size = entry.get("size")
+        if type(size) is not int:
+            return None
+        total += size
+    return total
+
+
+def failed_object_paths(log_text: str, limit: int) -> list[str]:
+    """Objects of the FINAL attempt's "Failed to copy" errors (unique, in log
+    order, at most `limit`)."""
+    entries = list(_json_entries(log_text))
+    start = _final_attempt_start(entries)
+    paths: list[str] = []
+    for i, (_, entry) in enumerate(entries):
+        if i <= start or entry is None:
+            continue
+        if str(entry.get("level", "")).upper() not in ("ERROR", "CRITICAL"):
+            continue
+        obj = entry.get("object")
+        if (str(entry.get("msg", "")).startswith("Failed to copy")
+                and isinstance(obj, str) and obj and obj not in paths):
+            paths.append(obj)
+            if len(paths) >= limit:
+                break
+    return paths
+
+
+_DELETES_HELD_MSG = "not deleting files as there were IO errors"
+
+
+def deletes_were_held(log_text: str) -> bool:
+    """True when rclone skipped all deletions because of read/IO errors."""
+    return any(e is not None and _DELETES_HELD_MSG in str(e.get("msg", ""))
+               for _, e in _json_entries(log_text))
+
+
+def rclone_deletes_of(result: dict, max_delete: int) -> int | None:
+    """Files a finished rclone sync deleted: its own stats.deletes; after a
+    --max-delete stop without that number, the cap; otherwise None (unknown)."""
+    stats = result.get("stats")
+    deletes = stats.get("deletes") if isinstance(stats, dict) else None
+    if type(deletes) is int:
+        return deletes
+    return max_delete if result.get("max_delete_reached") else None
 
 
 def measure_planned_deletes(
