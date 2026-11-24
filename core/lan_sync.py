@@ -10,12 +10,12 @@ from pathlib import Path
 
 from loguru import logger
 
-from core import cloud_sync
+from core import cloud_sync, cloud_verify
 from core.guards import require_source_files
 from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
-from core.tool_runner import run_tool
+from core.tool_runner import run_tool, tail_lines
 from models.config import LanConfig, MaintenanceConfig, model_default
 
 # ═══════════════════════════════════════════════════════════════
@@ -704,3 +704,229 @@ def decide_lan_rclone_result(
     if paths:
         reason += f": {', '.join(paths)}"
     return done("LAN_PARTIAL", reason, files_failed=failed, failed_paths=paths, deletes_held=held)
+
+
+# ═══════════════════════════════════════════════════════════════
+# rclone LAN wrappers: sync, plan (dry-run), arrival check (plan P1 2.1-2.3)
+# ═══════════════════════════════════════════════════════════════
+
+def run_lan_mirror(
+    config: LanConfig,
+    source: str,
+    dest: str,
+    artefacts_dir: str,
+    *,
+    max_delete: int,
+    max_duration_s: int | None = None,
+    timeout: int | None = None,
+) -> dict:
+    """Run the real LAN `rclone sync` and return decide_lan_rclone_result's dict
+    plus exit_code (None on spawn error/timeout, never a sentinel), timed_out,
+    log_path and, when rclone is missing, fault_code AAM-SYS-04.
+
+    The full JSON log is kept as `<...>_rclone-lan-sync.log` in the run folder.
+    """
+    artefacts = RunArtefacts.open(artefacts_dir)
+    step = "rclone-lan-sync"
+    timeout = config.subprocess_timeout_seconds if timeout is None else timeout
+    log_path = artefacts.new_path(step, "log")
+    cmd = build_lan_rclone_command(config, source, dest, str(log_path),
+                                   max_delete=max_delete, max_duration_s=max_duration_s)
+    logger.info(f"LAN rclone sync: {source} -> {dest} (full log: {log_path})")
+    result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts, log_path=log_path)
+
+    base = {"exit_code": None, "timed_out": False, "log_path": str(log_path)}
+    if result.spawn_error:
+        missing = "FileNotFoundError" in result.spawn_error
+        reason = "rclone not found" if missing else result.spawn_error
+        out = decide_lan_rclone_result(None, "", error_tail_lines=config.error_tail_lines)
+        out.update(base, reason=reason, error=reason)
+        if missing:
+            out["fault_code"] = "AAM-SYS-04"
+        return out
+    log_text = "\n".join(t for t in (result.log_text(), result.stderr_text()) if t)
+    if result.timed_out:
+        out = decide_lan_rclone_result(None, log_text, error_tail_lines=config.error_tail_lines)
+        reason = (f"Timeout after {timeout}s - rclone sync is resumable; progress is "
+                  "preserved and the next run continues from where this one left off")
+        out.update(base, timed_out=True, reason=reason, error=reason)
+        return out
+    out = decide_lan_rclone_result(result.exit_code, log_text, error_tail_lines=config.error_tail_lines)
+    out.update(base, exit_code=result.exit_code)
+    return out
+
+
+def plan_lan_mirror(
+    config: LanConfig,
+    source: str,
+    dest: str,
+    artefacts_dir: str,
+    *,
+    timeout: int | None = None,
+) -> dict:
+    """Measure what the real LAN sync would do (`--dry-run --combined`).
+
+    Planned deletes/moves/copies/bytes come from the dry-run JSON log (a
+    --track-renames move shows as '+' and '-' in combined, plan P1 C0b);
+    source/dest file counts come from the combined file. ok is False on any
+    sign the measurement is not trustworthy, so the guards fail closed.
+    """
+    artefacts = RunArtefacts.open(artefacts_dir)
+    step = "rclone-lan-plan"
+    timeout = config.rclone_measure_timeout_seconds if timeout is None else timeout
+    log_path = artefacts.new_path(step, "log")
+    combined_path = artefacts.new_path(f"{step}-combined", "txt")
+    cmd = build_lan_rclone_command(config, source, dest, str(log_path),
+                                   dry_run=True, combined_path=str(combined_path))
+    logger.info(f"LAN rclone plan: {source} -> {dest} (full log: {log_path})")
+    result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts, log_path=log_path)
+
+    out = {"ok": False, "error": None, "exit_code": result.exit_code,
+           "source_files": None, "dest_files": None, "planned_deletes": None,
+           "moves": 0, "planned_copies": None, "planned_bytes": None,
+           "log_path": str(log_path), "combined_path": str(combined_path)}
+    if result.spawn_error:
+        out["error"] = result.spawn_error
+        return out
+    if result.timed_out:
+        out["error"] = f"Timeout after {timeout}s"
+        return out
+    json_log = result.log_text()
+    log_text = "\n".join(t for t in (json_log, result.stderr_text()) if t)
+    has_error, error_tail = cloud_sync.scan_rclone_log_for_errors(
+        log_text, max_lines=config.error_tail_lines)
+    stats = cloud_sync.final_stats(json_log)
+    stats_errors = stats.get("errors") if isinstance(stats, dict) else None
+    if result.exit_code != 0 or has_error or (type(stats_errors) is int and stats_errors > 0):
+        out["error"] = (f"rclone exit {result.exit_code}: "
+                        f"{error_tail or tail_lines(log_text, config.error_tail_lines) or 'no log output'}")
+        return out
+    try:
+        counts = cloud_sync.combined_counts(combined_path)
+    except OSError as exc:
+        out["error"] = f"rclone wrote no combined file: {exc}"
+        return out
+    if counts["!"] or counts["?"]:
+        out["error"] = (f"rclone dry-run reported {counts['!']} unreadable and "
+                        f"{counts['?']} unknown entries")
+        return out
+    out.update(
+        ok=True,
+        source_files=counts["="] + counts["*"] + counts["+"],
+        dest_files=counts["="] + counts["*"] + counts["-"],
+        planned_deletes=cloud_sync.count_planned_deletes(json_log),
+        moves=cloud_sync.count_planned_moves(json_log),
+        planned_copies=cloud_sync.planned_copy_count(json_log),
+        planned_bytes=cloud_sync.planned_copy_bytes(json_log),
+    )
+    return out
+
+
+_MATCHING_RE = re.compile(r":\s*(\d+) matching files\s*$", re.MULTILINE)
+_ERRORS_WHILE_CHECKING_RE = re.compile(r"(\d+) errors? while checking")
+
+
+def decide_lan_arrival(exit_code, stderr: str, combined_text: str, changed_since) -> dict:
+    """Pure verdict of the LAN arrival check (plan P1 2.3).
+
+    Verified only when the check finished (summary line present, exit 0 or 1),
+    has no '!'/'?' entries, its difference count equals the '+' (missing) plus
+    '*' (differs) entries of the combined file, and every such file was changed
+    on the source during the backup (`changed_since(path)`): those are files
+    the source moved under the sync, not lost data.
+    """
+    decision = cloud_verify.decide_cloud_verify_result(exit_code, stderr, "")
+    missing_paths, differ_paths = [], []
+    bad = 0
+    for line in (combined_text or "").splitlines():
+        if not line.strip():
+            continue
+        kind, path = line[0], line[2:].strip()
+        if kind == "+":
+            missing_paths.append(path)
+        elif kind == "*":
+            differ_paths.append(path)
+        elif kind in "!?":
+            bad += 1
+    changed = [p for p in missing_paths + differ_paths if changed_since(p)]
+    unverified = [p for p in missing_paths + differ_paths if p not in changed]
+    matches = _MATCHING_RE.findall(stderr or "")
+    errors = _ERRORS_WHILE_CHECKING_RE.findall(stderr or "")
+    out = {
+        "verified": False, "reason": None,
+        "matching": int(matches[-1]) if matches else None,
+        "missing": len(missing_paths), "differ": len(differ_paths),
+        "changed_during_backup": len(changed), "unverified_paths": unverified,
+    }
+    differences = decision["differences"]
+    if not decision["completion"]:
+        out["reason"] = decision["reason"]
+    elif type(exit_code) is not int or exit_code not in (0, 1):
+        out["reason"] = f"rclone check exit {exit_code!r} is not 0 or 1"
+    elif bad:
+        out["reason"] = f"rclone check listed {bad} unreadable or unknown entries"
+    elif differences != len(missing_paths) + len(differ_paths):
+        out["reason"] = (f"rclone check summary says {differences} difference(s) but its combined "
+                         f"file lists {len(missing_paths) + len(differ_paths)}")
+    elif differences == 0 and not decision["verified"]:
+        out["reason"] = decision["reason"]
+    elif errors and int(errors[-1]) > differences:
+        out["reason"] = f"rclone check reported {errors[-1]} error(s) beyond its {differences} difference(s)"
+    elif unverified:
+        out["reason"] = (f"{len(unverified)} file(s) differ on the NAS and were not changed during "
+                         "the backup")
+    else:
+        out["verified"] = True
+    return out
+
+
+def check_lan_arrival(
+    config: LanConfig,
+    source: str,
+    dest: str,
+    artefacts_dir: str,
+    *,
+    changed_after_epoch: float,
+    timeout: int | None = None,
+) -> dict:
+    """Run `rclone check --one-way --size-only` source -> NAS and decide with
+    decide_lan_arrival. A file counts as changed during the backup when
+    max(st_mtime, st_ctime) of the source file >= changed_after_epoch -
+    lan.modify_window_seconds (OSError counts as not changed)."""
+    artefacts = RunArtefacts.open(artefacts_dir)
+    step = "rclone-lan-check"
+    timeout = config.verify_timeout_seconds if timeout is None else timeout
+    combined_path = artefacts.new_path(f"{step}-combined", "txt")
+    cmd = [
+        resolve_binary("rclone") or "rclone", "check", source, dest,
+        "--one-way", "--size-only", "--ignore-case", "--skip-links",
+        "--checkers", str(int(config.checkers)),
+        "--combined", str(combined_path),
+    ]
+    for pattern in LAN_EXCLUDES:
+        cmd.extend(["--exclude", pattern])
+    logger.info(f"LAN arrival check: {source} -> {dest}")
+    result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts)
+
+    def failed(reason: str) -> dict:
+        return {"verified": False, "reason": reason, "matching": None, "missing": 0,
+                "differ": 0, "changed_during_backup": 0, "unverified_paths": []}
+
+    if result.spawn_error:
+        return failed(f"arrival check could not start: {result.spawn_error}")
+    if result.timed_out:
+        return failed(f"arrival check timed out after {timeout}s")
+    try:
+        combined_text = Path(combined_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        combined_text = ""
+    threshold = changed_after_epoch - config.modify_window_seconds
+
+    def changed_since(rel_path: str) -> bool:
+        try:
+            st = (Path(source) / rel_path).stat()
+        except OSError:
+            return False
+        return max(st.st_mtime, st.st_ctime) >= threshold
+
+    return decide_lan_arrival(result.exit_code, result.stderr_text(), combined_text, changed_since)

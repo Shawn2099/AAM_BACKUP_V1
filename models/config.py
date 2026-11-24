@@ -166,6 +166,9 @@ class LanConfig(StrictModel):
         default=100, ge=1, le=10000,
         description="Most error lines (and failed file paths) of the rclone NAS mirror log carried "
                     "into results and alerts; the full log is always kept in run_logs")
+    verify_timeout_seconds: int = Field(
+        default=1800, ge=60, le=14400,
+        description="Timeout for the rclone arrival check after the NAS mirror (seconds)")
     log_tail_kb: int = Field(default=100, ge=4, le=10240, description="Size of the robocopy log tail (KB) used for the result decision and carried into alerts/DB; the full log is always kept in run_logs")
     # F8: the preflight /L walk scales with dataset size (1M files ~= 5-10 min
     # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the

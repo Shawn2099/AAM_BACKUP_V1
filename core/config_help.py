@@ -112,6 +112,8 @@ HELP: dict[str, tuple[str, str]] = {
                                   "Files whose times differ by no more than this are not copied again. "
                                   "A wide window skips same-size edits."),
     "lan.error_tail_lines": ("Error lines in NAS alerts", "How many error lines and failed file names are kept in results and alerts."),
+    "lan.verify_timeout_seconds": ("Time for the NAS arrival check",
+                                   "After the copy, the program compares the source with the NAS; it gives up after this long."),
     "lan.log_tail_kb": ("Log excerpt size", "How much of the copy log is shown in alerts."),
     "lan.dry_run_timeout_seconds": ("Time for the pre-check", "Before copying, the program checks what would change."),
     "lan.rclone_measure_timeout_seconds": ("Time for the delete count",
