@@ -25,7 +25,7 @@ from core import report
 from core.manifest import ManifestDB
 from core.report_period import ReportPeriod
 
-pytest.importorskip("time_machine")   # pendulum.travel_to needs it
+import time_machine  # noqa: E402,F401  hard import: a missing package must fail loudly, never skip the file (pendulum.travel_to needs it)
 
 TZ = "Asia/Kolkata"
 CFG_FY, NXT = "FY26-27", "FY27-28"

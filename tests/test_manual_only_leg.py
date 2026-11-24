@@ -279,7 +279,7 @@ def test_same_flags_keep_since(mdb):
 
 
 def test_back_to_scheduled_is_counted_from_the_switch(tmp_path, mdb):
-    pytest.importorskip("time_machine")
+    import time_machine  # noqa: F401  hard import, never a silent skip
     cfg = _cfg_rt(tmp_path)
     mdb.insert_run({"run_id": "l-lan-old", "mode": "lan", "started_at": "2026-11-11T01:00:00+05:30",
                     "ended_at": "2026-11-11T01:30:00+05:30", "status": "LAN_COMPLETE", "exit_code": 0,
@@ -520,7 +520,7 @@ def _c2_run(db, run_id, mode, status, started, metrics=None):
 
 
 def _c2_found(db, cfg, when):
-    pytest.importorskip("time_machine")
+    import time_machine  # noqa: F401  hard import, never a silent skip
     with pendulum.travel_to(when, freeze=True):
         return attention.compute_attention(db, cfg, now=when)
 
@@ -642,7 +642,7 @@ def test_C2_08_watchdog_never_mails_manual_leg(tmp_path, monkeypatch):
     monkeypatch.setattr(c2_nt, "notify", lambda cfg, event, db=None: sent.append(event))
     with _c2_world(tmp_path, **C2_MANUAL) as (cfg, db):
         _c2_run(db, "x-cloud", "cloud", "CLOUD_COMPLETE", c2_at(2026, 11, 2, 18))
-        pytest.importorskip("time_machine")
+        import time_machine  # noqa: F401  hard import, never a silent skip
         with pendulum.travel_to(C2_WEEK_LATER, freeze=True):
             assert watchdog._check_stale_legs(cfg) == ["cloud"]
     assert [e.key for e in sent] == ["stale:cloud"]
@@ -655,7 +655,7 @@ def test_C2_09_watchdog_manual_leg_both_fys_silent(tmp_path, monkeypatch):
     with _c2_world(tmp_path, overlap=True, **C2_MANUAL) as (cfg, db):
         _c2_run(db, "x-cloud", "cloud", "CLOUD_COMPLETE", c2_at(2027, 1, 14, 18))
         _c2_run(db, "x-cloud-FY27-28", "cloud", "CLOUD_COMPLETE", c2_at(2027, 1, 14, 18))
-        pytest.importorskip("time_machine")
+        import time_machine  # noqa: F401  hard import, never a silent skip
         with pendulum.travel_to(C2_NEXT_FY_NOW, freeze=True):
             assert watchdog._check_stale_legs(cfg) == []
     assert sent == []

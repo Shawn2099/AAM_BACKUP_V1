@@ -31,7 +31,7 @@ from test_support import attention_cfg
 from test_support.sandbox_config import _config_dict
 from test_support.smtp_server import smtp_server
 
-pytest.importorskip("time_machine")   # pendulum.travel_to needs it
+import time_machine  # noqa: E402,F401  hard import: a missing package must fail loudly, never skip the file (pendulum.travel_to needs it)
 
 TZ = "Asia/Kolkata"
 OWNER_SRC = "E:\\FY26-27"

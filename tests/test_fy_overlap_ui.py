@@ -38,7 +38,7 @@ from models.config import AppConfig
 from test_support import attention_cfg, ui_login
 from test_support.sandbox_config import _config_dict
 
-pytest.importorskip("time_machine")   # pendulum.travel_to needs it
+import time_machine  # noqa: E402,F401  hard import: a missing package must fail loudly, never skip the file (pendulum.travel_to needs it)
 
 ROOT = Path(__file__).resolve().parents[1]
 TZ = "Asia/Kolkata"
@@ -1038,7 +1038,7 @@ def test_status_reads_overlap_record_once_per_call(rig):
     rig.db.overlap_record = lambda fy: (reads.append(fy), orig(fy))[1]
     s = rig.status()
     assert s["overlap"]["active"] is True
-    assert len(reads) <= 12, reads      # was 51 for 12 rows: the labels share one read per FY
+    assert reads.count("FY27-28") <= 1, reads      # the labels share one read per FY (was 51 reads for 12 rows)
 
 
 def test_js_buttons_send_fy():
@@ -1068,9 +1068,9 @@ def test_js_labels_and_states():
     assert re.search(r"fy\s*&&\s*fy\s*!==\s*cardFy", src)
     assert re.search(r"!==\s*data\.fy_prefix", src)
     assert re.search(r"run_state\s*===\s*'queued'", src)
-    # a manual-only leg ('manual' timing from the server) must never read as late: no warn/critical branch for it
-    body = _js_func(src, "agoClass") + _js_func(src, "agoPrefix")
-    assert "manual" not in body
+    # Removed: `"manual" not in <agoClass/agoPrefix body>` was a text check that cannot fail for a real behaviour
+    # change. The rule (a manual-only leg never reads as late) is proven on the server side by the attention
+    # items and `leg_timing` tests (test_manual_only_leg.py C2_*); the JS only renders what the server sends.
 
 
 def test_settings_js_final_copy():
@@ -1183,3 +1183,35 @@ def test_two_cards_without_overlap(server):
     assert "cloud_next" not in s and "lan_next" not in s
     assert c.post("/trigger/cloud?wait=false").status_code == 202
     assert "parameters" not in server.calls[-1]
+
+
+# ── the forced rollover's typed phrase while the overlap is active (review W7, M12) ────────────────────
+
+def _rollover_request(rig):
+    g6 = [{"guard": "G6_FY_ROLLOVER", "reason": "The NAS has no verified final copy of FY26-27",
+           "metrics": {"from_fy": "FY26-27", "to_fy": "FY27-28"}}]
+    return rig.db.open_approval_request(
+        leg="rollover", blocked_run_id="run-r", fy="FY26-27", guards=g6, phrase=ap.request_phrase(g6),
+        created_at=pendulum.now("UTC").isoformat())
+
+
+@pytest.mark.parametrize("typed", ["yes", "approv", "", "APPROVE NOW"])
+def test_forced_rollover_with_the_overlap_active_refuses_a_wrong_word(rig, typed):
+    rig.use(overlap=True)
+    activate(rig.db)
+    aid = _rollover_request(rig)
+    r = rig.post(f"/approvals/{aid}/approve?wait=false", json={"phrase": typed})
+    assert r.status_code == 400, r.text
+    assert rig.db.get_approval(aid)["status"] == ap.PENDING
+    assert rig.calls == []
+
+
+def test_forced_rollover_with_the_overlap_active_accepts_the_typed_word_and_reruns_the_check(rig):
+    rig.use(overlap=True)
+    activate(rig.db)
+    aid = _rollover_request(rig)
+    r = _approve(rig, aid)
+    assert r.status_code == 202, r.text
+    assert rig.db.get_approval(aid)["status"] == ap.APPROVED
+    assert rig.calls[-1]["kwargs"]["name"] == "rollover-check/rollover-check"
+    assert rig.params() == {"approval_id": aid}

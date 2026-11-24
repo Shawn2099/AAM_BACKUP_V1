@@ -101,7 +101,7 @@ def _env(tmp_path: Path, *, lan_scheduled: bool = True, shutdown: bool = False, 
             patch("flow.lan_shutdown_task", shutdown_task), \
             patch("flow.notify", notify), \
             patch("flow.RunBudget", _fake_budget), \
-            patch("flow._auto_scheduled_run", auto, create=True):   # new helper (B6); absent on the base code
+            patch("flow._auto_scheduled_run", auto):
         yield SimpleNamespace(cfg=cfg, log=log, audits=audits, wol=wol_task, shutdown=shutdown_task,
                               slot=slot, notify=notify, auto=auto)
 

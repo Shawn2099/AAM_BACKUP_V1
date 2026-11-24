@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import pendulum
 import pytest
 
-pytest.importorskip("time_machine")   # pendulum.travel_to needs it
+import time_machine  # noqa: E402,F401  hard import: a missing package must fail loudly, never skip the file (pendulum.travel_to needs it)
 
 import flow  # noqa: E402
 from core import fy_overlap as fo  # noqa: E402

@@ -11,9 +11,6 @@ below use sibling folders under a temp root; the root case is covered by the A2 
 
 An unscheduled leg (`scheduled: false`) has no cron job in this calendar: that is the plan 5 / C1 rule, modelled here
 by leaving its job out of the simulated schedule.
-
-Known gaps are xfail(strict=True) with the task that builds them: B7 (attention items per FY), C2 (no overdue items
-for an unscheduled leg). A strict xfail that starts passing fails the run, so the marker must then be removed.
 """
 
 from __future__ import annotations
@@ -41,7 +38,7 @@ from test_support.sandbox_config import _config_dict
 
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("time_machine")   # pendulum.travel_to needs it
+import time_machine  # noqa: E402,F401  hard import: a missing package must fail loudly, never skip the file (pendulum.travel_to needs it)
 
 
 # ── the simulation ────────────────────────────────────────────────────────
