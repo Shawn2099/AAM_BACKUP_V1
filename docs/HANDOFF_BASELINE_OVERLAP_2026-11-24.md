@@ -3,6 +3,14 @@
 Read this first in the next session, then `docs/PROGRESS_BASELINE_OVERLAP_2026-11-23.md` (older facts), the binding plan
 `docs/PLAN_BASELINE_OVERLAP_2026-11-23.md` (rev 2 FINAL) and `CLAUDE.md` (build process, escalation, scope guard).
 
+## >>> UPDATE (later the same day): ALL CODE TASKS DONE; this block overrides 'In flight' and 'Remaining work' below <<<
+- Built, reviewed (Opus) and committed: A1-A6, B1-B9, C1-C3, D1 docs, D2 audit lab. Latest commits: 7f61634 D1 docs, e70417f B8 review fixes, b3b0e06 B9 review fixes, 3c17645 C2, eaacccf B9, e6239ba B8, e94e21f four copied test files, b89bb82 documented baseline bugs, cb607bb slow-test marker.
+- Verified: unit suite 3,494 passed (fast loop 3,485 + 9 slow calendar tests; the 2 tests of tests/test_v113_round3.py need the untracked real config.yaml and are excluded), audit lab: FY overlap 7/7, Prefect schedules 6/6, w6_flow + w6b + w19_ui 30/30. One flaky env test: tests/test_lan_sync.py::TestCleanupOrphanedLogs (something on this PC deletes files named robocopy_sync_*.log from TEMP at once; not our code).
+- Test commands: fast `-m "not slow"`, slow calendar `-m slow` (see CLAUDE.md). Run ONE pytest at a time (shared temp locks).
+- Pushed to origin as branch baseline-v1-overlap up to 7f61634 (owner allowed; NOT merged, owner said do not merge). Commits after that are local until the owner asks again.
+- Commit trailer rule: project CLAUDE.md requires `Co-Authored-By: Claude Opus 5.5` (early commits of this session carry the Sonnet line; not rewritten).
+- STILL OPEN: (1) D3 trial-box deploy and test (owner allows deploy + service restarts, never a system reboot or NAS power-off; tell the owner before the first restart; read docs/TESTMATRIX_D_2026-11-24.md D3 + risks first); (2) the Sonnet test-quality audit `docs/TEST_QUALITY_REVIEW_2026-11-24.md` (mutation spot check + coverage + business-rule map): read it and add the tests it asks for; (3) two baseline bugs documented, fix later (see the end of this file); (4) other release-candidate tests need branch-only code, not copied; (5) owner still has to rotate the old NAS/service password that is in the public git history; (6) merge only when the owner says.
+
 ## Where
 - Worktree `C:\Users\malliath\Desktop\aam_baseline_overlap`, branch `baseline-v1-overlap` (cut from tag `baseline-v1` = 9461ac2 = trial box version).
   The main checkout `C:\Users\malliath\Desktop\aam_backup` (branch `fy-overlap`) is reference only. Not pushed to git (push only when the owner asks).
