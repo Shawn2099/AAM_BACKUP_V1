@@ -259,8 +259,8 @@ def pre_backup_health(
                            f"(health.clock_unverified_policy: warn): {clock.reason}")
 
     if mode in ("lan", "all"):
-        if not check_binary_exists("robocopy"):
-            raise coded(HealthError("robocopy not found in PATH"), "AAM-SYS-04")
+        if not check_binary_exists("rclone"):
+            raise coded(HealthError("rclone not found in PATH"), "AAM-SYS-04")
 
     logger.info(f"Pre-backup health check passed (mode={mode})")
     return clock

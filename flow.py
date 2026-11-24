@@ -39,12 +39,14 @@ from core.cloud_reporter import (
     get_cloud_size,
 )
 from core.budget import BudgetExceeded, RunBudget, late_seconds as seconds_late
+from core import cloud_sync
 from core.cloud_sync import measure_planned_deletes, resolve_max_duration_seconds, run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.health import CLOCK_OK, check_clock, pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 from core.lan_preflight import check_lan_destination
-from core.lan_sync import cleanup_orphaned_robocopy_logs, plan_lan_mirror, run_lan_sync
+from core import lan_sync
+from core.lan_sync import cleanup_orphaned_robocopy_logs, plan_lan_mirror
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
@@ -660,8 +662,7 @@ def _pipeline_slot(config, leg: str, run_id: str, started_at: str,
 def health_check_task(config, mode: str, artefacts_dir: str | None = None):
     """Run pre-backup health checks. Fail fast — won't fix itself.
 
-    LAN with /ZB (lan.use_backup_mode): SeBackupPrivilege is checked here,
-    before the slow dry-run (plan WP4, DEC-8).
+    LAN needs the rclone binary (plan P1 section 2 step 1); no privilege probe any more.
     """
     logger.info(f"Running health checks (mode={mode})")
     artefacts = RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("health")
@@ -677,10 +678,6 @@ def health_check_task(config, mode: str, artefacts_dir: str | None = None):
         w32tm_timeout_seconds=config.health.w32tm_timeout_seconds,
         artefacts=artefacts,
     )
-    if mode == "lan" and config.lan.use_backup_mode:
-        permissions.check_backup_privilege(
-            artefacts, timeout_s=config.lan.privilege_check_timeout_seconds,
-        )
     # WP12: the clock verdict goes on the run row (dashboard: "clock unverified")
     return clock.to_metrics() if clock is not None else None
 
@@ -1412,15 +1409,16 @@ def lan_snapshot_after_task(config):
 
 
 @task(name="lan-sync")
-def lan_sync_task(config, artefacts_dir: str | None = None, budget: RunBudget | None = None):
-    """Run robocopy /MIR mirror sync.
+def lan_sync_task(config, artefacts_dir: str, max_delete: int,
+                  budget: RunBudget | None = None):
+    """Run the real LAN `rclone sync` (plan P1 section 2 step 6; max_delete: G3 backstop).
 
-    WP14: with a run budget robocopy gets what is left of it (minus the
-    post-sync reserve); being stopped there is LAN_PARTIAL with
-    `budget_stopped` - the next run continues the mirror, never a retry.
+    With a run budget rclone gets what is left of it (minus the post reserve) as its own
+    --max-duration with --cutoff-mode SOFT; stopping there (exit 10) is LAN_PARTIAL with
+    `budget_stopped` - resumable, never a retry, never an arrival check.
     """
-    logger.info(f"LAN sync: {config.paths.source_drive} → {config.paths.lan_destination}")
     timeout = config.lan.subprocess_timeout_seconds
+    max_duration = None
     limited = False
     if budget is not None:
         reserve = config.budget.lan_post_reserve_minutes * 60
@@ -1430,23 +1428,40 @@ def lan_sync_task(config, artefacts_dir: str | None = None, budget: RunBudget | 
         except BudgetExceeded as e:
             logger.error(str(e))
             return {"status": "LAN_PARTIAL", "exit_code": -1, "budget_stopped": True,
-                    "files_failed": 0, "counts": None, "bytes": None, "files_deleted": None,
+                    "stats": None, "files_failed": 0, "failed_paths": [], "deletes_held": False,
                     "error": _budget_stop_text(budget, "no time was left for the mirror")}
-    result = run_lan_sync(
-        source=config.paths.source_drive,
-        dest=config.paths.lan_destination,
-        lan_config=config.lan,
-        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
-        timeout_s=timeout,
-    )
-    if limited and result.get("timed_out"):
-        logger.warning("LAN mirror stopped at the run budget")
+        if limited:
+            max_duration = resolve_max_duration_seconds(timeout, None)
+            logger.info(f"LAN mirror limited by the run budget: --max-duration "
+                        f"{max_duration}s, hard stop {timeout}s")
+    logger.info(f"LAN sync: {config.paths.source_drive} -> {config.paths.lan_destination}")
+    result = lan_sync.run_lan_mirror(
+        config.lan, config.paths.source_drive, config.paths.lan_destination, artefacts_dir,
+        max_delete=max_delete, max_duration_s=max_duration, timeout=timeout)
+    stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
+    if stopped and limited:
+        stats = result.get("stats") or {}
+        done = (f"{stats.get('transfers', 'unknown')} file(s) copied in this run"
+                if stats else "progress unknown (no rclone stats)")
+        logger.warning(f"LAN mirror stopped at the run budget - {done}")
         return {**result, "status": "LAN_PARTIAL", "budget_stopped": True,
-                "error": _budget_stop_text(budget, "robocopy was stopped before the mirror "
-                                                   "finished (full log kept)")}
+                "error": _budget_stop_text(budget, done)}
     if result["status"] in ("LAN_FAILED", "LAN_SUSPECT"):
         raise SyncFailed(result.get("error") or "LAN sync failed", result)
     return result
+
+
+@task(name="lan-verify")
+def lan_verify_task(config, artefacts_dir: str, changed_after_epoch: float,
+                    budget: RunBudget | None = None) -> dict:
+    """The arrival check (plan P1 section 2 step 7): `rclone check` source -> NAS.
+    Raises BudgetExceeded when no run budget is left for it."""
+    timeout = config.lan.verify_timeout_seconds
+    if budget is not None:
+        timeout = int(budget.cap(timeout, 0))
+    return lan_sync.check_lan_arrival(
+        config.lan, config.paths.source_drive, config.paths.lan_destination, artefacts_dir,
+        changed_after_epoch=changed_after_epoch, timeout=timeout)
 
 
 @task(name="lan-record")
@@ -2155,11 +2170,6 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 # completed now that the NAS is awake - before G5 looks for the mount marker
                 _complete_pending_rollover_nas_folder(config)
             plan = preflight(config, artefacts_dir)
-            # rename moves the guard measured: robocopy counts their old-name half in
-            # files_deleted, which is not a deletion of data (see deletes_of below)
-            rename_moves = {"n": int(plan.get("moves") or 0)}
-            # C9 replaces the post-sync snapshot diff; no destination walk before the sync any more
-            before_dict: dict = {}
             guard_record = lan_guards_task(
                 config, _effective_fy_prefix(config), plan,
                 approval_id=approval_id, run_id=run_id,
@@ -2167,85 +2177,88 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             lan_access_task(config, plan, run_id)
             phase = "sync"
             _t_sync = time.monotonic()
+            caps = {"max_delete": guard_record["max_delete"]}
+            attempt_clock = {"epoch": time.time()}
 
             def remeasure(already_deleted: int) -> dict:
                 nonlocal guard_record
                 fresh = preflight(config, artefacts_dir)
-                rename_moves["n"] = int(fresh.get("moves") or 0)
                 guard_record = lan_guards_task(
                     config, _effective_fy_prefix(config), fresh,
                     approval_id=approval_id, run_id=run_id, already_deleted=already_deleted,
                 )
                 lan_access_task(config, fresh, run_id)
+                caps["max_delete"] = guard_record["max_delete"]
                 return guard_record
+
+            def run_once() -> dict:
+                # the arrival check asks "changed since the LAST attempt began?"
+                attempt_clock["epoch"] = time.time()
+                return sync(config, artefacts_dir, max_delete=caps["max_delete"], budget=budget)
 
             sync_result = _sync_with_retries(
                 "lan",
-                run_once=lambda: sync(config, artefacts_dir, budget=budget),
+                run_once=run_once,
                 remeasure=remeasure,
-                # only deletions beyond the rename moves count towards G3's already_deleted:
-                # a retry after a half-mirrored renamed folder must not re-block
-                deletes_of=lambda r: lan_deletes_of(r, rename_moves["n"]),
-                retryable=lambda r: (r.get("status") == "LAN_FAILED"
-                                     and not r.get("timed_out")),
+                deletes_of=lambda r: cloud_sync.rclone_deletes_of(r, caps["max_delete"]),
+                retryable=lambda r: r.get("retryable") is True,
                 max_attempts=config.lan.max_attempts,
                 delay_s=config.lan.retry_delay_seconds, budget=budget,
                 reserve_s=config.budget.lan_post_reserve_minutes * 60, state=sync_state)
             sync_seconds = round(time.monotonic() - _t_sync, 1)
             stage_seconds["sync_s"] = sync_seconds
             status = sync_result["status"]
-            phase = "post"
-            # F12: robocopy per-file failure count (0 on clean/anomaly runs)
-            files_failed = int(sync_result.get("files_failed", 0))
-            # WP6: the numbers are robocopy's OWN summary (Files / Bytes
-            # "Copied"); unknown when the summary is missing.
-            tool_files = (sync_result.get("counts") or {}).get("copied")
-            tool_bytes = (sync_result.get("bytes") or {}).get("copied")
-            files_copied, bytes_copied = tool_files, tool_bytes
-            tool_metrics = {
-                "counts_source": "robocopy" if tool_files is not None else "unavailable",
-                "files_deleted": sync_result.get("files_deleted"),
-            }
-            after_dict = lan_snapshot_after_task(config)
-            if after_dict is not None:
-                if _writes_entries(fy_pass):   # the next-FY pass writes no file_entries rows (plan D-9)
-                    lan_record_task(
-                        config, sync_result, before_dict, after_dict,
-                    )
-
-                # Cross-check only: the before/after walk diff vs the tool count.
-                diff = diff_snapshots(before_dict, after_dict)
-                diff_copied = len(diff.get("added", [])) + len(diff.get("modified", []))
-                metrics_consistent = tool_files is not None and diff_copied == tool_files
-                if tool_files is not None and not metrics_consistent:
-                    logger.warning(f"LAN metrics cross-check: robocopy copied {tool_files} file(s), "
-                                   f"the destination walk diff shows {diff_copied} - the tool "
-                                   "count is recorded")
-                extended_metrics = json.dumps({
-                    "added": len(diff.get("added", [])),
-                    "modified": len(diff.get("modified", [])),
-                    "removed": len(diff.get("removed", [])),
-                    "total_files": len(after_dict),
-                    "stage_seconds": dict(stage_seconds),
-                    **tool_metrics,
-                    "diff_copied": diff_copied,
-                    "metrics_consistent": metrics_consistent,
-                })
+            arrival = None
+            if status == "LAN_COMPLETE":
+                phase = "verify"
+                _t_verify = time.monotonic()
                 try:
-                    lan_publish_artifact_task(sync_result, diff, files_copied, bytes_copied, len(after_dict),
-                                              **_artifact_kwargs(fy_pass, "lan-backup-summary"))
-                except Exception as e:
-                    # The Prefect summary is cosmetic; the run row is the record.
-                    logger.warning(f"LAN run summary not published to Prefect: {e}")
+                    arrival = lan_verify_task(
+                        config, artefacts_dir, changed_after_epoch=attempt_clock["epoch"],
+                        budget=budget)
+                except BudgetExceeded as e:
+                    logger.error(str(e))
+                    status = "LAN_PARTIAL"
+                    sync_result = {**sync_result, "status": status, "budget_stopped": True,
+                                   "error": _budget_stop_text(
+                                       budget, "copied but not verified: no time left for the "
+                                               "arrival check")}
+                    sync_state["result"] = sync_result
+                stage_seconds["verify_s"] = round(time.monotonic() - _t_verify, 1)
+                if arrival is not None and arrival.get("verified") is not True:
+                    status = "LAN_SUSPECT"
+                    sync_result = {**sync_result, "status": status,
+                                   "error": f"Arrival check not verified: {arrival.get('reason')}"}
+                    sync_state["result"] = sync_result
+            phase = "post"
+            files_failed = int(sync_result.get("files_failed") or 0)
+            stats = sync_result.get("stats")
+            if isinstance(stats, dict):
+                files_copied, bytes_copied = stats.get("transfers"), stats.get("bytes")
             else:
-                # G14: walk unavailable - the tool counts are still recorded.
-                extended_metrics = json.dumps({"stage_seconds": dict(stage_seconds),
-                                               **tool_metrics})
-                logger.error(
-                    "Post-sync snapshot unavailable - diff metrics and file-level "
-                    "DB record skipped for this run; the sync outcome is recorded "
-                    "as-is and the next run re-derives the metrics."
-                )
+                files_copied = bytes_copied = None
+            failed_paths = list(sync_result.get("failed_paths") or [])[:config.lan.error_tail_lines]
+            deletes_held = bool(sync_result.get("deletes_held"))
+            metrics = {
+                "stage_seconds": dict(stage_seconds),
+                "counts_source": "rclone" if isinstance(stats, dict) else "unavailable",
+                "tool_counts": {k: stats.get(k) for k in ("transfers", "bytes", "deletes",
+                                                          "renames", "errors", "checks")}
+                if isinstance(stats, dict) else None,
+                "files_deleted": stats.get("deletes") if isinstance(stats, dict) else None,
+                "moves": stats.get("renames") if isinstance(stats, dict) else None,
+                "deletes_held": deletes_held,
+                "failed_paths": failed_paths,
+            }
+            if arrival is not None:
+                metrics["arrival"] = {k: arrival.get(k) for k in (
+                    "verified", "matching", "missing", "differ", "changed_during_backup", "reason")}
+                metrics["total_files"] = arrival.get("matching")
+            else:
+                metrics["verify"] = ("skipped - stopped at the run budget"
+                                     if sync_result.get("budget_stopped")
+                                     else "skipped - the mirror did not complete")
+            extended_metrics = json.dumps(metrics)
 
             logger.info(f"LAN pipeline completed with status {status}")
             # F3: shut the NAS down ONLY after a fully complete mirror (robocopy
@@ -2264,16 +2277,15 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     else "The NAS was NOT shut down; the next scheduled run will re-sync."
                 )
                 logger.error(
-                    f"LAN backup PARTIAL (robocopy exit {sync_result.get('exit_code')}): "
+                    f"LAN backup PARTIAL (rclone exit {sync_result.get('exit_code')}): "
                     f"some files were not copied. {nas_msg}"
                 )
                 # The alert goes out BEFORE any NAS shutdown below.
-                partial_text = (
-                    f"LAN backup PARTIAL: {sync_result['error']} {nas_msg}"
-                    if sync_result.get("budget_stopped") else
-                    f"LAN backup PARTIAL: robocopy exit code {sync_result.get('exit_code')} - "
-                    f"some files were not copied. {nas_msg} {sync_result.get('error') or ''}"
-                ).strip()
+                held_note = (" No deletions were made tonight (rclone deletes nothing after a "
+                             "read error); they run on the next clean night."
+                             if deletes_held else "")
+                partial_text = (f"LAN backup PARTIAL: {sync_result.get('error')}{held_note} "
+                                f"{nas_msg}").strip()
                 if sync_result.get("budget_stopped"):
                     error_msg = sync_result["error"]
                 _send_run_alert(config, "lan", status, partial_text,
@@ -2284,6 +2296,16 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 if shutdown_on_fail:
                     logger.info("shutdown_on_all_retries_exhausted enabled: powering down NAS after partial backup alert")
                     nas_shutdown = lan_shutdown_task(config, artefacts_dir)
+            elif status == "LAN_SUSPECT":
+                error_msg = sync_result["error"]
+                _send_run_alert(config, "lan", status,
+                                _failure_alert_text("lan", status, error_msg,
+                                                    "The NAS was NOT shut down; the next "
+                                                    "scheduled run will re-sync."),
+                                sync_result.get("exit_code"), started_at,
+                                run_id=run_id, fault_code="AAM-LAN-04",
+                                artefacts_dir=artefacts_dir, **scope)
+                alert_sent = True
             else:
                 logger.info(f"LAN shutdown skipped - status is {status}")
             # Terminal-state policy (single authoritative decision point):
