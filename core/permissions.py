@@ -178,7 +178,7 @@ def check_destination_free_space(dest: str, bytes_needed: int | None, min_free_g
     """Free space on the NAS >= bytes the mirror will write + configured margin."""
     if bytes_needed is None:
         raise _fail("AAM-NAS-05",
-            "NAS free space could not be measured against the backup size: the robocopy /L "
+            "NAS free space could not be measured against the backup size: the rclone dry-run "
             "byte count is missing - refusing to start a copy that may fill the NAS.")
     try:
         free = shutil.disk_usage(dest).free

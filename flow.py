@@ -43,8 +43,8 @@ from core.cloud_sync import measure_planned_deletes, resolve_max_duration_second
 from core.cloud_verify import verify_cloud_integrity
 from core.health import CLOCK_OK, check_clock, pre_backup_health
 from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
-from core.lan_preflight import run_lan_dry_run
-from core.lan_sync import cleanup_orphaned_robocopy_logs, run_lan_sync
+from core.lan_preflight import check_lan_destination
+from core.lan_sync import cleanup_orphaned_robocopy_logs, plan_lan_mirror, run_lan_sync
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
@@ -1140,73 +1140,36 @@ def wol_check_task(config):
 
 
 @task(name="lan-preflight")
-def lan_preflight_task(config, artefacts_dir: str | None = None):
-    """Run robocopy /L dry-run before real sync (full listing kept in run_logs)."""
-    logger.info(f"LAN preflight: validating {config.paths.source_drive} → {config.paths.lan_destination}")
-    result = run_lan_dry_run(
-        source=config.paths.source_drive,
-        dest=config.paths.lan_destination,
-        # F8: the dry-run /L walk scales with dataset size (1M files ~= 5-10 min
-        # over SMB); the old hardcoded 300s failed at the scale this deployment
-        # targets. Config-driven so the operator can tune per environment.
-        timeout=config.lan.dry_run_timeout_seconds,
+def lan_preflight_task(config, artefacts_dir: str):
+    """SMB probe, mount marker, G1 first file, then ONE rclone dry-run (plan P1 section 2 step 3).
+
+    Returns the plan dict (lan_sync.plan_lan_mirror) plus canary_present, or
+    {"source_empty": True, "canary_present": ...} without a dry-run so the
+    guards task gives G1's own message. A dry-run that is not ok is a FAIL
+    (AAM-LAN-01), never a BLOCK.
+    """
+    logger.info(f"LAN preflight: validating {config.paths.source_drive} -> {config.paths.lan_destination}")
+    canary_present = check_lan_destination(
+        config.paths.lan_destination,
         smb_attempts=config.lan.preflight_smb_attempts,
         smb_wait_seconds=config.lan.preflight_smb_wait_seconds,
         smb_connect_timeout_seconds=config.wol.smb_connect_timeout_seconds,
-        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
-        log_tail_kb=config.lan.log_tail_kb,
     )
-    if not result["ok"]:
-        raise faults.coded(RuntimeError(f"LAN preflight failed: {result['error']}"),
-                           "AAM-LAN-01")
-    # G3 input: the shared rclone measurement replaces robocopy's "*EXTRA File"
-    # count so a renamed folder is a move, not a mass delete (owner decision).
-    # The real LAN sync stays robocopy /MIR, which has NO rename detection: it
-    # still deletes and re-copies a renamed folder. That is accepted - the
-    # source keeps the data - but the guard no longer blocks the night on it.
-    # Genuine deletions (source files really gone) are still counted.
-    result["robocopy_planned_deletes"] = result["planned_deletes"]
-    measured = measure_planned_deletes(
-        config.paths.source_drive, config.paths.lan_destination,
-        track_renames=config.lan.track_renames,
-        # rclone filters are case-sensitive, robocopy's are not ("$Recycle.Bin" on 2016)
-        ignore_case=True,
-        modify_window_seconds=config.cloud.modify_window_seconds,
-        retries=config.cloud.retry_count,
-        retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds,
-        # what robocopy /MIR keeps (same names as the /L command in lan_preflight)
-        excludes=(".AAM_TARGET_MOUNTED", permissions.PROBE_PATTERN,
-                  "System Volume Information/**", "$RECYCLE.BIN/**"),
-        timeout=config.lan.rclone_measure_timeout_seconds,
-        artefacts=RunArtefacts.open(artefacts_dir) if artefacts_dir else None,
-        step="rclone-lan-dry-run", error_tail_lines=config.cloud.error_tail_lines)
-    if measured["planned_deletes"] is None:
-        failure = (f"LAN guard measurement failed: rclone sync --dry-run did not complete "
-                   f"cleanly: {measured['error']}")
-        try:
-            source_empty = guards.first_regular_file(
-                config.paths.source_drive, guards.SOURCE_IGNORE_NAMES) is None
-        except OSError:
-            source_empty = False   # unreadable source: fail closed with the measurement error
-        if source_empty:
-            # Empty/missing source: G1 must give the owner's message first
-            # (lan_guards_task runs G1, then raises this).
-            result["planned_deletes"] = None
-            result["rclone_measure_error"] = failure
-            return result
-        raise faults.coded(RuntimeError(failure), "AAM-LAN-01")
-    moves = int(measured.get("moves") or 0)
-    robo = result["robocopy_planned_deletes"]
-    # robocopy deletes everything rclone would delete PLUS the old-name half of
-    # every rename; anything beyond that is a delete rclone did not see.
-    if robo is not None and robo > measured["planned_deletes"] + moves:
+    try:
+        source_empty = guards.first_regular_file(
+            config.paths.source_drive, guards.SOURCE_IGNORE_NAMES) is None
+    except OSError:
+        source_empty = False   # unreadable source: the dry-run / G1 report it
+    if source_empty:
+        return {"source_empty": True, "canary_present": canary_present}
+    plan = plan_lan_mirror(config.lan, config.paths.source_drive,
+                           config.paths.lan_destination, artefacts_dir)
+    if not plan["ok"]:
         raise faults.coded(RuntimeError(
-            f"LAN guard measurement inconsistent: robocopy /L would delete {robo} file(s) but "
-            f"rclone sees only {measured['planned_deletes']} deletion(s) + {moves} rename move(s) "
-            "- the two listings disagree, refusing to mirror"), "AAM-LAN-01")
-    result["planned_deletes"] = measured["planned_deletes"]
-    result["rclone_moves"] = moves
-    return result
+            f"LAN guard measurement failed: rclone sync --dry-run did not complete "
+            f"cleanly: {plan['error']}"), "AAM-LAN-01")
+    plan["canary_present"] = canary_present
+    return plan
 
 
 @task(name="lan-snapshot-before")
@@ -1319,48 +1282,46 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
 
 
 @task(name="lan-guards")
-def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: int | None,
+def lan_guards_task(config, fy_prefix: str, plan: dict,
                     approval_id: str | None = None, run_id: str | None = None,
                     already_deleted: int = 0) -> dict:
-    """Data-safety guards G1-G4 before robocopy /MIR (plan WP3, M2 2.2).
+    """Data-safety guards G1-G5 on the one rclone dry-run `plan` (plan P1 section 2 step 4).
 
-    approval_id: dashboard re-run of a blocked run (plan §6.2); used up here
+    approval_id: dashboard re-run of a blocked run (plan 6.2); used up here
     if it validly covers every guard that blocks again. An approved G5
     (missing mount marker) creates the marker before the mirror runs.
 
     A measurement that could not be taken FAILS the run (retried next
-    night); a guard verdict BLOCKs it for a human (GuardBlocked). No Prefect
-    retries: re-measuring the same state gives the same verdict.
-    already_deleted (XR-2): robocopy deletions of earlier attempts of this
-    run - G3 covers the whole run, not each attempt.
+    night); a guard verdict BLOCKs it for a human (GuardBlocked).
+    already_deleted (XR-2): deletions of earlier attempts of this run - G3
+    covers the whole run, not each attempt. The record's max_delete is the
+    --max-delete backstop for the real sync.
     """
     source = config.paths.source_drive
     dest = config.paths.lan_destination
-    counts = (dry_run or {}).get("counts")
-    planned_deletes = (dry_run or {}).get("planned_deletes")
-    if (dry_run or {}).get("rclone_measure_error"):
-        # the rclone measurement failed on a source without files: G1 speaks first
+    limits = config.guards
+    plan = plan or {}
+    if plan.get("source_empty"):
+        # empty/missing source: G1 speaks first (it blocks); anything else is a FAIL
         g1 = guards.g1_source_has_files(
             guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES), source)
         approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, [g1])
         guards.enforce("lan", [g1], approved_guards=approved, fy=fy_prefix, **approval_record)
-        raise faults.coded(RuntimeError(dry_run["rclone_measure_error"]), "AAM-LAN-01")
-    if not counts or planned_deletes is None:
-        raise RuntimeError(
-            "LAN guard measurement failed: the robocopy /L job summary is missing or "
-            "unreadable, so planned deletions cannot be counted - refusing to mirror")
-    robocopy_deletes = dry_run.get("robocopy_planned_deletes", planned_deletes)
-    if robocopy_deletes is not None and robocopy_deletes > counts["extras"]:
-        # Every listed *EXTRA File is also in the Extras column; more lines
-        # than the column means robocopy's own listing cannot be trusted.
-        raise RuntimeError(
-            f"LAN guard measurement failed: robocopy /L listing is inconsistent "
-            f"({robocopy_deletes} '*EXTRA File' lines but Extras column = "
-            f"{counts['extras']}) - refusing to mirror")
-    if destination_files is None:
-        raise RuntimeError(
-            f"LAN guard measurement failed: the destination could not be listed ({dest}), "
-            "so the share of files a mirror would delete is unknown - refusing to mirror")
+        raise faults.coded(RuntimeError(
+            "LAN guard measurement skipped: the source looked empty at preflight"), "AAM-LAN-01")
+    source_files = plan.get("source_files")
+    destination_files = plan.get("dest_files")
+    planned_deletes = plan.get("planned_deletes")
+    if source_files is None or destination_files is None or planned_deletes is None:
+        raise faults.coded(RuntimeError(
+            "LAN guard measurement failed: the rclone dry-run counts are missing, so planned "
+            "deletions cannot be counted - refusing to mirror"), "AAM-LAN-01")
+
+    destination_ips = guards.resolve_host(guards.unc_host(dest))
+    if limits.forbid_local_destination and destination_ips is None:
+        raise faults.coded(RuntimeError(
+            f"Could not resolve the destination host of {dest} to check it is not this machine"),
+            "AAM-NAS-01")
 
     db = ManifestDB.from_config(config)
     try:
@@ -1368,27 +1329,33 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
     finally:
         db.close()
 
-    limits = config.guards
     results = [
         guards.g1_source_has_files(
             guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES), source),
-        guards.g2_source_shrink(counts["total"], baseline.get("source_file_count"),
+        guards.g2_source_shrink(source_files, baseline.get("source_file_count"),
                                 limits.max_source_shrink_percent),
         guards.g4_destination_identity(
-            dest, baseline.get("destination"),
-            guards.resolve_host(guards.unc_host(dest)), guards.local_addresses(),
+            dest, baseline.get("destination"), destination_ips, guards.local_addresses(),
             limits.forbid_local_destination),
         guards.g3_mass_delete(planned_deletes, destination_files,
                               limits.max_delete_files, limits.max_delete_percent,
                               already_deleted=already_deleted,
                               min_floor_files=limits.min_delete_floor_files),
-        guards.g5_canary(dry_run.get("canary_present"), destination_files > 0, dest),
+        guards.g5_canary(plan.get("canary_present"), destination_files > 0, dest),
     ]
     approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)
+    if "G3_MASS_DELETE" in approved:
+        # Approved mass deletion: the backstop is the count the approval was checked against.
+        max_delete = planned_deletes
+    else:
+        max_delete = guards.remaining_delete_allowance(
+            destination_files, already_deleted,
+            limits.max_delete_files, limits.max_delete_percent,
+            min_floor_files=limits.min_delete_floor_files)
     record = guards.enforce(
         "lan", results, approved_guards=approved, fy=fy_prefix,
-        source_file_count=counts["total"], destination=dest,
-        destination_files=destination_files, **approval_record,
+        source_file_count=source_files, destination=dest,
+        destination_files=destination_files, max_delete=max_delete, **approval_record,
         **({"already_deleted": already_deleted} if already_deleted else {}),
     )
     if "G5_CANARY" in approved:
@@ -1406,17 +1373,17 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
 
 
 @task(name="lan-access")
-def lan_access_task(config, dry_run: dict, run_id: str):
+def lan_access_task(config, plan: dict, run_id: str):
     """Prove the rights the mirror uses (plan WP4, CL3/LA7/LA9): read a real
     source file; create/read/delete a probe at the destination; NAS free
-    space for the bytes /L says will be copied. Runs AFTER the guards, so
+    space for the bytes the rclone dry-run says will be copied. Runs AFTER the guards, so
     nothing is ever written to a destination whose mount marker is not
     confirmed. A missing right FAILS the run."""
     dest = config.paths.lan_destination
     permissions.probe_source_read(config.paths.source_drive)
     permissions.probe_destination_write(dest, run_id)
     permissions.check_destination_free_space(
-        dest, bytes_needed=((dry_run or {}).get("bytes") or {}).get("copied"),
+        dest, bytes_needed=(plan or {}).get("planned_bytes"),
         min_free_gb=config.lan.min_free_dest_gb)
 
 
@@ -2187,28 +2154,26 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
                 # completed now that the NAS is awake - before G5 looks for the mount marker
                 _complete_pending_rollover_nas_folder(config)
-            dry_run = preflight(config, artefacts_dir)
+            plan = preflight(config, artefacts_dir)
             # rename moves the guard measured: robocopy counts their old-name half in
             # files_deleted, which is not a deletion of data (see deletes_of below)
-            rename_moves = {"n": int(dry_run.get("rclone_moves") or 0)}
-            before_dict = lan_snapshot_before_task(config)
+            rename_moves = {"n": int(plan.get("moves") or 0)}
+            # C9 replaces the post-sync snapshot diff; no destination walk before the sync any more
+            before_dict: dict = {}
             guard_record = lan_guards_task(
-                config, _effective_fy_prefix(config), dry_run,
-                None if before_dict is None else guards.count_backup_files(before_dict),
+                config, _effective_fy_prefix(config), plan,
                 approval_id=approval_id, run_id=run_id,
             )
-            lan_access_task(config, dry_run, run_id)
+            lan_access_task(config, plan, run_id)
             phase = "sync"
             _t_sync = time.monotonic()
 
             def remeasure(already_deleted: int) -> dict:
                 nonlocal guard_record
                 fresh = preflight(config, artefacts_dir)
-                rename_moves["n"] = int(fresh.get("rclone_moves") or 0)
-                listing = lan_snapshot_before_task(config)
+                rename_moves["n"] = int(fresh.get("moves") or 0)
                 guard_record = lan_guards_task(
                     config, _effective_fy_prefix(config), fresh,
-                    None if listing is None else guards.count_backup_files(listing),
                     approval_id=approval_id, run_id=run_id, already_deleted=already_deleted,
                 )
                 lan_access_task(config, fresh, run_id)
