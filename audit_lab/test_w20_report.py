@@ -422,7 +422,7 @@ def test_w20_weekly_monthly_delegate(sandbox, monkeypatch):
     cfg, n = _cfg(sandbox)
     calls = []
 
-    def fake_summary(db, config, firm, days, period, body_html=None, legs=None,
+    def fake_summary(db, notifications, firm, days, period, body_html=None, legs=None,
                      report_period=None, schedule=None, **_ignored):
         calls.append((days, period, body_html))
         return True

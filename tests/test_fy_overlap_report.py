@@ -534,6 +534,12 @@ def test_R23_last_good_of_fy_after_switch(db):
     assert closed["run_id"] == "x-final-lan"
 
 
+def test_R23_old_fy_plain_success_without_ended_at_is_not_configured_last_good(db):
+    activate(db)   # record without ended_at, configured FY is the new one
+    add_pass(db, "lan", at(2027, 3, 31, 1), CFG_FY, metrics="fy")
+    assert fy_overlap.last_good_of_fy(db, "lan", NXT, NXT, None) is None
+
+
 def test_R23_last_good_of_fy_next_fy_and_none(db):
     jan_world(db, lan_next=(2027, 1, 2))
     nxt = fy_overlap.last_good_of_fy(db, "lan", NXT, CFG_FY, None)

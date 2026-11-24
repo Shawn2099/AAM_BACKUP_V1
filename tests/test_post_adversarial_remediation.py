@@ -259,7 +259,7 @@ class TestBug01AbnormalTerminationShape:
     @patch("flow.ManifestDB")
     def test_killed_verify_persists_no_entries(
         self, mock_db, mock_health, mock_preflight, mock_sync,
-        mock_verify, mock_record, mock_alert,
+        mock_verify, mock_record, mock_alert, tmp_path,
     ):
         from flow import _run_cloud_pipeline
 
@@ -284,7 +284,7 @@ class TestBug01AbnormalTerminationShape:
         cfg.firm_name = "TestFirm"
         cfg.paths.database_path = ":memory:"
         cfg.paths.source_drive = "C:\\src"
-        cfg.paths.backup_lock_path = Path(tempfile.gettempdir()) / "t3b-shape.lock"
+        cfg.paths.backup_lock_path = tmp_path / "t3b-shape.lock"
         cfg.paths.gcs_key_path = "/tmp/key.json"
         cfg.maintenance.sqlite_busy_timeout_ms = 30000
         cfg.maintenance.sqlite_vacuum_freelist_threshold = 10000

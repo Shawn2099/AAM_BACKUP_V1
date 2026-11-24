@@ -610,7 +610,7 @@ def last_good_of_fy(db, leg: str, fy: str, configured: str, closed_at: str | Non
     if fy == configured:
         found = []
         plain = db.last_successful_run(leg)
-        if plain and (closed_at is None or row_fy_or_default(plain, configured, closed_at) == configured):
+        if plain and row_fy_or_default(plain, configured, closed_at) == configured:
             found.append(plain)
         suffixed = db.last_successful_run(leg, fy=configured)
         if suffixed:

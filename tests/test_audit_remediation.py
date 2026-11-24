@@ -33,8 +33,7 @@ def _make_mock_config(tmp_path=None):
     if tmp_path:
         cfg.paths.backup_lock_path = tmp_path / "backup.lock"
     else:
-        import tempfile
-        cfg.paths.backup_lock_path = Path(tempfile.gettempdir()) / "test_backup.lock"
+        raise ValueError("pass tmp_path so the lock file is per test")
     cfg.paths.gcs_key_path = "/tmp/key.json"
     cfg.maintenance.sqlite_busy_timeout_ms = 30000
     cfg.maintenance.sqlite_vacuum_freelist_threshold = 10000
@@ -72,7 +71,7 @@ class TestBug01CloudRecordPostGate:
     @patch("flow.ManifestDB")
     def test_failed_evidence_gate_never_calls_cloud_record_task(
         self, mock_db, mock_health, mock_preflight, mock_sync,
-        mock_verify, mock_record, mock_alert,
+        mock_verify, mock_record, mock_alert, tmp_path,
     ):
         mock_db_inst = MagicMock()
         mock_db_inst.get_cloud_synced_entries.return_value = {}
@@ -90,7 +89,7 @@ class TestBug01CloudRecordPostGate:
         }
 
         with pytest.raises(RuntimeError, match="Cloud integrity verification FAILED"):
-            _run_cloud_pipeline(_make_mock_config(), "test-run", "2026-09-07T10:00:00")
+            _run_cloud_pipeline(_make_mock_config(tmp_path), "test-run", "2026-09-07T10:00:00")
 
         # CRITICAL ASSERTION: cloud_record_task MUST NOT be called!
         mock_record.assert_not_called()
@@ -106,7 +105,7 @@ class TestBug01CloudRecordPostGate:
     @patch("flow.ManifestDB")
     def test_passing_evidence_gate_calls_cloud_record_task(
         self, mock_db, mock_health, mock_preflight, mock_sync,
-        mock_verify, mock_record, mock_artifact,
+        mock_verify, mock_record, mock_artifact, tmp_path,
     ):
         mock_db_inst = MagicMock()
         mock_db_inst.get_cloud_synced_entries.return_value = {}
@@ -122,7 +121,7 @@ class TestBug01CloudRecordPostGate:
             "manifest": [{"Path": "clean.bin", "Size": 100, "ModTime": 1234}],
         }
 
-        result = _run_cloud_pipeline(_make_mock_config(), "test-run", "2026-09-07T10:00:00")
+        result = _run_cloud_pipeline(_make_mock_config(tmp_path), "test-run", "2026-09-07T10:00:00")
         assert result["status"] == "CLOUD_COMPLETE"
         mock_record.assert_called_once()
 
@@ -140,7 +139,7 @@ class TestBug02And03AuditOrchestration:
     @patch("flow._backup_slot")
     def test_audit_uses_backup_slot_wol_and_shutdown(
         self, mock_slot, mock_db, mock_audit_lan, mock_audit_cloud,
-        mock_temp_cfg, mock_wol, mock_shutdown, mock_alert,
+        mock_temp_cfg, mock_wol, mock_shutdown, mock_alert, tmp_path,
     ):
         mock_db_inst = MagicMock()
         mock_db.return_value = mock_db_inst
@@ -154,7 +153,7 @@ class TestBug02And03AuditOrchestration:
             "bytes_checked": None, "mismatches": 0, "detail": "lan verified",
         }
 
-        cfg = _make_mock_config()
+        cfg = _make_mock_config(tmp_path)
         with prefect_test_harness():
             with patch("flow.load_config", return_value=cfg):
                 integrity_audit_flow(mode="all")
@@ -263,10 +262,10 @@ class TestBug05RobocopyExitCodes:
 
 class TestBug11LaunchReconciliation:
     @patch("prefect.client.orchestration.get_client")
-    def test_reconcile_disabled_legs_includes_integrity_audit(self, mock_get_client):
+    def test_reconcile_disabled_legs_includes_integrity_audit(self, mock_get_client, tmp_path):
         from launch import _reconcile_disabled_legs
 
-        cfg = _make_mock_config()
+        cfg = _make_mock_config(tmp_path)
         cfg.lan.enabled = False
         cfg.cloud.enabled = False
 
