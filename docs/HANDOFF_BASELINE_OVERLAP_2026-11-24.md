@@ -49,3 +49,9 @@ Suite at B7 commit: full unit suite exit 0. Not re-run after B8/C1/C3.
 - `format_ist` appends " IST" to times; the closed-FY note has no IST because the test requires that.
 - `notifications` table stores no mail body, so the activation-waiting text cannot quote the mail's reason.
 - Haiku built B7 acceptably but wrote two bad test helpers and took 12-15 min per job at 220-290k tokens; the owner moved to Sonnet medium for core work.
+
+## Baseline bugs found, deliberately not fixed yet (owner: fix later)
+
+- **Baseline bug 1, NAS error classification (found 2026-11-24 via release-candidate tests, NOT fixed, owner: fix later).** `core/faults.py` has no mapping for raw Windows network errors (WinError 53, 67, 1222 and similar) on the LAN leg, so they classify as `AAM-SYS-06` instead of `AAM-NAS-01` (NAS unreachable). The branch `release-candidate` adds `UNREACHABLE_WINERRORS`; its test `tests/test_l3_nas_unreachable_label.py` (14 tests) fails on the baseline for this reason. Fix later as a test-first commit.
+- **Baseline bug 2, zero / negative retention deletes today's log folder (found 2026-11-24, NOT fixed, owner: fix later).** `core/run_artefacts.purge_older_than(root, 0)` deletes today's day folder; `release-candidate` refuses a retention below 1 day. Its test is in `tests/test_break_db_artefacts.py` (zero/negative retention). Fix later as a test-first commit (also check the config bounds of the retention key so 0 cannot be configured).
+- Other `release-candidate` tests (104 added files) need branch-only code and were not copied; four test-only files that pass on the baseline were copied (commit e94e21f).
