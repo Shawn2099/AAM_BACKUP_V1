@@ -1,0 +1,436 @@
+{
+ "attention": [
+  {
+   "code": "stale:cloud",
+   "due_at": "2027-01-09T18:00:00+05:30",
+   "level": "red",
+   "message": "Check why the cloud backup has not succeeded. The last success was 66 h ago; the next scheduled run was due 2027-01-08 18:00 IST and it was not finished by 2027-01-09 02:00 IST (next scheduled run + 6 h run budget + 2 h grace)."
+  },
+  {
+   "code": "last_run:cloud",
+   "level": "red",
+   "message": "Open the cloud backup card on the dashboard and fix the cause. The last cloud backup did not succeed (Failed, 2027-01-09 18:00 IST)."
+  },
+  {
+   "code": "stale:lan",
+   "due_at": "2027-01-10T01:00:00+05:30",
+   "level": "red",
+   "message": "Check why the LAN backup has not succeeded. The last success was 83 h ago; the next scheduled run was due 2027-01-08 01:00 IST and it was not finished by 2027-01-08 07:00 IST (next scheduled run + 4 h run budget + 2 h grace)."
+  },
+  {
+   "code": "last_run:lan",
+   "level": "red",
+   "message": "Open the LAN backup card on the dashboard and fix the cause. The last LAN backup did not succeed (Failed, 2027-01-09 01:00 IST)."
+  }
+ ],
+ "cloud": {
+  "enabled": true,
+  "integrity": {
+   "checked_at": "2027-01-09T20:00:00+05:30",
+   "detail": null,
+   "newer_incomplete_at": null,
+   "status": "VERIFIED"
+  },
+  "last_run": {
+   "duration": "?",
+   "ended_at": "2027-01-09T18:00:00+05:30",
+   "error": "",
+   "fault_code": null,
+   "fault_title": null,
+   "files": 90,
+   "files_failed": 0,
+   "started_at": "2027-01-09T18:00:00+05:30",
+   "status": "CLOUD_FAILED",
+   "status_category": "failed",
+   "status_description": "Backup failed - see issue below",
+   "status_label": "Failed"
+  },
+  "last_run_formatted": "2027-01-09 18:00 IST",
+  "last_success": "2027-01-07T18:00:00+05:30",
+  "nights": [
+   {
+    "date": "2026-12-12",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-13",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-14",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-15",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-16",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-17",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-18",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-19",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-20",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-21",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-22",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-23",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-24",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-25",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-26",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-27",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-28",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-29",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-30",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-31",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-01",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-02",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-03",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-04",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-05",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-06",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-07",
+    "state": "ok"
+   },
+   {
+    "date": "2027-01-08",
+    "state": "partial"
+   },
+   {
+    "date": "2027-01-09",
+    "state": "bad"
+   },
+   {
+    "date": "2027-01-10",
+    "state": "none"
+   }
+  ],
+  "run_state": "idle",
+  "running": false,
+  "timing": {
+   "due_at": "2027-01-08T18:00:00+05:30",
+   "overdue_at": "2027-01-09T02:00:00+05:30",
+   "state": "overdue"
+  }
+ },
+ "firm": "AAM Associates",
+ "fy_prefix": "FY26-27",
+ "lan": {
+  "enabled": true,
+  "integrity": {
+   "checked_at": null,
+   "detail": null,
+   "status": "NOT_VERIFIED"
+  },
+  "last_run": {
+   "duration": "?",
+   "ended_at": "2027-01-09T01:00:00+05:30",
+   "error": "",
+   "fault_code": null,
+   "fault_title": null,
+   "files": 90,
+   "files_failed": 0,
+   "started_at": "2027-01-09T01:00:00+05:30",
+   "status": "LAN_FAILED",
+   "status_category": "failed",
+   "status_description": "Backup failed - see issue below",
+   "status_label": "Failed"
+  },
+  "last_run_formatted": "2027-01-09 01:00 IST",
+  "last_success": "2027-01-07T01:00:00+05:30",
+  "nights": [
+   {
+    "date": "2026-12-12",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-13",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-14",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-15",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-16",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-17",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-18",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-19",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-20",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-21",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-22",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-23",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-24",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-25",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-26",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-27",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-28",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-29",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-30",
+    "state": "none"
+   },
+   {
+    "date": "2026-12-31",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-01",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-02",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-03",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-04",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-05",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-06",
+    "state": "none"
+   },
+   {
+    "date": "2027-01-07",
+    "state": "ok"
+   },
+   {
+    "date": "2027-01-08",
+    "state": "partial"
+   },
+   {
+    "date": "2027-01-09",
+    "state": "bad"
+   },
+   {
+    "date": "2027-01-10",
+    "state": "none"
+   }
+  ],
+  "run_state": "idle",
+  "running": false,
+  "timing": {
+   "due_at": "2027-01-08T01:00:00+05:30",
+   "overdue_at": "2027-01-08T07:00:00+05:30",
+   "state": "overdue"
+  }
+ },
+ "manifest": {
+  "cloud_files": 0,
+  "lan_files": 0
+ },
+ "recent_runs": [
+  {
+   "duration": "-",
+   "error": "",
+   "extended_metrics": null,
+   "fault_code": null,
+   "fault_title": null,
+   "files": 90,
+   "files_failed": 0,
+   "mode": "cloud",
+   "started_at": "2027-01-09 18:00 IST",
+   "status": "CLOUD_FAILED",
+   "status_category": "failed",
+   "status_description": "Backup failed - see issue below",
+   "status_label": "Failed"
+  },
+  {
+   "duration": "-",
+   "error": "",
+   "extended_metrics": null,
+   "fault_code": null,
+   "fault_title": null,
+   "files": 90,
+   "files_failed": 0,
+   "mode": "lan",
+   "started_at": "2027-01-09 01:00 IST",
+   "status": "LAN_FAILED",
+   "status_category": "failed",
+   "status_description": "Backup failed - see issue below",
+   "status_label": "Failed"
+  },
+  {
+   "duration": "-",
+   "error": "",
+   "extended_metrics": null,
+   "fault_code": null,
+   "fault_title": null,
+   "files": 80,
+   "files_failed": 0,
+   "mode": "cloud",
+   "started_at": "2027-01-08 18:00 IST",
+   "status": "CLOUD_PARTIAL",
+   "status_category": "partial",
+   "status_description": "Backup partial - 80 file(s) transferred, 0 could not be copied",
+   "status_label": "Partial"
+  },
+  {
+   "duration": "-",
+   "error": "",
+   "extended_metrics": null,
+   "fault_code": null,
+   "fault_title": null,
+   "files": 80,
+   "files_failed": 0,
+   "mode": "lan",
+   "started_at": "2027-01-08 01:00 IST",
+   "status": "LAN_PARTIAL",
+   "status_category": "partial",
+   "status_description": "Backup partial - 80 file(s) transferred, 0 could not be copied",
+   "status_label": "Partial"
+  },
+  {
+   "duration": "-",
+   "error": "",
+   "extended_metrics": null,
+   "fault_code": null,
+   "fault_title": null,
+   "files": 70,
+   "files_failed": 0,
+   "mode": "cloud",
+   "started_at": "2027-01-07 18:00 IST",
+   "status": "CLOUD_COMPLETE",
+   "status_category": "success",
+   "status_description": "Backup complete - 70 file(s) transferred",
+   "status_label": "Completed"
+  },
+  {
+   "duration": "-",
+   "error": "",
+   "extended_metrics": null,
+   "fault_code": null,
+   "fault_title": null,
+   "files": 70,
+   "files_failed": 0,
+   "mode": "lan",
+   "started_at": "2027-01-07 01:00 IST",
+   "status": "LAN_COMPLETE",
+   "status_category": "success",
+   "status_description": "Backup complete - 70 file(s) transferred",
+   "status_label": "Completed"
+  }
+ ],
+ "schedule": {
+  "cloud_cron": "At 18:00 (Kolkata)",
+  "lan_cron": "At 01:00 (Kolkata)"
+ },
+ "verify_running": false
+}

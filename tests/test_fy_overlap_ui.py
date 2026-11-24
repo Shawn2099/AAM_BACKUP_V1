@@ -253,6 +253,10 @@ def test_status_without_overlap_matches_baseline(rig):
     assert sorted((r["mode"], r["status"]) for r in view["recent_runs"]) == sorted([
         ("cloud", "CLOUD_FAILED"), ("cloud", "CLOUD_PARTIAL"), ("cloud", "CLOUD_COMPLETE"),
         ("lan", "LAN_FAILED"), ("lan", "LAN_PARTIAL"), ("lan", "LAN_COMPLETE")])
+    # the whole baseline view equals the answer of the parent commit (eaacccf^), captured with this rig and the
+    # frozen clock: last_run / timing / integrity / strip (empty nights too) / recent_runs, field for field
+    snapshot = json.loads((ROOT / "tests" / "data" / "status_baseline_b9.json").read_text(encoding="utf-8"))
+    assert view == snapshot
 
 
 def test_status_without_overlap_new_fields_are_empty(rig):
@@ -1002,6 +1006,41 @@ def test_js_one_card_renderer():
         assert "_CARD_KEYS" in body or "['cloud', 'lan', 'cloud-next', 'lan-next']" in body, name
 
 
+def test_js_next_card_hidden_when_leg_disabled():
+    """B9 review 1 (Q8): a disabled leg has no next-FY data; its next card must be hidden, not stuck on Loading."""
+    body = _js_func(_read("static/js/dashboard.js"), "updateStatus")
+    assert re.search(r"getElementById\('card-' \+ key\)", body)
+    assert re.search(r"\.hidden\s*=\s*!d(?![\w.])", body)
+
+
+def test_js_approval_card_escapes_fy():
+    """B9 review 2: the FY of an approval is escaped in the card heading."""
+    body = _js_func(_read("static/js/dashboard.js"), "approvalCard")
+    assert "escHtml(a.fy)" in body and "(' + a.fy + ')'" not in body
+
+
+def test_js_hero_warns_for_next_fy_without_run():
+    """B9 review 5: a next-FY card with no run yet is a warning in the headline, never 'Everything is backed up'."""
+    body = _js_func(_read("static/js/dashboard.js"), "renderHero")
+    assert "waitingNext" in body
+    warn = body.index("waitingNext.length")
+    assert warn < body.index("'Everything is backed up'")
+    assert "setHero('warn'" in body[warn: warn + 200]
+
+
+def test_status_reads_overlap_record_once_per_call(rig):
+    """B9 review 7: the overlap record of a FY is read once per /status call, not twice per labelled row."""
+    seed_both_fys(rig.db)
+    rig.use(overlap=True)
+    activate(rig.db)
+    reads: list[str] = []
+    orig = rig.db.overlap_record
+    rig.db.overlap_record = lambda fy: (reads.append(fy), orig(fy))[1]
+    s = rig.status()
+    assert s["overlap"]["active"] is True
+    assert len(reads) <= 12, reads      # was 51 for 12 rows: the labels share one read per FY
+
+
 def test_js_buttons_send_fy():
     """J02."""
     src = _read("static/js/dashboard.js")
@@ -1009,6 +1048,7 @@ def test_js_buttons_send_fy():
     assert "'/trigger/'" in backup and re.search(r"\?fy='\s*\+\s*encodeURIComponent\(fy\)", backup)
     verify = _js_func(src, "triggerVerify")
     assert "anyway=1" in verify and "encodeURIComponent(fy)" in verify
+    assert "'&fy=' + encodeURIComponent(fy)" in verify      # the anyway=1 retry keeps the card's FY
     assert "dataset.fy" in src
 
 
@@ -1028,7 +1068,9 @@ def test_js_labels_and_states():
     assert re.search(r"fy\s*&&\s*fy\s*!==\s*cardFy", src)
     assert re.search(r"!==\s*data\.fy_prefix", src)
     assert re.search(r"run_state\s*===\s*'queued'", src)
-    assert "'manual'" in src
+    # a manual-only leg ('manual' timing from the server) must never read as late: no warn/critical branch for it
+    body = _js_func(src, "agoClass") + _js_func(src, "agoPrefix")
+    assert "manual" not in body
 
 
 def test_settings_js_final_copy():

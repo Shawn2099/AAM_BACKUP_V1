@@ -176,13 +176,13 @@ function renderHero(data) {
     if (!legs.length) { setHero('unknown', 'Backups are switched off', 'Both backups are disabled in the settings.'); return; }
     var attention = data.attention || [];
     var hasRed = attention.some(function(i) { return i.level === 'red'; });
-    var problems = [], running = [], unknown = [], partial = [], waiting = [];
+    var problems = [], running = [], unknown = [], partial = [], waiting = [], waitingNext = [];
     legs.forEach(function(l) {
         var d = data[l[0]];
         var cat = d.last_run ? d.last_run.status_category : 'unknown';
         if (d.running) running.push(l[1]);
         else if (d.run_state === 'unknown') unknown.push(l[1]);
-        else if (!d.last_run) waiting.push(l[1]);
+        else if (!d.last_run) { waiting.push(l[1]); if (l[0].indexOf('_next') > 0) waitingNext.push(l[1]); }
         else if (cat === 'partial') partial.push(l[1]);
         else if (_OK_CATEGORIES.indexOf(cat) < 0) problems.push(l[1] + ': ' + (d.last_run ? d.last_run.status_label : 'no backup yet'));
     });
@@ -200,6 +200,8 @@ function renderHero(data) {
         setHero('warn', 'A backup is running now', running.join(' and ') + ' is copying files at the moment.');
     } else if (attention.length) {
         setHero('warn', 'The latest backups succeeded, with a warning', 'Read the notice below.');
+    } else if (waitingNext.length) {
+        setHero('warn', 'The next year is not backed up yet', waitingNext.join(' and ') + ' has not run yet.');
     } else {
         var parts = legs.map(function(l) {
             if (!data[l[0]].last_run) return l[1] + ' has not run yet';
@@ -240,6 +242,9 @@ async function updateStatus() {
         _CARD_KEYS.forEach(function(key) {
             var d = data[_dkey(key)];
             if (d) renderLegCard(key, d);
+            // a leg switched off has no next-FY data: its one 'Disabled' card stays, the next card is hidden
+            var nextCard = key.indexOf('-next') > 0 ? document.getElementById('card-' + key) : null;
+            if (nextCard) nextCard.hidden = !d;
         });
         if (data.health && !data.health.error) { document.getElementById('health-info').innerText = 'Source: ' + data.health.source_free_gb + ' GB free | FY: ' + data.fy_prefix; }
         renderLegVisuals(data);
@@ -503,7 +508,7 @@ function approvalCard(a) {
     var reasons = (a.guards || []).map(function(g) { return '<li>' + escHtml(g.reason) + '</li>'; }).join('');
     var id = escHtml(a.approval_id);
     var html = '<div class="approval-card ' + (a.status === 'APPROVED' ? 'approved' : 'pending') + '">';
-    if (_overlapActive && a.fy && a.leg !== 'rollover') leg += ' (' + a.fy + ')';
+    if (_overlapActive && a.fy && a.leg !== 'rollover') leg += ' (' + escHtml(a.fy) + ')';
     html += '<h2>' + leg + ' blocked — ' + (a.status === 'APPROVED' ? 'approved, not run yet' : 'your decision is needed') + '</h2>';
     html += '<ul>' + reasons + '</ul>';
     html += '<p class="fine">' + (a.leg === 'rollover' ? 'Nothing was changed.' : 'Nothing was copied or deleted.') + ' Blocked ' + escHtml(formatFullDate(a.created_at)) + ' (run ' + escHtml(a.blocked_run_id) + ').</p>';

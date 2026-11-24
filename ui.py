@@ -586,6 +586,7 @@ async def status(request: Request):
         runs = db.get_recent_runs(25)
     except Exception:
         return JSONResponse({"error": "ManifestDB not found"}, status_code=503)
+    db = _OverlapReadOnce(db)      # the labels of every row share one read of each overlap record per call
 
     configured_fy = fy_rollover.effective_fy_prefix(cfg.paths.source_drive)
     overlap = _overlap_view(cfg, db)
@@ -655,6 +656,23 @@ async def status(request: Request):
         "health": await _get_health(),
         "recent_runs": recent_runs
     })
+
+
+class _OverlapReadOnce:
+    """The database for ONE /status call: `overlap_record(fy)` is read once per FY (row_fy_label would read it
+    twice per row on every 2 s poll); every other attribute is the real database's."""
+
+    def __init__(self, db):
+        self._db = db
+        self._records: dict = {}
+
+    def overlap_record(self, fy):
+        if fy not in self._records:
+            self._records[fy] = self._db.overlap_record(fy)
+        return self._records[fy]
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
 
 
 def _overlap_view(cfg, db) -> dict:

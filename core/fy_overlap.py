@@ -388,7 +388,8 @@ def activation_pending(config, db, today: dt.date) -> tuple[str, dt.date] | None
     rollover = getattr(config, "rollover", None)
     configured = configured_of(config)
     activate_on_text = getattr(rollover, "overlap_activate_on", None)
-    if getattr(rollover, "overlap_enabled", None) is not True or configured is None             or not isinstance(activate_on_text, str):
+    if (getattr(rollover, "overlap_enabled", None) is not True or configured is None
+            or not isinstance(activate_on_text, str)):
         return None
     nxt = next_fy(configured)
     if db.overlap_record(nxt) is not None:
