@@ -117,7 +117,7 @@ def g2_source_shrink(current_files: int | None, baseline_files: int | None,
 
 def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                    max_delete_files: int, max_delete_percent: float,
-                   already_deleted: int = 0) -> GuardResult:
+                   already_deleted: int = 0, min_floor_files: int = 0) -> GuardResult:
     """already_deleted (XR-1/XR-2): files an earlier attempt of THIS run
     deleted. The limits apply to the whole run, so they are added to the
     planned deletions and to the destination size the run started from."""
@@ -138,7 +138,8 @@ def g3_mass_delete(planned_deletes: int | None, destination_files: int | None,
                "this run)" if already_deleted else "")
     # B1: the verdict is the SAME allowance the cloud --max-delete backstop uses (one function), so
     # G3 can never pass what the backstop then stops. `pct` is for the message only.
-    if planned_deletes > max_delete_allowance(destination_files, max_delete_files, max_delete_percent):
+    if planned_deletes > max_delete_allowance(destination_files, max_delete_files, max_delete_percent,
+                                                      min_floor_files):
         return _block(
             name,
             f"This backup would delete {planned_deletes:,} of {destination_files:,} "
@@ -323,7 +324,7 @@ def enforce(leg: str, results: list[GuardResult],
 
 
 def max_delete_allowance(destination_files: int, max_delete_files: int,
-                         max_delete_percent: float) -> int:
+                         max_delete_percent: float, min_floor_files: int = 0) -> int:
     """Most deletions G3 passes for this destination size - the ONE rule (B1).
 
     G3 passes exactly when `planned <= max_delete_allowance(...)`, and rclone's own
@@ -333,11 +334,12 @@ def max_delete_allowance(destination_files: int, max_delete_files: int,
     whose binary value (0.3 is stored as 0.29999999999999998...) is one deletion too strict.
     """
     by_percent = math.floor(Fraction(destination_files) * Fraction(str(max_delete_percent)) / 100)
-    return max(0, min(max_delete_files, by_percent))
+    return max(0, min(max_delete_files, max(min_floor_files, by_percent)))
 
 
 def remaining_delete_allowance(destination_files: int, already_deleted: int,
-                               max_delete_files: int, max_delete_percent: float) -> int:
+                               max_delete_files: int, max_delete_percent: float,
+                               min_floor_files: int = 0) -> int:
     """XR-1: the --max-delete for a retry - what is left of the run's allowance.
 
     `destination_files` is the size now; the allowance is computed on the
@@ -345,7 +347,7 @@ def remaining_delete_allowance(destination_files: int, already_deleted: int,
     attempts together never delete more than G3 passes once.
     """
     allowance = max_delete_allowance(destination_files + already_deleted,
-                                     max_delete_files, max_delete_percent)
+                                     max_delete_files, max_delete_percent, min_floor_files)
     return max(0, allowance - already_deleted)
 
 

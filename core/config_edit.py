@@ -145,7 +145,8 @@ _UNITS = {
     "maintenance.sqlite_vacuum_freelist_threshold": "pages", "maintenance.config_backups_keep": "copies",
     "maintenance.config_replace_retries": "times", "maintenance.lock_release_retries": "times",
     "rollover.archive_alert_after_days": "days",
-    "guards.max_delete_files": "files", "audit.detail_max_paths": "paths",
+    "guards.max_delete_files": "files", "guards.min_delete_floor_files": "files",
+    "audit.detail_max_paths": "paths",
     "cloud.bandwidth_limit": "MB/s", "cloud.buffer_size": "MB",
 }
 # rclone size strings ("10M", "500k") edited as a number with a fixed unit

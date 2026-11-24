@@ -26,14 +26,16 @@ DEFAULT_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("DNS", r"no such host|getaddrinfo|name resolution|temporary failure in name resolution"
             r"|dial tcp: lookup",
      "The server could not resolve Google/NAS host names (DNS). Check DNS / internet access."),
-    ("AUTH", r"oauth2: cannot fetch token|invalid_grant|\b401\b|unauthori[sz]ed|\b403\b|forbidden"
-             r"|accessdenied|permission denied for bucket",
-     "Google refused the service-account credentials or permissions."),
+    # P1 C2: NETWORK before AUTH - an unreachable token endpoint is a network failure.
     ("NETWORK", r"dial tcp|connection refused|connection reset|i/o timeout|timed out"
                 r"|network is unreachable|no route to host|broken pipe"
                 r"|the network path was not found|the specified network name is no longer available"
                 r"|winerror 53|winerror 64|winerror 67|winerror 1231",
      "Network path to the destination is down or unreachable."),
+    ("AUTH", r"oauth2: cannot fetch token: (?:Post [^\n]*: )?4\d\d\b|invalid_grant"
+             r"|googleapi: error 40[13]\b|\b40[13] (?:unauthori[sz]ed|forbidden)|unauthori[sz]ed|forbidden"
+             r"|accessdenied|permission denied for bucket",
+     "Google refused the service-account credentials or permissions."),
     ("LISTING", r"error listing|directory not found|couldn't list|failed to list|object not found",
      "The destination could not be listed, so nothing could be compared."),
 )

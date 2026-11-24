@@ -760,6 +760,11 @@ class GuardsConfig(StrictModel):
         description="G3: block when a backup would delete more than this percent "
                     "of the destination files.",
     )
+    min_delete_floor_files: int = Field(
+        default=20, ge=0, le=100_000,
+        description="G3: a backup may always delete this many files, even when the percent "
+                    "limit would allow fewer (small backups). Never above max_delete_files.",
+    )
     max_source_shrink_percent: float = Field(
         default=20, ge=0, le=100,
         description="G2: block when the source has this percent fewer files than "

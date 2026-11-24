@@ -797,7 +797,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         results.append(guards.g3_mass_delete(
             dry["planned_deletes"], destination_files,
             limits.max_delete_files, limits.max_delete_percent,
-            already_deleted=already_deleted))
+            already_deleted=already_deleted,
+            min_floor_files=limits.min_delete_floor_files))
 
     approved, approval_record = _apply_approval(config, "cloud", approval_id, run_id, results)
     if "G3_MASS_DELETE" in approved:
@@ -807,7 +808,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     else:
         max_delete = guards.remaining_delete_allowance(
             destination_files, already_deleted,
-            limits.max_delete_files, limits.max_delete_percent)
+            limits.max_delete_files, limits.max_delete_percent,
+            min_floor_files=limits.min_delete_floor_files)
     return guards.enforce(
         "cloud", results, approved_guards=approved, fy=fy_prefix,
         source_file_count=source_files, destination=destination,
@@ -1378,7 +1380,8 @@ def lan_guards_task(config, fy_prefix: str, dry_run: dict, destination_files: in
             limits.forbid_local_destination),
         guards.g3_mass_delete(planned_deletes, destination_files,
                               limits.max_delete_files, limits.max_delete_percent,
-                              already_deleted=already_deleted),
+                              already_deleted=already_deleted,
+                              min_floor_files=limits.min_delete_floor_files),
         guards.g5_canary(dry_run.get("canary_present"), destination_files > 0, dest),
     ]
     approved, approval_record = _apply_approval(config, "lan", approval_id, run_id, results)

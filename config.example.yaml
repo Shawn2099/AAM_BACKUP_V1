@@ -518,6 +518,8 @@ guards:
   max_delete_files: 500
   # Block if a backup would delete more than this % of the backup files (0–100)
   max_delete_percent: 10
+  # Always allow at least this many deletions, even if the % limit allows fewer (0-100000)
+  min_delete_floor_files: 20
   # Block if the source has this % fewer files than at the last successful backup (0–100)
   max_source_shrink_percent: 20
   # Block a LAN destination that points back at this server (true/false)

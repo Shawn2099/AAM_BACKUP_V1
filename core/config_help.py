@@ -294,6 +294,11 @@ HELP: dict[str, tuple[str, str]] = {
         "...or more than this share of the files already backed up",
         "Counted against the files already in the backup, not against the folder being copied. "
         "0 = never delete."),
+    "guards.min_delete_floor_files": (
+        "Always allow at least this many deletions",
+        "Small backups: the percentage limit could allow only a handful of deletions, so a few "
+        "normal clean-ups would wait for approval. This many deletions are always allowed, but "
+        "never more than the file limit above."),
     "guards.max_source_shrink_percent": ("Stop if the data folder suddenly shrinks by more than",
                                          "Protects against an empty or wrong drive being mirrored."),
     "guards.forbid_local_destination": ("Never back up onto this same server", ""),
