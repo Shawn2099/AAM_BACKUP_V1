@@ -30,3 +30,9 @@ Read after this: the addendum `LIVEBOX_TEST_PROGRESS_2026-11-25_ADDENDUM.md` (bo
 
 ## Realism gaps to state in REPORT.md (Sonnet review 2026-11-25)
 Flows are called directly by the driver. NOT exercised: serve.py / `prefect serve` cron scheduling, deployment params, missed-run catch-up, launch.py boot, the watchdog service loop, real WoL/smb_ready, real GCS, real network-outage classification (P2), reboot/restart recovery. Real: Prefect server, robocopy/rclone, SQLite, flows, SMTP on loopback; faked clock. Recommended later: one small real-process lane on the box (real serve.py/launch.py/watchdog, short crons, taskkill restart); it would also enable X17/X39.
+
+## OWNER INSTRUCTION (2026-11-25, after lane A): next run defaults
+- Next run (A2 and all later lanes): start from 2026 and use 2-year (730 day) retention everywhere.
+  Pass `--start 2026-10-01 --retention-days 730` explicitly (code defaults still 2090-12-01 / box config 90; changing code defaults breaks 7 pinned tests, so do it via args or update those tests first).
+- Lane A finding: lane config db_retention_days=90 purged early run_history rows (product default is 730); use 730.
+- Add a harness scenario/step that plays the owner and approves AAM-DEL-01 blocks, else one rename blocks a whole year (lane A: Client_000/Invoices rename 2091-04-04 blocked every run after).
