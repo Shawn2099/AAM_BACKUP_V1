@@ -58,7 +58,7 @@ def test_d2_a730_sets_log_retention_days_too():
     cfg = _derive(retention_days=730)
     assert cfg["run_logs"]["retention_days"] == 730
     assert cfg["maintenance"]["db_retention_days"] == 730
-    assert cfg["maintenance"]["log_retention_days"] == 730
+    assert cfg["maintenance"]["log_retention_days"] == 365   # product model caps log_retention_days at 365
 
 
 def test_d2_r35_sets_db_35_run_logs_7_log_7():
@@ -72,7 +72,7 @@ def test_d2_per_key_keyword_wins_over_retention_days():
     cfg = _derive(retention_days=730, db_retention_days=35)
     assert cfg["maintenance"]["db_retention_days"] == 35
     assert cfg["run_logs"]["retention_days"] == 730
-    assert cfg["maintenance"]["log_retention_days"] == 730
+    assert cfg["maintenance"]["log_retention_days"] == 365   # capped at the product limit
 
 
 def test_d2_unnamed_retention_keys_keep_production_values():

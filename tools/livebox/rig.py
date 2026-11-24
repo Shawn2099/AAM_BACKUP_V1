@@ -731,8 +731,9 @@ class LaneRig:
         from models.config import AppConfig
 
         raw = derive_config(self.prod_raw, self.lane_dir, smtp_port=self.smtp.port,
-                            has_backup_privilege=self.has_backup_privilege, retention_days=self.retention_days)
-        AppConfig(**raw)                                    # re-validate with the real model
+                            has_backup_privilege=self.has_backup_privilege, retention_days=self.retention_days,
+                            test_fy=self.test_fy)
+        AppConfig(**raw)                                   # re-validate with the real model
         with self.config_path.open("w", encoding="utf-8") as fh:
             yaml.safe_dump(raw, fh, sort_keys=False, allow_unicode=True)
         self.config = raw
