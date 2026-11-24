@@ -115,6 +115,8 @@ def derive_config(
     run_logs_days = run_logs_retention_days if run_logs_retention_days is not None else retention_days
     db_days = db_retention_days if db_retention_days is not None else retention_days
     log_days = log_retention_days if log_retention_days is not None else retention_days
+    if log_retention_days is None and log_days is not None:
+        log_days = min(log_days, 365)   # product model caps maintenance.log_retention_days at 365 (le=365)
     if run_logs_days is not None:
         cfg.setdefault("run_logs", {})["retention_days"] = run_logs_days
     if db_days is not None:

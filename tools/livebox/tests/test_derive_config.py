@@ -300,6 +300,8 @@ def test_row_retention_lane_a730_uses_730_days():
     cfg = _derive(smtp_port=SMTP_PORT, retention_days=730)
     assert _get(cfg, "run_logs.retention_days") == 730
     assert _get(cfg, "maintenance.db_retention_days") == 730
+    # the product model caps maintenance.log_retention_days at 365: 730 must not reach it (box lt1 failure)
+    assert _get(cfg, "maintenance.log_retention_days") == 365
 
 
 def test_row_rollover_overlap_enabled_and_activate_on_as_production():
