@@ -25,7 +25,12 @@ Nightly backup automation for an accounting firm on **Windows Server 2016**: `rc
 The venv is at `.venv` (Python 3.12, managed by `uv`). Use the venv interpreter directly; `pyproject.toml` `addopts` is overridden because it adds `-v`.
 
 ```
-# full unit suite (~3 min)
+# fast loop: everything except the minutes-long calendar simulation (tests/test_fy_overlap_calendar.py, marker `slow`)
+.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider -o addopts="" --timeout=600 -m "not slow"
+# the slow calendar file alone (run it as its own job, in parallel with the fast loop)
+.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider -o addopts="" --timeout=1200 -m slow
+
+# full unit suite (~3 min without the calendar file, about 6 min with it; the two jobs above give the same coverage)
 .venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider -o addopts="" --timeout=600
 
 # single file / single test

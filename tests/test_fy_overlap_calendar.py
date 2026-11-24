@@ -39,6 +39,8 @@ from core.time_utils import IST
 from models.config import load_config
 from test_support.sandbox_config import _config_dict
 
+pytestmark = pytest.mark.slow
+
 pytest.importorskip("time_machine")   # pendulum.travel_to needs it
 
 
