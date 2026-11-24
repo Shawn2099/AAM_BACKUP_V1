@@ -248,3 +248,25 @@ C0b run 2026-11-25, rclone v1.74.3, fixtures in `test_support/rclone_logs/lan_*`
 1. Copy-only on a G3-only block: YES (Phase 1b, both legs).
 2. `--backup-dir` on the NAS (deleted AND replaced files, same relative path, dated folder, same share, outside the mirror root): YES, retention 91 days (Phase 1b). Space growth from replaced daily-changing files to be measured in the shadow trial; space check must include the folder.
 3. Small-tree floor 20: OK (chunk C1).
+
+## Phase 1b: copy-only on block, `--backup-dir`, approval scenarios (owner-approved 2026-11-25; build after Phase 1 gate, tests FIRST)
+
+Design rules
+- Copy-only on a G3-only block: `rclone copy` (same flags, same excludes), status stays `*_BLOCKED`, row says "copied N, deletions held". G1/G4/G5 blocks still stop everything.
+- Never auto-approve on a timeout (owner rule: never auto-proceed). A pending approval escalates by reminders (ladder day 1, 2, 4, 7, then weekly; uses the notify fix deferred from P1) and the dashboard shows "N deletions waiting, D days".
+- `--backup-dir <share>\AAM_versions\<YYYY-MM-DD_HHmm>_<FY>\` : per RUN and per FY pass (never just the date), same share, outside the mirror root, so a retry, a second pass or a manual run can never overwrite an earlier save. Applies to deleted AND replaced files (also with `copy`). Retention: 91 days counted from the run folder date (= the day of deletion, not the day the file left the source), purged by `rclone delete --min-age 91d` + `rmdirs`; config keys `lan.versions_enabled`, `lan.versions_folder`, `lan.versions_retention_days` (default 91, bounds 7..3650). Space check counts the folder; its size is shown in the weekly report.
+- An approval covers only the count it was granted for (existing `evaluate_approval`); a larger plan blocks again.
+
+Test rows (written first, by the test agent)
+- V1: G3-only block -> `copy` is run, new + changed files arrive, no deletion, status BLOCKED, row "deletions held N".
+- V2: G1/G4/G5 block -> nothing runs (no copy-only).
+- V3: block stays open 30 simulated nights: every night copies new files, never deletes, never auto-approves, reminders follow the ladder (no daily spam), dashboard count/age correct.
+- V4: operator approves after 40 nights: deletions run once, deleted files are in `AAM_versions\<that run>\<same relative path>`, mirror then matches source.
+- V5: approved for N, tonight's plan N+1: blocks again.
+- V6: file deleted on night 1, same path recreated and deleted again night 2: both versions exist in two different run folders, nothing overwritten.
+- V7: two runs on the same day (retry / second FY pass / manual): distinct run folders, no overwrite.
+- V8: a replaced (changed) file: the old version is in the run folder at the same relative path; the mirror has the new one.
+- V9: retention: run folder older than 91 days purged, younger kept; folder dated at deletion time, not at source-removal time; the purge never touches the mirror root.
+- V10: backup-dir inside the mirror root or on another share is refused at config validation / preflight.
+- V11: free-space check counts the versions folder growth; low space -> FAIL before the sync.
+- V12: real rclone local->UNC (audit lab): deletes + replaces land in the run folder with identical relative paths and content.
