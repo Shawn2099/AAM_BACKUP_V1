@@ -1,0 +1,82 @@
+Metadata-Version: 2.4
+Name: time-machine
+Version: 3.6.0
+Summary: Travel through time in your tests.
+Author-email: Adam Johnson <me@adamj.eu>
+License-Expression: MIT
+Project-URL: Changelog, https://time-machine.readthedocs.io/en/latest/changelog.html
+Project-URL: Documentation, https://time-machine.readthedocs.io/
+Project-URL: Funding, https://adamj.eu/books/
+Project-URL: Repository, https://github.com/adamchainz/time-machine
+Keywords: date,datetime,mock,test,testing,tests,time,warp
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Framework :: Pytest
+Classifier: Intended Audience :: Developers
+Classifier: Natural Language :: English
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Programming Language :: Python :: 3.15
+Classifier: Typing :: Typed
+Requires-Python: >=3.11
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Provides-Extra: cli
+Requires-Dist: tokenize-rt; extra == "cli"
+Provides-Extra: dateutil
+Requires-Dist: python-dateutil>=2.8.2; extra == "dateutil"
+Dynamic: license-file
+
+============
+time-machine
+============
+
+.. image:: https://img.shields.io/readthedocs/time-machine?style=for-the-badge
+   :target: https://time-machine.readthedocs.io/en/latest/
+
+.. image:: https://img.shields.io/github/actions/workflow/status/adamchainz/time-machine/main.yml.svg?branch=main&style=for-the-badge
+   :target: https://github.com/adamchainz/time-machine/actions?workflow=CI
+
+.. image:: https://img.shields.io/badge/Coverage-100%25-success?style=for-the-badge
+   :target: https://github.com/adamchainz/time-machine/actions?workflow=CI
+
+.. image:: https://img.shields.io/pypi/v/time-machine.svg?style=for-the-badge
+   :target: https://pypi.org/project/time-machine/
+
+.. image:: https://img.shields.io/badge/code%20style-black-000000.svg?style=for-the-badge
+   :target: https://github.com/psf/black
+
+.. image:: https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white&style=for-the-badge
+   :target: https://github.com/pre-commit/pre-commit
+   :alt: pre-commit
+
+----
+
+.. figure:: https://raw.githubusercontent.com/adamchainz/time-machine/main/docs/_static/logo.svg
+  :alt: time-machine logo
+  :align: center
+
+*Travel through time in your tests.*
+
+A quick example:
+
+.. code-block:: python
+
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    import time_machine
+
+    hill_valley_tz = ZoneInfo("America/Los_Angeles")
+
+
+    @time_machine.travel(dt.datetime(1985, 10, 26, 1, 24, tzinfo=hill_valley_tz))
+    def test_delorean():
+        assert dt.date.today().isoformat() == "1985-10-26"
+
+Documentation
+=============
+
+Please see https://time-machine.readthedocs.io/.

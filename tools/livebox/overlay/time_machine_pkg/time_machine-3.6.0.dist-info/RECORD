@@ -1,0 +1,13 @@
+_time_machine.cp312-win_amd64.pyd,sha256=fCBlknIrR2f-Lz7Y_CFoSgJybu5B3kqrNibOsha0X_A,23040
+time_machine-3.6.0.dist-info/INSTALLER,sha256=5hhM4Q4mYTT9z6QB6PGpUAW81PGNFrYrdXMj4oM_6ak,2
+time_machine-3.6.0.dist-info/METADATA,sha256=gk_QxFRuSFSBpHcqEcEqh4vujLzF22_i53-lJJvEYN0,3001
+time_machine-3.6.0.dist-info/RECORD,,
+time_machine-3.6.0.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+time_machine-3.6.0.dist-info/WHEEL,sha256=smAfYAdc4xihz0sI8rUsw5fnCPd2yjYFBM0up6OiEDE,101
+time_machine-3.6.0.dist-info/entry_points.txt,sha256=sBZaeMPp0a9bj2HsTfuXEMGryl5Lygn_KHg3pC_XLhI,39
+time_machine-3.6.0.dist-info/licenses/LICENSE,sha256=I1qxGYOv9spdMz2Wtzqp_n8Pf47OO0xPdFlfa6D9lwQ,1090
+time_machine-3.6.0.dist-info/top_level.txt,sha256=uOMuggVt5pbDg_71TXrOLXrDJ0Txhd3zZ2HCPAIaqFQ,27
+time_machine/__init__.py,sha256=W9Nsd3sAjFBgC6Z4maECI9LY6SXR2UGTTcb5AtLm-44,19436
+time_machine/__main__.py,sha256=i1cvtnUxrfyt3qAk50KlBjtCZKutwvh7NPAxnBejIII,153
+time_machine/cli.py,sha256=Os4smUSFxGIGEUy50d0aW-pLOyGoVEvU442VXXmiQi8,61413
+time_machine/py.typed,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0

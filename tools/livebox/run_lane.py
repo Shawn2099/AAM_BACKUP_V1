@@ -739,6 +739,8 @@ def _run_one(a: argparse.Namespace, hooks_factory, agent_runs, sleep, catalog_sc
         ar = Path(agent_runs) if agent_runs is not None else default_agent_runs(a, lane_root)
         if a.dry_run or a.preflight:
             print("DRY RUN " + plan_text(a, days, lane_root))
+            from tools.livebox import evidence as env_mod
+            print(env_mod.env_summary_line(env_mod.env_versions(days[-1].date if days else None)))
             problems = validate_plan(a, days, lane_root)
             for p in problems:
                 print("PLAN PROBLEM: " + p)
@@ -990,6 +992,14 @@ def tree_summary(root: Path, ignore: Iterable[str] = ()) -> tuple[int, int, floa
 
 def _summary_equal(a, b, tol: float = 2.0) -> bool:
     return a[0] == b[0] and a[1] == b[1] and abs(a[2] - b[2]) <= tol
+
+
+def audit_spy_expectation(lan_on: bool, config: dict | None) -> tuple[int, int]:
+    """(wake, shutdown) the spies must count on an audit day: the flow wakes whenever the LAN leg runs, and shuts
+    down only when lan.shutdown_after_backup and wol.enabled are both true in the lane config (flow.py _shut_nas_down)."""
+    cfg = config or {}
+    shut_on = bool((cfg.get("lan") or {}).get("shutdown_after_backup")) and bool((cfg.get("wol") or {}).get("enabled"))
+    return (1, 1 if shut_on else 0) if lan_on else (0, 0)
 
 
 def _check(check_id: str, verdict: str, expected: Any = "", observed: Any = "", evidence: list | None = None,
@@ -1258,6 +1268,8 @@ class LaneHooks:
 
         self._ev_safe("identity", identity)
         self._ev_safe("expected", lambda: evidence.write_expected(self.ev_dir, self.days))
+        self._ev_safe("env_versions", lambda: evidence.write_env_versions(
+            self.ev_dir, self.days[-1].date if self.days else None))
         if self.cli_args is not None:
             self._ev_safe("cli_input", lambda: self.record_input("cli", "run_lane", dict(self.cli_args)))
         for o in self.outages:
@@ -1799,10 +1811,12 @@ class LaneHooks:
             lan_on = any(r.leg == "audit_lan" for r in day.rows)
             self.audit_wakes += wake
             self.audit_shutdowns += shut
-            want = (1, 1) if lan_on else (0, 0)
+            want = audit_spy_expectation(lan_on, self.rig.config)
             out.checks.append(_check("SPY_AUDIT", "PASS" if (wake, shut) == want else "FAIL",
                                      "the audit's LAN leg wakes the NAS once and shuts it down after the last pass "
-                                     "(flow.py integrity_audit_flow)", f"{tag}: wake {wake}, shutdown {shut}, want {want}"))
+                                     "only when lan.shutdown_after_backup and wol.enabled are set "
+                                     "(flow.py integrity_audit_flow _shut_nas_down)",
+                                     f"{tag}: wake {wake}, shutdown {shut}, want {want}"))
         elif base != cal.ROLLOVER_CHECK and (wake or shut):
             out.checks.append(_check("SPY_UNEXPECTED", "FAIL", f"a {base} flow never wakes or shuts down the NAS",
                                      f"{tag}: wake {wake}, shutdown {shut}"))

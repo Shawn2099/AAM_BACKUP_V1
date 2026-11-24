@@ -1,0 +1,18 @@
+# time_machine overlay manifest (dev PC, mechanical copy)
+# source: C:\Users\malliath\Desktop\aam_backup\.venv\Lib\site-packages
+# time-machine 3.6.0, _time_machine.cp312-win_amd64.pyd (built for CPython 3.12, win_amd64)
+# paths relative to time_machine_pkg\ ; copy the folder contents into the box app venv site-packages
+# sha256  path
+7c206592722b4767fe2f3ed8fc21684a02726eee41de4aab3626ceb216b45ff0  _time_machine.cp312-win_amd64.pyd
+5bd36c777b008c50600ba67899a10223d2d8e925d1d941934dc6f902d2e6fb8e  time_machine\__init__.py
+8b572fb67531adfcaddea024e742a5063b4264abadc2f87b34f0319c17a32082  time_machine\__main__.py
+3ace2c994485c46206114cb9d1dd1a5bea4b3b21a8544bd4e38d955d79a2422f  time_machine\cli.py
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  time_machine\py.typed
+e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9  time_machine-3.6.0.dist-info\INSTALLER
+824fd0c4546e485481a4772a11c12a878bee8cbcc5db6fe2e77fa5249bc460dd  time_machine-3.6.0.dist-info\METADATA
+a74461e7b885856339ced5079cf675ce0ee9cb059c27710f300ffd584777a049  time_machine-3.6.0.dist-info\RECORD
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  time_machine-3.6.0.dist-info\REQUESTED
+b2601f60075ce318a1cf4b08f2b52cc397e708f776ca360504cd2ea7a3a21031  time_machine-3.6.0.dist-info\WHEEL
+b0165a78c3e9d1af5b8f61ec4dfb9710c1abca5e4bca09ff287837a42fd72e12  time_machine-3.6.0.dist-info\entry_points.txt
+b8e32e82056de696c383fef54d7ace2d7ac32744f185ddf36761c23c021aa854  time_machine-3.6.0.dist-info\top_level.txt
+235ab11983aff6ca5d333d96b73aa9fe7f0f7f8ece3b4c4f74595f6ba0fd9704  time_machine-3.6.0.dist-info\licenses\LICENSE

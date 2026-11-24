@@ -9,6 +9,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import platform
 import sqlite3
 import subprocess
 import sys
@@ -21,6 +22,7 @@ SCHEMA_VERSIONS: dict[str, int] = {
     "expected.jsonl": 1,
     "config_snapshot.json": 1,
     "identity.json": 1,
+    "env_versions.json": 1,
     "db_dump/*.jsonl": 1,
     "db_dump/*.jsonl.gz": 1,
     "trees/*.jsonl": 1,
@@ -151,6 +153,47 @@ def harness_identity(code_root, harness_dir) -> dict:
         "time_machine_version": tm,
         "python_version": sys.version.split()[0],
     }
+
+
+# ------------------------------------------------------------------------------------------------ runtime environment
+ENV_PACKAGES = ("loguru", "prefect", "time_machine", "pydantic")
+BEYOND_2038 = dt.date(2038, 1, 19)     # 32-bit time_t limit; the lane clock must stay before it (recorded, not enforced)
+
+
+def _package_version(name: str) -> str:
+    try:
+        from importlib import metadata
+        return metadata.version(name)
+    except Exception:  # noqa: BLE001 - a missing or broken package is recorded as n/a, never raised
+        return "n/a"
+
+
+def env_versions(last_sim_date: dt.date | None = None) -> dict:
+    """Runtime environment of this harness run: interpreter, platform, key package versions and the 2038 check."""
+    beyond = bool(last_sim_date is not None and last_sim_date >= BEYOND_2038)
+    return {
+        "python_version": sys.version.split()[0],
+        "python_executable": sys.executable,
+        "platform": platform.platform(),
+        "packages": {p: _package_version(p) for p in ENV_PACKAGES},
+        "last_sim_date": _iso(last_sim_date),
+        "beyond_2038": beyond,
+        "crt_post_2038_ok": not beyond,
+    }
+
+
+def env_summary_line(env: dict) -> str:
+    pk = " ".join(f"{k}={v}" for k, v in env["packages"].items())
+    return (f"env: python {env['python_version']} ({env['python_executable']}) on {env['platform']}; {pk}; "
+            f"last_sim_date={env['last_sim_date']} beyond_2038={env['beyond_2038']}")
+
+
+def write_env_versions(ev_dir, last_sim_date: dt.date | None = None) -> Path:
+    ev_dir = Path(ev_dir)
+    ev_dir.mkdir(parents=True, exist_ok=True)
+    out = ev_dir / "env_versions.json"
+    out.write_text(json.dumps(env_versions(last_sim_date), indent=1, default=str), encoding="utf-8")
+    return out
 
 
 # ------------------------------------------------------------------------------------------------ expected rows
@@ -422,6 +465,7 @@ _DESCRIPTIONS = {
     "expected.jsonl": "the calendar's expected events, run_history rows and mails per day",
     "config_snapshot.json": "redacted lane configuration with its sha256",
     "identity.json": "git commit, harness file hashes, tool versions",
+    "env_versions.json": "python, platform and key package versions, last simulated date and the 2038 check",
     "manifest.db": "consistent copy of the lane manifest SQLite database",
     "checks.jsonl": "oracle check results, one line per check",
     "logs_index.json": "index of copied product logs with sizes, hashes and truncation flags",

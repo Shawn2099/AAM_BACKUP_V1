@@ -434,3 +434,39 @@ def test_cli_export_evidence_without_evidence_fails(tmp_path):
     rc = rl().main(["--export-evidence", str(tmp_path / "z.zip"), "--lane", "nolane", "--stamp", "s1",
                     "--agent-runs", str(tmp_path / "ar")])
     assert rc != 0 and not (tmp_path / "z.zip").exists()
+
+
+# ------------------------------------------------------------------------------------------------ runtime environment
+def test_write_env_versions_records_keys_and_2038_flag(tmp_path):
+    import datetime as dt
+    from tools.livebox import evidence as ev
+
+    out = ev.write_env_versions(tmp_path / "evidence", dt.date(2038, 1, 19))
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert out.name == "env_versions.json"
+    for key in ("python_version", "python_executable", "platform", "packages", "last_sim_date", "beyond_2038",
+                "crt_post_2038_ok"):
+        assert key in data
+    assert set(data["packages"]) == {"loguru", "prefect", "time_machine", "pydantic"}
+    assert data["last_sim_date"] == "2038-01-19" and data["beyond_2038"] is True and data["crt_post_2038_ok"] is False
+    assert ev.env_versions(dt.date(2038, 1, 18))["beyond_2038"] is False
+    assert "env_versions.json" in ev.SCHEMA_VERSIONS
+
+
+def test_env_versions_missing_package_is_na(monkeypatch):
+    from importlib import metadata
+    from tools.livebox import evidence as ev
+
+    real = metadata.version
+
+    def fake(name):
+        if name == "prefect":
+            raise metadata.PackageNotFoundError(name)
+        return real(name)
+
+    monkeypatch.setattr(metadata, "version", fake)
+    env = ev.env_versions(None)
+    assert env["packages"]["prefect"] == "n/a"
+    assert env["packages"]["loguru"] != "n/a"
+    assert env["last_sim_date"] is None and env["beyond_2038"] is False
+    assert "prefect=n/a" in ev.env_summary_line(env)
