@@ -22,7 +22,7 @@ HOW IT WORKS
 2. After FAILURE_THRESHOLD (5) consecutive failures (~5 minutes), considers
    the Prefect server hung-but-alive.
 3. Before acting, ALWAYS checks for an active backup via two signals:
-    - Signal A (real transfer): rclone.exe / robocopy.exe process is alive.
+    - Signal A (real transfer): rclone.exe process is alive.
       → Defer up to MAX_TRANSFER_DEFERRALS (default 240 × 2 min = 8 h).
         A legitimate transfer (max 6 h by subprocess_timeout_seconds) is
         never cut short. At the cap with a PID-live lock owner, log a
@@ -30,7 +30,7 @@ HOW IT WORKS
         lock, never restart under it). Only a dead/absent lock owner
         proceeds to restart.
     - Signal B (lock only, no transfer process): lock file exists + PID alive
-      but no rclone/robocopy detected. Expected between rclone calls
+      but no rclone detected. Expected between rclone calls
       (verify/manifest/report phases) — defer indefinitely while the owner
       is PID-live; at the MAX_DEFERRALS cap (~30 min) log a file/log-only
       CRITICAL and keep deferring. A PID-dead/reused lock is not a live
@@ -187,7 +187,7 @@ def _pid_is_alive(pid: int) -> bool:
 
 
 def _transfer_process_running() -> bool:
-    """Return True if rclone.exe or robocopy.exe is actively running.
+    """Return True if rclone.exe is actively running.
 
     This is the definitive signal that a real data transfer is in progress.
     Used to decide whether deferral should be indefinite (real transfer) or
@@ -195,7 +195,7 @@ def _transfer_process_running() -> bool:
     """
     try:
         import psutil
-        transfer_procs = {"rclone.exe", "robocopy.exe"}
+        transfer_procs = {"rclone.exe"}
         for proc in psutil.process_iter(["name"]):
             p_name = proc.info.get("name")
             if p_name and p_name.lower() in transfer_procs:
@@ -658,7 +658,7 @@ def main() -> None:
 
             # ── Threshold reached — check for active backup before acting ────────
             lock_held = _is_backup_running()       # PID-validated lock file
-            transferring = _transfer_process_running()  # rclone / robocopy alive
+            transferring = _transfer_process_running()  # rclone alive
 
             if transferring:
                 # ── Real transfer detected — defer with an 8-hour safety cap ─────
@@ -678,7 +678,7 @@ def main() -> None:
                             f"transfer process has been detected for {transfer_deferrals} deferrals "
                             f"(~{transfer_deferrals * BACKUP_WAIT_INTERVAL // 3600} h) while the "
                             f"backup lock owner is still alive. NOT removing the live lock and NOT "
-                            f"restarting. Possible zombie rclone/robocopy belonging to "
+                            f"restarting. Possible zombie rclone belonging to "
                             f"{AGENT_SERVICE} - manual review required."
                         )
                         try:
@@ -696,7 +696,7 @@ def main() -> None:
                         f"Prefect API has been unhealthy for {failures} checks and a "
                         f"transfer process has been detected for {transfer_deferrals} deferrals "
                         f"(~{transfer_deferrals * BACKUP_WAIT_INTERVAL // 3600} h). "
-                        f"Possible zombie rclone/robocopy. Forcing restart. "
+                        f"Possible zombie rclone. Forcing restart. "
                         f"NOTE: the zombie process belongs to {AGENT_SERVICE}, not "
                         f"{WATCHED_SERVICE} - manual kill may still be required."
                     )
@@ -722,7 +722,7 @@ def main() -> None:
                 else:
                     logger.warning(
                         f"Prefect API has been unhealthy for {failures} checks but a real "
-                        f"data transfer is in progress (rclone/robocopy detected). "
+                        f"data transfer is in progress (rclone detected). "
                         f"Deferring restart. Will re-check in {BACKUP_WAIT_INTERVAL}s. "
                         f"(transfer-deferral {transfer_deferrals}/{MAX_TRANSFER_DEFERRALS} - cap at 8 h)"
                     )

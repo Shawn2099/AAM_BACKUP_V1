@@ -59,12 +59,10 @@ lan:
   max_attempts: 2
   # Seconds between flow-level retry attempts
   retry_delay_seconds: 600
-  # Extra tries of the LAN preflight (robocopy /L dry-run) after a failure (0-5)
+  # Extra tries of the LAN preflight (rclone dry-run) after a failure (0-5)
   preflight_retries: 1
   # Seconds between LAN preflight tries (5-3600)
   preflight_retry_delay_seconds: 30
-  # Robocopy /MT — parallel copy threads
-  mt_threads: 4
   # rclone --transfers for the NAS mirror: files copied at the same time (1-32)
   transfers: 4
   # rclone --checkers for the NAS mirror and its arrival check (1-32)
@@ -75,31 +73,19 @@ lan:
   error_tail_lines: 100
   # Timeout (seconds) of the rclone arrival check after the NAS mirror (60-14400)
   verify_timeout_seconds: 1800
-  # Robocopy /ZB backup mode: also copies files the account cannot open normally.
-  # Needs the "Back up files and directories" right (SeBackupPrivilege) for the
-  # backup service account; every LAN run checks it first. false = no /ZB.
-  use_backup_mode: true
   # The NAS must have the size of this backup's new/changed files PLUS this many GB
   # free before copying starts (0–100000)
   min_free_dest_gb: 5
-  # Timeout for the SeBackupPrivilege check (seconds, 5–600)
-  privilege_check_timeout_seconds: 60
-  # Timeout for the robocopy /L dry run that counts planned deletions before the
-  # mirror (seconds, 60–7200)
-  dry_run_timeout_seconds: 900
   # Timeout for the rclone dry run that counts planned deletions for the mass-delete
   # guard; it may hash renamed files over SMB (seconds, 60-14400)
   rclone_measure_timeout_seconds: 1800
   # The mass-delete guard counts a renamed file as a move, not a deletion (rclone
-  # --track-renames; the robocopy mirror itself still deletes + copies it)
+  # --track-renames; the mirror uses the same flag)
   track_renames: true
   # Before the dry run: how many times to try the NAS on port 445, and the pause
   # between tries (each try waits up to wol.smb_connect_timeout_seconds)
   preflight_smb_attempts: 8
   preflight_smb_wait_seconds: 15
-  # KB of the robocopy log's end used for the result and put into alerts/DB
-  # (the FULL log is always kept in run_logs). 4–10240
-  log_tail_kb: 100
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
@@ -397,9 +383,6 @@ maintenance:
   # Days of application log files to keep (1–365). 90 = the 3-month log
   # retention the owner asked for (R8)
   log_retention_days: 90
-  # Robocopy temp logs left in %TEMP% by a killed run are deleted once older than
-  # this many hours (1-720); the age gate protects a running backup's own log
-  orphan_robocopy_log_max_age_hours: 24
   # How long a backup waits for another backup job to finish before it gives up
   # as *_SLOT_TIMEOUT (seconds). The schedule check (see `schedule:`) uses it.
   concurrency_wait_seconds: 3600

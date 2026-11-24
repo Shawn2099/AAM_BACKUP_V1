@@ -46,19 +46,12 @@ COLOUR = {faults.ACTION: "#b91c1c", faults.PROBLEM: "#b91c1c", faults.WARNING: "
           "RESOLVED": "#047857", "INFO": "#1d4ed8"}
 WHO = {faults.YOU: "you", faults.IT: "your IT person", faults.SUPPORT: "support"}
 
-_ROBOCOPY_BITS = ((1, "files copied"), (2, "extra files in the backup"),
-                  (4, "mismatched files"), (8, "some files could not be copied"),
-                  (16, "fatal error"))
-
-
 def exit_meaning(leg: str, code) -> str:
     if type(code) is not int or code < 0:
         return "the tool did not run or did not finish"
-    if leg == "cloud":
-        return RCLONE_EXIT_MEANING.get(code, "unknown exit code")
-    if code == 0:
+    if leg != "cloud" and code == 0:
         return "no change"
-    return "; ".join(text for bit, text in _ROBOCOPY_BITS if code & bit) or "unknown exit code"
+    return RCLONE_EXIT_MEANING.get(code, "unknown exit code")   # both legs run rclone (plan P1)
 
 
 def software_version() -> str:

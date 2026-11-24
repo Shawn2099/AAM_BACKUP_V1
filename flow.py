@@ -6,7 +6,7 @@ This provides full visibility into which step is running, which failed, and how 
 
 Two deployments from one codebase:
   - backup-cloud: daily 6 PM IST, rclone sync → GCS
-  - backup-lan:   daily 1 AM IST, robocopy /MIR → LAN (WoL + shutdown)
+  - backup-lan:   daily 1 AM IST, rclone mirror → LAN (WoL + shutdown)
   - backup-all:   manual, runs both sequentially (cloud first)
 """
 
@@ -43,10 +43,9 @@ from core import cloud_sync
 from core.cloud_sync import measure_planned_deletes, resolve_max_duration_seconds, run_cloud_sync
 from core.cloud_verify import verify_cloud_integrity
 from core.health import CLOCK_OK, check_clock, pre_backup_health
-from core.lan_manifest import diff_snapshots, snapshot_to_dict, walk_lan_destination
 from core.lan_preflight import check_lan_destination
 from core import lan_sync
-from core.lan_sync import cleanup_orphaned_robocopy_logs, plan_lan_mirror
+from core.lan_sync import plan_lan_mirror
 from core.logging import configure as configure_logging
 from core.logging import configure_prefect_bridge
 from core.manifest import ManifestDB
@@ -835,15 +834,6 @@ def cloud_access_task(config, run_id: str, artefacts_dir: str | None = None):
         )
 
 
-def lan_deletes_of(result: dict, rename_moves: int) -> int | None:
-    """robocopy deletions of one attempt that count as data deletions for G3's
-    already_deleted: `files_deleted` minus the rename moves the guard measured
-    (their old-name half is deleted but the data lives on under the new name).
-    None = unknown (fail closed)."""
-    deleted = result.get("files_deleted")
-    return max(0, deleted - int(rename_moves)) if type(deleted) is int else None
-
-
 def _sync_with_retries(leg: str, *, run_once, remeasure, deletes_of, retryable,
                        max_attempts: int, delay_s: int, budget: RunBudget | None,
                        reserve_s: float, state: dict) -> dict:
@@ -851,7 +841,7 @@ def _sync_with_retries(leg: str, *, run_once, remeasure, deletes_of, retryable,
 
     Replaces Prefect task retries, which re-ran the mirror with the same
     arguments: a fresh --max-delete each time (up to max_attempts x the G3
-    limit deleted) and a robocopy /MIR repeat without re-checking anything.
+    limit deleted) and a mirror repeat without re-checking anything.
 
     run_once() runs one attempt; it returns the result or
     raises SyncFailed (anything else is not retried). A failed attempt is
@@ -1169,24 +1159,6 @@ def lan_preflight_task(config, artefacts_dir: str):
     return plan
 
 
-@task(name="lan-snapshot-before")
-def lan_snapshot_before_task(config):
-    """Snapshot LAN destination before sync for diff comparison.
-
-    Returns None when the walk fails: the destination file count is then
-    UNKNOWN, and the guards fail the run (M2 2.2, G3 needs it). An empty
-    dict would be indistinguishable from a genuinely empty destination.
-    """
-    logger.info("Taking LAN snapshot (before sync)")
-    try:
-        before = snapshot_to_dict(walk_lan_destination(config.paths.lan_destination))
-        logger.info(f"LAN snapshot: {len(before)} files before sync")
-        return before
-    except Exception as e:
-        logger.error(f"Pre-sync destination walk failed: {e} - destination file count unknown")
-        return None
-
-
 def _apply_approval(config, leg: str, approval_id: str | None, run_id: str | None,
                     results: list) -> tuple[frozenset, dict]:
     """Which blocked guards a human approved for THIS run (plan §6.2).
@@ -1384,30 +1356,6 @@ def lan_access_task(config, plan: dict, run_id: str):
         min_free_gb=config.lan.min_free_dest_gb)
 
 
-@task(name="lan-snapshot-after")
-def lan_snapshot_after_task(config):
-    """Snapshot LAN destination after sync for diff comparison.
-
-    G14: returns None (instead of raising) when the walk fails. The sync
-    itself already succeeded — a dropped SMB session or NAS hiccup while
-    enumerating must not turn a completed backup into a failed run. The
-    pipeline skips diff metrics + DB record for that run; the next run
-    re-derives everything from a fresh walk.
-    """
-    logger.info("Taking LAN snapshot (after sync)")
-    try:
-        after_files = walk_lan_destination(config.paths.lan_destination)
-        after = snapshot_to_dict(after_files)
-    except Exception as e:
-        logger.critical(
-            f"Post-sync destination walk failed: {e} - sync result is "
-            "UNAFFECTED; diff metrics and DB record are skipped for this run"
-        )
-        return None
-    logger.info(f"LAN snapshot: {len(after)} files after sync")
-    return after
-
-
 @task(name="lan-sync")
 def lan_sync_task(config, artefacts_dir: str, max_delete: int,
                   budget: RunBudget | None = None):
@@ -1462,31 +1410,6 @@ def lan_verify_task(config, artefacts_dir: str, changed_after_epoch: float,
     return lan_sync.check_lan_arrival(
         config.lan, config.paths.source_drive, config.paths.lan_destination, artefacts_dir,
         changed_after_epoch=changed_after_epoch, timeout=timeout)
-
-
-@task(name="lan-record")
-def lan_record_task(
-    config,
-    sync_result: dict,
-    before_dict: dict,
-    after_dict: dict,
-):
-    """Compute diff from before/after snapshots, record to ManifestDB."""
-    diff = diff_snapshots(before_dict, after_dict)
-
-    db = ManifestDB.from_config(config)
-    try:
-        # snapshot_to_dict returns {path: (size, mtime)} tuples
-        files_list = [{"path": k, "size": v[0], "mtime": v[1]}
-                      for k, v in after_dict.items()]
-        record_sync_results(db, "lan", files_list, diff.get("removed"))
-        logger.info(
-            f"LAN recorded: {len(after_dict)} files, "
-            f"+{len(diff['added'])} -{len(diff['removed'])} "
-            f"*{len(diff['modified'])} changed"
-        )
-    finally:
-        db.close()
 
 
 @task(name="lan-shutdown")
@@ -1564,43 +1487,6 @@ def cloud_publish_artifact_task(verify_data: dict, sync_result: dict,
         logger.info("Published Cloud Backup Markdown Artifact to Prefect Console UI")
     except Exception as e:
         logger.warning(f"Could not publish cloud backup artifact: {e}", exc_info=True)
-
-
-@task(name="lan-publish-artifact")
-def lan_publish_artifact_task(sync_result: dict, diff: dict, files_copied: int | None,
-                              bytes_copied: int | None, total_files: int,
-                              key: str = "lan-backup-summary"):
-    """Publish a beautiful Markdown summary of the LAN Backup to the Prefect Console."""
-    try:
-        from prefect.artifacts import create_markdown_artifact
-        status = sync_result.get("status", "UNKNOWN")
-        exit_code = sync_result.get("exit_code", -1)
-        
-        added = len(diff.get("added", []))
-        modified = len(diff.get("modified", []))
-        removed = len(diff.get("removed", []))
-        files_text, volume_text = _summary_counts(files_copied, bytes_copied)
-        
-        markdown_content = (
-            f"# 🖥️ AAM LAN Backup Run Summary\n\n"
-            f"## 📊 Robocopy Differential Metrics\n"
-            f"* **Status:** `{status}` (Exit Code: `{exit_code}`)\n"
-            f"* **Total Differential Changes:** `{files_text}` files\n"
-            f"* **Volume Transferred:** `{volume_text}`\n\n"
-            f"## 📁 File Alterations Detail\n"
-            f"* **➕ Files Added:** `{added}` files\n"
-            f"* **✏️ Files Modified:** `{modified}` files\n"
-            f"* **🗑️ Files Pruned (Mirror):** `{removed}` files\n\n"
-            f"## 📦 Destination Volume Inventory\n"
-            f"* **Active Files:** `{total_files}` files\n"
-        )
-        create_markdown_artifact(
-            markdown=markdown_content,
-            key=key
-        )
-        logger.info("Published LAN Backup Markdown Artifact to Prefect Console UI")
-    except Exception as e:
-        logger.warning(f"Could not publish lan backup artifact: {e}", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2135,7 +2021,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         )
         # XR-2/XR-6: no Prefect retries for the mirror - _sync_with_retries
         # decides (lan.max_attempts / retry_delay_seconds) and re-runs the
-        # robocopy /L measurement + guards before any repeat of /MIR.
+        # dry-run measurement + guards before any repeat of the mirror.
         sync = lan_sync_task.with_options(retries=0)
 
         status = "LAN_SKIPPED"
@@ -2261,8 +2147,8 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             extended_metrics = json.dumps(metrics)
 
             logger.info(f"LAN pipeline completed with status {status}")
-            # F3: shut the NAS down ONLY after a fully complete mirror (robocopy
-            # exit 0-3). A PARTIAL run (exit 4-15) means some files did not land —
+            # F3: shut the NAS down ONLY after a fully complete mirror (LAN_COMPLETE).
+            # A PARTIAL run (rclone exit 1/4/6/10) means some files did not land —
             # powering off the NAS now strands them until the next WoL, and the
             # partial state must be reported, not silent.
             if status == "LAN_COMPLETE":
@@ -2547,7 +2433,7 @@ _SERVICE_LOG_GLOBS = ("agent_svc-*.log", "prefect_svc-*.log", "watchdog_svc-*.lo
 def log_retention_task(config) -> dict:
     """Delete retained logs past their configured retention (plan WP2).
 
-    * run artefacts (full rclone/robocopy logs): run_logs.retention_days
+    * run artefacts (full rclone logs): run_logs.retention_days
     * NSSM-rotated service logs: run_logs.service_log_retention_days
     App logs (backup_*.log) are rotated/retained by loguru
     (maintenance.log_retention_days). Never raises.
@@ -3356,7 +3242,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
 
     Modes:
         cloud — Run only cloud backup (rclone sync → GCS)
-        lan   — Run only LAN backup (robocopy /MIR, includes WoL + shutdown)
+        lan   — Run only LAN backup (rclone mirror, includes WoL + shutdown)
         all   — Run both sequentially (cloud first, then LAN)
 
     approval_id: set only by the dashboard when a human approved a BLOCKED
@@ -3420,16 +3306,6 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
     passes = [p for p in active if fy is None or p.fy == fy.upper()]
     runs = passes or [None]   # no FY folder to back up: the baseline call, once per leg
     started_fy = active[0].fy if active else None
-
-    # G8: clean up orphaned robocopy temp logs left behind by hard-killed
-    # processes (SCM stop, timeout kill, crash). Normal runs delete their own
-    # log in a finally block; only killed runs strand them in %TEMP%. The age
-    # gate protects a concurrently running pipeline's active log.
-    try:
-        cleanup_orphaned_robocopy_logs(
-            max_age_hours=config.maintenance.orphan_robocopy_log_max_age_hours)
-    except Exception as e:
-        logger.warning(f"Orphaned robocopy log cleanup failed (non-fatal): {e}")
 
     # ── Watchdog lock + serialization now live INSIDE each pipeline ──
     # P2-CONC: the concurrency slot and the lock moved into _backup_slot()

@@ -99,9 +99,7 @@ def derive_config(
 
     lan = cfg.setdefault("lan", {})
     lan["retry_wait_seconds"] = 1
-    if has_backup_privilege is False:
-        lan["use_backup_mode"] = False
-    # shutdown_after_backup and (with privilege) use_backup_mode: as production.
+    # shutdown_after_backup: as production (the LAN copier no longer has a backup-mode key).
 
     cfg.setdefault("guards", {})["forbid_local_destination"] = False
 

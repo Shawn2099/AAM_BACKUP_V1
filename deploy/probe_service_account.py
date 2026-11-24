@@ -77,15 +77,6 @@ def run_checks(config_path: str) -> list[tuple[str, str, str]]:
             permissions.probe_destination_write(config.paths.lan_destination,
                                                 f"readiness-{uuid.uuid4().hex[:8]}"),
             f"create/write/read/delete at {config.paths.lan_destination}")[1])
-        if config.lan.use_backup_mode:
-            def privilege() -> str:
-                artefacts = RunArtefacts.ephemeral("readiness")
-                permissions.check_backup_privilege(
-                    artefacts, timeout_s=config.lan.privilege_check_timeout_seconds)
-                return "SeBackupPrivilege held (robocopy /ZB)"
-            check("backup privilege", privilege)
-        else:
-            results.append(("SKIP", "backup privilege", "lan.use_backup_mode is false"))
     else:
         results.append(("SKIP", "NAS write", "lan.enabled is false"))
 

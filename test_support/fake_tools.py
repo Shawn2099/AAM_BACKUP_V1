@@ -119,24 +119,6 @@ class SubprocessStyleRunTool:
         )
 
 
-ROBOCOPY_CLEAN_SUMMARY = (
-    "\n------------------------------------------------------------------------------\n\n"
-    "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-    "    Dirs :         1         0         1         0         0         0\n"
-    "   Files :        {total}         {copied}         {skipped}         0         {failed}         0\n"
-    "   Bytes :         {bytes_copied}         {bytes_copied}         0         0         0         0\n"
-    "   Ended : Wednesday, October 14, 2026 4:43:36 PM\n"
-)
-
-
-def robocopy_log(total: int = 1, copied: int = 1, skipped: int = 0, failed: int = 0,
-                 body: str = "", bytes_copied: int = 0) -> str:
-    """A robocopy /UNILOG body with a completed job summary (/BYTES format)."""
-    return body + ROBOCOPY_CLEAN_SUMMARY.format(
-        total=total, copied=copied, skipped=skipped, failed=failed,
-        bytes_copied=bytes_copied)
-
-
 # ── LAN rclone fake (plan P1 T0) ─────────────────────────────────────
 #
 # Patches `core.lan_sync.run_tool` (the module attribute; created if absent)

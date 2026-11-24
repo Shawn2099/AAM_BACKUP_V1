@@ -39,8 +39,8 @@ SOURCE_IGNORE_NAMES = frozenset({
 def count_backup_files(relative_paths) -> int:
     """Destination files that are backup content (G3 denominator).
 
-    The mount marker is excluded at any depth, exactly like robocopy's
-    `/XF .AAM_TARGET_MOUNTED`, which never copies or deletes it.
+    The mount marker is excluded at any depth, exactly like the mirror's
+    `--exclude .AAM_TARGET_MOUNTED`, which never copies or deletes it.
     """
     marker = MOUNT_MARKER.lower()
     return sum(1 for p in relative_paths
@@ -384,7 +384,7 @@ def first_regular_file(root: str, ignore_names: frozenset[str]) -> str | None:
     """Return the first regular file under `root`, or None.
 
     Stops at the first hit (cheap on a populated drive, exact on an empty
-    one). Never follows symlinks/junctions — robocopy /XJ excludes them, so
+    one). Never follows symlinks/junctions — the mirror skips links (--skip-links), so
     a file reachable only through a junction is not backup content.
     Raises OSError if `root` itself cannot be listed (caller fails closed).
     """
@@ -418,12 +418,11 @@ def first_regular_file(root: str, ignore_names: frozenset[str]) -> str | None:
 def require_source_files(source: str) -> None:
     """Raise ValueError (G1 reason) if `source` lists fine but holds no real file.
 
-    Last line of defence used by the mirror-command builders (robocopy,
-    rclone): even a caller that bypasses the pipeline guards can never
+    Last line of defence used by the mirror-command builders (the LAN
+    and cloud rclone commands): even a caller that bypasses the pipeline guards can never
     mirror an empty or folders-only source. A source that cannot be listed
     at all is left to the tool, which then deletes nothing: verified
-    2026-10-14 — robocopy /MIR exits 16 ("ERROR 2 Accessing Source
-    Directory"), rclone sync exits 3 ("not deleting files as there were IO
+    2026-10-14 — rclone sync exits 3 ("not deleting files as there were IO
     errors"); the pre-backup health check fails it earlier anyway.
     """
     try:

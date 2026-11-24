@@ -288,12 +288,6 @@ class Seams:
             if self.bucket_dir is not None:
                 self.bucket_dir.mkdir(parents=True, exist_ok=True)
 
-            if self._strip_zb:
-                import core.lan_sync as ls
-                orig = ls.build_robocopy_command
-                p.setattr(ls, "build_robocopy_command",
-                          lambda s, d, c, _o=orig: [a for a in _o(s, d, c) if str(a).upper() != "/ZB"])
-
             self._patch_flow_run_context(p)
             self._installed = True
         except BaseException:
@@ -595,8 +589,7 @@ def dev_prod_raw() -> dict:
                   "runtime_dir": r"C:\BackupAgent", "gcs_key_path": r"C:\BackupAgent\key.json"},
         "lan": {"enabled": True, "retry_count": 1, "retry_wait_seconds": 1, "subprocess_timeout_seconds": 3600,
                 "shutdown_after_backup": True, "shutdown_on_all_retries_exhausted": False, "max_attempts": 1,
-                "retry_delay_seconds": 60, "mt_threads": 2, "dry_run_timeout_seconds": 120,
-                "use_backup_mode": False},
+                "retry_delay_seconds": 60},
         "wol": {"enabled": True, "mac_address": "AA:BB:CC:DD:EE:FF", "server_ip": "10.0.0.5",
                 "broadcast_address": "", "wake_timeout_seconds": 60, "ping_interval_seconds": 5,
                 "stability_wait_seconds": 0, "wake_retry_count": 1, "wake_retry_interval_seconds": 2},

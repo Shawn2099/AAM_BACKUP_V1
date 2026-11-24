@@ -41,6 +41,10 @@ DEPRECATED_KEYS: dict[str, frozenset[str]] = {
     # owner 2026-10-22: a fixed number of hours raised false "overdue" alarms for any schedule that
     # is not daily; the limit now follows the schedule (dashboard.stale_grace_hours).
     "dashboard": frozenset({"api_key", "auth_enabled", "stale_after_hours"}),
+    # plan P1 (C10b): the LAN leg is rclone now; these keys controlled the old LAN copier.
+    "lan": frozenset({"mt_threads", "log_tail_kb", "dry_run_timeout_seconds", "use_backup_mode",
+                      "privilege_check_timeout_seconds"}),
+    "maintenance": frozenset({"orphan_robocopy_log_max_age_hours"}),  # DEPRECATED key
 }
 
 
@@ -152,10 +156,9 @@ class LanConfig(StrictModel):
     retry_delay_seconds: int = Field(default=600, ge=60, le=3600, description="Delay between flow-level retry attempts")
     preflight_retries: int = Field(
         default=1, ge=0, le=5,
-        description="Extra tries of the LAN preflight (robocopy /L dry-run) after a failure")
+        description="Extra tries of the LAN preflight (rclone dry-run) after a failure")
     preflight_retry_delay_seconds: int = Field(
         default=30, ge=5, le=3600, description="Seconds between LAN preflight tries")
-    mt_threads: int = Field(default=4, ge=1, le=128, description="Robocopy /MT multi-threaded copy count")
     transfers: int = Field(default=4, ge=1, le=32, description="rclone --transfers for the NAS mirror: files copied at the same time")
     checkers: int = Field(default=4, ge=1, le=32, description="rclone --checkers for the NAS mirror and its arrival check: files compared at the same time")
     modify_window_seconds: int = Field(
@@ -169,39 +172,25 @@ class LanConfig(StrictModel):
     verify_timeout_seconds: int = Field(
         default=1800, ge=60, le=14400,
         description="Timeout for the rclone arrival check after the NAS mirror (seconds)")
-    log_tail_kb: int = Field(default=100, ge=4, le=10240, description="Size of the robocopy log tail (KB) used for the result decision and carried into alerts/DB; the full log is always kept in run_logs")
-    # F8: the preflight /L walk scales with dataset size (1M files ~= 5-10 min
-    # over SMB; 2.5M ~= 12-25 min). The old hardcoded 300s failed at exactly the
-    # scale this deployment targets, aborting a healthy backup before it started.
-    dry_run_timeout_seconds: int = Field(default=900, ge=60, le=7200, description="Timeout for the robocopy /L preflight dry-run (seconds)")
     rclone_measure_timeout_seconds: int = Field(
         default=1800, ge=60, le=14400,
         description="Timeout for the rclone dry-run that measures planned deletions before the "
-                    "mirror (seconds); it may hash renamed files over SMB, so it is longer than "
-                    "dry_run_timeout_seconds")
+                    "mirror (seconds); it may hash renamed files over SMB, so it can take long")
     track_renames: bool = Field(
         default=True,
         description="The mass-delete guard (G3) measurement of the LAN mirror uses rclone "
                     "--track-renames, so a renamed folder is a move, not planned deletions. "
-                    "(The robocopy mirror itself still deletes and copies a renamed folder.)")
+                    "The mirror itself uses the same flag, so a renamed folder is moved on the NAS.")
     preflight_smb_attempts: int = Field(
         default=8, ge=1, le=60,
         description="LAN preflight: SMB port-445 reachability attempts before failing "
                     "(each up to wol.smb_connect_timeout_seconds)")
     preflight_smb_wait_seconds: int = Field(
         default=15, ge=1, le=300, description="LAN preflight: seconds between SMB attempts")
-    use_backup_mode: bool = Field(
-        default=True,
-        description="robocopy /ZB (backup mode) so files the account cannot open normally "
-                    "are still copied (owner DEC-8). Needs SeBackupPrivilege on the service "
-                    "account; the preflight checks it. false = no /ZB.")
     min_free_dest_gb: float = Field(
         default=5, ge=0, le=100_000,
         description="Preflight: the NAS must have the bytes this backup will copy plus this "
                     "many GB free.")
-    privilege_check_timeout_seconds: int = Field(
-        default=60, ge=5, le=600,
-        description="Timeout for the `whoami /priv` SeBackupPrivilege check (seconds)")
 
 
 class WolConfig(StrictModel):
@@ -668,13 +657,6 @@ class MaintenanceConfig(StrictModel):
         le=365,
         description="Days of log files to retain before Loguru auto-deletion (1–365)",
     )
-    orphan_robocopy_log_max_age_hours: int = Field(
-        default=24,
-        ge=1,
-        le=720,
-        description="G8: robocopy temp logs left in %TEMP% by a killed run are deleted once "
-                    "older than this (hours); the age gate protects a running backup's log",
-    )
     lock_release_retries: int = Field(
         default=5, ge=0, le=50,
         description="A7: how often the backup lock file is deleted again when the first delete fails "
@@ -688,7 +670,7 @@ class MaintenanceConfig(StrictModel):
         default=1.0,
         ge=0.1,
         le=30,
-        description="A6: while rclone/robocopy runs, the agent checks this often whether the flow "
+        description="A6: while rclone runs, the agent checks this often whether the flow "
                     "was cancelled or interrupted; it then stops the tool and records the run "
                     "(seconds). A cancel is noticed within this time.",
     )
@@ -732,7 +714,7 @@ class RunLogsConfig(StrictModel):
 
     dir: str = Field(
         default="",
-        description="Root for per-run artefacts (full rclone/robocopy logs, check "
+        description="Root for per-run artefacts (full rclone logs, check "
                     "outputs). Empty = <runtime_dir>/run_logs.",
     )
     retention_days: int = Field(
@@ -988,10 +970,10 @@ class WatchdogConfig(StrictModel):
         default=120, ge=10, le=1800, description="Re-check interval while a backup is running")
     max_deferrals: int = Field(
         default=15, ge=1, le=1000,
-        description="Lock held but no rclone/robocopy: deferrals before the CRITICAL alert")
+        description="Lock held but no rclone: deferrals before the CRITICAL alert")
     max_transfer_deferrals: int = Field(
         default=240, ge=1, le=10_000,
-        description=("rclone/robocopy running: deferrals before the zombie-transfer handling "
+        description=("rclone running: deferrals before the zombie-transfer handling "
                      "(240 x 120 s = 8 h, above the longest legitimate transfer)"))
     restart_cooldown_seconds: int = Field(
         default=120, ge=0, le=1800, description="Pause after a restart before resuming checks")

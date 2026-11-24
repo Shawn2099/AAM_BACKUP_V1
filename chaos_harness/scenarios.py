@@ -23,13 +23,13 @@ class Scenario:
 
 H1_ROBOCOPY_KILL = Scenario(
     sid="H1",
-    title="Process termination / abnormal execution (robocopy kill mid-/MIR)",
+    title="Process termination / abnormal execution (LAN copier kill mid-mirror)",
     family="Process termination / abnormal execution",
     real_entrypoints=(
         "flow.backup(mode='lan') [chaos deployment backup-lan]",
         "flow._run_lan_pipeline",
-        "core.lan_sync.run_lan_sync",
-        "core.lan_sync.decide_lan_result",
+        "core.lan_sync.run_lan_mirror",
+        "core.lan_sync.decide_lan_rclone_result",
         "ManifestDB._record_run",
     ),
     fault_tool="C:\\ChaosTest\\tools\\killrob.py (taskkill/wmi/nt/ctrl)",
@@ -39,7 +39,7 @@ H1_ROBOCOPY_KILL = Scenario(
               "Prefect FAILED", "lock released", "forensic log retained"),
     evidence=("killer log", "agent log slice", "run_history row",
               "Prefect run states (pfx.py run)", "lock state"),
-    cleanup=("orphaned robocopy log reaped by G8", "lock absent", "mirror reconverged"),
+    cleanup=("lock absent", "mirror reconverged"),
     harness_only=("killer arming", "evidence capture", "status assertions"),
 )
 

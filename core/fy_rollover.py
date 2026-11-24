@@ -211,7 +211,7 @@ def new_fy_file_count(source_drive: str, to_fy: str, placeholder_name: str | Non
     """Real files in the new FY folder next to the configured source, or None when it does not exist.
 
     The placeholder and the entries G1 never counts (desktop.ini, Thumbs.db, ...) are not files of the
-    office. Never follows links (robocopy /XJ would not either). Plan FY-6."""
+    office. Never follows links (the mirror skips links too). Plan FY-6."""
     root = _new_fy_root(source_drive, to_fy)
     if root is None:
         return None

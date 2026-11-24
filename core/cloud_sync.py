@@ -173,8 +173,8 @@ def count_planned_deletes(log_text: str) -> int:
 
 def count_planned_moves(log_text: str) -> int:
     """Rename moves rclone `--track-renames` planned: `"skipped":"move to <name>"`
-    lines (verified on rclone v1.74.3, 2026-11-25). Each is a file robocopy would
-    delete (old name) and copy again (new name)."""
+    lines (verified on rclone v1.74.3, 2026-11-25). Each is a file a delete-and-copy
+    mirror would delete (old name) and copy again (new name)."""
     planned = 0
     for line in (log_text or "").splitlines():
         try:
@@ -290,14 +290,14 @@ def measure_planned_deletes(
     matches by size/hash/modtime under another name is a MOVE and is not
     counted as a delete - its data still exists in the source. Cloud passes
     its temp rclone config and fast_list=True; the LAN leg passes none (local
-    backend, UNC destination) plus the names robocopy /MIR keeps.
+    backend, UNC destination) plus the names the LAN mirror keeps (LAN_EXCLUDES).
 
     Differences from the real upload command (build_rclone_sync_command): no
     --gcs-no-check-bucket, --check-first or --gcs-storage-class. Those only
     change how objects are written (bucket check, ordering, storage class);
     they do not change which files rclone decides to delete or move, so the
     dry-run's delete count equals the real sync's.
-    ignore_case: LAN leg - rclone filters are case-sensitive, robocopy's are not.
+    ignore_case: LAN leg - rclone filters are case-sensitive, the NTFS share is not.
 
     Returns {"planned_deletes": int | None, "moves": int, "exit_code", "error",
     "log_path"};

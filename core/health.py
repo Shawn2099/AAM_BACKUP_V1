@@ -218,7 +218,7 @@ def pre_backup_health(
 
     Raises:
         HealthError: If any critical check fails — key missing, clock skewed
-            (or unverified under policy "block"), rclone/robocopy not found,
+            (or unverified under policy "block"), rclone not found,
             or source drive inaccessible.
     """
     clock = None

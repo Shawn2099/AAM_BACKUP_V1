@@ -6,7 +6,7 @@ and the fix. These are environment faults to repair, so they raise
 PermissionCheckError (the run is *_FAILED and retried next night) — they
 are never a human approval decision (*_BLOCKED).
 
-Verified on Windows 11 / robocopy 10.0 / rclone v1.74.3 (2026-10-15):
+Verified on Windows 11 / rclone v1.74.3 (2026-10-15):
 * `whoami /priv /fo csv /nh` prints one CSV row per privilege; column 1 is
   the privilege NAME (locale independent), description and state are
   localized. Git Bash ships its own `whoami`, so the System32 one is called
@@ -35,7 +35,7 @@ from core.tool_runner import run_tool, tail_lines
 
 GB = 1024 ** 3
 
-# Destination write probe. robocopy excludes the pattern (/XF) in both the
+# Destination write probe. rclone excludes the pattern (--exclude) in both the
 # dry-run and the mirror, like the mount marker, so a probe left behind by
 # a killed run is never copied, deleted or counted as a planned deletion.
 PROBE_PREFIX = ".aam_write_probe_"
@@ -58,7 +58,7 @@ def _fail(code: str, message: str) -> PermissionCheckError:
     return coded(PermissionCheckError(message), code)
 
 
-# ── SeBackupPrivilege (robocopy /ZB) ───────────────────────────────────────
+# ── Token privileges (helpers; whoami /priv) ───────────────────────────────────────
 
 def whoami_path() -> str:
     return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "whoami.exe")
@@ -71,35 +71,6 @@ def parse_privileges(csv_text: str) -> set[str]:
         if row and _PRIVILEGE_NAME.match(row[0].strip()):
             names.add(row[0].strip())
     return names
-
-
-def check_backup_privilege(artefacts: RunArtefacts, timeout_s: float) -> None:
-    """robocopy /ZB needs SeBackupPrivilege, else it stops with exit 16 (C-2).
-
-    A privilege listed by whoami is held (robocopy enables it itself). An
-    interactive non-elevated session hides it (UAC); the service context
-    shows the real token.
-    """
-    result = run_tool("whoami-priv", [whoami_path(), "/priv", "/fo", "csv", "/nh"],
-                      timeout_s=timeout_s, artefacts=artefacts)
-    if not result.completed or result.exit_code != 0:
-        detail = result.describe_failure() or (
-            f"whoami exit {result.exit_code}: {result.stderr_text().strip() or 'no output'}")
-        raise _fail("AAM-LAN-05", f"SeBackupPrivilege could not be checked ({detail}) - "
-                                   "refusing to start robocopy /ZB blind.")
-    held = parse_privileges(result.stdout_text())
-    if not held:
-        raise _fail("AAM-LAN-05", "SeBackupPrivilege could not be checked: whoami listed "
-                                   "no privileges.")
-    if "SeBackupPrivilege" not in held:
-        raise _fail("AAM-LAN-05",
-            "The account running the backup does not hold SeBackupPrivilege ('Back up files "
-            "and directories'), which robocopy /ZB needs - robocopy would stop with exit 16. "
-            "Fix: secpol.msc > Local Policies > User Rights Assignment > 'Back up files and "
-            "directories' > add the backup service account, then restart the AamBackupAgent "
-            "service. Alternative: set lan.use_backup_mode: false (no /ZB; files the account "
-            "cannot read will then fail to copy).")
-    logger.info("Preflight: SeBackupPrivilege held")
 
 
 # ── LAN destination: write / read back / delete ───────────────────────────
@@ -143,7 +114,7 @@ def _explain_write_failure(dest: str, e: OSError, rights_fix: str) -> tuple[str,
 def probe_destination_write(dest: str, run_id: str) -> None:
     """Create, write, read back and delete a probe file at the destination root.
 
-    robocopy /L cannot detect write denial (21 nights of 'Access is denied'
+    a dry-run cannot detect write denial (21 nights of 'Access is denied'
     in production); the mirror needs create, write and delete rights.
     """
     path = os.path.join(dest, PROBE_PREFIX + re.sub(r"[^A-Za-z0-9_.-]", "_", run_id))

@@ -92,7 +92,7 @@ _IO_ERROR_LINE_RE = re.compile(
 # transfer never converges it, so the bidirectional audit must not
 # treat it as divergent backup content.
 # Exclusion is by exact basename at ANY depth (never dotfiles in
-# general): robocopy /XF matches the filename in every directory, so a
+# general): the mirror's --exclude matches the filename in every directory, so a
 # canary under an FY subdir (e.g. `E2E_TEST_FY/.AAM_TARGET_MOUNTED`) is
 # excluded from the transfer exactly like the root one and must be
 # excluded from the audit verdict on BOTH sides (missing-from-dest `+`
@@ -461,8 +461,8 @@ def audit_lan(
 ) -> dict:
     """Read-only LAN audit via `rclone check` (local backend, hash-aware).
 
-    The LAN backup was created by Robocopy; Robocopy does not participate
-    here — rclone independently compares source path ↔ backup path by
+    The LAN backup is written by rclone sync; this check does not use the
+    sync's own result — rclone independently compares source path ↔ backup path by
     size + MD5 content (measured). No --size-only: size-only can never
     yield VERIFIED. UNC destinations (\\\\server\\share) work through the
     local backend like any other path.

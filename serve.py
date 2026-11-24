@@ -53,7 +53,7 @@ def _deployments():
                 parameters={"config_path": CONFIG_PATH, "mode": "lan"},
                 schedules=[Cron(config.schedule.lan_cron, tz)] if config.lan.scheduled else [],
                 tags=["production", "lan"],
-                description=("Daily LAN backup - robocopy /MIR, includes WoL and auto-shutdown" if config.lan.scheduled
+                description=("Daily LAN backup - rclone mirror, includes WoL and auto-shutdown" if config.lan.scheduled
                              else "Manual-only lan backup - runs when started from the dashboard"),
             )
         )

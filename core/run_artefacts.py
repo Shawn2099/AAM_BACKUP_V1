@@ -5,7 +5,7 @@ Layout::
     <run_logs_dir>/<YYYY-MM-DD>/<YYYY-MM-DD>_<HHmm>_<leg>_<short id>/
         manifest.json                          every artefact + tool, argv, exit, timing
         <YYYY-MM-DD>_<HHmm>_<leg>_rclone-sync.log     full rclone JSON log (--log-file)
-        <YYYY-MM-DD>_<HHmm>_<leg>_robocopy.log        full robocopy /UNILOG (UTF-16)
+        <YYYY-MM-DD>_<HHmm>_<leg>_robocopy.log        full LAN copier log (UTF-16), legacy runs only
         ...
 
 (Plan F: a log file keeps its meaning when it is mailed or copied out of its folder. The DB run

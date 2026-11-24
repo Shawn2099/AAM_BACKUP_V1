@@ -1,6 +1,6 @@
 """One subprocess wrapper for every external tool (plan §5.1).
 
-Guarantees, for every rclone / robocopy / system-tool invocation:
+Guarantees, for every rclone / system-tool invocation:
 
 * stdout and stderr stream to FILES inside the run's artefact folder — the
   full output is kept (WP2) and never accumulated unbounded in memory;
@@ -192,8 +192,7 @@ def run_tool(
 ) -> ToolResult:
     """Run one external tool; see module docstring for the guarantees.
 
-    `log_path`: a file the tool itself writes (rclone --log-file, robocopy
-    /UNILOG) — reserve it with `artefacts.new_path(...)` and pass the same
+    `log_path`: a file the tool itself writes (rclone --log-file) — reserve it with `artefacts.new_path(...)` and pass the same
     path in argv; it is recorded in the manifest.
     """
     stdout_path = artefacts.new_path(f"{name}.stdout", "txt")

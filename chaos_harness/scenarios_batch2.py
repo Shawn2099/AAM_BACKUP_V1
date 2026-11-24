@@ -14,8 +14,8 @@ B2_1_KILL_MATRIX = Scenario(
     real_entrypoints=(
         "flow.backup(mode='lan') [chaos deployment backup-lan]",
         "flow._run_lan_pipeline",
-        "core.lan_sync.run_lan_sync",
-        "core.lan_sync.decide_lan_result",
+        "core.lan_sync.run_lan_mirror",
+        "core.lan_sync.decide_lan_rclone_result",
         "ManifestDB._record_run",
     ),
     fault_tool="C:\\ChaosTest\\tools\\killrob.py (taskkill/wmi/nt × "
