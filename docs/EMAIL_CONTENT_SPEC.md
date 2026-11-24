@@ -142,7 +142,7 @@ in the report CSV and in the email.
 
 | Code | Title | What happened | Who | What to do |
 |---|---|---|---|---|
-| AAM-LAN-01 | Copy to the NAS failed | The copy to the NAS stopped with an error ({meaning}). Your server's files are untouched; the NAS copy is from {last_good}. | Support | Forward to support (the attached report has the tool log). The next backup runs automatically {next_run}. |
+| AAM-LAN-01 | Copy to the NAS failed | The copy to the NAS stopped with an error ({meaning}). Your server's files are untouched; the NAS copy is from {last_good}. The same code is used when the next year's NAS folder cannot be made (the share's parent folder is not reachable) or the destination is not that year's folder (FY overlap, `fy_overlap.ensure_pass_nas_folder`). | Support | Forward to support (the attached report has the tool log). The next backup runs automatically {next_run}. |
 | AAM-LAN-02 | Some files could not be copied | {failed} file(s) could not be copied - usually files that were open (Tally, Excel) during the backup. All other files were copied. | You | Close programs at the end of the day. The list of files is in the attachment. Tonight's backup tries again. |
 | AAM-LAN-03 | Backup ran out of time | The backup reached its time limit ({hours} h) and stopped; {copied} files were copied, the rest follow in the next backup. | Nothing / Support | Nothing if this happens once (for example after many changes). If it repeats, tell support - the time limit may be too short. |
 | AAM-LAN-04 | Backup did not finish cleanly | The copy ended in an unexpected way, so we cannot prove every file was copied. | Support | Forward to support. The next backup re-checks everything. |
@@ -181,11 +181,17 @@ in the report CSV and in the email.
 | AAM-CLK-04 | Server clock could not be checked - backup stopped | No time server answered and `health.clock_unverified_policy` is `block`, so nothing was uploaded. | IT | Check the server's internet access / time.google.com; then press "Run Cloud Backup". |
 | AAM-ROL-01 | Financial year jumped more than one year | The date says FY {to}, but the backups use {from}. Moving more than one year at once is unusual. | You | Check the server date. Approve only if this is really intended. |
 | AAM-ROL-02 | Last backup of the old year incomplete | The final backup of FY {from} did not complete for {legs}. Switching now would leave the last changes of {from} unprotected. | You / Support | Fix the backup problem first (see its own email); the switch then runs automatically. |
-| AAM-ROL-06 | Files in the new year are not backed up yet | N files were saved in the FY {to} folder, but the backups still use FY {from} until the switch is done, so they exist on the server only. Do not move files out of FY {from} meanwhile. | You / Support | Open the dashboard and approve the switch, or fix the problem it shows. Sent by the daily 06:00 check, repeated at most every `alerts.stale_repeat_hours`; a RESOLVED mail follows once the switch is done. |
-| AAM-ROL-07 | Next financial year not added yet - clock not proven | The next financial year is added to the backups only once the server clock is proven correct. It is not yet, so the next year's folder is not created and its files are not backed up until then. Backups of the current year are not affected. | IT / Support | Check the server's date and time settings and that it can reach the time service; then open the dashboard and press 'Run FY rollover now'. The check also retries every morning. |
+| AAM-ROL-06 | Files in the new year are not backed up yet | N files were saved in the FY {to} folder, but the backups still use FY {from} until the switch is done, so they exist on the server only. Do not move files out of FY {from} meanwhile. | You / Support | Open the dashboard and approve the switch, or fix the problem it shows. Sent by the daily 06:00 check, repeated at most every `alerts.stale_repeat_hours`; a RESOLVED mail follows once the switch is done. Not sent while the overlap that adds {to} is active (both years are backed up). |
+| AAM-ROL-07 | Next financial year not added yet - clock not proven | The next financial year is added to the backups only once the server clock is proven correct. It is not yet, so the next year's folder is not created and its files are not backed up until then. Backups of the current year are not affected. The mail names the reason: the clock is not proven, the next year's folder is a link or junction, or the folder could not be made. | IT / Support | Check the server's date and time settings and that it can reach the time service; then open the dashboard and press 'Run FY rollover now'. The check also retries every morning. Key `rollover:activation:<fy>`: WARNING on the activation day, ACTION NEEDED from the next day, repeated at most every `alerts.stale_repeat_hours`. |
 | AAM-ROL-03 | Clock not proven - financial-year switch waits | The switch to the new FY needs a proven clock but no time server answered; backups keep using the current FY folder, nothing changed. | IT | Check internet access and the date/time; the switch is retried every morning. |
 | AAM-ROL-04 | Financial-year switch could not be finished | The switch to FY {to} stopped part-way. Your data is safe: nothing was deleted; the settings file is exactly as before. | Support | Forward this email to support; the switch is retried every morning and continues where it stopped. |
 | AAM-ROL-05 | Old year not moved to cheaper storage yet | The switch is done, but the online copy of FY {from} could not be moved to ARCHIVE storage. Data is safe; it only costs more until this works. | Support | Nothing needed - retried every morning. Becomes ACTION NEEDED after `rollover.archive_alert_after_days`. |
+
+**AAM-ROL-02 while the FY overlap is open.** Both years are backed up every night, so the text says "until then both {from} and {to} are backed up every night", and one line per outstanding leg is added (`fy_overlap._hint`, shown with "To finish {leg}:"):
+- cloud, scheduled: "the daily check retries it, or press 'Run backup' on the {from} cloud card"
+- cloud, manual only: "press 'Run backup' on the {from} cloud card"
+- NAS, scheduled: "switch the NAS on and press 'Run backup' on the {from} NAS card, or the daily check retries it"
+- NAS, manual only: "NAS (run by hand): switch the NAS on and press 'Run backup' on the {from} NAS card"
 
 ### 4.7 Weekly safety check (integrity audit)
 
@@ -310,6 +316,8 @@ Placeholders in `{braces}`. Text in the top part is exactly what the reader sees
 
 ### 7.1 Backup failed (PROBLEM) - one template, the fault code fills it
 
+**Per FY (7.1-7.4, 7.12).** While the FY overlap is active the title names the pass's FY, e.g. "CLOUD (FY27-28) backup failed"; the configured FY's title names its FY too ("LAN (FY26-27) ..."). Keys: `backup:<leg>:<fy>:<status>`, `blocked:<leg>:<fy>`, `missed:<leg>:<fy>`, `recovered:<leg>:<fy>`. The configured FY keeps the keys without `<fy>`. Cooldown and incident are per `<leg>:<fy>`, so a FY27-28 RESOLVED never closes a FY26-27 problem, and the reverse.
+
 ```
 Subject: [AAM Backup] PROBLEM: Office NAS backup failed - NAS not reachable (AAM-NAS-01)
 
@@ -423,6 +431,7 @@ What happens next: We remind you every 24 hours until a backup succeeds.
 ```
 Not sent while a failure email about the latest missed run was already sent (it says the same); the dashboard
 banner stays red. Repeats per `alerts.stale_repeat_hours` (24 h).
+Per FY: key `stale:<leg>:<fy>` for the next FY, counted from its activation (`activated_at`); title "LAN backup (FY27-28) overdue". While the overlap is active the configured FY's title names its FY ("LAN backup (FY26-27) overdue"); outside it the title is "LAN backup overdue". A manual-only leg (`scheduled: false`) never gets this mail; the watchdog sends it (`watchdog.py`).
 
 ### 7.8 Weekly safety check (ACTION NEEDED / WARNING): AAM-AUD-01 / AAM-AUD-02
 AUD-01 headline: "This week's safety check compared every file and found 3 differences between your shared folder
@@ -430,6 +439,7 @@ and the office NAS copy (2 missing, 1 changed)." Is my data safe: "Your server's
 is not an exact copy right now." What to do: "Forward to support. Do not delete anything." Attached: file list.
 AUD-02 headline: "This week's safety check could not finish ({reason in words: no internet / NAS not reachable}).
 This does not mean your files differ." What to do: "Nothing; it runs again next Sunday, 10:00 AM IST."
+Per FY: outcome key `cloud@FY27-28=<status>` (`lan@FY27-28=...` for the NAS); the audit name in the text carries the FY ("Cloud FY27-28").
 
 ### 7.9 NAS not switched off (WARNING): AAM-NAS-06
 "The backup finished fine, but the NAS did not confirm it switched off. Please check it and switch it off by hand if
@@ -437,9 +447,12 @@ it is still on."
 
 ### 7.10 Financial year (ACTION NEEDED / INFO)
 - AAM-CLK-03 / ROL-01 / ROL-02 as in §4.6, template 7.2 when an approval is needed.
-- **New INFO email "New financial year started"** (today nothing is sent on success):
+- **New INFO email "New financial year FY27-28 started"** (key `rollover:done:<fy>`; today nothing is sent on success):
   "From 1 Apr 2027 your backups use the new folder FY27-28. The FY26-27 backups are kept unchanged.
-  Nothing to do." (Owner decision D5.)
+  Nothing to do." (Owner decision D5.) During the overlap it adds one sentence per leg counted from an
+  earlier copy (its time, and that changes after it are not on it) and names any forced leg
+  (`fy_overlap.announce_text`).
+- **New INFO email "FY27-28 is added to the backups"** (key `rollover:activated:<fy>`, reports list, sent once), built text: "From today FY27-28 is backed up as well as FY26-27. Files saved in {new source folder} are backed up from the next backup run; its NAS folder is made by the first NAS backup of FY27-28." While it waits, AAM-ROL-07 (§4.6) is sent instead.
 
 ### 7.11 Backup program on the server (ACTION NEEDED): AAM-SVC-01..04
 ```
@@ -462,6 +475,7 @@ The problem reported on 18 Oct 2026, 9:08 PM IST (NAS not reachable) is fixed.
 Nothing to do.
 ```
 Sent in the same thread as the problem email. Also for the program on the server ("running again").
+A RESOLVED for a next-FY pass (`recovered:<leg>:<fy>`) closes only that FY's incident.
 
 ### 7.13 Weekly / monthly report (INFO)
 
@@ -489,6 +503,9 @@ Then: per-leg table of every run of the period (not "last 10"), the CSV attachme
   legs; an integrity row is shown only for an enabled leg.
 - Every scheduled report is recorded in `notifications` (mode `report`); a failed delivery shows on
   the dashboard.
+- **During the FY overlap:** one section per (leg, FY). A next-FY section counts from `activated_at`. A
+  manual-only leg is labelled "(run by hand)", and its "no schedule" wording is "This {office NAS backup /
+  online backup} has no schedule: it runs only when someone presses Run backup on the dashboard." (`email_compose._next_text`).
 
 Previewing: `tools/preview_emails.py --to <address>` sends one sample of every email kind, fault
 code, reminder / RESOLVED, report, password notice and attachment rung through the real composer and

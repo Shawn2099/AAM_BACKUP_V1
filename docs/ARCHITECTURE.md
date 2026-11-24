@@ -60,6 +60,21 @@ The crons above are the model defaults. The trial box runs cloud at 02:00 and LA
 At load, `core.budget.schedule_problems` refuses a schedule whose run budgets could overlap
 (§8 `budget`).
 
+**FY overlap.** From `rollover.overlap_activate_on` (default `12-31`, IST) until the April switch,
+every `backup-cloud` / `backup-lan` run makes one pass per active FY, the configured FY first and
+then the next FY. The weekly audit runs the next FY first. A next FY is active while
+`rollover.overlap_enabled` is on and `db_meta['overlap:<next FY>']` exists without `ended_at`
+(`core/fy_overlap.active_passes`; the activation date is read only by `activate_if_due`). Both
+passes of a leg share that leg's run budget (same start, `late_seconds` only on the first pass), so
+`schedule_problems` still proves the schedule; there is no new budget key. The backup slot is taken
+per pipeline pass, so a manual run waiting for the slot can start between pass 1 and pass 2 of a
+nightly run (writes stay serialised; not a bug).
+
+**Manual-only leg.** `cloud.scheduled` / `lan.scheduled` = `false` (enabled, no schedule): the
+deployment is registered without a schedule (`serve._deployments`), `launch._reconcile_disabled_legs`
+keeps it resumed, and it is left out of the schedule budget check. At least one enabled leg must be
+scheduled; the config refuses otherwise.
+
 All backup-type work (cloud, LAN, audit) takes ONE global slot: Prefect concurrency limit
 `aam-backup` (limit 1, created by `launch._ensure_concurrency_limit`) + the PID file
 `backup.lock`. Waiting longer than `maintenance.concurrency_wait_seconds` fails the run.
@@ -68,23 +83,53 @@ All backup-type work (cloud, LAN, audit) takes ONE global slot: Prefect concurre
 
 ## 3. The nightly backup, step by step
 
-### 3.1 Entry: `flow.backup(config_path, mode)`
+### 3.1 Entry: `flow.backup(config_path, mode, approval_id, budget_hours, fy)`
 
 ```
-backup(mode)
+backup(config_path, mode, approval_id, budget_hours, fy)
  ├─ load_config()                      models/config.py   (strict: unknown key = error)
  ├─ configure_logging()                core/logging.py    → logs\backup_YYYY-MM-DD.log
  ├─ configure_prefect_bridge()         core/logging.py    → loguru lines also in Prefect UI
  ├─ disabled-leg guard                 mode=cloud/lan but leg disabled → ValueError (FAILED)
+ ├─ fy guard                           fy= not an active FY → ValueError (FAILED, no row)
+ ├─ active_passes(config, record)      core/fy_overlap.py, read once: configured FY first,
+ │    │                                next FY only while its record has no ended_at (D-1)
+ │    └─ record cannot be read         configured FY only; the flow ends FAILED with a note (review F2)
  ├─ cleanup_orphaned_robocopy_logs()   core/lan_sync.py   (legacy %TEMP% logs, 24h)
- ├─ if cloud enabled: _run_cloud_pipeline()   ── §3.2   (exceptions collected)
- ├─ if lan   enabled: _run_lan_pipeline()     ── §3.3   (runs even if cloud failed)
- ├─ any errors? → send_failure_alert() (skipped for PartialRun: already alerted)
- │               → raise ExceptionGroup  ⇒ Prefect state FAILED
+ ├─ per enabled leg (cloud, then lan), per pass p (none active = one pass, fy_pass None):
+ │     race guard (from the second pass): config.yaml FY re-read; if the configured FY
+ │        changed, no later pass of either leg starts → PartialRun (FAILED)
+ │     cloud: _run_cloud_pipeline(p.config, fy_pass=p, budget_start=…)   ── §3.2
+ │     lan:   _run_lan_pipeline(p.config, fy_pass=p, allow_shutdown=…)  ── §3.3
+ │        allow_shutdown (D-8): earlier passes never shut the NAS down; the last pass only if
+ │        every earlier LAN pass ended LAN_COMPLETE, or lan.shutdown_on_all_retries_exhausted
+ │     a failed pass never stops the next pass (exceptions collected)
+ ├─ any errors? → raise ExceptionGroup  ⇒ Prefect state FAILED  (each failed leg alerted itself)
  └─ no errors  → ManifestDB.purge_old_runs(maintenance.db_retention_days)  ⇒ COMPLETED
 ```
 
+With one active pass the calls are exactly the baseline calls (no FY keywords). What differs for a
+next-FY pass (built in `flow.py`, plan 2.3):
+
+| Item | Next-FY pass (e.g. FY27-28) |
+|---|---|
+| Paths | `fy_overlap.config_for_fy(config, fy)`: the source and NAS leaf are that FY |
+| Run id | suffix `-FY27-28` (`fy_overlap.pass_run_id`) |
+| Run row metrics | `extended_metrics.fy` and `overlap: true` (`_pass_metrics`) |
+| Run-log folder and files | folder `..._FY27-28`; files `<date>_<HHmm>_<leg>_FY27-28_<step>.log` |
+| Artifact key | `<leg>-backup-summary-fy27-28` (`fy_overlap.artifact_key`) |
+| Alert keys | `backup:<leg>:FY27-28:<status>`, `blocked:<leg>:FY27-28`, `missed:<leg>:FY27-28`, `recovered:<leg>:FY27-28` |
+| Alert titles | `CLOUD (FY27-28) backup failed`; both passes name their FY while the overlap is active |
+| Incident group | `<leg>:FY27-28` (`notifications.mode`), so one FY never closes the other's problem |
+| Approvals | per (leg, FY); an approval for the other FY is not applied to this pass (`_approval_of_pass`) |
+| `file_entries` | not written, no cross-check (D-9); the files counters show the configured FY |
+| NAS folder | `ensure_pass_nas_folder` after WoL. Parent share unreachable, or the destination is not that FY's folder: `LAN_FAILED` with AAM-LAN-01. Folder with files but no marker: guard G5 |
+| MISSED / SLOT_TIMEOUT rows | carry `fy` (F5) |
+| Abandoned-run sweep | keyed and titled with its FY (F7) |
+
 ### 3.2 Cloud pipeline: `flow._run_cloud_pipeline()`
+
+During the FY overlap this pipeline runs once per active FY on a per-pass config copy; see §3.1 for what differs.
 
 ```
 with _backup_slot(config):                     concurrency slot + backup.lock (acquire_lock)
@@ -128,6 +173,8 @@ with _backup_slot(config):                     concurrency slot + backup.lock (a
 ```
 
 ### 3.3 LAN pipeline: `flow._run_lan_pipeline()`
+
+During the FY overlap this pipeline runs once per active FY on a per-pass config copy; see §3.1 for what differs.
 
 ```
 with _backup_slot(config):
@@ -214,18 +261,26 @@ The others are built but not wired yet.
 
 ## 5. Other flows
 
-### 5.1 `integrity_audit_flow(mode)` — weekly, read-only
+### 5.1 `integrity_audit_flow(config_path, mode, fy)` — weekly, read-only
 ```
 load_config → ManifestDB.from_config
-with _backup_slot:
+fy= given and not an active FY → ValueError (nothing audited); a record that cannot be read →
+                                  the configured FY is still audited and the flow ends FAILED
+_auto_scheduled_run(): a scheduled run skips legs with scheduled: false;
+                       a run started by hand ("Check now") audits every enabled leg
+with _backup_slot (ONE slot, ONE RunBudget = budget.audit_max_hours for all passes):
+  per leg, next FY pass first, then the configured FY pass (fy= audits one active FY only):
   cloud: temp_rclone_config → integrity.audit_cloud()  rclone check (hash, no --size-only)
          → db.record_audit(); not VERIFIED and not PENDING_BACKUP → collect error
-         (pending=_pending_context: reference = start of the leg's last successful run;
-          only a completed check WITH differences reaches core/audit_pending; delete tripwire =
-          guards.max_delete_files/percent; unknown reference/time/stat error = REAL)
-  lan:   wol_check_task → integrity.audit_lan() (rclone check local↔UNC, hash)
-         → lan_shutdown_task (if configured) → db.record_audit()
-  errors → send_failure_alert + raise ExceptionGroup
+         (pending=_pending_context(config, db, leg, fy): reference = start of that FY's last
+          successful run; only a completed check WITH differences reaches core/audit_pending;
+          delete tripwire = guards.max_delete_files/percent; unknown reference/time/stat error = REAL)
+  lan:   one wake_check per leg (a failed wake is not retried for the second pass)
+         → integrity.audit_lan() per pass (rclone check local↔UNC, hash)
+         → one lan_shutdown_task after the last pass, only if a wake happened
+  a next-FY audit row: audit id suffixed `-FY27-28` (`<uuid>-<leg>-full-FY27-28`);
+  `latest_audit(leg, fy=)` reads it; the outcome key is `cloud@FY27-28=<status>`
+errors → alert (key carries each leg's outcome) + raise ExceptionGroup
 ```
 
 ### 5.2 `rollover_check_flow` — daily 06:00
@@ -237,6 +292,8 @@ is `flow._rollover_resume`.
 ```
 log_retention_task(config)          purge run_logs (run_logs.retention_days)
                                     + NSSM service logs (run_logs.service_log_retention_days)
+fy_overlap.activate_if_due(config, db)   adds the next FY on its activation day (§10.7 R9); never raises
+_alarm_unprotected_new_fy()         silent while the overlap of that FY is open
 rollover_incomplete() FIRST         an open journal is resumed before anything is classified
                                     (after the switch config already says the new FY)
 else classify: only exactly the next FY on the clock proof; clock behind / unproven →
@@ -259,6 +316,19 @@ the next LAN pipeline (`_complete_pending_rollover_nas_folder`, before the guard
 config already points at the new folder and the share root exists).
 Rows: ROLLOVER_RUNNING (swept as ABANDONED after a crash), ROLLOVER_COMPLETE, ROLLOVER_FAILED
 (never counted as a backup's "last success"). Dashboard: Settings > FY rollover step card.
+
+**While the FY overlap is open (B4, rules R9-R12 in §10.7).** Step 1 runs the final backup of each
+enabled leg through the normal pipelines. A manual-only leg (`scheduled: false`) is not run by the
+check. `fy_overlap.final_copy_state` decides per leg whether a verified final copy exists. A leg
+still outstanding blocks G6 (`overlap_active` text, one hint per leg from `fy_overlap._hint`); the
+next daily check switches by itself once the last blocker clears. A forced switch needs the typed
+`APPROVE` on the G6 card; the switch mail names the forced legs and any copy counted from an earlier
+run (`fy_overlap.announce_text`). The state is saved in the overlap record (`save_final_copy` /
+`load_final_copy`), so a resume keeps it. After `config_switch`, `fy_overlap.end_overlap` supersedes
+the old year's open approvals and stamps `ended_at`. With the overlap off, the step is the baseline
+one (a manual-only leg is still run by the check).
+
+Accepted gaps of the overlap are listed in §9.
 ```
 
 ### 5.3 Reports — `weekly_report_flow` / `monthly_report_flow`
@@ -490,6 +560,31 @@ producer (flow, watchdog, rollover, reports, password change)
 - The guards, approvals, truthful statuses and operations work (M2-M4) are described in
   §3, §4 and §10.
 
+**FY overlap - accepted gaps** (owner decisions and plan §11; written here so they are not lost):
+
+- **F4 - NAS left on for a day.** When the last LAN pass of a night is missed, skipped by the race guard
+  or hits a slot timeout, nothing calls the NAS shutdown (it lives in the pipeline body, inside the
+  slot). The NAS stays on until the next night's run. Owner decision 2026-11-23: accepted.
+- **Q10 - old-year rows after the April switch.** For about one day after the switch, the new configured
+  FY's lookups without an FY (`fy=None`) return the old FY's rows, until its first run; the old FY's audit
+  shows until the next weekly audit. Texts name the row's real FY (`prev_fy`), never the new one.
+- **Activation text.** The waiting item says "the mail gives the reason" (`core/attention.py`), but the
+  mail body is not stored, so the dashboard cannot show the reason itself.
+- **Database error.** When the database cannot be read, alert mails say that the next year's state could
+  not be read, instead of guessing (B8 finding 3).
+- **Slot between passes.** The backup slot is free between the FY passes of one run (F-D7), so a manual
+  run waiting for the slot can start there. The race guard (§3.1) stops the later passes when the
+  configured FY switched meanwhile.
+- **G4 (review).** After a database error at `end_overlap`, the overlap record can stay without `ended_at`.
+  This is harmless: the config already points at the new FY, and the passes read only the record of the
+  FY after the configured one.
+- **Plan §11 risks:** files edited in the old FY after the April switch are not backed up (baseline); a
+  leg counted from an earlier copy can miss changes made after that copy (the switch mail says so); a
+  flow waiting for the slot during the switch can run one pass with the old view (the race guard closes
+  it between passes); next-FY passes do not fill `file_entries`, so the files counters show the configured
+  FY; a NAS FY folder placed directly at a share root is out of scope (the owner's layout is
+  `\\nas\backup\FY..`).
+
 ---
 
 ## 10. Gates — what must be true (today vs. after the plan)
@@ -592,9 +687,13 @@ own completed summary; content verification is the weekly audit (V3).
 |---|---|---|---|
 | R1 | The SOURCE path MUST end in a 2-digit FY folder (`FY26-27`) whichever backup legs are on (config load refuses otherwise; owner 2026-10-22). The NAS path must end in the SAME FY folder while the NAS leg is on; with the NAS off it is an unused placeholder that nothing reads or rewrites. The source leaf alone decides the FY (`fy_rollover.configured_fy`). Only the current FY is backed up; older years are bulk-uploaded at deployment by a separate tool | yes | done |
 | R2 | Rollover happens when that FY differs from the FY of today's date (IST, April 1 boundary) | only exactly the next FY on a proven clock; clock behind (CLK-03), not proven (ROL-03) or a jump of more than one FY (G6 → approval card) stop it | done |
-| R3 | Final backup of the closing FY must succeed on every enabled leg (cloud COMPLETE/NO_CHANGES, LAN COMPLETE) + G6, else the step fails (ROL-01/02), retried daily; the LAN one does not shut the NAS down | through the normal pipelines inside the slot; a retry repeats it (D-17) | done |
+| R3 | Final backup of the closing FY must succeed on every enabled leg (cloud COMPLETE/NO_CHANGES, LAN COMPLETE) + G6, else the step fails (ROL-01/02), retried daily; the LAN one does not shut the NAS down | through the normal pipelines inside the slot; a retry repeats it (D-17) | done; while the overlap is open: R11 |
 | R4 | Archive the old FY in GCS (gcloud, key as a file, `ARCHIVE` class) | failure = ROL-05 WARNING, retried every morning, ACTION_REQUIRED after `rollover.archive_alert_after_days` | done |
 | R5 | New source FY folder + placeholder; NAS folder + mount marker; `config.yaml` switched by compare-and-set under the config lock (backup, validate, restore on failure) | each step journaled and resumable; a failure before the switch = ROL-04 ACTION_REQUIRED; a NAS that is off does not stop the switch (the next LAN pipeline completes the folder) | done |
 | R6 | Every step state is persisted (`rollover_journal`); a crash is swept as ABANDONED; the INFO email says "nothing to do" only when every step is finished | — | done |
-| R7 | The new local FY folder is created BEFORE the final backups (`rollover.create_source_folder_early`, default on), only for exactly the next FY on a proven clock; files saved there are not backed up until the switch, so a red card and a daily mail (AAM-ROL-06) say so, and one RESOLVED mail follows | step SOURCE_FOLDER first in `_rollover_resume`; `fy_rollover.unprotected_new_fy`; `flow._alarm_unprotected_new_fy` | done |
+| R7 | The new local FY folder is created BEFORE the final backups (`rollover.create_source_folder_early`, default on), only for exactly the next FY on a proven clock; files saved there are not backed up until the switch, so a red card and a daily mail (AAM-ROL-06) say so, and one RESOLVED mail follows | step SOURCE_FOLDER first in `_rollover_resume`; `fy_rollover.unprotected_new_fy`; `flow._alarm_unprotected_new_fy` | done; silent while the overlap of that FY is open (B4) |
 | R8 | Settings never change the FY (409, `config_edit._refuse_fy_change`); both paths end in an FY folder or neither; a finished rollover is never re-run when the paths are put back (`rollover:reentered:<fy>`); the Advanced picker (`core/source_picker.py`) chooses only the PARENT folder, never creates folders | done | done |
+| R9 | Activation: the next FY is added on or after `rollover.overlap_activate_on` (IST), only for a NONE or FORWARD classification and only on a proven clock | yes (B1) | Creates the SOURCE folder and placeholder only (never the NAS folder, never `config.yaml`). The record `overlap:<fy>` is written last, so a crash repeats safely. Link or junction refused. INFO mail `rollover:activated:<fy>`, once, to the reports list. An unproven clock, a link or a folder that cannot be made: AAM-ROL-07 (`rollover:activation:<fy>`, WARNING on the day, ACTION NEEDED after, repeats per `alerts.stale_repeat_hours`). No backup, NAS, WoL, approval or failed run can delay it |
+| R10 | Overlap passes: every next-FY pass passes all gates of §10.1-10.6 for its own FY (G1-G5 with `guard_baseline(leg, fy)`), within the leg's shared run budget | yes (B2, B3, B6) | Active set per D-1; a missing next folder is not decided by its existence but fails that pass's health check. The next-FY NAS destination must end in its FY or the pass is refused (`ensure_pass_nas_folder`). `ensure_nas_folder`: missing → created with marker; empty → marker; files without marker → G5; share parent unreachable → AAM-LAN-01. Budget used up → `<LEG>_MISSED` for that FY. One NAS shutdown after the last pass (D-8). No `file_entries`. Race guard between passes |
+| R11 | Final-copy rule for the April switch: a leg counts when a run row has `mode` = leg, `guards.fy` = the closing FY, `started_at` >= 1 Apr 00:00 IST (boundary included) and a status in `FINAL_COPY_STATUSES` (`CLOUD_COMPLETE`, `CLOUD_NO_CHANGES_COMPLETE`, `LAN_COMPLETE`) | yes (B4) | PARTIAL, BLOCKED, FAILED, VERIFY_FAILED, MISSED and legacy statuses never count; a next-FY row never counts; a run before 1 Apr never counts; how the run started does not matter. A copy from an earlier run counts with its time named in the switch mail (`announce_text`); a failed run this morning adds a warning. The switch is automatic at the next daily check; a forced switch only by approval |
+| R12 | Manual-only legs (`scheduled: false`): no cron; no overdue, first-run or catching-up item and no watchdog mail for any FY | yes (C1, C2) | Registered without a schedule (`serve._deployments`) and kept resumed (`launch._reconcile_disabled_legs`). A failed manual run is still red and mailed. Skipped by the scheduled audit. Reports say "(run by hand)". Mail wording: "has no schedule: it runs only when someone presses Run backup on the dashboard". April: not run by the check; needs one manual final copy (`<LEG>_MANUAL_FINAL_NEEDED`) |

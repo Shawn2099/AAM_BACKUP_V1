@@ -393,31 +393,34 @@ touched) plus one non-root source (`D:\Data\FY26-27`) as a control.
 - [x] **B6 Integrity audit per FY.** `tests/test_fy_overlap_audit.py`: next FY then configured FY per leg in one slot,
   suffixed audit ids, `latest_audit(leg, fy=)`, alert key `@FY27-28`, one NAS wake/shutdown, shared budget (budget
   used up -> configured FY `AUDIT_INCOMPLETE`, next FY verified), scheduled audit skips an unscheduled leg, `fy=`.
-- [ ] **B7 Attention / overdue / watchdog.** `tests/test_fy_overlap_attention.py`: per-FY items; next FY "waiting"
+- [x] **B7 Attention / overdue / watchdog.** `tests/test_fy_overlap_attention.py`: per-FY items; next FY "waiting"
   from activation; watchdog mails `stale:lan:FY27-28` once; `overlap_off:` RED item; activation-waiting item.
-- [ ] **B8 Reports.** `tests/test_fy_overlap_report.py`: sections per (leg, FY); first January week no false "no
+- [x] **B8 Reports.** `tests/test_fy_overlap_report.py`: sections per (leg, FY); first January week no false "no
   backup ran" for FY27-28; 28 Mar - 3 Apr report labels both FYs across the switch; legacy rows without `fy` fall
   into the configured-FY section.
-- [ ] **B9 Dashboard API + UI.** `tests/test_fy_overlap_ui.py` (TestClient, fake `arun_deployment`): `/status` with and
+- [x] **B9 Dashboard API + UI.** `tests/test_fy_overlap_ui.py` (TestClient, fake `arun_deployment`): `/status` with and
   without overlap; triggers with `?fy=` (active / inactive / disabled / running); approved re-run passes `fy`;
   `/api/rollover` with `final_copy_state`; extend `tests/test_e8_dashboard_e2e.py` for 4 cards and per-card buttons.
 
 **Part C - manual-only legs (in scope)**
 
-- [ ] **C1 Registration.** `tests/test_manual_only_leg.py` (part 2): `serve._deployments()` registers an unscheduled
+- [x] **C1 Registration.** `tests/test_manual_only_leg.py` (part 2): `serve._deployments()` registers an unscheduled
   enabled leg with no schedule, a scheduled cloud leg with its cron while LAN is unscheduled or disabled;
   `_reconcile_disabled_legs` keeps it resumed; schedule-in-effect record carries the flags. Probe against a local
   Prefect server (clean `PREFECT_HOME`): re-serve removes the old cron, no scheduled runs appear, `arun_deployment`
   starts it; if the cron survives, add the delete to the reconcile step (with its test).
-- [ ] **C2 Behaviour.** same file (part 3): no overdue / first-run items and no watchdog mail for an unscheduled leg
+- [x] **C2 Behaviour.** same file (part 3): no overdue / first-run items and no watchdog mail for an unscheduled leg
   (both FYs); failed manual run still red + failure mail; reports "run by hand", 0 scheduled; email `_next_text`
   wording; card schedule line; April gate covered in B4.
+- [x] **C3 Shipped configs.** `tests/test_manual_only_leg.py` (`test_shipped_configs_write_enabled_and_scheduled`,
+  `test_shipped_configs_explain_the_three_states`): `config.example.yaml` and `deploy/config.install.yaml` carry the
+  explanation block (off / scheduled / manual only) and explicit `enabled` / `scheduled` keys (matrix TESTMATRIX_C, DC10).
 
 **Part D - finish**
 
-- [ ] **D1 Docs.** `docs/ARCHITECTURE.md` §2, §3.1, §5.1, §5.2, §10.7 (gates R9 activation, R10 overlap passes, R11
+- [x] **D1 Docs.** `docs/ARCHITECTURE.md` §2, §3.1, §5.1, §5.2, §10.7 (gates R9 activation, R10 overlap passes, R11
   final-copy rule, R12 manual-only legs); `SESSION_HANDOFF.md`; `docs/EMAIL_CONTENT_SPEC.md` (keys, AAM-ROL-07).
-- [ ] **D2 Audit lab (targeted).** `audit_lab/test_fy_overlap_lab.py`: real robocopy + rclone (`deploy\bin\rclone.exe`,
+- [x] **D2 Audit lab (targeted).** `audit_lab/test_fy_overlap_lab.py`: real robocopy + rclone (`deploy\bin\rclone.exe`,
   test bucket prefix) with two sibling FY folders and a `backup` parent on the fake share: two mirrors, two cloud
   prefixes, a delete in FY27-28 never touches FY26-27, G3/G5 per FY. Clean `PREFECT_HOME`.
 - [ ] **D3 Trial box.** Deploy by git bundle; for the test only set `overlap_activate_on` = today with test prefixes,

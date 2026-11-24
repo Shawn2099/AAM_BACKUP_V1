@@ -1,12 +1,36 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-10-22 (see the 2026-10-22 block right below - it is newest and wins; older text follows). 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
+**Last updated:** 2026-11-24 (see the 2026-11-24 block right below - it is newest and wins; older text follows). 2026-10-22 (see the 2026-10-22 block - it is newer than the 2026-10-18 text). 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
 UI + email audit and rebuild - see §4f; rclone exit codes +
 bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
 **Box not redeployed with §4d / §4e / §4f** (box is at 6adcfb2; owner decides). §4f adds schema
 v3 (one-time in-place upgrade of the box DB) and needs `dashboard.public_url` + bind/firewall
 on deploy day (see §4f).
 
+
+---
+
+## >>> 2026-11-24 - FY OVERLAP ON THE BASELINE (branch `baseline-v1-overlap`, worktree `C:\Users\malliath\Desktop\aam_baseline_overlap`) <<<
+
+**Built:** the FY overlap on the baseline: from `rollover.overlap_activate_on` (default 31 Dec) the next FY is
+backed up next to the configured one until the April switch; manual-only legs (`scheduled: false`); the April
+final-copy rule. Tasks A1-D2 are done and committed (the commits are the newest 25 of the branch:
+`git log --oneline -25` in the worktree).
+
+**Read first:**
+- `docs/HANDOFF_BASELINE_OVERLAP_2026-11-24.md` (what was done and how it was checked)
+- `docs/PLAN_BASELINE_OVERLAP_2026-11-23.md` (binding plan; section 9 has the task ticks)
+- `docs/TESTMATRIX_B7_2026-11-24.md`, `TESTMATRIX_B8_2026-11-24.md`, `TESTMATRIX_B9_2026-11-24.md`,
+  `TESTMATRIX_C_2026-11-24.md`, `TESTMATRIX_D_2026-11-24.md` (per-task test matrices)
+- `docs/ARCHITECTURE.md` §2, §3.1, §5.1, §5.2, §9 and §10.7 (R9-R12) and `docs/EMAIL_CONTENT_SPEC.md` (keys, AAM-ROL-07) describe the built overlap.
+
+**Tests** (from CLAUDE.md, in the worktree):
+- fast loop: `.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider -o addopts="" --timeout=600 -m "not slow"`
+- slow calendar file alone: `.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider -o addopts="" --timeout=1200 -m slow`
+
+**Still open:**
+- D3 trial-box deploy (needs the owner's explicit go; the box is untouched until then).
+- Full unit-suite and audit-lab (D2) reruns on the final commit.
 
 ---
 
