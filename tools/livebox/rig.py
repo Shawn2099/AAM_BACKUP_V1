@@ -198,6 +198,7 @@ class Seams:
         self.archive_calls: list = []
         self.archive_result = True
         self.wake_result = True
+        self.wake_error: BaseException | None = None      # set -> the wake spy raises it (WoL failed / NAS not ready)
         self.scheduled_at: dt.datetime | None = None      # None = manual press (auto_scheduled False)
         self.lane_root.mkdir(parents=True, exist_ok=True)
         self.rclone_conf = self.lane_root / "rclone_local.conf"
@@ -252,6 +253,8 @@ class Seams:
         try:
             def wake_spy(*args, **kwargs):
                 seams.wake_calls.append({"args": args, "kwargs": kwargs})
+                if seams.wake_error is not None:
+                    raise seams.wake_error
                 return seams.wake_result
 
             wake_spy.livebox_spy = True
@@ -855,6 +858,18 @@ class LaneRig:
         if variant in DUMMY_TOKEN_URI:
             (self.runtime_dir / "dummy-key.json").write_text(dummy_service_account_json(variant), encoding="utf-8")
         self.seams.set_remote_variant(variant, str(self.runtime_dir / "dummy-key.json"))
+
+    def set_wake_fail(self, flag: bool) -> None:
+        """True: the NAS wake step raises core.wol.WolTimeout (WoL sent, NAS never became ready); False: wake works."""
+        self._record("knob", "set_wake_fail", [bool(flag)])
+        if self.seams is None:
+            raise RigError("rig is not installed (no wake seam)")
+        if flag:
+            from core.wol import WolTimeout
+
+            self.seams.wake_error = WolTimeout("livebox: NAS not ready after wake (injected)")
+        else:
+            self.seams.wake_error = None
 
     def set_mail(self, mode: str, reply: str = "451 try later") -> None:
         """normal | fail | stopped."""
