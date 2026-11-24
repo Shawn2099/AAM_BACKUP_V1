@@ -336,8 +336,6 @@ def test_unscheduled_lan_leg_is_never_run_by_the_check_and_blocks_the_switch_unt
         assert fr._fy_name(load_config(str(cfg)).paths.source_drive) == "FY26-27"   # still waiting
 
 
-@pytest.mark.xfail(strict=True, reason="C2 not built: compute_attention still raises first_run/stale items "
-                                       "for an unscheduled (manual-only) LAN leg (plan 2.5, section 5)")
 def test_unscheduled_lan_leg_is_never_overdue_in_the_whole_window(tmp_path):
     cfg = _make_site(tmp_path, "FY26-27", lan_scheduled=False)
     lan_items: list[tuple[str, str]] = []

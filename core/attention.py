@@ -281,7 +281,9 @@ def _leg_items(db, config, leg: str, sched: dict | None, now, fy: str | None = N
     unchanged. `fy` set: that next FY's own items with `<kind>:<leg>:<FY>` codes. `clock` and `nas_shutdown` are
     never suffixed; the caller de-duplicates them across the passes."""
     out: list[dict] = []
-    if sched:
+    if not leg_scheduled(db, config, leg):
+        item = None     # C2/DC7: a manual-only leg is never late; a failed manual run still shows below
+    elif sched:
         item = _overdue_item(db, config, leg, sched, now, fy=fy, activated_at=activated_at, active=active)
     else:       # cannot even tell when it should run: say so (red + the watchdog mails it)
         item = _item(RED, _code("stale", leg, fy),

@@ -161,14 +161,20 @@ def _data_safety(config, db, now) -> list[str]:
             except Exception:  # noqa: BLE001
                 last = None
             name = LEG_LABEL[leg] + (f" ({fy})" if fy else "")
+            by_hand = "" if _leg_is_scheduled(config, leg) else " Runs only by hand (no schedule)."
             if last:
                 when = last.get("ended_at") or last.get("started_at")
-                lines.append(f"{name}: last good copy {_when(when)} ({_age(when, now)}).")
+                lines.append(f"{name}: last good copy {_when(when)} ({_age(when, now)}).{by_hand}")
             else:
-                lines.append(f"{name}: no good copy recorded yet.")
+                lines.append(f"{name}: no good copy recorded yet.{by_hand}")
     if error:
         lines.append("The next financial year's backup state could not be read - it may not be backed up.")
     return lines
+
+
+def _leg_is_scheduled(config, leg: str) -> bool:
+    """C2/DC9: the configured `<leg>.scheduled` (absent = scheduled)."""
+    return getattr(getattr(config, leg, None), "scheduled", True) is not False
 
 
 def _next_text(config, event, fault, now) -> str:
@@ -181,6 +187,9 @@ def _next_text(config, event, fault, now) -> str:
                 "and we remind you while it waits.")
     if event.mode == "watchdog":
         return "We email you again when the backup program is running again."
+    if event.mode in ("lan", "cloud") and not _leg_is_scheduled(config, event.mode):
+        return (f"This {LEG_RUN[event.mode]} has no schedule: it runs only when someone presses "
+                "Run backup on the dashboard. You get one email when it works again.")
     cron = {"lan": "lan_cron", "cloud": "cloud_cron", "audit": "audit_cron"}.get(event.mode)
     nxt = _next_run(config, cron, now) if cron else None
     if nxt:
