@@ -1,0 +1,17 @@
+= a.txt
+= name with spaces & (parens).txt
+= README note.txt
+= Ünïcode café.txt
+= 中文 文件.txt
++ photos_renamed/p1.jpg
++ photos_renamed/p2.jpg
++ photos_renamed/p3.jpg
++ photos_renamed/p4.jpg
++ photos_renamed/p5.jpg
+= sub/b.bin
+- photos/p1.jpg
+- photos/p2.jpg
+- photos/p3.jpg
+- photos/p4.jpg
+- photos/p5.jpg
+= sub/deep/c.txt

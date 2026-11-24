@@ -1,0 +1,3 @@
++ .AAM_TARGET_MOUNTED
++ .aam_write_probe_ab12cd
++ data.txt

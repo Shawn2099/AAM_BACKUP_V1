@@ -1,0 +1,9 @@
+= a.txt
+= README note.txt
+= sub/b.bin
+= photos_renamed/p4.jpg
+= photos_renamed/p5.jpg
+= photos_renamed/p2.jpg
+= photos_renamed/p3.jpg
+* photos_renamed/p1.jpg
+= sub/deep/c.txt

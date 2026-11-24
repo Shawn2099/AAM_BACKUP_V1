@@ -1,0 +1,13 @@
+= keep.txt
+- x1.txt
+- x2.txt
++ photos2/p1.jpg
++ photos2/p2.jpg
++ photos2/p3.jpg
++ photos2/p4.jpg
++ photos2/p5.jpg
+- photos/p1.jpg
+- photos/p2.jpg
+- photos/p3.jpg
+- photos/p4.jpg
+- photos/p5.jpg
