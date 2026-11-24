@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Start here
 
+**Live-box test effort for this build (baseline-v1-overlap):** read `docs/LIVEBOX_HANDOFF_2026-11-25.md` first, then `docs/LIVEBOX_TEST_PROGRESS_2026-11-25_ADDENDUM.md`, the STATE block of `docs/LIVEBOX_TEST_PROGRESS_2026-11-24.md` and `docs/LIVEBOX_TEST_PLAN_2026-11-24.md`. Harness code is `tools/livebox` on this branch. Rules: never change product code or the live schedule, no reboot/shutdown, never power off the NAS, no product fixes committed without the owner's go.
+
 Active work is the MVP hardening on branch `mvp-hardening`. Before doing anything, read:
 
 1. `SESSION_HANDOFF.md` — current position, next steps, verified tool facts, gotchas (update it at the end of every session).
