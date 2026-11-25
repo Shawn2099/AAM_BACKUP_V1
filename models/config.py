@@ -142,7 +142,7 @@ class LanConfig(StrictModel):
         description="Run the NAS backup by its schedule. false = manual only (the cron is kept; the "
                     "backup runs when started from the dashboard). Needs at least one scheduled leg.",
     )
-    retry_count: int = Field(default=3, ge=1, le=10)
+    retry_count: int = Field(default=2, ge=1, le=10)
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
     shutdown_after_backup: bool = True

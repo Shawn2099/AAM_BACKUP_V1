@@ -122,7 +122,7 @@ class TestM1ExactFlagSet:
             ("--modify-window", "2s"),
             ("--transfers", "4"),
             ("--checkers", "4"),
-            ("--retries", "3"),
+            ("--retries", "2"),
             ("--retries-sleep", "10s"),
             ("--use-json-log", None),
             ("--log-level", "INFO"),

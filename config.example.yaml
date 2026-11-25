@@ -43,9 +43,9 @@ lan:
   # true = the nightly schedule runs this backup. false = manual only: it runs when you press
   # "Run backup" on the dashboard (the schedule is kept). At least one switched-on backup must be true.
   scheduled: true
-  # Robocopy /R — retries per failed file
-  retry_count: 3
-  # Robocopy /W — seconds to wait between retries
+  # rclone --retries (full-tree attempts when a file fails/is locked)
+  retry_count: 2
+  # rclone --retries-sleep (seconds to wait between attempts)
   retry_wait_seconds: 10
   # Hard timeout for the entire robocopy process (seconds). 14400 = 4 hours.
   # The LAN run budget (budget.lan_max_hours) is usually the tighter limit.
