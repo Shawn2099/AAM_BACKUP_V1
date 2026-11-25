@@ -111,7 +111,7 @@ def scan_rclone_log_for_errors(log_text: str, max_lines: int = model_default(Clo
     attempt's verdict and is kept with that attempt's errors.
     """
     entries = list(_json_entries(log_text))
-    start = _final_attempt_start(entries) + 1
+    start = _final_attempt_start(entries)
     bad_lines: list[str] = []
     for i, (line, entry) in enumerate(entries):
         if entry is None:
@@ -265,7 +265,7 @@ def failed_object_paths(log_text: str, limit: int) -> list[str]:
     failed" and "Couldn't delete" errors (unique, in log order, at most
     `limit`); rclone's `.<8 hex>.partial` temp suffix is stripped."""
     entries = list(_json_entries(log_text))
-    start = _final_attempt_start(entries) + 1
+    start = _final_attempt_start(entries)
     paths: list[str] = []
     for i, (_, entry) in enumerate(entries):
         if i <= start or entry is None:
@@ -375,11 +375,6 @@ def measure_planned_deletes(
     if result.spawn_error:
         out["error"] = result.spawn_error
         return out
-    if getattr(result, "stalled", False):
-        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "stalled": True,
-                "retryable": True, "stats_at_least": True,
-                "stats": final_stats(result.log_text()),
-                "error": result.describe_failure() or "rclone stalled (no progress) and was terminated"}
     if result.timed_out:
         out["error"] = f"Timeout after {timeout}s"
         return out
