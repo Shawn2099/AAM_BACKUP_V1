@@ -545,6 +545,12 @@ def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Vio
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: AAM-DEL-03 with max_delete_reached={m.get('max_delete_reached')!r}, want True"))
             if m.get("counts_source") != "rclone":
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_BLOCKED exit-7 counts_source={m.get('counts_source')!r}, want 'rclone'"))
+        elif status == "LAN_BLOCKED" and m.get("copy_only"):
+            co = m["copy_only"]
+            if int(r.get("files_deleted") or 0) != 0:
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: copy_only LAN_BLOCKED deleted {r.get('files_deleted')} files"))
+            if int(co.get("deletes_held") or 0) <= 0:
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: copy_only without deletes_held > 0"))
         elif r.get("fault_code") == "AAM-DEL-03" and status != "LAN_BLOCKED":
             out.append(Violation("METRICS", f"{day} {r['run_id']}: AAM-DEL-03 with status={status!r}, want 'LAN_BLOCKED'"))
     return out

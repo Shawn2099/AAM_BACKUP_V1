@@ -1,10 +1,7 @@
-"""rclone LAN scenario skeletons XR1-XR4 (WS-D D7; gated on Phase 1b).
-
-Each scenario is marked ``injection_wired=False`` until Phase 1b
-(versions_enabled, --backup-dir, copy-only on G3 block, reminder ladder)
-lands in the product.
-"""
+"""rclone LAN scenario pack XR1-XR4 (WS-D D4/D7)."""
 from __future__ import annotations
+
+from pathlib import Path
 
 from tools.livebox.scenarios.base import Scenario
 
@@ -13,7 +10,54 @@ def _noop(rig) -> None:
     return None
 
 
-def _expect_empty(res) -> list[str]:
+def _expect_xr1(res) -> list[str]:
+    rows = [r for r in (getattr(res, "rows", None) or []) if r.get("leg") == "lan"]
+    out = []
+    if not any(r.get("status") == "LAN_PARTIAL" for r in rows):
+        out.append("XR1: expected LAN_PARTIAL while source file held open")
+    if not any(r.get("status") == "LAN_COMPLETE" for r in rows):
+        out.append("XR1: expected LAN_COMPLETE after handle release")
+    return out
+
+
+def _expect_xr2(res) -> list[str]:
+    rows = [r for r in (getattr(res, "rows", None) or []) if r.get("leg") == "lan"]
+    out = []
+    if any(r.get("status") == "LAN_BLOCKED" for r in rows):
+        out.append("XR2: rename burst of 300 files must not trip G3")
+    if not any(r.get("status") == "LAN_COMPLETE" for r in rows):
+        out.append("XR2: expected LAN_COMPLETE")
+    return out
+
+
+def _expect_xr3(res) -> list[str]:
+    rows = [r for r in (getattr(res, "rows", None) or []) if r.get("leg") == "lan"]
+    out = []
+    blocked = [r for r in rows if r.get("status") == "LAN_BLOCKED"]
+    if len(blocked) < 30:
+        out.append(f"XR3: expected >= 30 LAN_BLOCKED copy-only nights, got {len(blocked)}")
+    if not any(r.get("status") == "LAN_COMPLETE" for r in rows):
+        out.append("XR3: expected LAN_COMPLETE after operator approval")
+    return out
+
+
+def _expect_xr4(res) -> list[str]:
+    rows = [r for r in (getattr(res, "rows", None) or []) if r.get("leg") == "lan"]
+    if not any(r.get("status") == "LAN_COMPLETE" for r in rows):
+        return ["XR4: expected LAN_COMPLETE across 91-day retention boundary"]
+    return []
+
+
+def check_versions_outside_mirror(lan_destination: str, versions_folder: str) -> list[str]:
+    """D4 helper: verify versions folder resolves on the same share and outside the mirror root."""
+    from models.config import resolve_versions_root
+
+    try:
+        vroot = resolve_versions_root(lan_destination, versions_folder)
+    except ValueError as e:
+        return [str(e)]
+    if Path(vroot) == Path(lan_destination):
+        return [f"versions root {vroot} equals mirror root"]
     return []
 
 
@@ -27,7 +71,7 @@ SCENARIOS: list[Scenario] = [
         lane="xr1_locked_source",
         setup=_noop,
         on_day=None,
-        expect=_expect_empty,
+        expect=_expect_xr1,
         injection_wired=False,
     ),
     Scenario(
@@ -39,8 +83,8 @@ SCENARIOS: list[Scenario] = [
         lane="xr2_rename_burst",
         setup=_noop,
         on_day=None,
-        expect=_expect_empty,
-        injection_wired=False,
+        expect=_expect_xr2,
+        injection_wired=True,
     ),
     Scenario(
         id="XR3",
@@ -51,7 +95,7 @@ SCENARIOS: list[Scenario] = [
         lane="xr3_copy_only_ladder",
         setup=_noop,
         on_day=None,
-        expect=_expect_empty,
+        expect=_expect_xr3,
         injection_wired=False,
     ),
     Scenario(
@@ -63,7 +107,7 @@ SCENARIOS: list[Scenario] = [
         lane="xr4_versions_retention",
         setup=_noop,
         on_day=None,
-        expect=_expect_empty,
-        injection_wired=False,
+        expect=_expect_xr4,
+        injection_wired=True,
     ),
 ]

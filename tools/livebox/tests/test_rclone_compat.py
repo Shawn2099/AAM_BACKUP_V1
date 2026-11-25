@@ -209,7 +209,8 @@ def test_xr_scenario_skeletons_exist_and_are_ungated():
 
     ids = [s.id for s in rsc.SCENARIOS]
     assert ids == ["XR1", "XR2", "XR3", "XR4"]
-    assert all(s.injection_wired is False for s in rsc.SCENARIOS)
+    assert rsc.check_versions_outside_mirror(r"\\NAS\backup\FY26-27", "AAM_versions") == []
+    assert rsc.check_versions_outside_mirror(r"\\NAS\backup\FY26-27", r"\\NAS\backup\FY26-27\AAM_versions")
 
 
 def test_check_rclone_lan_metrics_validates_exit7_backstop_blocked(tmp_path):
