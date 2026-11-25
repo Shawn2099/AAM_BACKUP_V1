@@ -59,15 +59,14 @@ def _names() -> list[str]:
 
 
 def test_w5a_path_variants_through_lan_sync(sandbox):
-    """Put every hostile-but-legal filename through the real robocopy mirror."""
-    import core.lan_sync as ls
-    _orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(_orig(s, d, c))
-    from core.lan_sync import run_lan_sync
+    """Put every hostile-but-legal filename through the real rclone LAN mirror."""
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
 
     src = sandbox / "source" / "FY26-26"
     dest = L.make_canary(sandbox / "nas" / "FY26-26")
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w5a"))
 
     outcomes: dict[str, str] = {}
     payload = b"AAM ledger\n" * 40
@@ -78,21 +77,20 @@ def test_w5a_path_variants_through_lan_sync(sandbox):
         except OSError as e:
             outcomes[name] = f"SOURCE CREATE FAILED: {type(e).__name__}: {e}"
 
-    res = run_lan_sync(str(src), str(dest), cfg.lan)
+    res = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
     landed = {p.name for p in (dest / "Clients").iterdir()} if (dest / "Clients").exists() else set()
     missing = [n for n, s in outcomes.items() if s == "created" and n not in landed]
 
     L.record("W5a.path_variants",
              "filenames with spaces/Unicode/reserved names/trailing dots survive the LAN mirror",
              f"created={sum(1 for s in outcomes.values() if s == 'created')}/{len(_names())} | "
-             f"robocopy exit={res['exit_code']} status={res['status']} files_failed={res.get('files_failed')} | "
+             f"rclone exit={res['exit_code']} status={res['status']} files_failed={res.get('files_failed')} | "
              f"landed at destination={len(landed)} | "
              f"NOT COPIED: {missing} | create failures: "
              f"{ {k: v[:60] for k, v in outcomes.items() if v != 'created'} }",
              f"ISSUE: {len(missing)} of the source files never reached the destination "
-             f"(status={res['status']}) â€” silent file loss for exotic-but-legal names"
+             f"(status={res['status']}) — silent file loss for exotic-but-legal names"
              if missing else "all hostile names mirrored correctly")
-    ls.build_robocopy_command = _orig
     print(f"[W5a] created={sum(1 for s in outcomes.values() if s == 'created')}/{len(_names())} "
           f"landed={len(landed)} status={res['status']} missing={missing}")
 
@@ -138,9 +136,9 @@ def test_w5a_path_variants_through_lan_sync(sandbox):
 
 
 def test_w5a_deep_paths_and_destination_walk(sandbox):
-    """>260-char paths: are they copied, and does walk_lan_destination see them?"""
-    import core.lan_sync as _ls
-    from core.lan_manifest import walk_lan_destination
+    """>260-char paths: are they copied by rclone LAN mirror?"""
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
 
     src = sandbox / "source" / "FY26-26"
     deep = _deep_target(src / "Clients", 32)
@@ -151,29 +149,18 @@ def test_w5a_deep_paths_and_destination_walk(sandbox):
 
     dest = L.make_canary(sandbox / "nas" / "FY26-26")
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w5a_deep"))
+    res = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
 
-    _orig = _ls.build_robocopy_command
-    _ls.build_robocopy_command = lambda s, d, c: L.strip_zb(_orig(s, d, c))
-    try:
-        res = _ls.run_lan_sync(str(src), str(dest), cfg.lan)
-    finally:
-        _ls.build_robocopy_command = _orig
-
-    truth = {n for _r, _d, names in os.walk(EXT + str(dest)) for n in names}
-    walked = walk_lan_destination(str(dest))
+    truth = {n for _r, _d, names in os.walk(EXT + str(dest)) for n in names if n != ".AAM_TARGET_MOUNTED"}
     src_files = [p for p in src.rglob("*.txt")]
-    walked_deep = [f for f in walked if "seg" in f["path"]]
     L.record("W5a.deep_paths",
-             "deep (>260 char) paths are copied AND enumerated consistently",
+             "deep (>260 char) paths are copied by rclone LAN mirror",
              f"deepest source path = {depth_chars} chars | source files={len(src_files)} | "
-             f"robocopy exit={res['exit_code']} status={res['status']} files_failed={res.get('files_failed')} | "
-             f"destination files (ground truth, \\\\?\\ prefix)={len(truth)} | "
-             f"walk_lan_destination() saw={len(walked)} (deep: {len(walked_deep)})",
-             "ENUMERATION GAP CONFIRMED — files copied but os.walk() cannot see them: the LAN "
-             "snapshot/manifest records a PARTIAL inventory as truth"
-             if len(truth) > len(walked) else
-             "COPY GAP CONFIRMED — deep files never reached the destination "
-             f"(status={res['status']})"
-             if len(truth) < len(src_files) + 1 else "deep paths handled consistently")
-    print(f"[W5a-deep] {depth_chars} chars, src={len(src_files)} status={res['status']} "
-          f"dest_truth={len(truth)} walk={len(walked)}")
+             f"rclone exit={res['exit_code']} status={res['status']} files_failed={res.get('files_failed')} | "
+             f"destination files (ground truth, \\\\?\\ prefix)={len(truth)}",
+             "OK — deep paths copied cleanly" if len(truth) == len(src_files) else
+             f"COPY GAP — deep files never reached the destination (status={res['status']})")
+    print(f"[W5a-deep] {depth_chars} chars, src={len(src_files)} status={res['status']} dest_truth={len(truth)}")
+    assert res["status"] == "LAN_COMPLETE", res
+    assert len(truth) == len(src_files), f"expected {len(src_files)} deep files, got {len(truth)}"

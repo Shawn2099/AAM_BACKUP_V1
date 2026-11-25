@@ -60,8 +60,6 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
     dest.mkdir(parents=True, exist_ok=True)          # NO canary on purpose
 
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
     emails = []
     monkeypatch.setattr(flow, "notify", lambda config, event, db=None: emails.append(event))
 
@@ -123,7 +121,7 @@ def test_w5c_missing_canary_blocks_then_one_approved_run(sandbox, monkeypatch):
         exc4 = run("w5c-4", approval_id=req["approval_id"])
         assert isinstance(exc4, guards.GuardBlocked) and "already used" in str(exc4)
     finally:
-        ls.build_robocopy_command = orig
+        pass
 
     L.record("W5c.approval_cycle",
              "missing marker -> BLOCKED; scheduled rerun stays blocked; ONE approved rerun "
@@ -164,15 +162,12 @@ def test_w5c_smb_false_positive(sandbox, monkeypatch):
     cfg.wol.stability_wait_seconds = 0
 
     online = ensure_server_online(cfg)     # TCP probe against the real 445 (closed here)
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
     exc = None
     try:
         flow._run_lan_pipeline(cfg, "w5c-smb", "2026-09-07T01:00:00+05:30", time.monotonic())
     except Exception as e:
         exc = e
     finally:
-        ls.build_robocopy_command = orig
         srv.close()
 
     L.record("W5c.smb_false_positive",
@@ -213,15 +208,15 @@ def test_w5c_source_disappears_mid_run(sandbox, monkeypatch):
     _seed(src, 3000)
     dest = L.make_canary(sandbox / "nas" / "FY26-26")
 
+    from core.run_artefacts import RunArtefacts
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w5c_src"))
 
     box: dict = {}
 
     def _run():
         try:
-            box["res"] = ls.run_lan_sync(str(src), str(dest), cfg.lan)
+            box["res"] = ls.run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
         except Exception as e:
             box["err"] = repr(e)
 
@@ -229,7 +224,7 @@ def test_w5c_source_disappears_mid_run(sandbox, monkeypatch):
     t.start()
     pid, deadline = None, time.time() + 30
     while time.time() < deadline and pid is None:
-        pid = _pid_of("Robocopy", str(sandbox))
+        pid = _pid_of("rclone", str(sandbox))
         time.sleep(0.02)
     time.sleep(0.2)
     vanished = None
@@ -238,7 +233,6 @@ def test_w5c_source_disappears_mid_run(sandbox, monkeypatch):
     except OSError as e:
         box["rename_err"] = repr(e)
     t.join(timeout=300)
-    ls.build_robocopy_command = orig
     if vanished:
         vanished.rename(src)                # restore for inspection
 
@@ -278,26 +272,27 @@ def test_w5c_locked_file(sandbox, monkeypatch):
     dest = L.make_canary(sandbox / "nas" / "FY26-26")
     L.write_file(dest / "Clients" / "OPEN_BY_USER.xlsx", b"PREVIOUS BACKUP" * 500)
 
-    # hold the source file open with deny-write, like Excel does
-    import msvcrt
+    # hold the source file open with CreateFileW share-mode-0, like Excel does
+    import ctypes
+    from core.run_artefacts import RunArtefacts
 
-    fh = open(locked, "rb")
-    try:
-        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-    except OSError:
-        pass                        # byte-range locking may not block; share mode is what matters
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+    k32.CreateFileW.restype = ctypes.c_void_p
+    handle = k32.CreateFileW(str(locked), 0x80000000, 0, None, 3, 0x80, None)
+    assert handle and handle != ctypes.c_void_p(-1).value, ctypes.WinError(ctypes.get_last_error())
+
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w5c_locked"))
     try:
-        res = ls.run_lan_sync(str(src), str(dest), cfg.lan)
+        res = ls.run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
     finally:
-        ls.build_robocopy_command = orig
-        fh.close()
+        ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(handle))
 
     dest_copy = dest / "Clients" / "OPEN_BY_USER.xlsx"
     kept = dest_copy.exists()
-    content = dest_copy.read_bytes()[:7] if kept else b""
+    content = dest_copy.read_bytes()[:8] if kept else b""
     L.record("W5c.locked_file",
              "a file locked by a user is not mirrored but not deleted either",
              f"status={res['status']} exit={res['exit_code']} files_failed={res.get('files_failed')} | "
@@ -307,14 +302,9 @@ def test_w5c_locked_file(sandbox, monkeypatch):
              if kept and content == b"PREVIOUS" else
              "ISSUE — locked file was deleted or replaced at the destination")
     print(f"[W5c-locked] status={res['status']} dest_kept={kept} content={content!r}")
-    # A17 - L-1 SIGNATURE (asserted, not sanitised): a file the OS will not let
-    # robocopy read was PURGED from the destination instead of retaining the
-    # previous good copy (exit 11 -> LAN_PARTIAL). The Excel-held-open case: the
-    # firm's last good copy of that workbook is gone for one cycle, and the run
-    # only reports LAN_PARTIAL. When L-1 is fixed, `kept` becomes True.
-    assert res["status"] in ("LAN_PARTIAL", "LAN_FAILED"), res
-    assert kept is False, (
-        "L-1 appears FIXED: the locked file's previous destination copy was "
-        "retained - update this assertion to expect it")
+    assert res["status"] == "LAN_PARTIAL", res
+    assert res["deletes_held"] is True, res
+    assert kept is True and content == b"PREVIOUS", (
+        f"locked file's previous destination copy was lost or corrupted: kept={kept} content={content!r}")
     assert len([p for p in dest.rglob("*.txt")]) == 200, (
-        "the locked file's neighbours were affected - more than L-1's single-file loss")
+        "the locked file's neighbours were affected - more than single-file lock")

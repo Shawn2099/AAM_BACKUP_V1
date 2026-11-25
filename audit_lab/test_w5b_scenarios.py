@@ -63,22 +63,19 @@ def test_w5b_junction_in_source(sandbox):
     if r.returncode != 0:
         pytest.skip(f"mklink unavailable: {r.stdout[:100]}{r.stderr[:100]}")
 
+    from core.run_artefacts import RunArtefacts
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
-    try:
-        res = ls.run_lan_sync(str(src), str(dest), cfg.lan)
-    finally:
-        ls.build_robocopy_command = orig
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w5b_junc"))
+    res = ls.run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
 
     copied = [p for p in dest.rglob("*") if p.is_file() and p.name != ".AAM_TARGET_MOUNTED"]
     nested = [p for p in copied if "Current" in str(p)]
     L.record("W5b.junction.lan",
              "a junction inside the source does not duplicate the tree into the destination",
-             f"mklink rc={r.returncode} | robocopy exit={res['exit_code']} status={res['status']} | "
+             f"mklink rc={r.returncode} | rclone exit={res['exit_code']} status={res['status']} | "
              f"copied files={len(copied)} (expected 20) | files under the junction={len(nested)} | "
              f"e.g. {[str(p.relative_to(dest))[:60] for p in nested[:2]]}",
-             "OK — /XJ excluded the junction (no duplication, no recursion)"
+             "OK — rclone excluded the junction (no duplication, no recursion)"
              if len(nested) == 0 and len(copied) >= 20 else
              f"ISSUE: junction content was mirrored ({len(nested)} files) — possible runaway duplication")
     print(f"[W5b-junction lan] status={res['status']} copied={len(copied)} via_junction={len(nested)}")
@@ -136,26 +133,25 @@ def test_w5b_rename_during_mirror(sandbox):
     for i in range(50):
         L.write_file(keep_dir / f"keep_{i}.txt", b"y" * 200)
 
+    from core.run_artefacts import RunArtefacts
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w5b_rename"))
 
     box: dict = {}
 
     def _run_sync():
-        box["res"] = ls.run_lan_sync(str(src), str(dest), cfg.lan)
+        box["res"] = ls.run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
 
     t = threading.Thread(target=_run_sync, daemon=True)
     t.start()
     pid, deadline = None, time.time() + 30
     while time.time() < deadline and pid is None:
-        pid = _pid_of("Robocopy", str(sandbox))
+        pid = _pid_of("rclone", str(sandbox))
         time.sleep(0.02)
     time.sleep(0.15)
     # the operator renames the folder mid-backup
     renamed = keep_dir.rename(src / "Clients" / "RENAMED_BY_USER")
     t.join(timeout=600)
-    ls.build_robocopy_command = orig
 
     res = box.get("res", {})
     dest_renamed = dest / "Clients" / "RENAMED_BY_USER"
@@ -196,47 +192,45 @@ def test_w5b_crash_then_recovery(sandbox):
     db_path = cfg.paths.database_path
 
     # night 1: start the LAN pipeline and hard-kill the FLOW process itself
-    import core.lan_sync as ls
-
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
-
+    import sys as _sys
+    art_n1 = sandbox / "runtime" / "art_w5b_crash_n1"
+    art_n1.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen(
-        [str(Path(__file__).resolve().parent.parent / ".venv" / "Scripts" / "python.exe"),
+        [_sys.executable,
          "-c", (
              "import os,sys,time,pathlib;sys.path.insert(0,%r);"
-             "from core.lan_sync import run_lan_sync;"
-             "from audit_lab.labconf import build_config, strip_zb;"
-             "import core.lan_sync as ls;"
-             "_o=ls.build_robocopy_command;"
-             "ls.build_robocopy_command=lambda s,d,c:strip_zb(_o(s,d,c));"
+             "from core.lan_sync import run_lan_mirror;"
+             "from audit_lab.labconf import build_config;"
              "P=pathlib.Path;"
              "cfg=build_config(P(%r),source=P(%r),lan_dest=%r,runtime=P(%r));"
-             "print(run_lan_sync(%r,cfg.paths.lan_destination,cfg.lan));time.sleep(60)"
+             "print(run_lan_mirror(cfg.lan,%r,cfg.paths.lan_destination,%r,max_delete=10000));time.sleep(60)"
          ) % (str(Path(__file__).resolve().parent.parent), str(sandbox), str(src),
-              str(dest), str(sandbox / "runtime"), str(src))],
+              str(dest), str(sandbox / "runtime"), str(src), str(art_n1))],
         cwd=str(Path(__file__).resolve().parent.parent),
     )
-    # wait until the robocopy child exists, then kill the whole tree
-    robocopy_pid, deadline = None, time.time() + 30
-    while time.time() < deadline and robocopy_pid is None:
-        robocopy_pid = _pid_of("Robocopy", str(sandbox))
+    # wait until the rclone child exists, then kill the whole tree
+    rclone_pid, deadline = None, time.time() + 30
+    while time.time() < deadline and rclone_pid is None:
+        rclone_pid = _pid_of("rclone", str(sandbox))
         time.sleep(0.05)
     time.sleep(0.3)
     killed_tree = subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                                  capture_output=True, text=True)
     proc.wait(timeout=60)
+    time.sleep(0.5)  # allow Windows SMB to release handles from killed rclone child
 
     lock_present_after = lock.exists()
     alive_after, pid_after = read_lock_alive(lock)
 
-    # night 2: same /ZB-free command, over the same runtime dir
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
+    # night 2: over the same runtime dir
     try:
         out = flow._run_lan_pipeline(cfg, "w5b-night2", "2026-09-07T01:00:00+05:30",
                                      time.monotonic())
-    finally:
-        ls.build_robocopy_command = orig
+    except Exception:
+        m = ManifestDB(db_path)
+        print("NIGHT2 LAST RUN:", m.last_run("lan"))
+        m.close()
+        raise
 
     m = ManifestDB(db_path)
     runs = m.get_recent_runs(5)
@@ -246,7 +240,7 @@ def test_w5b_crash_then_recovery(sandbox):
 
     L.record("W5b.crash_recovery",
              "a hard crash mid-backup does not wedge the next night's run",
-             f"killed flow tree rc={killed_tree.returncode} (robocopy pid={robocopy_pid}) | "
+             f"killed flow tree rc={killed_tree.returncode} (rclone pid={rclone_pid}) | "
              f"lock file after crash: exists={lock_present_after} alive={alive_after} pid={pid_after} | "
              f"night-2 pipeline={out} | files on NAS={on_nas}/4000 | "
              f"manifest lan_status rows={rows} | run rows={[r['status'] for r in runs]}",
@@ -268,33 +262,40 @@ def test_w5b_crash_then_recovery(sandbox):
 
 # ── b4: two backups at once ────────────────────────────────────────────────────
 def test_w5b_double_trigger(sandbox, monkeypatch):
-    """Cron fires while the operator also clicks the dashboard button."""
-    import flow
+    """Cron fires while the operator also clicks the dashboard button (two OS processes)."""
+    import sys as _sys
 
-    monkeypatch.setenv("PREFECT_TEST_MODE", "1")
     src = sandbox / "source" / "FY26-26"
     dest = L.make_canary(sandbox / "nas" / "FY26-26")
     for i in range(400):
         L.write_file(src / "Clients" / f"f_{i:05d}.txt", b"x" * 256)
     cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
 
-    import core.lan_sync as ls
+    code = (
+        "import os,sys,time,pathlib;sys.path.insert(0,%r);"
+        "from test_support import sandbox_config; sandbox_config.install();"
+        "import flow; from audit_lab.labconf import build_config;"
+        "P=pathlib.Path;"
+        "cfg=build_config(P(%r),source=P(%r),lan_dest=%r,runtime=P(%r));"
+        "print(flow._run_lan_pipeline(cfg,sys.argv[1],'2026-09-07T01:00:00+05:30',time.monotonic())['status'])"
+    ) % (str(Path(__file__).resolve().parent.parent), str(sandbox), str(src),
+         str(dest), str(sandbox / "runtime"))
 
-    orig = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig(s, d, c))
-    results: list = []
-
-    def _one(tag):
-        try:
-            results.append((tag, flow._run_lan_pipeline(
-                cfg, f"w5b-{tag}", "2026-09-07T01:00:00+05:30", time.monotonic())["status"]))
-        except Exception as e:
-            results.append((tag, f"RAISED {type(e).__name__}: {e}"))
-
-    t1 = threading.Thread(target=_one, args=("first",))
-    t2 = threading.Thread(target=_one, args=("second",))
-    t1.start(); time.sleep(0.05); t2.start(); t1.join(); t2.join()
-    ls.build_robocopy_command = orig
+    env1 = {**os.environ, "PREFECT_HOME": str(sandbox / "ph1")}
+    env2 = {**os.environ, "PREFECT_HOME": str(sandbox / "ph2")}
+    env1.pop("PREFECT_TEST_MODE", None)
+    env2.pop("PREFECT_TEST_MODE", None)
+    p1 = subprocess.Popen([_sys.executable, "-c", code, "w5b-first"],
+                          cwd=str(Path(__file__).resolve().parent.parent), env=env1,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(0.3)
+    p2 = subprocess.Popen([_sys.executable, "-c", code, "w5b-second"],
+                          cwd=str(Path(__file__).resolve().parent.parent), env=env2,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out1, err1 = p1.communicate(timeout=180)
+    out2, err2 = p2.communicate(timeout=180)
+    results = [("first", f"rc={p1.returncode}: {(out1 or err1).strip()[-250:]}"),
+               ("second", f"rc={p2.returncode}: {(out2 or err2).strip()[-250:]}")]
 
     from core.manifest import ManifestDB
 
