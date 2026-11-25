@@ -10,6 +10,25 @@ on deploy day (see §4f).
 
 ---
 
+## >>> 2026-11-25 - P1 RCLONE LAN ENGINE (branch `rclone-engine`, worktree `C:\Users\malliath\Desktop\aam_rclone`) <<<
+
+**Position:** plan `docs/PLAN_P1_RCLONE_LAN_2026-11-25.md` (binding). Robocopy removal and config deprecation are done
+and committed: C10a-c `3483065` (tests `1adbae2`), C11 test sweep `fe48776` + `c7512ee` (log
+`agent_runs/p1_sweep.md`). **C12 (audit lab) is next**: new `audit_lab/test_w25_rclone_lan.py`, adapt
+`test_w4_pipeline.py` (LAN case), `test_fy_overlap_lab.py`, `test_w6b_rollover_nas_off.py`; needs a clean `PREFECT_HOME`.
+
+**Environmental caveats (not code):**
+- The worktree has no `.venv`. Run tests with `PYTHONPATH=.` and `..\aam_backup\.venv\Scripts\python.exe`.
+- `tests/test_v113_round3.py::test_r3_repo_config_timeouts` and `::test_r3_loaded_runtime_timeouts` read the gitignored
+  repo `config.yaml`, which is absent in this worktree. The main checkout's copy still has the removed keys
+  `lan.mt_threads` / `lan.dry_run_timeout_seconds`, so the second fails even when copied. Fix the config, not the code.
+- `tests/test_review2_driver.py` (2 tests) refuses a dirty working tree; it passes when committed.
+
+**Rule for chunk work:** build through subagents. Opus reviews and resolves doubts, Sonnet builds and debugs code,
+Haiku writes tests, runs test loops and monitoring, and writes docs. Tests and code are written by different agents.
+
+---
+
 ## >>> 2026-11-24 - FY OVERLAP ON THE BASELINE (branch `baseline-v1-overlap`, worktree `C:\Users\malliath\Desktop\aam_baseline_overlap`) <<<
 
 **Built:** the FY overlap on the baseline: from `rollover.overlap_activate_on` (default 31 Dec) the next FY is

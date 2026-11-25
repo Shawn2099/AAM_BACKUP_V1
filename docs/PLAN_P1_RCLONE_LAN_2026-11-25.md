@@ -167,6 +167,8 @@ Each chunk: Haiku writes tests FIRST from the matrix rows and shows them fail on
 | C11 | Test sweep | files below | Run suite; classify failures: (a) patch of removed symbol/key: fix mechanically; (b) assertion about robocopy behaviour: delete only where a matrix row covers new behaviour, log in `agent_runs/p1_sweep.md`; (c) anything else: escalate | - | fast loop + slow file green | Haiku run, Sonnet fix |
 | C12 | Audit lab | new `audit_lab/test_w25_rclone_lan.py`; adapt `test_w4_pipeline.py` (LAN case), `test_fy_overlap_lab.py` (drop `strip_zb` patch; :402 looks for UTF-8 rclone log), `test_w6b_rollover_nas_off.py` | L1-L11 | - | 4 files green with clean `PREFECT_HOME` | Haiku |
 
+**Status 2026-11-25:** C10a-c and C11 are DONE (code `3483065`, tests `1adbae2`; sweep `fe48776`, `c7512ee`; log `agent_runs/p1_sweep.md`). Next: C12.
+
 ### Test files
 - **Rewrite** (10): test_lan_sync.py (M,D,R), test_lan_result_contract.py (D), test_lan_preflight_comprehensive.py (G-1..4, PL), test_lan_canary_integrity.py (G-2, L9 unit form), test_track_renames_g3.py, test_track_renames_review_fixes.py (G-6, cross-check gone), test_m2_guard_wiring.py LAN part, test_m2_preflight_permissions.py (drop privilege; G-11), test_xr_sync_attempts.py LAN part (W3,W7), test_f1_run_artefact_names.py.
 - **Adapt**: test_m3_metrics.py LAN part (W1), test_publish_artifact.py (drop LAN artifact).
