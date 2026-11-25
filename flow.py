@@ -966,6 +966,20 @@ def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         track_renames=config.cloud.track_renames,
         mode=mode,
     )
+    if limited and result.get("timed_out") and max_duration is not None:
+        # C8 (F2 / R6): rclone had --max-duration with --cutoff-mode SOFT and still
+        # did not stop within the 300s margin — killed_after_cutoff, not budget_stopped.
+        stats = result.get("stats") or {}
+        done = (f"{stats.get('transfers', 'unknown')} file(s), "
+                f"{(stats.get('bytes') or 0) / 1024 ** 3:.2f} GB uploaded in this run"
+                if stats else "upload progress unknown (no rclone stats)")
+        logger.error("Cloud sync: rclone did not stop after its time limit and was killed")
+        return {**result, "status": "CLOUD_PARTIAL", "killed_after_cutoff": True,
+                "budget_stopped": False, "fault_code": "AAM-CLD-08",
+                "error": (f"rclone did not stop within {cloud_sync.MAX_DURATION_MARGIN_S} s after its time "
+                          f"limit (--max-duration {max_duration}s, --cutoff-mode SOFT) and was killed after "
+                          f"{timeout}s - a large file may still have been uploading, or network I/O may be "
+                          f"hung. {done}")}
     stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
     if stopped:
         stats = result.get("stats") or {}
