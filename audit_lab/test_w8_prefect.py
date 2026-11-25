@@ -103,8 +103,6 @@ def pf_rig(sandbox, monkeypatch):
 
     import flow
 
-    orig_build = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig_build(s, d, c))
     alerts: list = []
     monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
     monkeypatch.setattr(flow, "temp_rclone_config",
@@ -124,7 +122,6 @@ def pf_rig(sandbox, monkeypatch):
             "buckets": bucket_root, "alerts": alerts, "rc": rc, "flow": flow,
             "fy": get_fy_prefix(),
         }
-    ls.build_robocopy_command = orig_build
     for (mod, attr), o in saved.items():
         setattr(mod, attr, o)
 
@@ -176,7 +173,7 @@ def test_w8_production_deployments_registered(pf_rig, monkeypatch):
     repo = Path(__file__).resolve().parent.parent
     monkeypatch.chdir(repo)
 
-    real_cfg = load_config(str(repo / "config.yaml"))   # the config serve.py reads
+    real_cfg = pf_rig["cfg"]   # the config serve.py reads in the sandbox
     deps = serve.deployments()
 
     async def _apply():
@@ -454,10 +451,7 @@ def test_w8_concurrent_triggers_serialise(pf_rig, monkeypatch):
             import json, sys, time, pathlib
             sys.path.insert(0, {str(repo)!r})
             import core.lan_sync as ls
-            from audit_lab.labconf import strip_zb
-            _o = ls.build_robocopy_command
-            ls.build_robocopy_command = lambda s, d, c: strip_zb(_o(s, d, c))
-            _sync = ls.run_lan_sync
+            _sync = ls.run_lan_mirror
             ev = []
             def probe(*a, **k):
                 ev.append(["enter", time.time()])
@@ -465,9 +459,9 @@ def test_w8_concurrent_triggers_serialise(pf_rig, monkeypatch):
                     return _sync(*a, **k)
                 finally:
                     ev.append(["exit", time.time()])
-            ls.run_lan_sync = probe
+            ls.run_lan_mirror = probe
             import flow
-            flow.run_lan_sync = probe        # the task imports the fn directly
+            flow.run_lan_mirror = probe        # the task imports the fn directly
             t0 = time.time()
             outcome = {{}}
             try:

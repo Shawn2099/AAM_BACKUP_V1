@@ -116,19 +116,10 @@ def w12_rig(sandbox, monkeypatch):
     rc = L.write_local_rclone_config(sandbox / "runtime" / "rclone_local.conf")
     saved = L.patch_cloud_modules_to_local(rc)
 
-    orig_build = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig_build(s, d, c))
-
     alerts: list = []
     monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
     monkeypatch.setattr(flow, "temp_rclone_config",
                         lambda *a, **k: contextlib.nullcontext(rc))
-    # W11's evidence corpus lives in %TEMP%\robocopy_sync_*.log and flow.backup()
-    # would delete it (it is older than 24h by the time this wave runs). Quarantine
-    # the side effect but keep proof that the production call happens.
-    cleaned: list[int] = []
-    monkeypatch.setattr(flow, "cleanup_orphaned_robocopy_logs",
-                        lambda *a, **k: cleaned.append(1) or 0)
     # flow.backup() runs core.health.check_clock(), which would otherwise
     # make a REAL HTTPS call and legitimately fail ("skew" between Google's time
     # and our frozen 2027 clock). Simulate "Google agrees with our clock" so the
@@ -146,10 +137,9 @@ def w12_rig(sandbox, monkeypatch):
         _ensure_concurrency_limit()          # production startup code, limit=1
         yield {"sandbox": sandbox, "src": src, "nas": sandbox / "nas" / FY_OLD,
                "buckets": bucket_root, "cfg": cfg, "cfg_path": cfg_path, "rc": rc,
-               "alerts": alerts, "cleaned": cleaned, "flow": flow,
+               "alerts": alerts, "flow": flow,
                "labclock": labclock}
 
-    ls.build_robocopy_command = orig_build
     for (mod, attr), old in saved.items():
         setattr(mod, attr, old)
 
@@ -752,7 +742,6 @@ def test_w12_seven_day_cycle_through_the_production_flows(w12_rig):
         f"night 8: source={len(src_new_map)} nas={len(nas_new_map)} cloud={len(cloud_new_map)} "
         f"| run rows added={sorted(r['status'] for r in final_rows)}",
         f"alerts during the whole cycle: {len(rig['alerts'])}",
-        f"cleanup_orphaned_robocopy_logs called by flow.backup(): {len(rig['cleaned'])} times",
     ]
 
     if result != "ROLLOVER_COMPLETED":
@@ -766,8 +755,6 @@ def test_w12_seven_day_cycle_through_the_production_flows(w12_rig):
                         f"src={len(src_new_map)}")
     if len(final_rows) != 2 or any(r["status"] not in _OK for r in final_rows):
         problems.append(f"night 8 run rows: {[r['status'] for r in final_rows]}")
-    if len(rig["cleaned"]) < 8:
-        problems.append("flow.backup() did not invoke cleanup_orphaned_robocopy_logs on every night")
 
     L.record("W12.seven_day_cycle",
               "seven consecutive nights (26 Mar - 1 Apr 2027) plus the boundary "

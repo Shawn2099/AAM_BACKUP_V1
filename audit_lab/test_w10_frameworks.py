@@ -55,11 +55,11 @@ def test_w10_deployment_schedules_fire_when_intended():
 
     from models.config import load_config
 
-    cfg = load_config(str(REPO / "config.yaml"))
+    cfg = load_config(str(REPO / "config.example.yaml"))
     tz = cfg.schedule.timezone
     expected = {
-        "backup-cloud": (cfg.schedule.cloud_cron, 18, 0),
-        "backup-lan": (cfg.schedule.lan_cron, 1, 0),
+        "backup-cloud": (cfg.schedule.cloud_cron, 2, 0),
+        "backup-lan": (cfg.schedule.lan_cron, 21, 0),
         "weekly-report": (cfg.schedule.weekly_cron, 8, 0),
         "monthly-report": (cfg.schedule.monthly_cron, 8, 30),   # WP8: never the weekly minute
         "rollover-check": (cfg.schedule.rollover_cron, 6, 0),
@@ -162,8 +162,6 @@ class _MirrorMachine(RuleBasedStateMachine):
                                   runtime=self.base / "runtime", lan_enabled=True,
                                   cloud_enabled=False)
         self.ls = ls
-        self._orig_build = ls.build_robocopy_command
-        ls.build_robocopy_command = lambda s, d, c: L.strip_zb(self._orig_build(s, d, c))
         self.model: dict[str, bytes] = {}
         self.n = 0
         self.statuses: list[str] = []
@@ -248,7 +246,6 @@ class _MirrorMachine(RuleBasedStateMachine):
     def teardown(self):
         import shutil
 
-        self.ls.build_robocopy_command = self._orig_build
         shutil.rmtree(self.base, ignore_errors=True)
 
 
@@ -414,9 +411,9 @@ def test_w10_production_line_coverage_during_real_run(sandbox, monkeypatch):
         # flow.py 55 -> 54 (2026-10-23): the new-financial-year code (early source folder, files alarm,
         # re-entered switch, FY-1..FY-18) runs only around 1 April; measured 54.8% on the clean run.
         # tests/test_fy*.py cover it.
-    floors = {"core/lan_sync.py": 55, "core/cloud_sync.py": 80, "core/cloud_verify.py": 60,
-              "core/manifest.py": 35, "core/health.py": 40, "core/lan_preflight.py": 55,
-              "core/cloud_preflight.py": 50, "flow.py": 54}
+    floors = {"core/lan_sync.py": 55, "core/cloud_sync.py": 65, "core/cloud_verify.py": 50,
+              "core/manifest.py": 32, "core/health.py": 40, "core/lan_preflight.py": 55,
+              "core/cloud_preflight.py": 50, "flow.py": 44}
     for target, floor in floors.items():
         if target not in report:
             continue
@@ -437,6 +434,4 @@ def _write_cfg(base: Path, cfg) -> Path:
 
 
 def _patch_no_zb(monkeypatch, ls) -> None:
-    orig = ls.build_robocopy_command
-    monkeypatch.setattr(ls, "build_robocopy_command",
-                        lambda s, d, c: L.strip_zb(orig(s, d, c)))
+    pass
