@@ -1,0 +1,12 @@
+= Ünïcode café.txt
+= a.txt
+= README note.txt
+= name with spaces & (parens).txt
+= 中文 文件.txt
+= sub/b.bin
+= photos/p1.jpg
+= photos/p2.jpg
+= photos/p3.jpg
+= photos/p4.jpg
+= photos/p5.jpg
+= sub/deep/c.txt

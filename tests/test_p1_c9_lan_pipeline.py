@@ -90,10 +90,15 @@ def check_missing() -> dict:
             "combined": _fx("lan_check_missing_combined.txt")}
 
 
-def hash_clean() -> dict:
-    """Real hash check (R8b fixture): no differences, exit 0."""
-    return {"exit_code": 0, "stderr": _fx("lan_hash_clean.stderr.txt"),
-            "combined": _fx("lan_hash_clean_combined.txt")}
+def hash_clean(listed: int = 12) -> dict:
+    """Real clean hash check of the twelve lan_clean files (R11 fixture lan_hash12_clean), exit 0.
+    For a list of another length the same output is used with only its count changed, the
+    count rclone prints for a clean check of that many files (LAN_FIXTURES.md, R11)."""
+    stderr = _fx("lan_hash12_clean.stderr.txt")
+    if listed != 12:
+        stderr = stderr.replace("12 matching files", f"{listed} matching files")
+    return {"exit_code": 0, "stderr": stderr,
+            "combined": _fx("lan_hash12_clean_combined.txt")}
 
 
 def copy_log(files: list[tuple[str, int | None]]) -> str:
@@ -616,6 +621,19 @@ def test_w14_hang_after_cutoff_is_partial_killed_after_cutoff_no_check_no_shutdo
     assert arrival_kwargs(w) == []
     assert w.shutdown.call_count == 0
     assert len(sync_argvs(w)) == 1, "a hang is never retried"
+    # R6 (matrix section 6): the exact text, with the 300 s margin of MAX_DURATION_MARGIN_S,
+    # --max-duration as resolve_max_duration_seconds gives it for the killed timeout, and the
+    # hard timeout that was used. No stats in HANG_SYNC, so the progress part is "unknown".
+    sync_calls = [c for c in w.fake.calls if c["step"] == SYNC]
+    killed_after = sync_calls[0]["timeout_s"]
+    max_duration = cloud_sync.resolve_max_duration_seconds(killed_after, None)
+    assert max_duration is not None
+    expected = (f"rclone did not stop within {cloud_sync.MAX_DURATION_MARGIN_S} s after its time "
+                f"limit (--max-duration {max_duration}s, --cutoff-mode SOFT) and was killed after "
+                f"{killed_after}s - a large file may still have been copying, or NAS I/O may be "
+                "hung. progress unknown (no rclone stats)")
+    assert captured[0].get("error") == expected, captured[0].get("error")
+    assert "did not stop within" in alerts[0].message
 
 
 def test_w14b_limited_timeout_too_small_for_a_cutoff_keeps_the_budget_stop(tmp_path):
@@ -720,6 +738,7 @@ def test_w16_hash_list_is_the_union_of_both_attempts_copies(tmp_path):
     first_attempt = copy_log([("retry_first_a.txt", 5), ("retry_first_b.txt", 7)])
     script = _w7_script()
     script[SYNC] = [{"exit_code": 5, "log": first_attempt}, sync_ok()]
+    script[HASH] = hash_clean(14)   # the union: 2 copies of attempt 1 + 12 of attempt 2
     cfg = make_config(tmp_path)
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)

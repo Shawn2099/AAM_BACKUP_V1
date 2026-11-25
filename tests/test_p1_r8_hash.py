@@ -362,3 +362,104 @@ def test_a14_list_file_write_error_returns_not_verified_and_never_raises(tmp_pat
     assert result["verified"] is False
     assert result["reason"].startswith("hash check could not start:")
     assert set(result) >= ARRIVAL_KEYS
+
+
+# ── R11 (Opus rulings 2026-11-25): verified only when every listed path is accounted for ──
+#
+# Rule: verified only if matching is not None and matching + missing + differ == len(listed).
+# A listed path that no longer exists on the source counts as changed during the backup.
+# Fixture lan_hash_silent.* is real rclone v1.74.3 output for two listed paths the source does
+# not have: rclone prints "0 differences found" and NO "N matching files" line (fact X8).
+# Lines like "matching 1 of 2 listed" are synthetic (no real rclone output has that wording).
+
+HASH_SILENT_ERR = _fixture("lan_hash_silent.stderr.txt")
+HASH_SILENT_COMB = _fixture("lan_hash_silent_combined.txt")
+TWO_GONE = ["gone_one.txt", "gone_two.txt"]
+HASH12_PATHS = CLEAN_NAMES   # the twelve files of lan_clean (lan_hash12_* were checked on them)
+
+
+def test_a12d_listed_files_rclone_silently_skipped_are_not_verified(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": HASH_SILENT_ERR, "combined": HASH_SILENT_COMB}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=TWO_GONE,
+                                epoch=time.time() + 100)
+    assert result["verified"] is False
+    assert "covered 0 of 2" in result["reason"]
+
+
+def test_a12e_partial_count_line_does_not_verify(tmp_path):
+    # synthetic: the count names 1 of the 2 listed files, the rest are unaccounted for
+    stderr = ("2026/11/25 12:00:00 NOTICE: Local file system at X:/rig/dst: 0 differences found\n"
+              "2026/11/25 12:00:00 NOTICE: Local file system at X:/rig/dst: matching 1 of 2 listed\n")
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": stderr, "combined": ""}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=["a.txt", "sub/b.txt"],
+                                epoch=time.time() + 100)
+    assert result["verified"] is False
+    assert result["reason"]
+
+
+def test_a12f_count_short_of_the_listed_paths_does_not_verify(tmp_path):
+    # real clean output for 12 files, but 13 paths were listed: one is unaccounted for
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": _fixture("lan_hash12_clean.stderr.txt"),
+            "combined": _fixture("lan_hash12_clean_combined.txt")}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec,
+                                paths=HASH12_PATHS + ["extra.txt"], epoch=time.time() + 100)
+    assert result["verified"] is False
+
+
+def test_a12g_listed_path_gone_from_the_source_counts_as_changed_during_backup(tmp_path):
+    # the Opus ruling says the gone path counts as changed; whether verified follows from that
+    # is not in the matrix, so only the count is asserted here (flagged for Opus)
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": HASH_SILENT_ERR, "combined": HASH_SILENT_COMB}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=["gone_one.txt"],
+                                epoch=time.time() + 100)
+    assert result["changed_during_backup"] == 1
+    assert "gone_one.txt" not in result["unverified_paths"]
+
+
+def test_a12c_clean_hash_of_twelve_listed_files_is_verified(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": _fixture("lan_hash12_clean.stderr.txt"),
+            "combined": _fixture("lan_hash12_clean_combined.txt")}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH12_PATHS,
+                                epoch=time.time() + 100)
+    assert result["verified"] is True
+    assert result["matching"] == len(HASH12_PATHS) == 12
+
+
+# ── H7: the copy messages of rclone that are transfers ───────────────────
+#
+# Real fixtures lan_multithread_new/replaced.jsonl (rclone v1.74.3, --multi-thread-cutoff 1,
+# local source -> loopback admin share): small.txt is "Copied (new)" and big.bin is
+# "Multi-thread Copied (new)" in the same run. "Copied (Rcat, new)" and "Copied (server-side
+# copy)" cannot come from a local -> UNC copy, so their entries are synthetic (flagged).
+
+@pytest.mark.parametrize("msg", [
+    "Multi-thread Copied (new)",
+    "Multi-thread Copied (replaced existing)",
+    "Copied (Rcat, new)",
+    "Copied (server-side copy)",
+])
+def test_h7_copy_message_variants_are_listed(msg):
+    log = _log(_entry(msg, "x.bin", size=5))
+    assert lan_sync.transferred_files([log]) == (["x.bin"], 5)
+
+
+def test_h7_real_multithread_new_run_lists_both_files():
+    paths, total = lan_sync.transferred_files([_fixture("lan_multithread_new.jsonl")])
+    assert paths == ["small.txt", "big.bin"]
+    assert total == 40 + 2097152
+
+
+def test_h7_real_multithread_replaced_run_lists_both_files():
+    paths, total = lan_sync.transferred_files([_fixture("lan_multithread_replaced.jsonl")])
+    assert paths == ["small.txt", "big.bin"]
+    assert total == 55 + 2097169
+
+
+def test_h7_multithread_error_entry_is_not_listed():
+    log = _log(_entry("Multi-thread Copied (new)", "bad.bin", size=5, level="error"))
+    assert lan_sync.transferred_files([log]) == ([], 0)

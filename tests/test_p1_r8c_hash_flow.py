@@ -11,6 +11,7 @@ unreadable copy log is recorded as a skip (`ran` False) and the run stays LAN_CO
 plan section 8 says the verdict becomes not verified (LAN_SUSPECT). Flagged for Opus.
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -42,9 +43,10 @@ from core import lan_sync
 
 
 def _md5diff_hash() -> dict:
-    """Real hash check of R8b: new.txt differs (same size, other bytes), exit 1."""
-    return {"exit_code": 1, "stderr": _fx("lan_hash_md5diff.stderr.txt"),
-            "combined": _fx("lan_hash_md5diff_combined.txt")}
+    """Real hash check of the twelve lan_clean files (R11 fixture): a.txt differs (same size,
+    other bytes), exit 1. The list is 12 long, so the count matches the copies (R11 rule)."""
+    return {"exit_code": 1, "stderr": _fx("lan_hash12_md5diff.stderr.txt"),
+            "combined": _fx("lan_hash12_md5diff_combined.txt")}
 
 
 # ── A12 (flow) a hash mismatch on a real file is SUSPECT, one alert, no shutdown ──
@@ -54,10 +56,10 @@ def test_a12_hash_mismatch_on_a_missing_or_unchanged_file_is_suspect(tmp_path, s
     cfg = make_config(tmp_path)
     src = Path(cfg.paths.source_drive)
     if state == "old_mtime":
-        # new.txt exists on the source but was last written an hour before the sync began
-        (src / "new.txt").write_bytes(b"N" * 300)
+        # a.txt exists on the source but was last written an hour before the sync began
+        (src / "a.txt").write_bytes(b"N" * 300)
         past = time.time() - 3600
-        os.utime(src / "new.txt", (past, past))
+        os.utime(src / "a.txt", (past, past))
     script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: _md5diff_hash()}
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)
@@ -78,9 +80,9 @@ def test_a12_hash_mismatch_on_a_missing_or_unchanged_file_is_suspect(tmp_path, s
 def test_a12b_hash_difference_from_a_change_during_the_backup_is_complete(tmp_path):
     cfg = make_config(tmp_path)
     src = Path(cfg.paths.source_drive)
-    (src / "new.txt").write_bytes(b"N" * 300)
+    (src / "a.txt").write_bytes(b"N" * 300)
     future = time.time() + 3600   # written after the sync began: changed during the backup
-    os.utime(src / "new.txt", (future, future))
+    os.utime(src / "a.txt", (future, future))
     script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: _md5diff_hash()}
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)
@@ -120,7 +122,7 @@ def test_a13h_copies_of_exactly_the_size_cap_still_run_the_hash(tmp_path):
     one_gib = 1024 ** 3
     cfg = make_config(tmp_path, arrival_hash_max_gb=1)
     script = {PLAN: clean_plan(), SYNC: {"exit_code": 0, "log": copy_log([("big.bin", one_gib)])},
-              CHECK: check_clean(), HASH: hash_clean()}
+              CHECK: check_clean(), HASH: hash_clean(1)}
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)
     assert out.exc is None, f"exc {out.exc!r}"
@@ -211,17 +213,18 @@ def test_m1_hash_metrics_keys_present_when_the_hash_ran_clean(tmp_path):
     hash_ = _hash_metrics(out)
     assert hash_["ran"] is True
     assert set(hash_) >= HASH_METRIC_KEYS, f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
-    # rclone's own 'N matching files' count from the hash check stderr (fixture lan_hash_clean: 3), not the copied-file count
-    assert hash_["matching"] == 3
+    # rclone's own 'N matching files' count from the hash check stderr (fixture lan_hash12_clean:
+    # 12, the same as the copied-file count of lan_clean)
+    assert hash_["matching"] == 12
     assert hash_["unverified_paths"] == []
 
 
 def test_m1_hash_metrics_keys_present_when_the_hash_ran_with_a_mismatch(tmp_path):
     cfg = make_config(tmp_path)
     src = Path(cfg.paths.source_drive)
-    (src / "new.txt").write_bytes(b"N" * 300)
+    (src / "a.txt").write_bytes(b"N" * 300)
     past = time.time() - 3600
-    os.utime(src / "new.txt", (past, past))
+    os.utime(src / "a.txt", (past, past))
     script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: _md5diff_hash()}
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)
@@ -230,4 +233,149 @@ def test_m1_hash_metrics_keys_present_when_the_hash_ran_with_a_mismatch(tmp_path
     assert hash_["ran"] is True
     assert hash_["verified"] is False
     assert set(hash_) >= HASH_METRIC_KEYS, f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
-    assert hash_["unverified_paths"] == ["new.txt"]
+    assert hash_["unverified_paths"] == ["a.txt"]
+
+
+# ── R11 (Opus rulings 2026-11-25): flow rows ─────────────────────────────
+
+def _stats_log(copies, transfers: int) -> str:
+    """Synthetic sync log: one info `Copied (new)` per (name, size) in `copies`, then the stats
+    line with the `transfers` count rclone reports (layout of the lan_clean stats line)."""
+    lines = [json.dumps({"level": "info", "msg": "Copied (new)", "object": name, "size": size,
+                         "objectType": "*local.Object"}) for name, size in copies]
+    total = sum(size for _name, size in copies)
+    lines.append(json.dumps({"level": "info", "msg": "stats", "stats": {
+        "bytes": total, "transfers": transfers, "deletes": 0, "errors": 0, "renames": 0,
+        "checks": 0}}))
+    return "\n".join(lines) + "\n"
+
+
+# ── A12d (flow): listed files rclone silently skipped: SUSPECT, one alert, no shutdown ──
+
+def test_a12d_silently_skipped_listed_files_are_suspect_one_alert_and_no_shutdown(tmp_path):
+    cfg = make_config(tmp_path)
+    silent = {"exit_code": 0, "stderr": _fx("lan_hash_silent.stderr.txt"),
+              "combined": _fx("lan_hash_silent_combined.txt")}
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: silent}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert isinstance(out.exc, flow.PartialRun)
+    assert steps(w) == [PLAN, SYNC, CHECK, HASH]
+    alerts = failures(w)
+    assert len(alerts) == 1, [a.message for a in alerts]
+    assert alerts[0].fault_code == "AAM-LAN-04"
+    assert w.shutdown.call_count == 0
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is True
+    assert hash_["verified"] is False
+    assert "covered 0 of 12" in hash_["reason"]
+
+
+# ── A13j (flow): stats say transfers, the log lists fewer copies: fail closed ──
+
+def test_a13j_transfers_reported_but_no_copied_files_is_suspect_not_nothing_copied(tmp_path):
+    cfg = make_config(tmp_path)
+    script = {PLAN: clean_plan(), SYNC: {"exit_code": 0, "log": _stats_log([], 3)},
+              CHECK: check_clean(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert isinstance(out.exc, flow.PartialRun)
+    assert steps(w) == [PLAN, SYNC, CHECK], "no hash without a copy list"
+    alerts = failures(w)
+    assert len(alerts) == 1, [a.message for a in alerts]
+    assert alerts[0].fault_code == "AAM-LAN-04"
+    assert w.shutdown.call_count == 0
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is False
+    assert hash_["verified"] is False
+    assert "transfers reported but no copied files in the log" in hash_["reason"]
+
+
+def test_a13j_fewer_listed_copies_than_reported_transfers_is_suspect(tmp_path):
+    cfg = make_config(tmp_path)
+    log = _stats_log([("x1.txt", 5), ("x2.txt", 7)], 3)   # two copies listed, 3 reported
+    script = {PLAN: clean_plan(), SYNC: {"exit_code": 0, "log": log},
+              CHECK: check_clean(), HASH: hash_clean(2)}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert steps(w) == [PLAN, SYNC, CHECK], "fewer copies than transfers: no hash"
+    alerts = failures(w)
+    assert len(alerts) == 1, [a.message for a in alerts]
+    assert alerts[0].fault_code == "AAM-LAN-04"
+    assert w.shutdown.call_count == 0
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is False
+    assert hash_["verified"] is False
+    assert "transfers" in hash_["reason"]
+
+
+# ── Matrix section 8: metrics.arrival.verified is the hash verdict when the hash ran ──
+
+def test_m8_hash_mismatch_makes_metrics_arrival_verified_false(tmp_path):
+    cfg = make_config(tmp_path)
+    src = Path(cfg.paths.source_drive)
+    (src / "a.txt").write_bytes(b"N" * 300)
+    past = time.time() - 3600
+    os.utime(src / "a.txt", (past, past))
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: _md5diff_hash()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert _hash_metrics(out)["verified"] is False
+    assert out.metrics["arrival"]["verified"] is False
+
+
+def test_m8_clean_hash_makes_metrics_arrival_verified_true(tmp_path):
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
+    cfg = make_config(tmp_path)
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert _hash_metrics(out)["verified"] is True
+    assert out.metrics["arrival"]["verified"] is True
+
+
+def test_m8_hash_timeout_makes_metrics_arrival_verified_false(tmp_path):
+    cfg = make_config(tmp_path)
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(),
+              HASH: {"exit_code": None, "timed_out": True}}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert _hash_metrics(out)["ran"] is True
+    assert out.metrics["arrival"]["verified"] is False
+
+
+def test_m8_hash_not_run_keeps_the_size_only_verdict_when_nothing_copied(tmp_path):
+    script = {PLAN: clean_plan(), SYNC: {"exit_code": 0, "log": _fx("lan_nochange.jsonl")},
+              CHECK: check_clean(), HASH: hash_clean()}
+    cfg = make_config(tmp_path)
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert _hash_metrics(out)["ran"] is False
+    assert out.metrics["arrival"]["verified"] is True
+
+
+def test_m8_hash_switched_off_keeps_the_size_only_verdict(tmp_path):
+    cfg = make_config(tmp_path, arrival_hash_transferred=False)
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert _hash_metrics(out)["ran"] is False
+    assert out.metrics["arrival"]["verified"] is True
+
+
+def test_m8_failed_size_only_check_is_verified_false_and_no_hash(tmp_path):
+    cfg = make_config(tmp_path, modify_window_seconds=0)
+    time.sleep(0.3)   # sub/deep/c.txt is older than the sync: the size-only check fails
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_missing(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert _hash_metrics(out)["ran"] is False
+    assert out.metrics["arrival"]["verified"] is False

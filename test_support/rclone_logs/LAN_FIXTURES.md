@@ -45,3 +45,14 @@ Generated with `deploy\bin\rclone.exe` under Git Bash on local disk (not the loo
 
 - `lan_hash_clean.stderr.txt` / `lan_hash_clean_combined.txt`: check of the untouched destination, exit 0; `0 differences found`, `3 matching files`.
 - `lan_hash_md5diff.stderr.txt` / `lan_hash_md5diff_combined.txt`: same check after `dst/new.txt` was overwritten with 300 bytes of different content, exit 1; `* new.txt`, `ERROR : new.txt: md5 differ`, `1 differences found`, `1 errors while checking`, `2 matching files`, `Failed to check: 1 differences found` (fact X8).
+
+## R11 fixtures (plan P1 review, Opus rulings 2026-11-25, rclone v1.74.3)
+
+Generated with `deploy\bin\rclone.exe` by a PowerShell-run Python script (scratch rig `C:\aam_lanrig_r11`, local disk; the multi-thread run writes over the loopback admin share). Sanitised like the rest: the rig and the absent config file become `X:/rig` and `X:/rclone.conf`; the `//?/X:/rig` form of rclone's destination line is written as `X:/rig` too.
+
+- `lan_hash12_clean.stderr.txt` / `lan_hash12_clean_combined.txt`: the twelve files of `lan_clean` (names and sizes from that log), synced into an empty destination, then `rclone check --one-way --files-from-raw` over the twelve names, exit 0: `0 differences found`, `12 matching files`. Replaces the three-file `lan_hash_clean.*` as the clean hash of the flow tests (a list of 12 needs a count of 12).
+- `lan_hash12_md5diff.stderr.txt` / `lan_hash12_md5diff_combined.txt`: same, after the destination `a.txt` was overwritten with same-size different bytes, exit 1: `* a.txt`, `ERROR : a.txt: md5 differ`, `1 differences found`, `1 errors while checking`, `11 matching files`, `Failed to check: 1 differences found`.
+- `lan_hash_silent.stderr.txt` / `lan_hash_silent_combined.txt`: `rclone check` over two listed names the source does not have (`gone_one.txt`, `gone_two.txt`), exit 0: `0 differences found` and NO `N matching files` line; the combined file is empty. Real behaviour of rclone for listed paths it does not see on the source (fact X8). Stands for the A12d silent-skip case. Synthetic lines of the matrix (for example `matching 1 of 2 listed`) are written inline in the tests, not as fixtures.
+- `lan_multithread_new.jsonl`: `rclone sync` of a 2 MiB `big.bin` and a 40-byte `small.txt` (local source) to the loopback share, `--multi-thread-cutoff 1 --multi-thread-streams 4`, exit 0. `small.txt`: `Copied (new)` size 40; `big.bin`: `Multi-thread Copied (new)` size 2097152; stats transfers 2.
+- `lan_multithread_replaced.jsonl`: the same pair rewritten (2097169 and 55 bytes), synced again, exit 0. `small.txt`: `Copied (replaced existing)` size 55; `big.bin`: `Multi-thread Copied (replaced existing)` size 2097169. Stats transfers 2.
+- `Copied (Rcat, new)` and `Copied (server-side copy)` have no real fixture: a local to UNC copy cannot produce them. Their H7 rows use inline synthetic entries (flagged in the test file).
