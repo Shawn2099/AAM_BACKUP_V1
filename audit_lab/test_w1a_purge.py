@@ -38,7 +38,6 @@ def test_w1a_d1_empty_subdirs_source_is_blocked_lan(sandbox, monkeypatch):
 
     import flow
     from core import guards
-    from core.lan_sync import build_robocopy_command
     from core.manifest import ManifestDB
     from core.time_utils import now_iso
 
@@ -59,10 +58,6 @@ def test_w1a_d1_empty_subdirs_source_is_blocked_lan(sandbox, monkeypatch):
     with pytest.raises(guards.GuardBlocked) as ei:
         flow._run_lan_pipeline(cfg, "w1a-d1-lan", now_iso(), time.monotonic())
     blocked = [r["guard"] for r in ei.value.record["results"] if r["verdict"] == guards.BLOCK]
-
-    # backstop: even a direct caller cannot build the mirror command
-    with pytest.raises(ValueError, match="contains no files"):
-        build_robocopy_command(str(src), str(dest), cfg.lan)
 
     db = ManifestDB.from_config(cfg)
     try:
@@ -132,7 +127,6 @@ def test_w1a_d1_empty_subdirs_source_is_refused_cloud(sandbox):
 @pytest.mark.parametrize("mode", ["acl_deny", "maxpath"])
 def test_w1a_d2_unreadable_subtree_purges(mode, sandbox, tmp_path):
     """An unreadable source subtree: is it purged from the destination?"""
-    from core.lan_sync import decide_lan_result, run_lan_sync
     from audit_lab.labconf import run as _run
 
     src = sandbox / "source" / "FY26-26"
@@ -176,27 +170,24 @@ def test_w1a_d2_unreadable_subtree_purges(mode, sandbox, tmp_path):
 
     before = len([p for p in dest.rglob("*") if p.is_file()])
 
-    # Production command (/ZB). Observed 2026-10-15: WITHOUT /ZB robocopy reads
-    # the >MAX_PATH subtree fine and mirrors it (LAN_COMPLETE is then the true
-    # result) - "maxpath" is only unreadable for tools without long-path support.
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
-                       lan=dict(L.PRODUCTION_LAN))
-    res = run_lan_sync(str(src), str(dest), cfg.lan)
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    art = RunArtefacts.open(str(sandbox / "runtime" / f"art_w1a_d2_{mode}"))
+    res = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
 
     blocked_dest = dest / ("B" if mode == "acl_deny" else "LONG")
     survived = [p.name for p in blocked_dest.rglob("*") if p.is_file()] if blocked_dest.exists() else []
     after = len([p for p in dest.rglob("*") if p.is_file()])
-    decision = decide_lan_result(res["exit_code"], (res.get("error") or "")) if res.get("error") else None
 
     L.record(
         f"D2[{mode}].result",
-        "unreadable source subtree is purged from the destination",
-        f"robocopy exit={res['exit_code']} status={res['status']} files_failed={res.get('files_failed')} | "
-        f"dest files before={before} after={after} | unreadable-subtree survivors={len(survived)} | "
-        f"decision={decision['status'] if decision else None}",
+        "unreadable source subtree is NOT purged from the destination",
+        f"rclone exit={res['exit_code']} status={res['status']} files_failed={res.get('files_failed')} | "
+        f"dest files before={before} after={after} | unreadable-subtree survivors={len(survived)}",
         ("PURGE CONFIRMED — " + str(len(survived)) + " survivor(s) of 5, status=" + res["status"])
         if len(survived) < 5 else
-        ("NO PURGE — subtree survived intact, robocopy reported status=" + res["status"]),
+        ("NO PURGE — subtree survived intact, rclone reported status=" + res["status"]),
     )
     # A3: the D2 hypothesis is REFUTED on the LAN leg — an unreadable subtree is
     # NEVER purged from the destination, and the run never reports a clean
@@ -205,7 +196,10 @@ def test_w1a_d2_unreadable_subtree_purges(mode, sandbox, tmp_path):
     assert len(survived) == 5, (
         f"D2 PROTECTION BROKEN: only {len(survived)}/5 files of the unreadable "
         f"subtree survived the mirror (mode={mode}, exit={res['exit_code']})")
-    assert res["status"] != "LAN_COMPLETE", (
-        f"D2 PROTECTION BROKEN: unreadable subtree mirrored as {res['status']} "
-        f"instead of failing loudly")
+    if mode == "acl_deny":
+        assert res["status"] != "LAN_COMPLETE", (
+            f"D2 PROTECTION BROKEN: unreadable subtree mirrored as {res['status']} "
+            f"instead of failing loudly")
+    else:
+        assert res["status"] == "LAN_COMPLETE", res
     print(f"[D2/{mode}] survivors={len(survived)} status={res['status']} exit={res['exit_code']}")

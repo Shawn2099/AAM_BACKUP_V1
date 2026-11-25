@@ -23,64 +23,14 @@ def flags_without_zb(cmd: list[str]) -> list[str]:
     return [a for a in cmd if a.upper() != "/ZB"]
 
 
-def test_w1c_c1_zb_privilege_is_a_hard_failure(sandbox):
-    """A bog-standard copy WITH /ZB fails if the account lacks SeBackupPrivilege."""
-    from core.lan_sync import build_robocopy_command
-
-    src = sandbox / "source" / "FY26-26"
-    write_file(src / "a.txt", b"hello\n" * 10)
-    dest = sandbox / "nas" / "FY26-26"
-
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-
-    with_zb = build_robocopy_command(str(src), str(dest), cfg.lan)
-    without_zb = flags_without_zb(with_zb)
-
-    r_zb = _run([*with_zb, "/LOG:{}".format(sandbox / "runtime" / "with_zb.log")], timeout=120)
-    r_no = _run([*without_zb, "/LOG:{}".format(sandbox / "runtime" / "no_zb.log")], timeout=120)
-
-    L.record("C1./ZB", "robocopy /ZB works for a normal service account",
-             f"WITH /ZB    : exit={r_zb.returncode} err={r_zb.stderr.strip()[:160]!r} | "
-             f"copied file exists={ (dest / 'a.txt').exists() if False else 'see below' }\n"
-             f"WITHOUT /ZB : exit={r_no.returncode} err={r_no.stderr.strip()[:120]!r}",
-             "CRITICAL: /ZB is a HARD FAILURE (exit 16, privilege absent) — "
-             "every LAN backup would fail before copying anything" if r_zb.returncode == 16
-             else "/ZB worked in this account (privilege present)")
-    print(f"[C1] with_zb exit={r_zb.returncode}  without_zb exit={r_no.returncode}")
-    assert r_no.returncode in (0, 1), r_no.stdout
+# C1./ZB and C2.dirs_only_no_zb removed in P2 CL4 (robocopy /ZB removed; G1 covered by test_w1a_purge)
 
 
-def test_w1c_c2_dirs_only_source_without_zb_is_refused(sandbox):
-    """C-1 regression (closed in M2 2.2): with /ZB removed, an all-empty-dirs
-    source used to wipe the LAN destination (12 -> 0 files). The robocopy
-    command builder now refuses it (G1 backstop) before robocopy can run."""
-    from core.lan_sync import build_robocopy_command
+def test_w1c_c3_partial_source_rclone_preserves_denied(sandbox):
+    """Is an ACL-denied subtree preserved on the LAN destination by rclone?"""
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
 
-    src = sandbox / "source" / "FY26-26"
-    for d in ("Clients", "Clients/2026", "Registers"):
-        (src / d).mkdir(parents=True, exist_ok=True)
-    dest = sandbox / "nas" / "FY26-26"
-    for i in range(12):
-        write_file(dest / "Clients" / f"ledger_{i}.txt", f"L{i}\n".encode() * 40)
-    before = sorted((p.name, p.read_bytes()) for p in dest.rglob("*") if p.is_file())
-
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    with pytest.raises(ValueError, match="contains no files") as ei:
-        flags_without_zb(build_robocopy_command(str(src), str(dest), cfg.lan))
-
-    after = sorted((p.name, p.read_bytes()) for p in dest.rglob("*") if p.is_file())
-    L.record("C2.dirs_only_no_zb",
-             "all-empty-dirs source is refused before robocopy runs (C-1 closed)",
-             f"builder: {ei.value} | dest files before={len(before)} after={len(after)}",
-             "LAN leg protected (byte-identical)" if after == before else "DATA CHANGED")
-    assert after == before, "destination must be byte-identical"
-
-
-def test_w1c_c3_partial_source_without_zb_purges(sandbox):
-    """With /ZB removed, is an ACL-denied subtree purged from the LAN destination?"""
-    from core.lan_sync import build_robocopy_command
-
-    user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".lstrip("\\")
     src = sandbox / "source" / "FY26-26"
     write_file(src / "A" / "a1.txt", b"A1\n" * 10)
     denied = src / "B"
@@ -96,24 +46,18 @@ def test_w1c_c3_partial_source_without_zb_purges(sandbox):
         write_file(dest / "B" / f"b{i}.txt", f"B{i}\n".encode() * 10)
 
     cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    cmd = flags_without_zb(build_robocopy_command(str(src), str(dest), cfg.lan))
-    cmd.append(f"/LOG:{sandbox / 'runtime' / 'c3.log'}")
-    from core.lan_sync import decide_lan_result
-    r = _run(cmd, timeout=120)
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w1c_c3"))
+    res = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
 
     b_left = len([p for p in (dest / "B").rglob("*") if p.is_file()])
-    log_text = (sandbox / "runtime" / "c3.log").read_text(encoding="utf-8", errors="replace")[-100_000:]
-    dec = decide_lan_result(r.returncode, log_text)
-    L.record("C3.denied_subtree_no_zb",
-             "ACL-denied source subtree is purged from the LAN destination when /ZB is absent",
-             f"robocopy exit={r.returncode} decision={dec['status']} | B survivors={b_left}/5",
-             "LAN DATA LOSS CONFIRMED (denied subtree purged, status=" + dec["status"] + ")"
-             if b_left == 0 else f"LAN protected: B survived ({b_left}/5), status={dec['status']}")
-    print(f"[C3] exit={r.returncode} decision={dec['status']} B_left={b_left}")
-    # A4: the denied subtree must survive (robocopy refuses to delete what it
-    # cannot read) AND the verdict must not be a clean success.
+    L.record("C3.denied_subtree",
+             "ACL-denied source subtree is preserved on the LAN destination",
+             f"rclone exit={res['exit_code']} status={res['status']} | B survivors={b_left}/5",
+             f"LAN protected: B survived ({b_left}/5), status={res['status']}"
+             if b_left == 5 else f"LAN DATA LOSS (B={b_left}/5)")
+    print(f"[C3] exit={res['exit_code']} status={res['status']} B_left={b_left}")
     assert b_left == 5, f"denied subtree purged from the destination: {b_left}/5 survived"
-    assert dec["status"] in ("LAN_PARTIAL", "LAN_FAILED"), dec
+    assert res["status"] in ("LAN_PARTIAL", "LAN_FAILED"), res
 
 
 def _deny_read(path: Path) -> tuple[bool, str]:
@@ -123,8 +67,9 @@ def _deny_read(path: Path) -> tuple[bool, str]:
 
 
 def test_w1c_c4_denied_file_with_production_command(sandbox):
-    """A single denied FILE (production command, /ZB intact) — LAN result?"""
-    from core.lan_sync import run_lan_sync
+    """A single denied FILE — LAN result?"""
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
 
     src = sandbox / "source" / "FY26-26"
     write_file(src / "A" / "a1.txt", b"A1\n" * 10)
@@ -137,9 +82,9 @@ def test_w1c_c4_denied_file_with_production_command(sandbox):
     write_file(dest / "A" / "a1.txt", b"A1\n" * 10)
     write_file(dest / "A" / "locked.txt", b"OLD COPY\n" * 10)
 
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
-                       lan=dict(L.PRODUCTION_LAN))
-    res = run_lan_sync(str(src), str(dest), cfg.lan)
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w1c_c4"))
+    res = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
     left = (dest / "A" / "locked.txt").exists()
     content = (dest / "A" / "locked.txt").read_bytes()[:20] if left else b""
     L.record("C4.denied_file",

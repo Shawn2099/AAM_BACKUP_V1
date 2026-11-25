@@ -51,63 +51,45 @@ def _make_big_source(src: Path, *, files: int = 4000, size: int = 4096) -> None:
 
 
 def test_w1d_kill_lan_with_exit_code_0(sandbox):
-    """Kill robocopy mid-run with exit code 0 -> must NOT be LAN_COMPLETE.
-
-    LAB FIX (this test was vacuous on this box): it built the PRODUCTION command,
-    which carries /ZB. Without SeBackupPrivilege robocopy exits 16 before copying
-    a single byte (finding C-2), so `pid` stayed None, the kill never happened,
-    and the recorded verdict was an artefact of C-2 rather than a statement about
-    the kill contract. The missing helper name is fixed above. /ZB is now stripped
-    through the lab seam (as test_w1d2 already does) so the kill really happens
-    mid-transfer, and the assertions below prove it.
-    """
-    import core.lan_sync as ls
-    from core.lan_sync import run_lan_sync
+    """Kill rclone mid-run with exit code 0 -> must NOT be LAN_COMPLETE."""
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
 
     src = sandbox / "source" / "FY26-26"
     _make_big_source(src)
     dest = sandbox / "nas" / "FY26-26"
     cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w1bd"))
 
-    _orig_build = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(_orig_build(s, d, c))
     box: dict = {}
 
     def _worker():
-        box["res"] = run_lan_sync(str(src), str(dest), cfg.lan)
+        box["res"] = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
 
-    try:
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        pid = None
-        deadline = time.time() + 20
-        while time.time() < deadline and pid is None:
-            pid = _find_pid("Robocopy", str(sandbox))
-            time.sleep(0.2)
-        killed = _terminate_exit_0(pid) if pid else False
-        t.join(timeout=180)
-    finally:
-        ls.build_robocopy_command = _orig_build
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    pid = None
+    deadline = time.time() + 20
+    while time.time() < deadline and pid is None:
+        pid = _find_pid("rclone", str(sandbox))
+        time.sleep(0.05)
+    killed = _terminate_exit_0(pid) if pid else False
+    t.join(timeout=180)
     res = box.get("res", {})
 
     dest_files = len([p for p in dest.rglob("*") if p.is_file()])
     L.record("D.kill_exit0.lan",
-             "robocopy killed mid-run with exit code 0 is reported as success (F-08 forge)",
-             f"found_robocopy_pid={pid} NtTerminateProcess(0)={killed} | "
+             "rclone killed mid-run with exit code 0 is not reported as success (F-08 forge)",
+             f"found_rclone_pid={pid} NtTerminateProcess(0)={killed} | "
              f"status={res.get('status')} exit_code={res.get('exit_code')} "
-             f"termination={res.get('termination')} log_complete={res.get('log_complete')} "
-             f"log_retained={res.get('log_retained')} | dest files copied={dest_files}/{4000}",
-             "FAIL-CLOSED OK: status=" + str(res.get('status')) +
-             " (kill detected, nothing falsely COMPLETE)"
+             f"stats={res.get('stats')} | dest files copied={dest_files}/4000",
+             "FAIL-CLOSED OK: status=" + str(res.get('status'))
              if res.get("status") == "LAN_SUSPECT" else
              f"FAIL-CLOSED BROKEN: status={res.get('status')} exit={res.get('exit_code')}")
     print(f"[D-lan] status={res.get('status')} exit={res.get('exit_code')} killed={killed}")
-    # A6: the kill must actually have happened mid-transfer, and the verdict must
-    # fail closed (never LAN_COMPLETE) with the forensic log retained.
-    assert killed is True, "could not kill the robocopy process - experiment is vacuous"
+    assert killed is True, "could not kill the rclone process - experiment is vacuous"
     assert res.get("status") == "LAN_SUSPECT", res
-    assert res.get("termination") == "abnormal", res
-    assert res.get("log_complete") is False, res
+    assert res.get("stats") is None, res
     assert dest_files < 4000, (
         f"kill landed after the whole copy finished ({dest_files}/4000) - this no "
         "longer proves fail-closed behaviour")

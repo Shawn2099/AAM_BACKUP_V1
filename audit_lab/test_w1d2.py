@@ -102,64 +102,51 @@ def _terminate_exit_0(pid: int) -> bool:
 
 
 def test_w1d2_kill_lan_exit0_without_zb(sandbox):
-    from core.lan_sync import decide_lan_result, run_lan_sync
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
 
     src = sandbox / "source" / "FY26-26"
     for i in range(4000):
         write_file(src / "Clients" / f"f_{i:05d}.bin", b"Z" * 4096)
     dest = sandbox / "nas" / "FY26-26"
     cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-
-    from core.lan_sync import build_robocopy_command
-    cmd = _flags_without_zb(build_robocopy_command(str(src), str(dest), cfg.lan))
-    print(f"[D2] starting: {' '.join(cmd[:4])} ... (no /ZB)")
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w1d2"))
 
     box: dict = {}
     err: dict = {}
 
     def _worker():
         try:
-            box["res"] = run_lan_sync(str(src), str(dest), cfg.lan)
+            box["res"] = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
         except Exception as e:  # pragma: no cover
             err["e"] = repr(e)
 
-    # run the real wrapper but force the command without /ZB
-    import core.lan_sync as ls
-    orig_build = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: _flags_without_zb(orig_build(s, d, c))
-    try:
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        pid, deadline = None, time.time() + 30
-        while time.time() < deadline and pid is None:
-            pid = _find_pid("Robocopy", str(sandbox))
-            time.sleep(0.05)
-        if pid is None:
-            pytest.fail("could not find the robocopy process to kill")
-        time.sleep(0.4)
-        killed = _terminate_exit_0(pid)
-        t.join(timeout=300)
-    finally:
-        ls.build_robocopy_command = orig_build
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    pid, deadline = None, time.time() + 30
+    while time.time() < deadline and pid is None:
+        pid = _find_pid("rclone", str(sandbox))
+        time.sleep(0.05)
+    if pid is None:
+        pytest.fail("could not find the rclone process to kill")
+    time.sleep(0.2)
+    killed = _terminate_exit_0(pid)
+    t.join(timeout=300)
 
     res = box.get("res", {})
     copied = len([p for p in dest.rglob("*") if p.is_file()])
     L.record("D2.kill_exit0.lan",
-             "robocopy killed mid-run with exit code 0 is reported as success (F-08 forge)",
-             f"robocopy_pid={pid} NtTerminateProcess(p,0)={killed} | status={res.get('status')} "
-             f"exit_code={res.get('exit_code')} termination={res.get('termination')} "
-             f"log_complete={res.get('log_complete')} log_retained={res.get('log_retained')} | "
+             "rclone killed mid-run with exit code 0 is not reported as success (F-08 forge)",
+             f"rclone_pid={pid} NtTerminateProcess(p,0)={killed} | status={res.get('status')} "
+             f"exit_code={res.get('exit_code')} stats={res.get('stats')} | "
              f"dest files={copied}/4000 | reason={(res.get('error') or '')[:180]}",
              "FAIL-CLOSED OK — kill detected as " + str(res.get('status'))
              if res.get("status") in ("LAN_SUSPECT", "LAN_FAILED")
              else f"FAIL-CLOSED BROKEN — status={res.get('status')} exit={res.get('exit_code')}")
     print(f"[D2] status={res.get('status')} exit={res.get('exit_code')} copied={copied}/4000 killed={killed}")
-    # A8: with /ZB stripped the kill really lands mid-transfer. The contract:
-    # an exit code of 0 with a TRUNCATED log must never read LAN_COMPLETE.
-    assert killed is True, "could not kill the robocopy process - experiment is vacuous"
+    assert killed is True, "could not kill the rclone process - experiment is vacuous"
     assert copied < 4000, (
         f"kill landed after the whole copy finished ({copied}/4000) - this no "
         "longer proves the fail-closed path")
     assert res.get("status") == "LAN_SUSPECT", res
-    assert res.get("termination") == "abnormal", res
-    assert res.get("log_complete") is False, res
+    assert res.get("stats") is None, res

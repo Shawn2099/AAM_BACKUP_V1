@@ -33,40 +33,7 @@ def _can_read(path: Path) -> bool:
         return False
 
 
-def test_w1a_diag_robocopy_exit16_reason(sandbox):
-    """Capture the actual robocopy output for the /ZB privilege abort (C-2).
-
-    The source holds one real file: a dirs-only source no longer reaches
-    robocopy at all (G1 backstop, M2 2.2 - see test_w1a_purge D1)."""
-    from core.lan_sync import run_lan_sync
-
-    src = sandbox / "source" / "FY26-26"
-    for d in ("Clients", "Registers"):
-        (src / d).mkdir(parents=True, exist_ok=True)
-    write_file(src / "Clients" / "new_ledger.txt", b"y" * 50)
-    dest = sandbox / "nas" / "FY26-26"
-    write_file(dest / "Clients" / "ledger.txt", b"x" * 100)
-
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
-                       lan=dict(L.PRODUCTION_LAN))
-    res = run_lan_sync(str(src), str(dest), cfg.lan)
-    err = (res.get("error") or "")[:1200]
-    survivors = len([p for p in dest.rglob("*") if p.is_file()])
-
-    L.record("D1.robocopy_exit16", "robocopy refuses to mirror a dirs-only source (exit 16?)",
-             f"status={res['status']} exit={res['exit_code']} survivors={survivors}\n--- log ---\n{err}",
-             "LAN leg FAILS CLOSED (exit 16 = fatal, nothing copied/deleted)" if res["exit_code"] == 16
-             and survivors else "see evidence")
-    print(err)
-    # A1: a /ZB privilege abort must fail CLOSED - never silently succeed, and
-    # never delete a destination file it could not have mirrored. This is the
-    # C-2 deployment blocker, asserted so it cannot regress into a partial purge.
-    assert res["status"] in ("LAN_FAILED", "LAN_SUSPECT"), res
-    assert res["exit_code"] == 16, (
-        "expected the /ZB privilege abort (exit 16); got "
-        f"{res['exit_code']} - if SeBackupPrivilege has since been granted, C-2 "
-        "is resolved and this test should assert the successful-copy path instead")
-    assert survivors == 1, f"/ZB abort deleted destination files: {survivors} left of 1"
+# test_w1a_diag_robocopy_exit16_reason removed in P2 CL4 (robocopy /ZB exit-16 diagnostic)
 
 
 def test_w1a_d2_partial_readability_both_legs(sandbox):
@@ -77,7 +44,8 @@ def test_w1a_d2_partial_readability_both_legs(sandbox):
     import os as _os
 
     from core.cloud_sync import run_cloud_sync
-    from core.lan_sync import run_lan_sync
+    from core.lan_sync import run_lan_mirror
+    from core.run_artefacts import RunArtefacts
     from audit_lab.labconf import write_local_rclone_config
 
     src = sandbox / "source" / "FY26-26"
@@ -104,15 +72,15 @@ def test_w1a_d2_partial_readability_both_legs(sandbox):
     for i in range(5):
         write_file(dest / "B" / f"b{i}.txt", f"B{i}\n".encode() * 10)
 
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
-                       lan=dict(L.PRODUCTION_LAN))
-    lan = run_lan_sync(str(src), str(dest), cfg.lan)
+    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
+    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w1a_diag"))
+    lan = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
     b_survivors = len([p for p in (dest / "B").rglob("*") if p.is_file()]) if (dest / "B").exists() else 0
     a_files = len([p for p in (dest / "A").rglob("*") if p.is_file()])
     L.record("D2.partial.lan",
-             "robocopy /MIR against a partially readable source purges the unreadable subtree",
+             "rclone LAN mirror against a partially readable source preserves the unreadable subtree",
              f"status={lan['status']} exit={lan['exit_code']} files_failed={lan.get('files_failed')} | "
-             f"A survivors={a_files}/2  B survivors={b_survivors}/5 | counts={lan.get('counts')}",
+             f"A survivors={a_files}/2  B survivors={b_survivors}/5",
              f"LAN: {'PURGED B' if b_survivors == 0 else f'B survived ({b_survivors}/5)'} with status={lan['status']}")
 
     # ── cloud leg: seed the fake bucket with A + B, then sync with B denied ──
