@@ -248,7 +248,7 @@ budget:
   audit_max_hours: 8
   # Of the cloud budget, kept for the size check after the upload (minutes)
   cloud_verify_reserve_minutes: 60
-  # Of the LAN budget, kept for the destination walk + verified NAS shutdown (minutes)
+  # Of the LAN budget, kept for the arrival check(s) + verified NAS shutdown (minutes)
   lan_post_reserve_minutes: 30
 
 # ═══════════════════════════════════════════════════

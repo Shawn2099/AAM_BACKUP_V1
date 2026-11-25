@@ -183,7 +183,8 @@ HELP: dict[str, tuple[str, str]] = {
                                "After this it stops and continues the next night (a first full upload takes several nights)."),
     "budget.audit_max_hours": ("Weekly safety check may run for at most", ""),
     "budget.cloud_verify_reserve_minutes": ("Time kept for the after-upload check", ""),
-    "budget.lan_post_reserve_minutes": ("Time kept for switching the NAS off", ""),
+    "budget.lan_post_reserve_minutes": ("Time kept for the arrival check and switching the NAS off",
+                                         "Of the NAS budget, kept after the copy for the arrival check(s) and the verified NAS shutdown, so a night that ran out of time still checks and shuts the NAS down."),
 
     # ── dashboard ──
     "dashboard.public_url": ("Dashboard address in emails",

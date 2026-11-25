@@ -952,8 +952,8 @@ class BudgetConfig(StrictModel):
         description="Of the cloud budget, kept for the size check / manifest after the upload")
     lan_post_reserve_minutes: int = Field(
         default=30, ge=0, le=600,
-        description="Of the LAN budget, kept after the mirror for the destination walk and the "
-                    "verified NAS shutdown")
+        description="Of the LAN budget, kept after the mirror for the arrival check(s) (size check "
+                    "and hash check) and the verified NAS shutdown")
 
 
 class WatchdogConfig(StrictModel):
