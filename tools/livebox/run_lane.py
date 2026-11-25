@@ -1587,6 +1587,14 @@ class LaneHooks:
             if src.name != fy:
                 pass
             churn.seed_tree(src, self.seed, self.scale, now=first - dt.timedelta(days=1))
+        if not self.resume:
+            from core.manifest import ManifestDB
+
+            db = ManifestDB.from_config(self.rig.load_config())
+            try:
+                db.set_meta_created_at(f"{first.isoformat()}T00:00:00+05:30")
+            finally:
+                db.close()
 
     def src_dir(self, fy: str) -> Path:
         return self.rig.lane_dir / "src" / fy
@@ -2225,7 +2233,7 @@ class LaneHooks:
                           f"{tot['archive']}: {rig.seams.archive_calls}"))
         v = oracles.check_spies(wake_calls=tot["wake"] - self.audit_wakes - self.rollover_wakes,
                                 shutdown_calls=tot["shutdown"] - self.audit_shutdowns - self.rollover_shutdowns,
-                                lan_flows=self.lan_passes or self.lan_flows, lan_flows_all_complete=self.lan_flows_complete)
+                                lan_flows=self.lan_flows, lan_flows_all_complete=self.lan_flows_complete)
         out += _viol_checks("FINAL_SPY", v, "wake = LAN flows of this process, shutdown = fully complete LAN flows")
         out.append(_check("FINAL_NO_REAL_POWER", "PASS" if not self.argv_violations else "FAIL",
                           "no shutdown / wake / gcloud ever executed", f"violations {self.argv_violations}"))

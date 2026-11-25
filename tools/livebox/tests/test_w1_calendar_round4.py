@@ -279,6 +279,15 @@ def test_f4_rollover_wake_and_shutdown_are_subtracted_from_the_final_spy(tmp_pat
     assert st["rollover_wakes"] == 2 and st["rollover_shutdowns"] == 1
 
 
+def test_f4b_final_spy_uses_lan_flows_not_lan_passes_during_overlap(tmp_path, monkeypatch):
+    h = _hooks(tmp_path, monkeypatch)
+    h.rig = SimpleNamespace(config={"paths": {"runtime_dir": str(tmp_path)}}, runtime_dir=tmp_path,
+                            seams=SimpleNamespace(wake_calls=[0] * 14, shutdown_calls=[0] * 14, archive_calls=[]))
+    h.lan_passes, h.lan_flows, h.lan_flows_complete = 22, 14, 14
+    spy = [c for c in h.final_checks() if c["check_id"] == "FINAL_SPY"]
+    assert spy and all(c["verdict"] == "PASS" for c in spy), spy
+
+
 # ============================================================================ F5: churn in small trees
 def _tree(root, n):
     for i in range(n):
