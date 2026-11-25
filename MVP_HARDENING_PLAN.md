@@ -175,7 +175,7 @@ Format per WP: **Problem/evidence → Design → Config → Files → Tests → 
   3. Fix the 21 stale tests to match current *intended* behaviour (no production code change); mark chaos-tool tests `skipif` tool dir absent with an explicit reason.
   4. Add `run_tests.bat`/`pyproject` markers: `unit`, `lab` (audit_lab), `onbox` (Wave 7). Add `pytest-timeout` to dev group (already used).
   5. Record the baseline: committed suite 0 failed; audit lab = exactly the 3 known intentional reds.
-- **Acceptance:** baseline report committed in `docs/audit/BASELINE_mvp-hardening.md`.
+- **Acceptance:** baseline report committed in `docs/audit/BASELINE_mvp-hardening.md` (removed from the tree, in git history).
 
 ### WP1 — Shared building blocks (§5)
 - Implement §5.1–§5.7 with unit tests each. Migrate call sites module by module (each migration its own commit with existing tests still green).
@@ -488,7 +488,7 @@ Cost-control rules for execution: work inline (no parallel agents), run only the
 - [x] 0.1 `.gitignore`: `audit_lab/raw/*.err`, `audit_lab/raw/*_report.txt`, `.coverage`, `htmlcov/`, `MagicMock/`
 - [x] 0.2 Fix 21 stale tests to current intended behaviour (no production change)
 - [x] 0.3 `skipif` the 3 chaos-tool tests when `C:\ChaosTest\tools` is absent
-- [x] 0.4 Baseline recorded (markers deferred: `tests/` and `audit_lab/` are already separate roots; on-box tests live only in `audit_lab/test_w7_deployed.py`); record baseline in `docs/audit/BASELINE_mvp-hardening.md`
+- [x] 0.4 Baseline recorded (markers deferred: `tests/` and `audit_lab/` are already separate roots; on-box tests live only in `audit_lab/test_w7_deployed.py`); record baseline in `docs/audit/BASELINE_mvp-hardening.md` (removed from the tree, in git history)
 
 ### M1 — Foundations
 - [x] 1.1 Config hygiene: `extra="forbid"`, absolute `CONFIG_PATH` (`AAM_CONFIG`), deprecated-key handling. New config keys are added with their consumer (run_logs/alerts/notifications in 1.4-1.6; **WoL timings move to 2.5**)

@@ -2,7 +2,7 @@
 
 For the person at the server. Follow it top to bottom; every step says what you should see. If a step does not show
 that, **stop**. Steps 1-6 change almost nothing; step 7 changes system settings; the services are only installed in step 11. To UPDATE an existing install use
-`DEPLOY_RUNBOOK.md` instead. Plan and reasons: `docs/PLAN_FRESH_INSTALL_2026-10-23.md`.
+`DEPLOY_RUNBOOK.md` instead. Plan and reasons (removed 2026-11-25, in git history): `docs/PLAN_FRESH_INSTALL_2026-10-23.md`.
 
 | Placeholder | Meaning | Example |
 |---|---|---|

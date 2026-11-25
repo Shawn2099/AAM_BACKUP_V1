@@ -16,7 +16,7 @@ Active work is the MVP hardening on branch `mvp-hardening`. Before doing anythin
 
 **Worker agents** (asked to run tests/checks, not to build): follow `AGENT_TASKS.md` only. You never edit tracked files, and the trial box is read-only for you (worker agents only); your logs and reports go to `agent_runs/`.
 
-`HANDOVER.md` and the many `*_REPORT*.md` / `AUDIT_*.md` files at the root are historical audit material, not current state.
+Old audit and report files at the root (`*_REPORT*.md`, `AUDIT_*.md`) are historical audit material, not current state.
 
 ## What this is
 

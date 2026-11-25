@@ -636,7 +636,7 @@ whole day folders; the support zip keeps the names. (No old-name compatibility n
 - [x] **10.2** (2026-10-19) Update `docs/ARCHITECTURE.md` (§10 gates, rollover journal, report model,
   credentials, interruption), `docs/EMAIL_CONTENT_SPEC.md`, `config.example.yaml`,
   `docs/DEPLOY_RUNBOOK.md`.
-- [x] **10.3** (2026-10-19, see docs/DEPLOY_LOG_2026-10-19.md; agent account kept via -KeepServiceAccount) **Fresh install** on the box (D-16; full control): stop + uninstall the old services,
+- [x] **10.3** (2026-10-19, see docs/DEPLOY_LOG_2026-10-19.md (removed 2026-11-25, in git history); agent account kept via -KeepServiceAccount) **Fresh install** on the box (D-16; full control): stop + uninstall the old services,
   keep the old install + runtime folders renamed as reference only (like `C:\AAMBackup_v113`),
   fresh clone, `uv sync`, NEW config.yaml from `config.example.yaml` (old config only as
   reference), new empty runtime / database, `public_url` empty

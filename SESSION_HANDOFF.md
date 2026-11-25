@@ -56,7 +56,7 @@ final-copy rule. Tasks A1-D2 are done and committed (the commits are the newest 
 ## >>> 2026-10-23 - FRESH-INSTALL WORK + OPEN ITEMS (newest of the newest) <<<
 
 Owner goal: install on a clean Windows Server 2016 from scratch (owner will supply a fresh 2016 VM for the dry run).
-Plan: `docs/PLAN_FRESH_INSTALL_2026-10-23.md` (rev 2, section 5 binding). Guide: `docs/INSTALL_FRESH.md`. Built and
+Plan (removed 2026-11-25, in git history): `docs/PLAN_FRESH_INSTALL_2026-10-23.md` (rev 2, section 5 binding). Guide: `docs/INSTALL_FRESH.md`. Built and
 committed (INST-1..): `.gitattributes` (CRLF for .bat/.ps1/config.install.yaml), `deploy/_common.ps1`,
 04/06/03 rewritten parts, `install_checks.py`, `set_mail_password.py`, `send_test_mail.py`, `config.install.yaml`
 (02_collect_config.ps1 removed). Config for a fresh install lives OUTSIDE the locked code folder:
@@ -91,7 +91,7 @@ Lab rerun on this code still to do (previous report was against rigs without a y
 ## >>> 2026-10-22 LATE UPDATE (newest of the newest) - FY folders + deploy <<<
 
 **Box now runs `9906026` (deployed ~22:12 IST: bundle `^4d32a24`, ff merge, DB backup `C:\BackupAgent\manifest.db.bak-before-fy-*`,
-agent+watchdog restarted while idle).** That includes alert controls A-C. Plan `docs/PLAN_FY_FOLDERS_2026-10-22.md` (rev 2,
+agent+watchdog restarted while idle).** That includes alert controls A-C. Plan `docs/PLAN_FY_FOLDERS_2026-10-22.md` (removed 2026-11-25, in git history; rev 2,
 Opus-reviewed) is built through FY-8: FY-1 both paths end in an FY folder or neither (config load) | FY-2 a finished rollover is
 never re-run when the paths are put back (`rollover:reentered:<fy>`, AAM-ROL-04) | FY-3 Settings can never change the FY
 (`config_edit._refuse_fy_change`, 409) | FY-4 the two paths are Advanced | FY-5 G6 text "nothing saved in <to_fy> is backed up yet" |
@@ -107,7 +107,7 @@ config.yaml moving the FY stays an accepted risk. **Box facts:** schedule now cl
 Advanced password is still unknown - the two must differ, min 10 chars; reset with `deploy/set_dashboard_passwords.py`, ask is
 injectable); `report_recipients` now set by the owner; `wol.server_ip` still the stale 10.10.186.231 (WoL is Off on the box);
 LAN destination already uses the real NAS 10.10.151.53. The 21:00 LAN run of 22 Oct was LAN_COMPLETE (slot fix proven).
-**FY review fixes are DONE in the repo (FY-9..FY-17, plan `docs/PLAN_FY_FIXES_2026-10-22.md` rev 2, unit suite 2960 passed), NOT yet deployed (box still runs 9906026):** the SOURCE folder alone decides the FY (`configured_fy`); **a year folder on the source is MANDATORY whichever legs are on** (owner 2026-10-22; config load refuses otherwise; NAS must match while the NAS is on; with the NAS off the NAS path is an unused placeholder, never read or rewritten); drive-root paths keep their backslash (`D:\FY25-26` -> `D:\FY26-27`); picker accepts only absolute local paths, drive root has no parent, links anywhere in the path, case-insensitive; dashboard asks presence only (`new_fy_has_files`), the daily mail counts (junction-safe); the ROL-06 alarm + its RESOLVED use mode `rollover_files` (own incident; RESOLVED goes out in the switching run; `_incident_closed` branch); rollover messages send the owner to support; a failed early new-year folder sends a WARNING (`rollover:<fy>:source_folder_early`); JS try/catch. Deploy note: an existing install whose source has no year folder will refuse to start (runbook section 4). **Old years:** only the CURRENT FY is backed up; at deployment a SEPARATE bulk-upload tool/script must upload older year folders (`D:\FY24-25`, `D:rchives\FY10-11`) - never into the current year's cloud folder, nothing verifies them unless the tool does (`rclone check`); NOT built yet. Edits to a closed year after the switch are not backed up (accepted).
+**FY review fixes are DONE in the repo (FY-9..FY-17, plan `docs/PLAN_FY_FIXES_2026-10-22.md` (removed 2026-11-25, in git history) rev 2, unit suite 2960 passed), NOT yet deployed (box still runs 9906026):** the SOURCE folder alone decides the FY (`configured_fy`); **a year folder on the source is MANDATORY whichever legs are on** (owner 2026-10-22; config load refuses otherwise; NAS must match while the NAS is on; with the NAS off the NAS path is an unused placeholder, never read or rewritten); drive-root paths keep their backslash (`D:\FY25-26` -> `D:\FY26-27`); picker accepts only absolute local paths, drive root has no parent, links anywhere in the path, case-insensitive; dashboard asks presence only (`new_fy_has_files`), the daily mail counts (junction-safe); the ROL-06 alarm + its RESOLVED use mode `rollover_files` (own incident; RESOLVED goes out in the switching run; `_incident_closed` branch); rollover messages send the owner to support; a failed early new-year folder sends a WARNING (`rollover:<fy>:source_folder_early`); JS try/catch. Deploy note: an existing install whose source has no year folder will refuse to start (runbook section 4). **Old years:** only the CURRENT FY is backed up; at deployment a SEPARATE bulk-upload tool/script must upload older year folders (`D:\FY24-25`, `D:rchives\FY10-11`) - never into the current year's cloud folder, nothing verifies them unless the tool does (`rclone check`); NOT built yet. Edits to a closed year after the switch are not backed up (accepted).
 **The owner runs the audit lab themselves:** `powershell -ExecutionPolicy Bypass -File tools\run_audit_lab.ps1` writes
 `agent_runs\audit_lab_<stamp>\REPORT.md` (+ lab.log, junit.xml); read that report first and fix whatever it lists.
 **Next:** verify the 02:01 cloud run of 23 Oct; alert-controls steps D-G; audit lab + Opus review of FY-1..8; owner acceptance
@@ -234,11 +234,11 @@ lab `test_w24_server_restart`.
 >
 > **2026-10-19 (evening) - Google key + archive:** `deploy/lock_gcs_key.ps1` (run by the installer, applied on the box) leaves only SYSTEM, Administrators and the service account (read) on the key; the account is a parameter, the list is rebuilt each run. The key is still PLAIN (encryption parked by the owner; no readiness check yet). `rclone settier` does NOT work on GCS, so the FY archive step stays on gcloud: it now passes the key as a file (`CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, no `activate-service-account`, so no copy in gcloud's `credentials.db`), sets `CLOUDSDK_PYTHON` to the agent's interpreter and `CLOUDSDK_CONFIG` to `<runtime>/gcloud`, and first runs `gcloud --version`. SDK 589.0.0 unzipped to the box's `deploy/bin/google-cloud-sdk` (gitignored) and installed machine-wide as a fallback. The 365-day lifecycle rule stays as the fallback. NOT yet proven under the service account (only as Administrator, scratch object in `_gc_probe/`, ARCHIVE confirmed); a rewrite under versioning leaves the old STANDARD version for up to 92 days (storage cost only). Audit lab: fully green (the W19 trigger test now expects the backup-first question). The earlier claim that the NAS was woken/shut down was wrong: WoL and shutdown are disabled on the box and never ran there.
 >
-> **2026-10-19 update:** the safety check now separates "newer files wait for the next backup" (`PENDING_BACKUP`, amber, no email) from real faults - plan `docs/PLAN_AUDIT_PENDING_2026-10-19.md` (steps 1-4 done and proven on the box at 9186fb6; the weekly "backup first" chain, step 5, is deferred until a real week of data). New key `audit.backup_first_prompt_minutes`. Accepted by the owner (do not work on): locked files / no VSS, nothing alerts if the server is down, in-place ransomware, size-only daily cloud check. Restore drill + restore-script key handling (`.dpapi` vs plain key, hardcoded bucket fallback) is deferred to LAST.
+> **2026-10-19 update:** the safety check now separates "newer files wait for the next backup" (`PENDING_BACKUP`, amber, no email) from real faults - plan `docs/PLAN_AUDIT_PENDING_2026-10-19.md` (removed 2026-11-25, in git history; steps 1-4 done and proven on the box at 9186fb6; the weekly "backup first" chain, step 5, is deferred until a real week of data). New key `audit.backup_first_prompt_minutes`. Accepted by the owner (do not work on): locked files / no VSS, nothing alerts if the server is down, in-place ransomware, size-only daily cloud check. Restore drill + restore-script key handling (`.dpapi` vs plain key, hardcoded bucket fallback) is deferred to LAST.
 
 > **2026-10-20 (evening) - TRIAL BOX DEPLOYED AND LAN LEG PROVEN.** Box is at `14f50d8` (branch `mvp-hardening`, deployed by git bundle, NOT pushed to GitHub); `06` re-run, all three services run as `.\aambackup`. `04_check_readiness.ps1 -ServiceAccount .\aambackup` passes every probe. LAN run through the service finished `LAN_COMPLETE` (19:53). **Root cause of the LAN failures since 19 Oct 21:00 (WinError 1326, later 1909):** the NAS-side `aambackup` had no password, then retries locked it out. Fixed on the NAS (password set, lockout threshold 0 = OFF for now). **Gotchas found:** (1) a recreated `aambackup` has a new SID: it must be added to *Backup Operators* (gives "Back up files and directories" + "Log on as a batch job"; the readiness probe, a scheduled task, fails with exit 267011 without it), then re-run 06 (restores folder ACLs + log-on-as-a-service); (2) NAS login must be addressed as `<NAS name>\aambackup`; (3) in cmd, single quotes become part of the password; (4) `.ps1` opens in Notepad from Explorer/cmd - run with `powershell -File`. **Open with owner:** `lan.server_ip` is `10.10.186.231` (silent) while the NAS answers at `10.10.151.53` (WoL / wait-for-NAS use `server_ip`); the temporary password `Qwerty123@@m` was typed in chat - change it on both machines, then re-run 04 + 06; turn the NAS lockout back on (e.g. threshold 10). `04` once hung after its last probe (cause unknown; killed). Cloud leg not re-run since 14:57. Not yet done: G3 previews, C7, 10.4, seven nights, restore drill.
 >
-> **2026-10-20 (later) - ALL OF THE AUDIT PLAN IS BUILT AND COMMITTED** (`docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`,
+> **2026-10-20 (later) - ALL OF THE AUDIT PLAN IS BUILT AND COMMITTED** (plan removed 2026-11-25, in git history: `docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`,
 > hashes there). Unit suite **2675 passed / 19 skipped / 0 failed**. New lab wave **W23** (`audit_lab/test_w23_cancel.py`):
 > a Prefect-style cancel (`_thread.interrupt_main(SIGTERM)`, how Prefect 3.7.2 cancels a flow-run process on Windows;
 > 30 s grace, then a forced kill) mid-sync on the real tools: cloud 0.8 s / LAN 1.3 s to exit, no tool left, `*_FAILED` +
@@ -261,7 +261,7 @@ lab `test_w24_server_restart`.
 > mechanism on real processes, not the service wrapper).
 >
 > **2026-10-20 - final code audit + new plan (owner):** 4 read-only reviewers + advisor audited the branch
-> (unit suite re-run first: 2526 passed / 19 skipped). **Current plan: `docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`**
+> (unit suite re-run first: 2526 passed / 19 skipped). **Last plan (removed 2026-11-25, in git history): `docs/PLAN_FIRST_UPLOAD_AND_AUDIT_FIXES_2026-10-20.md`**
 > (rev 2, every claim re-verified by 3 independent readers who reproduced them: Part A bug fixes A1-A7: hidden failed
 > audit, interrupted run recorded as success (also `run_tool` not killing its child on cancel), BLOCKED text, `smb_ready`
 > winerror 53/67, deploy scripts 03/09, backup.lock must be mandatory; Part B deletion limits in Settings incl. the G3 vs
@@ -297,9 +297,7 @@ caused by our program, a human is asked whenever an action could be wrong.**
 |---|---|
 | `MVP_HARDENING_PLAN.md` | the approved plan: rules (§2), WPs (§7), config keys (§8), decisions (§11), **checklist (§13)** |
 | `docs/ARCHITECTURE.md` | block diagrams, decision points, file map, **§10 gates (every check per leg)** |
-| `docs/audit/BASELINE_mvp-hardening.md` | M0 test baseline |
 | `SESSION_HANDOFF.md` | this file — current position |
-| `HANDOVER.md` | OLD (audit-lab era, 2026-10-10) — background only |
 
 ## 2. Owner rules (non-negotiable)
 
@@ -451,7 +449,7 @@ sign-in always on, `api_key`/`auth_enabled`/`X-API-Key` removed, sessions carry 
 Unit suite 2290 passed. **Milestone lab after B, C, E: 241 passed / 3 skipped / 2 failed -> both (W8 raw httpx clients without a session) fixed and re-run green.** The full lab now takes ~50 min.
 Also done: D1 `core/netinfo.py`, S1 `core/secrets.py` (DPAPI), H2/H3 deploy scripts, G1/G2 `core/email_samples.py` + `tools/preview_emails.py`.
 **Done after that (2026-10-19):** D2/D3 (`notify.dashboard_urls`, new key `dashboard.link_cache_seconds`), F1/F2 (dated run-log folder + file names), S2 (smtp_password DPAPI, `SecretText`), S3 (`core/gcs_key.py`, `.dpapi` key via rclone env var; rclone 1.74.3 accepts it), G1/G2 (incl. report samples). Unit suite 2353 passed. Full lab NOT re-run since D/F/S (do it at step 10.1).
-**DEPLOYED to the trial box 2026-10-19 (fresh install, release 10d3054+):** everything is in `docs/DEPLOY_LOG_2026-10-19.md`
+**DEPLOYED to the trial box 2026-10-19 (fresh install, release 10d3054+):** everything was in `docs/DEPLOY_LOG_2026-10-19.md` (removed 2026-11-25, in git history)
 (backup `C:\AAM_backup_20261019` on the box; 6 deploy bugs found and fixed; cloud `CLOUD_NO_CHANGES_COMPLETE`, LAN `LAN_COMPLETE`,
 real test email with the DPAPI mail password; dashboard + Advanced use the owner's chosen password (same for both); agent still runs as
 `.ambackup`, installed with `06_install_services.ps1 -KeepServiceAccount`). Branch pushed to origin/mvp-hardening.
