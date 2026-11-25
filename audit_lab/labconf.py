@@ -35,7 +35,6 @@ import pytest  # noqa: E402
 
 LAB_ROOT = Path(os.environ.get("AAM_LAB_ROOT", str(Path(tempfile.gettempdir()) / "opencode" / "aam_lab")))
 RCLONE_EXE = str(REPO_ROOT / "deploy" / "bin" / "rclone.exe")
-ROBOCOPY_EXE = r"C:\Windows\System32\Robocopy.exe"
 
 FAKE_REMOTE = "aam_gcs"  # rclone config section name the production code hardcodes
 
@@ -146,9 +145,6 @@ def _to_unc(p: str | Path) -> str:
 # tiny random trees, where one stray file is already > the 10 % delete
 # limit. The guards themselves are proven in tests/test_m2_guard_wiring.py
 # and the W1A/W1C data-loss regressions, which keep the default limits.
-# Production LAN command (/ZB) for the C-1/C-2 experiments.
-PRODUCTION_LAN = {"use_backup_mode": True}
-
 MIRROR_MECHANICS_GUARDS = {"max_delete_files": 100_000_000, "max_delete_percent": 100,
                            "max_source_shrink_percent": 100,
                            "forbid_local_destination": False}
@@ -306,19 +302,6 @@ def md5(path: Path) -> str:
 def run(cmd: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                           encoding="utf-8", errors="replace")
-
-
-def robocopy_local(source: Path, dest: Path, flags: list[str], *, timeout: int = 120):
-    """Run real robocopy.exe with local (non-UNC) paths."""
-    cmd = [ROBOCOPY_EXE, str(source), str(dest), *flags]
-    return run(cmd, timeout=timeout)
-
-
-# ── helpers used by scenario tests ──────────────────────────────────────────────
-def strip_zb(cmd: list[str]) -> list[str]:
-    """Drop the /ZB flag (needs SeBackupPrivilege — see experiment C1) so the
-    scenario can actually run on an unprivileged account."""
-    return [a for a in cmd if a.upper() != "/ZB"]
 
 
 def make_canary(dest: Path) -> Path:

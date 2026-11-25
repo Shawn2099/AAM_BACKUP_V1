@@ -19,63 +19,25 @@ pytestmark = pytest.mark.timeout(600)
 SET = settings(max_examples=250, deadline=None, suppress_health_check=list(HealthCheck))
 
 
-# â”€â”€ classify_exit_code: exhaustive over the whole bit space â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-def test_w1f_classify_exit_code_exhaustive():
-    from core.lan_sync import classify_exit_code
-
-    rows = []
-    for code in list(range(-5, 40)) + [255, 256, 9999]:
-        rows.append(f"{code:>6} -> {classify_exit_code(code)}")
-    L.record("F.classify_exit_code", "robocopy exit-code classification is total & consistent",
-             "code -> status:\n" + "\n".join(rows[:24]) + "\n...",
-             "OK" if classify_exit_code(16).startswith("LAN_FAILED") else "unexpected")
-    # documented mapping (v1.1.3: aligned with decide_lan_result — codes 0-7
-    # with a finished pass are COMPLETE, only bit-3 copy errors are PARTIAL)
-    assert classify_exit_code(0) == "LAN_COMPLETE"
-    assert classify_exit_code(3) == "LAN_COMPLETE"
-    assert classify_exit_code(4) == "LAN_COMPLETE"
-    assert classify_exit_code(7) == "LAN_COMPLETE"
-    assert classify_exit_code(8) == "LAN_PARTIAL"
-    assert classify_exit_code(15) == "LAN_PARTIAL"
-    assert classify_exit_code(16) == "LAN_FAILED"
-    assert classify_exit_code(-1) == "LAN_FAILED"
+# test_w1f_classify_exit_code_exhaustive removed in P2 CL5 (robocopy exit bitmask replaced by rclone LAN)
 
 
-# â”€â”€ decide_lan_result: the forged-success hunt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── decide_lan_rclone_result: the forged-success hunt ─────────────────────────
 @given(exit_code=st.integers(min_value=-3, max_value=40),
        lines=st.lists(st.text(alphabet=string.printable), min_size=0, max_size=12))
 @SET
 def test_w1f_lan_never_complete_without_completed_summary(exit_code, lines):
-    """INVARIANT: COMPLETE requires BOTH the 'Files :' row AND the 'Ended :' line."""
-    from core.lan_sync import decide_lan_result
+    """INVARIANT: COMPLETE requires exit 0 and final JSON stats with 0 errors."""
+    from core.lan_sync import decide_lan_rclone_result
 
-    def has(pred):
-        return any(pred(ln) for ln in lines)
-
-    res = decide_lan_result(exit_code, "\n".join(lines))
+    res = decide_lan_rclone_result(exit_code, "\n".join(lines))
     if res["status"] == "LAN_COMPLETE":
-        # if it says COMPLETE, the log must prove completion
-        assert res["log_complete"] is True
-        assert res["termination"] == "normal"
-    if res["status"] == "LAN_SUSPECT":
-        assert res["termination"] == "abnormal"
+        assert exit_code == 0
+        assert isinstance(res["stats"], dict)
 
-    # targeted forge: a summary row without an "Ended :" line must never be COMPLETE
-    forged = ["Files :    12    12    0    0    0    0"] + lines
-    r2 = decide_lan_result(0, "\n".join(forged))
-    if not has(lambda ln: ln.strip().startswith("Ended")):
-        assert r2["status"] != "LAN_COMPLETE", f"FORGED COMPLETE with: {forged}"
-
-
-@given(tail=st.text(alphabet=string.printable))
-@SET
-def test_w1f_lan_bit3_floor_and_failed_floor(tail):
-    from core.lan_sync import failed_file_count
-
-    assert failed_file_count(tail, 8) >= 1          # bit 3 -> at least one failure
-    assert failed_file_count("", 8) == 1
-    assert failed_file_count(tail, 0) >= 0
-    assert failed_file_count("** FAILED: x\n" * 3, 0) >= 0
+    # targeted forge: exit 0 without final stats must never be COMPLETE
+    r2 = decide_lan_rclone_result(0, "\n".join(ln for ln in lines if '"stats"' not in ln))
+    assert r2["status"] != "LAN_COMPLETE", f"FORGED COMPLETE without stats: {lines}"
 
 
 # â”€â”€ decide_cloud_verify_result: forged verification hunt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -161,26 +123,7 @@ def test_w1f_fy_prefix(y, m, d):
         assert out == f"FY{(y - 1) % 100:02d}-{y % 100:02d}"
 
 
-# â”€â”€ diff/snapshot invariants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-@given(before=st.dictionaries(st.text(min_size=1, max_size=8), st.tuples(st.integers(0, 10**9), st.floats())),
-       after=st.dictionaries(st.text(min_size=1, max_size=8), st.tuples(st.integers(0, 10**9), st.floats())))
-@SET
-def test_w1f_diff_snapshots_partition(before, after):
-    from core.lan_manifest import diff_snapshots
-
-    d = diff_snapshots(before, after)
-    added, modified, removed, unchanged = set(d["added"]), set(d["modified"]), set(d["removed"]), set(d["unchanged"])
-    allkeys = set(before) | set(after)
-    assert added | modified | removed | unchanged == allkeys
-    for s in (added, modified, removed, unchanged):
-        assert isinstance(s, set)
-    # pairwise disjoint
-    assert not (added & modified) and not (added & removed) and not (modified & removed)
-    # membership semantics
-    for p in added:
-        assert p in after and p not in before
-    for p in removed:
-        assert p in before and p not in after
+# test_w1f_diff_snapshots_partition removed in P2 CL5 (core.lan_manifest removed in P1)
 
 
 # â”€â”€ path normalisation never escapes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

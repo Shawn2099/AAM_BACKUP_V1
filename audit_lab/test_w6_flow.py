@@ -70,8 +70,6 @@ def rig(sandbox, monkeypatch):
 
     import flow
 
-    orig_build = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig_build(s, d, c))
     alerts: list = []
     monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
     monkeypatch.setattr(flow, "temp_rclone_config",
@@ -89,7 +87,6 @@ def rig(sandbox, monkeypatch):
             "cfg": cfg, "cfg_path": cfg_path, "sandbox": sandbox, "src": src, "nas": nas,
             "buckets": bucket_root, "alerts": alerts, "rc": rc, "flow": flow,
         }
-    ls.build_robocopy_command = orig_build
     for (mod, attr), o in saved.items():
         setattr(mod, attr, o)
 
