@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import core.cloud_sync as cloud_sync
 import core.lan_sync as lan_sync
 
 FIXTURES = Path(__file__).resolve().parents[1] / "test_support" / "rclone_logs"
@@ -231,3 +232,71 @@ class TestD16DeletesHeldFlag:
         result = _decide(1, text)
         assert result["status"] == "LAN_PARTIAL"
         assert result["deletes_held"] is False
+
+
+# ── D17: names of the files that could not be copied, replaced or removed ─
+# Plan P1 review R3 (S1), matrix §3. The two D17/D17b fixtures are real rclone
+# v1.74.3 logs (LAN_FIXTURES.md). The synthetic logs follow rclone's --retries
+# layout: earlier "Attempt k/N failed" markers, then the final attempt.
+
+class TestD17ReadOnlyDestinationFile:
+    def test_read_only_destination_names_the_file_without_rclone_suffix(self):
+        result = _decide(1, _fixture("lan_readonly_dst_exit1.jsonl"))
+        assert result["status"] == "LAN_PARTIAL"
+        assert result["failed_paths"] == ["ro.txt"]
+        assert result["deletes_held"] is True
+        assert "ro.txt" in result["reason"]
+        assert ".partial" not in result["reason"]
+
+
+class TestD17bLockedDestinationDelete:
+    def test_locked_destination_delete_names_the_file(self):
+        result = _decide(1, _fixture("lan_locked_dst_delete_exit1.jsonl"))
+        assert result["status"] == "LAN_PARTIAL"
+        assert result["failed_paths"] == ["del.txt"]
+        assert result["deletes_held"] is False
+        assert "del.txt" in result["reason"]
+
+
+class TestD17cFilesystemLevelErrorIsNotAPath:
+    def test_fs_level_partial_rename_error_gives_no_path(self):
+        text = _log({"level": "error",
+                     "msg": "partial file rename failed: x",
+                     "object": "Local file system at X:/rig/dst",
+                     "objectType": "*local.Fs"})
+        assert cloud_sync.failed_object_paths(text, 10) == []
+
+
+class TestD17dOnlyRcloneSuffixIsStripped:
+    @pytest.mark.parametrize("obj, expected", [
+        ("a.txt.7514dbf0.partial", "a.txt"),
+        ("b.partial", "b.partial"),
+        ("c.txt.7514DBF0.partial", "c.txt.7514DBF0.partial"),
+        ("d.txt.12345678.partial.bak", "d.txt.12345678.partial.bak"),
+    ])
+    def test_only_the_eight_hex_partial_suffix_is_removed(self, obj, expected):
+        text = _log(_error("partial file rename failed: rename x: Access is denied.",
+                           object=obj, objectType="*local.Object"))
+        assert cloud_sync.failed_object_paths(text, 10) == [expected]
+
+
+class TestD17eSameFileInTwoMessagesIsListedOnce:
+    def test_failed_to_copy_and_partial_rename_of_one_file_give_one_name(self):
+        text = _log(
+            _error("Failed to copy: read x: denied", object="x.txt", objectType="*local.Object"),
+            _error("partial file rename failed: rename x: denied",
+                   object="x.txt.0badc0de.partial", objectType="*local.Object"),
+        )
+        assert cloud_sync.failed_object_paths(text, 10) == ["x.txt"]
+
+
+class TestD17fEarlierAttemptOnlyIsIgnored:
+    def test_partial_rename_error_of_an_earlier_attempt_is_not_listed(self):
+        text = _log(
+            _error("partial file rename failed: rename a: denied",
+                   object="ro.txt.7514dbf0.partial", objectType="*local.Object"),
+            _error("Attempt 1/3 failed with 1 errors and: rename a: denied"),
+            {"level": "info", "msg": "Copied (new)", "size": 3, "object": "a.txt"},
+            {"level": "info", "msg": "Attempt 3/3 succeeded"},
+        )
+        assert cloud_sync.failed_object_paths(text, 10) == []

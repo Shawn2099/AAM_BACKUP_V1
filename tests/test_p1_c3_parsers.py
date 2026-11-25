@@ -230,3 +230,38 @@ class TestP6RenameFixturePlan:
 
     def test_rename_dry_run_has_five_planned_moves(self):
         assert cloud_sync.count_planned_moves(_fixture("lan_rename_dryrun.jsonl")) == 5
+
+
+# ── P7 --backup-dir dry-run counters (plan P1 review R4, M3; matrix §4) ──
+# lan_backupdir_dryrun.jsonl: real rclone v1.74.3 dry-run with --track-renames
+# --backup-dir. Deletions are "move into backup dir", renames "move to <new>",
+# a replaced file a bare "move" (X4). Expected from matrix §4: 2 deletes, 3 moves.
+
+class TestP7BackupDirDryRunCounts:
+    def test_backup_dir_deletions_count_as_deletes_and_renames_as_moves(self):
+        text = _fixture("lan_backupdir_dryrun.jsonl")
+        assert cloud_sync.count_planned_deletes(text) == 2
+        assert cloud_sync.count_planned_moves(text) == 3
+
+    def test_backup_dir_dry_run_has_one_planned_copy(self):
+        assert cloud_sync.planned_copy_count(_fixture("lan_backupdir_dryrun.jsonl")) == 1
+
+
+class TestP7bNoRegressionWithoutBackupDir:
+    def test_mixed_dry_run_has_two_deletes_and_five_moves(self):
+        text = _fixture("lan_mixed_dryrun.jsonl")
+        assert cloud_sync.count_planned_deletes(text) == 2
+        assert cloud_sync.count_planned_moves(text) == 5
+
+    def test_rename_dry_run_has_no_deletes_and_five_moves(self):
+        text = _fixture("lan_rename_dryrun.jsonl")
+        assert cloud_sync.count_planned_deletes(text) == 0
+        assert cloud_sync.count_planned_moves(text) == 5
+
+
+class TestP7cBareMoveIsNeitherDeleteNorMove:
+    def test_replaced_file_entry_is_not_counted(self):
+        text = _json_lines({"level": "notice", "msg": "Skipped move as --dry-run is set",
+                            "skipped": "move", "object": "change.txt", "size": 3})
+        assert cloud_sync.count_planned_deletes(text) == 0
+        assert cloud_sync.count_planned_moves(text) == 0
