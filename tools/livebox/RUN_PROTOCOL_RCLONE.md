@@ -25,6 +25,7 @@ Launched via `box_run.ps1 -Action start` from `C:\AAMLivebox\harness_rclone` usi
 3. **Gate 3 — Scenario pack (max 3 lanes concurrently, S13)**:
    - `XR1`–`XR4` (Phase 1b: locked source file 5 nights, rename burst 300 files, mass delete > G3 copy-only 30 nights + approval at 31, versions retention crossing 91 days)
    - `X01` (no internet), `X04l` (LAN only), `X05`, `X08b` (wake fail), `X34`, `X35`.
+   - **Out of scope for `rclone-rc1`**: `X17`, `X37`–`X39`, `X45`–`X48` (unwired red-first injection scenarios covered by `test_wire_injections.py`, whose wiring APIs `clock_skew`, `race_next_flow`, `trigger_during_next_flow`, and `_install_step_hook` are not implemented on `baseline-v1-overlap` or `rclone-engine`; they remain `injection_wired=False` / `NOT_RUN`, and `test_wire_injections.py` is kept unskipped).
 
 ## 4. Monitoring & Stop Conditions
 - Poll read-only: `box_run.ps1 -Action status -Name <stamp> -Lane <lane>`.
