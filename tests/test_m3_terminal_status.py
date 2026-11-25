@@ -109,31 +109,6 @@ def test_p1_verify_exception_after_no_changes_is_not_a_success(
     assert json.loads(kwargs["extended_metrics"])["sync_status"] == "CLOUD_NO_CHANGES_COMPLETE"
 
 
-@patch("flow._record_running")
-@patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_shutdown_task")
-@patch("flow.lan_record_task", side_effect=OSError("database is locked"))
-@patch("flow.lan_snapshot_after_task", return_value={"a": (1, 1.0)})
-@patch("flow.lan_sync_task")
-@patch("flow.lan_access_task")
-@patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={})
-@patch("flow.lan_preflight_task")
-@patch("flow.wol_check_task")
-@patch("flow.health_check_task")
-@patch("flow._record_run")
-def test_p2_post_exception_after_complete_is_not_a_success(
-    rec, _h, _w, _pre, _snap, _g, _acc, sync, _after, _rt, shutdown, _art, _running,
-):
-    sync.with_options.return_value.return_value = {"status": "LAN_COMPLETE", "exit_code": 1}
-    with pytest.raises(OSError):
-        flow._run_lan_pipeline(_cfg(), "run-p2", now_iso())
-    args, kwargs = rec.call_args
-    assert args[4] == "LAN_FAILED"
-    assert json.loads(kwargs["extended_metrics"])["sync_status"] == "LAN_COMPLETE"
-    shutdown.assert_not_called()          # a run that did not complete never powers the NAS off
-
-
 # ── RUNNING row before the slot; SLOT_TIMEOUT when the slot is not obtained ──
 
 def test_running_row_is_written_before_the_slot(tmp_path):

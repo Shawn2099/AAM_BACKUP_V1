@@ -94,25 +94,3 @@ def test_cloud_pipeline_takes_task_retries_from_config(pre, sync, verify, _art, 
     verify.with_options.assert_called_once_with(retries=2, retry_delay_seconds=90)
 
 
-@patch("flow._record_running")
-@patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_publish_artifact_task", new=MagicMock())
-@patch("flow.lan_record_task", new=MagicMock())
-@patch("flow.lan_snapshot_after_task", new=MagicMock(return_value={}))
-@patch("flow.lan_shutdown_task", new=MagicMock())
-@patch("flow.lan_sync_task")
-@patch("flow.lan_access_task", new=MagicMock())
-@patch("flow.lan_guards_task", new=MagicMock())
-@patch("flow.lan_snapshot_before_task", new=MagicMock(return_value={}))
-@patch("flow.lan_preflight_task")
-@patch("flow.wol_check_task", new=MagicMock())
-@patch("flow.health_check_task", new=MagicMock())
-@patch("flow._record_run", new=MagicMock())
-def test_lan_pipeline_takes_preflight_retries_from_config(pre, sync, _art, _running):
-    sync.with_options.return_value.return_value = {
-        "status": "LAN_COMPLETE", "exit_code": 0,
-        "counts": {"total": 0, "copied": 0, "skipped": 0, "mismatch": 0, "failed": 0, "extras": 0},
-        "bytes": {"total": 0, "copied": 0, "skipped": 0, "mismatch": 0, "failed": 0, "extras": 0},
-        "files_deleted": 0}
-    flow._run_lan_pipeline(_cfg(), "run-rl", "2026-10-16T21:00:00")
-    pre.with_options.assert_called_once_with(retries=4, retry_delay_seconds=15)

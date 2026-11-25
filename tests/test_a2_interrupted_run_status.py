@@ -93,28 +93,33 @@ def _lan_pipeline(interrupt_in, exc):
         p = lambda target, **kw: st.enter_context(patch(target, **kw))  # noqa: E731
         p("flow.notify"), p("flow._send_run_alert")
         record_run, recovery = p("flow._record_run"), p("flow._send_recovery_if_needed")
-        p("flow.lan_shutdown_task"), p("flow.lan_publish_artifact_task"), p("flow.lan_record_task")
-        after = p("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
-        p("flow.lan_access_task", new=MagicMock()), p("flow.lan_guards_task", new=MagicMock())
-        p("flow.lan_snapshot_before_task", return_value={})
+        shutdown = p("flow.lan_shutdown_task")
+        p("flow.lan_access_task", new=MagicMock())
+        p("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
         sync = p("flow.lan_sync_task")
+        verify = p("flow.lan_verify_task", new=MagicMock(return_value={
+            "verified": True, "matching": 1, "missing": 0, "differ": 0,
+            "changed_during_backup": 0, "reason": None}))
         p("flow.lan_preflight_task"), p("flow.wol_check_task")
         health = p("flow.health_check_task")
         p("flow._missed_if_no_budget")
         sync.with_options.return_value.return_value = {
-            "status": "LAN_COMPLETE", "exit_code": 1, "files_failed": 0,
-            "counts": {"copied": 1}, "bytes": {"copied": 100}, "files_deleted": 0}
+            "status": "LAN_COMPLETE", "exit_code": 0, "files_failed": 0,
+            "stats": {"transfers": 1, "bytes": 100, "deletes": 0, "renames": 0,
+                      "errors": 0, "checks": 0}}
         if interrupt_in == "pre":
             health.side_effect = exc
         if interrupt_in == "sync":
             sync.with_options.return_value.side_effect = exc
+        if interrupt_in == "verify":
+            verify.side_effect = exc
         if interrupt_in == "post":
-            after.side_effect = exc
+            shutdown.side_effect = exc
         yield record_run, recovery
 
 
 @pytest.mark.parametrize("exc", INTERRUPTS)
-@pytest.mark.parametrize("phase", ["pre", "sync", "post"])
+@pytest.mark.parametrize("phase", ["pre", "sync", "verify", "post"])
 def test_lan_interrupt_is_never_a_success(phase, exc):
     with _lan_pipeline(phase, _raised(exc)) as (record_run, recovery):
         with pytest.raises(exc):

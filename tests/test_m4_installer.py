@@ -52,7 +52,6 @@ def probe(monkeypatch):
     mod = _probe_module()
     from core import permissions
     monkeypatch.setattr(permissions, "probe_destination_write", lambda dest, run_id: None)
-    monkeypatch.setattr(permissions, "check_backup_privilege", lambda artefacts, timeout_s: None)
     return mod
 
 
@@ -69,7 +68,6 @@ class TestProbe:
         assert status["config"] == "OK" and status["NAS write"] == "OK"
         assert status["runtime folder"] == "OK" and status["config folder"] == "OK"
         assert any(line.startswith("OK source read") and "ledger.xlsx" in line for line in lines)
-        assert any(line.startswith("OK backup privilege") for line in lines)
         assert any(line.startswith("SKIP NAS remote shutdown") for line in lines)
         # probe files are cleaned up
         assert not list((tmp_path / "rt").iterdir())
@@ -85,16 +83,6 @@ class TestProbe:
         assert probe.main(["p", str(_config(tmp_path)), str(result)]) == 1
         [line] = [x for x in _lines(result) if x.startswith("FAIL")]
         assert line.startswith("FAIL NAS write") and "Access is denied" in line
-
-    def test_missing_backup_privilege_fails(self, probe, tmp_path, monkeypatch):
-        from core import permissions
-
-        def missing(artefacts, timeout_s):
-            raise permissions.PermissionCheckError("SeBackupPrivilege not held")
-        monkeypatch.setattr(permissions, "check_backup_privilege", missing)
-        result = tmp_path / "result.txt"
-        assert probe.main(["p", str(_config(tmp_path)), str(result)]) == 1
-        assert any(x.startswith("FAIL backup privilege") for x in _lines(result))
 
     def test_a_config_this_version_refuses_is_reported(self, probe, tmp_path):
         bad = _config(tmp_path, "schedule:\n  lan_cron: '0 21 * * *'\n  audit_cron: '0 22 * * SUN'\n")

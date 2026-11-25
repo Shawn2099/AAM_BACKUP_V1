@@ -110,91 +110,6 @@ def test_guard_baseline_is_last_success_of_same_leg_and_fy(tmp_path):
         db.close()
 
 
-# ── LAN: planned deletions from the robocopy /L job summary ───────────────
-
-_ROBOCOPY_L_STDOUT = (
-    "\t  *EXTRA File \t\t       2\tx.txt\n"
-    "------------------------------------------------------------------------------\n"
-    "\n"
-    "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-    "    Dirs :         3         1         2         0         0         2\n"
-    "   Files :      1000        12       988         0         0         3\n"
-    "   Bytes :     1.2 m     3.4 k     1.1 m         0         0       6 k\n"
-    "   Ended : Wednesday, October 14, 2026 10:00:00 PM\n"
-)
-
-
-def test_lan_dry_run_keeps_job_summary_and_returns_counts(tmp_path):
-    from core import lan_preflight
-
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    from test_support.fake_tools import fake_run_tool
-    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=1, log=_ROBOCOPY_L_STDOUT) as calls:
-        res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
-    argv = calls[0]["argv"]
-    assert "/L" in argv and "/NJS" not in argv
-    assert res["ok"] is True
-    assert res["counts"]["total"] == 1000 and res["counts"]["extras"] == 3
-
-
-# Real robocopy 10.0 /L /MIR output (probe 2026-10-14): 3 files really get
-# deleted (all listed as *EXTRA File, nested ones too), but the Files Extras
-# column says 5 - it also counts the two /XF-excluded mount markers, which
-# /MIR keeps. Planned deletions must come from the lines, not the column.
-_ROBOCOPY_L_WITH_MARKERS = (
-    "\t                   1\tC:\\p\\rs\\\n"
-    "\t                   1\tC:\\p\\rd\\extra_dir\\\n"
-    "\t  *EXTRA File \t\t       1\t1.txt\n"
-    "\t                   1\tC:\\p\\rd\\extra_dir\\deep\\\n"
-    "\t  *EXTRA File \t\t       0\t2.txt\n"
-    "\t  *EXTRA File \t\t       2\tx_extra.txt\n"
-    "\t    Older     \t\t       2\ta.txt\n"
-    "------------------------------------------------------------------------------\n"
-    "\n"
-    "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-    "    Dirs :         2         0         2         0         0         4\n"
-    "   Files :         1         1         0         0         0         5\n"
-    "   Bytes :         2         2         0         0         0         5\n"
-    "   Ended : 14 October 2026 23:06:43\n"
-)
-
-
-def test_lan_planned_deletes_exclude_kept_mount_markers(tmp_path):
-    from core import lan_preflight
-
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    from test_support.fake_tools import fake_run_tool
-    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=3, log=_ROBOCOPY_L_WITH_MARKERS):
-        res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
-    assert res["planned_deletes"] == 3
-    assert res["counts"]["extras"] == 5
-
-
-def test_lan_guards_use_planned_deletes_not_extras_column(tmp_path):
-    """Lab regression: a fresh destination holding only the mount marker
-    (Extras=1) was blocked as 'would delete 1 of 1'."""
-    cfg = _lan_cfg(tmp_path)
-    rec = _run_lan_guards(cfg, _counts(3, 1), 1, planned_deletes=0)
-    assert [r for r in rec["results"] if r["guard"] == "G3_MASS_DELETE"][0]["metrics"][
-        "planned_deletes"] == 0
-
-
-def test_lan_guards_fail_when_extra_lines_exceed_extras_column(tmp_path):
-    with pytest.raises(RuntimeError, match="inconsistent") as ei:
-        _run_lan_guards(_lan_cfg(tmp_path), _counts(3, 1), 10, planned_deletes=2)
-    assert not isinstance(ei.value, g.GuardBlocked)
-
-
-def test_lan_snapshot_before_failure_is_unknown_not_empty():
-    cfg = MagicMock()
-    with patch("flow.walk_lan_destination", side_effect=OSError("SMB timeout")):
-        assert flow.lan_snapshot_before_task.fn(cfg) is None
-
-
 # ── LAN guards task ───────────────────────────────────────────────────────
 
 def _lan_cfg(tmp_path, dest="\\\\10.0.0.9\\backup\\FY26-27", forbid_local=True):
@@ -208,28 +123,34 @@ def _lan_cfg(tmp_path, dest="\\\\10.0.0.9\\backup\\FY26-27", forbid_local=True):
     return cfg
 
 
-def _run_lan_guards(cfg, counts, dest_files, baseline=None, dest_ips=frozenset({"10.0.0.9"}),
-                    planned_deletes="extras"):
+def _run_lan_guards(cfg, source_files, dest_files, baseline=None,
+                    dest_ips=frozenset({"10.0.0.9"}), planned_deletes=0, plan=None):
+    """lan_guards_task on an rclone dry-run plan dict (plan P1 section 2 step 4)."""
     db = MagicMock()
     db.guard_baseline.return_value = baseline
-    if planned_deletes == "extras":  # default: every Extras entry really gets deleted
-        planned_deletes = counts["extras"] if counts else None
-    dry_run = {"ok": True, "counts": counts, "planned_deletes": planned_deletes,
-               "canary_present": True}
+    if plan is None:
+        plan = {"ok": True, "source_files": source_files, "dest_files": dest_files,
+                "planned_deletes": planned_deletes, "moves": 0, "planned_copies": 0,
+                "planned_bytes": 0, "canary_present": True}
     with patch("flow.ManifestDB") as mdb, \
          patch("flow.guards.resolve_host", return_value=set(dest_ips)), \
          patch("flow.guards.local_addresses", return_value={"127.0.0.1", "10.0.0.5"}):
         mdb.from_config.return_value = db
-        return flow.lan_guards_task.fn(cfg, "FY26-27", dry_run, dest_files)
+        return flow.lan_guards_task.fn(cfg, "FY26-27", plan)
 
 
-def _counts(total, extras):
-    return {"total": total, "copied": 0, "skipped": total, "mismatch": 0,
-            "failed": 0, "extras": extras}
+def test_lan_guards_use_planned_deletes_not_extras_column(tmp_path):
+    """Lab regression: a fresh destination holding only the mount marker
+    was blocked as 'would delete 1 of 1'. The plan's planned_deletes (never the
+    marker, which rclone excludes) is what G3 measures."""
+    cfg = _lan_cfg(tmp_path)
+    rec = _run_lan_guards(cfg, 3, 1, planned_deletes=0)
+    assert [r for r in rec["results"] if r["guard"] == "G3_MASS_DELETE"][0]["metrics"][
+        "planned_deletes"] == 0
 
 
 def test_lan_guards_pass_and_return_baseline_record(tmp_path):
-    rec = _run_lan_guards(_lan_cfg(tmp_path), _counts(1000, 3), 1000,
+    rec = _run_lan_guards(_lan_cfg(tmp_path), 1000, 1000, planned_deletes=3,
                           baseline={"fy": "FY26-27", "source_file_count": 990,
                                     "destination": "\\\\10.0.0.9\\backup\\FY26-27"})
     assert rec["fy"] == "FY26-27"
@@ -241,48 +162,50 @@ def test_lan_guards_pass_and_return_baseline_record(tmp_path):
         "G4_DESTINATION_IDENTITY", "G5_CANARY"}
 
 
-def test_lan_guards_block_mass_delete_from_extras(tmp_path):
+def test_lan_guards_block_mass_delete_from_the_plan(tmp_path):
     with pytest.raises(g.GuardBlocked) as ei:
-        _run_lan_guards(_lan_cfg(tmp_path), _counts(400, 600), 1000)
+        _run_lan_guards(_lan_cfg(tmp_path), 400, 1000, planned_deletes=600)
     assert "would delete 600 of 1,000" in str(ei.value)
 
 
 def test_lan_guards_block_source_shrink_against_same_fy_baseline(tmp_path):
     with pytest.raises(g.GuardBlocked, match="had 1,000"):
-        _run_lan_guards(_lan_cfg(tmp_path), _counts(500, 0), 500,
+        _run_lan_guards(_lan_cfg(tmp_path), 500, 500,
                         baseline={"fy": "FY26-27", "source_file_count": 1000,
                                   "destination": "\\\\10.0.0.9\\backup\\FY26-27"})
 
 
 def test_lan_guards_block_changed_and_loopback_destination(tmp_path):
     with pytest.raises(g.GuardBlocked, match="Destination changed"):
-        _run_lan_guards(_lan_cfg(tmp_path), _counts(10, 0), 10,
+        _run_lan_guards(_lan_cfg(tmp_path), 10, 10,
                         baseline={"fy": "FY26-27", "source_file_count": 10,
                                   "destination": "\\\\10.0.0.8\\backup\\FY26-27"})
     loop = _lan_cfg(tmp_path, dest="\\\\127.0.0.1\\backup\\FY26-27")
     with pytest.raises(g.GuardBlocked, match="THIS machine"):
-        _run_lan_guards(loop, _counts(10, 0), 10, dest_ips={"127.0.0.1"})
+        _run_lan_guards(loop, 10, 10, dest_ips={"127.0.0.1"})
     no_forbid = _lan_cfg(tmp_path, dest="\\\\127.0.0.1\\backup\\FY26-27", forbid_local=False)
-    assert _run_lan_guards(no_forbid, _counts(10, 0), 10, dest_ips={"127.0.0.1"})
+    assert _run_lan_guards(no_forbid, 10, 10, dest_ips={"127.0.0.1"})
 
 
 def test_lan_guards_block_dirs_only_source(tmp_path):
+    """The preflight returns source_empty (no dry-run) for a source with no real file;
+    G1 speaks first and blocks."""
     cfg = _lan_cfg(tmp_path)
     (tmp_path / "src" / "ledger.xlsx").unlink()
     (tmp_path / "src" / "Clients" / "2026").mkdir(parents=True)
     with pytest.raises(g.GuardBlocked, match="contains no files"):
-        _run_lan_guards(cfg, _counts(0, 0), 0)
+        _run_lan_guards(cfg, 0, 0, plan={"source_empty": True, "canary_present": True})
 
 
-@pytest.mark.parametrize("counts,dest_files,match", [
-    (None, 10, "job summary"),
-    (_counts(10, 0), None, "destination could not be listed"),
-])
-def test_lan_guard_measurement_failure_fails_the_run(tmp_path, counts, dest_files, match):
+@pytest.mark.parametrize("missing", ["source_files", "dest_files", "planned_deletes"])
+def test_lan_guard_measurement_failure_fails_the_run(tmp_path, missing):
     """A measurement that could not be taken is a FAILED run (retried next
     night), not a guard verdict a human could approve."""
-    with pytest.raises(RuntimeError, match=match) as ei:
-        _run_lan_guards(_lan_cfg(tmp_path), counts, dest_files)
+    plan = {"ok": True, "source_files": 10, "dest_files": 10, "planned_deletes": 0,
+            "canary_present": True}
+    plan[missing] = None
+    with pytest.raises(RuntimeError, match="counts are missing") as ei:
+        _run_lan_guards(_lan_cfg(tmp_path), None, None, plan=plan)
     assert not isinstance(ei.value, g.GuardBlocked)
 
 
@@ -312,13 +235,12 @@ def _blocked(leg):
 @patch("flow.lan_sync_task")
 @patch("flow.lan_access_task", new=MagicMock())
 @patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={"a": (1, 1.0)})
 @patch("flow.lan_preflight_task")
 @patch("flow.wol_check_task")
 @patch("flow.health_check_task")
 @patch("flow._record_run")
 def test_lan_pipeline_guard_block_records_lan_blocked(
-    rec, _h, _w, _pre, _snap, guards_task, sync, shutdown, _art,
+    rec, _h, _w, _pre, guards_task, sync, shutdown, _art,
 ):
     guards_task.side_effect = _blocked("lan")
     with pytest.raises(g.GuardBlocked):
@@ -334,46 +256,23 @@ def test_lan_pipeline_guard_block_records_lan_blocked(
 
 
 @patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_sync_task")
-@patch("flow.lan_access_task", new=MagicMock())
-@patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={
-    ".AAM_TARGET_MOUNTED": (0, 1.0), "Clients/.aam_target_mounted": (0, 1.0),
-    "Clients/a.txt": (1, 1.0), "b.txt": (1, 1.0)})
-@patch("flow.lan_preflight_task")
-@patch("flow.wol_check_task")
-@patch("flow.health_check_task")
-@patch("flow._record_run")
-def test_lan_destination_count_excludes_mount_markers(
-    _rec, _h, _w, _pre, _snap, guards_task, sync, _art,
-):
-    """Lab finding: 'would delete 12 of 13' counted the marker, which robocopy
-    skips (/XF at any depth) - the G3 denominator is backup files only."""
-    guards_task.side_effect = _blocked("lan")
-    with pytest.raises(g.GuardBlocked):
-        flow._run_lan_pipeline(_pipeline_cfg(), "run-m", "2026-10-14T21:00:00")
-    assert guards_task.call_args.args[3] == 2
-
-
-@patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_publish_artifact_task")
-@patch("flow.lan_record_task")
-@patch("flow.lan_snapshot_after_task", return_value={"a": (1, 1.0)})
+@patch("flow.lan_verify_task")
 @patch("flow.lan_shutdown_task")
 @patch("flow.lan_sync_task")
 @patch("flow.lan_access_task", new=MagicMock())
 @patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={"a": (1, 1.0)})
 @patch("flow.lan_preflight_task")
 @patch("flow.wol_check_task")
 @patch("flow.health_check_task")
 @patch("flow._record_run")
 def test_lan_pipeline_success_records_guard_baseline(
-    rec, _h, _w, _pre, _snap, guards_task, sync, _shut, _after, _rt, _pub, _art,
+    rec, _h, _w, _pre, guards_task, sync, _shut, verify, _art,
 ):
     guards_task.return_value = {"fy": "FY26-27", "source_file_count": 1,
-                                "destination": "D", "results": []}
+                                "destination": "D", "results": [], "max_delete": 5}
     sync.with_options.return_value.return_value = {"status": "LAN_COMPLETE", "exit_code": 0}
+    verify.return_value = {"verified": True, "matching": 1, "missing": 0, "differ": 0,
+                           "changed_during_backup": 0, "reason": None}
     flow._run_lan_pipeline(_pipeline_cfg(), "run-ok", "2026-10-14T21:00:00")
     args, kwargs = rec.call_args
     assert args[4] == "LAN_COMPLETE"
@@ -396,7 +295,7 @@ def test_sync_builders_refuse_a_source_without_real_files(tmp_path, layout):
     (also covers callers outside the pipelines, e.g. the rollover final
     backup until 2.6). Dirs-only passed the old top-level check (probe P6)."""
     from core.cloud_sync import build_rclone_sync_command
-    from core.lan_sync import build_robocopy_command
+    from core.lan_sync import build_lan_rclone_command
     from models.config import LanConfig
 
     if layout == "dirs_only":
@@ -405,19 +304,19 @@ def test_sync_builders_refuse_a_source_without_real_files(tmp_path, layout):
         (tmp_path / "System Volume Information").mkdir()
         (tmp_path / "desktop.ini").write_text("x")
     with pytest.raises(ValueError, match="contains no files"):
-        build_robocopy_command(str(tmp_path), "\\\\nas\\s", LanConfig())
+        build_lan_rclone_command(LanConfig(), str(tmp_path), "\\\\nas\\s", "log.txt")
     with pytest.raises(ValueError, match="contains no files"):
         build_rclone_sync_command(str(tmp_path), "b", "FY26-27", "/c", "STANDARD")
 
 
 def test_sync_builders_accept_a_deep_file(tmp_path):
     from core.cloud_sync import build_rclone_sync_command
-    from core.lan_sync import build_robocopy_command
+    from core.lan_sync import build_lan_rclone_command
     from models.config import LanConfig
 
     (tmp_path / "a" / "b").mkdir(parents=True)
     (tmp_path / "a" / "b" / "ledger.xlsx").write_text("x")
-    assert build_robocopy_command(str(tmp_path), "\\\\nas\\s", LanConfig())
+    assert build_lan_rclone_command(LanConfig(), str(tmp_path), "\\\\nas\\s", "log.txt")
     assert build_rclone_sync_command(str(tmp_path), "b", "FY26-27", "/c", "STANDARD")
 
 

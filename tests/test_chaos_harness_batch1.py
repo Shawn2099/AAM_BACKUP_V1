@@ -80,7 +80,7 @@ class TestScenarios:
         from core import cloud_verify, integrity, lan_sync, manifest
         assert callable(flow.backup) and callable(flow.integrity_audit_flow)
         assert callable(integrity.audit_lan) and callable(integrity.audit_cloud)
-        assert callable(lan_sync.run_lan_sync)
+        assert callable(lan_sync.run_lan_mirror)
         assert callable(cloud_verify.verify_cloud_integrity)
         assert hasattr(manifest.ManifestDB, "record_audit")
 

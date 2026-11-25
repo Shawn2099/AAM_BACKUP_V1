@@ -1660,9 +1660,9 @@ _csv_safe('=HYPERLINK("http://x")'    ) -> '\'=HYPERLINK("http://x")'
 _csv_safe("+CMD('calc')"              ) -> "'+CMD('calc')"
 _csv_safe(None) -> '' (empty, not 'None')
 CSV:
-Started At,Ended At,Mode,Status,Files Copied,Files Failed,Bytes Copied,Duration (sec),Exit Code,Error Message,Extended Metrics
-2026-10-10T18:00:00+05:30,2026-10-10T18:05:00+05:30,cloud,CLOUD_COMPLETE,1200,0,999999,300,0,,"{""a"": 1}"
-2026-10-11T01:00:00+05:30,2026-10-11T01:02:00+05:30,lan,LAN_FAILED,3,1,10,120,16,'=rm -rf / (attempted injection),"{""status"": ""LAN_FAILED""}"
+Started At,Ended At,Mode,Status,Files Copied,Files Failed,Bytes Copied,Duration (sec),Exit Code,Error Message,Extended Metrics
+2026-10-10T18:00:00+05:30,2026-10-10T18:05:00+05:30,cloud,CLOUD_COMPLETE,1200,0,999999,300,0,,"{""a"": 1}"
+2026-10-11T01:00:00+05:30,2026-10-11T01:02:00+05:30,lan,LAN_FAILED,3,1,10,120,16,'=rm -rf / (attempted injection),"{""status"": ""LAN_FAILED""}"
 
 ```
 

@@ -84,7 +84,7 @@ def test_support_report_and_logs_zip(tmp_path, db):
                           "AAM-logs_20261018-2108_AAM-LAN-02.zip"}
     report = files["AAM-support_20261018-2108_AAM-LAN-02.txt"].decode("utf-8")
     for needle in ("AAM BACKUP - SUPPORT REPORT", "AAM-LAN-02", "Some files could not be copied",
-                   "run-123-lan", "LAN_PARTIAL", "some files could not be copied",
+                   "run-123-lan", "LAN_PARTIAL",
                    "CAUSE", "robocopy exit 8", "SETTINGS IN EFFECT", UNC,
                    "LAST RUNS", "17 Oct 2026, 9:00 PM IST", "DATA SAFETY",
                    "TOOL LOGS", "ERROR 5 (0x00000005) Copying File", "FULL LOGS on the server",

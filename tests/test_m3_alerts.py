@@ -98,47 +98,12 @@ def test_guard_block_sends_no_failure_alert():
         block.assert_called_once()
 
 
-@patch("flow._send_recovery_if_needed")
-@patch("flow.notify")
-@patch("flow._record_running")
-@patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_publish_artifact_task")
-@patch("flow.lan_record_task")
-@patch("flow.lan_snapshot_after_task", return_value={"a": (1, 1.0)})
-@patch("flow.lan_shutdown_task")
-@patch("flow.lan_sync_task")
-@patch("flow.lan_access_task")
-@patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={})
-@patch("flow.lan_preflight_task")
-@patch("flow.wol_check_task")
-@patch("flow.health_check_task")
-@patch("flow._record_run")
-def test_lan_partial_alerts_once_and_before_the_nas_shutdown(
-    _rec, _h, _w, _pre, _snap, _g, _acc, sync, shutdown, _after, _rt, _pub, _art, _running,
-    notify, _recov,
-):
-    order = MagicMock()
-    order.attach_mock(notify, "notify")
-    order.attach_mock(shutdown, "shutdown")
-    cfg = _cfg()
-    cfg.lan.shutdown_on_all_retries_exhausted = True
-    sync.with_options.return_value.return_value = {"status": "LAN_PARTIAL", "exit_code": 9,
-                                                   "error": "1 file FAILED"}
-    with pytest.raises(flow.PartialRun):
-        flow._run_lan_pipeline(cfg, "run-lp", now_iso())
-    [event] = _failures(notify)
-    assert event.status == "LAN_PARTIAL"
-    names = [c[0] for c in order.mock_calls]
-    assert names.index("notify") < names.index("shutdown")
-
-
 def test_backup_flow_adds_no_second_alert():
     cfg = MagicMock()
     cfg.cloud.enabled = False
     cfg.lan.enabled = True
     with patch("flow.load_config", return_value=cfg), patch("flow.configure_logging"), \
-         patch("flow.configure_prefect_bridge"), patch("flow.cleanup_orphaned_robocopy_logs"), \
+         patch("flow.configure_prefect_bridge"), \
          patch("flow._run_lan_pipeline", side_effect=RuntimeError("lan broke")), \
          patch("flow.notify") as notify:
         with pytest.raises(ExceptionGroup):

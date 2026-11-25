@@ -135,7 +135,7 @@ def test_backup_flow_passes_the_lateness_to_the_first_leg_only(tmp_path):
     cfg.cloud.enabled = cfg.lan.enabled = True
     cfg.firm_name = "x"
     with patch("flow.load_config", return_value=cfg), patch("flow.configure_logging"), \
-         patch("flow.configure_prefect_bridge"), patch("flow.cleanup_orphaned_robocopy_logs"), \
+         patch("flow.configure_prefect_bridge"), \
          patch("flow._scheduled_lateness_seconds", return_value=7200.0), \
          patch("flow._run_cloud_pipeline") as cloud, patch("flow._run_lan_pipeline") as lan, \
          patch("flow.ManifestDB"):

@@ -151,7 +151,7 @@ def test_permission_checks_carry_codes(tmp_path, monkeypatch):
 def test_nas_unreachable_is_nas_01(monkeypatch):
     from core import lan_preflight
     monkeypatch.setattr(lan_preflight, "_is_smb_reachable", lambda *a, **k: False)
-    code = _raised(lan_preflight.run_lan_dry_run, "E:\\FY", "\\\\10.0.0.9\\nas\\FY",
+    code = _raised(lan_preflight.check_lan_destination, "\\\\10.0.0.9\\nas\\FY",
                    smb_attempts=1, smb_wait_seconds=0, smb_connect_timeout_seconds=0.1)
     assert code == "AAM-NAS-01"
 

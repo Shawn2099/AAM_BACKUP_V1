@@ -303,8 +303,8 @@ def test_g7_g12_pre_phase_sequence_walks_nothing_and_runs_no_robocopy(tmp_path):
     with ExitStack() as st:
         for module in ("core.lan_preflight", "core.cloud_sync", "core.permissions", "core.health"):
             st.enter_context(patch(f"{module}.run_tool", side_effect=_recorder(module, spies)))
-        walk = st.enter_context(patch("flow.walk_lan_destination"))
-        snapshot = st.enter_context(patch("flow.lan_snapshot_before_task"))
+        walk = st.enter_context(patch("flow.walk_lan_destination", create=True))
+        snapshot = st.enter_context(patch("flow.lan_snapshot_before_task", create=True))
         st.enter_context(patch("flow.ManifestDB")).from_config.return_value = db
         st.enter_context(patch("flow.guards.resolve_host", return_value=set(NAS_IPS)))
         st.enter_context(patch("flow.guards.local_addresses", return_value=set(LOCAL_IPS)))

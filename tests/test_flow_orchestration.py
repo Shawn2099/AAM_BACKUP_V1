@@ -12,12 +12,7 @@ from flow import (
     cloud_record_task,
     cloud_sync_task,
     health_check_task,
-    lan_preflight_task,
-    lan_record_task,
     lan_shutdown_task,
-    lan_snapshot_after_task,
-    lan_snapshot_before_task,
-    lan_sync_task,
     monthly_report_flow,
     weekly_report_flow,
     wol_check_task,
@@ -38,11 +33,10 @@ class TestBackupModeRouting:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    @patch("flow.cleanup_orphaned_robocopy_logs")
     @patch("flow.ManifestDB")
     @patch("flow._run_lan_pipeline")
     @patch("flow._run_cloud_pipeline")
-    def test_valid_modes_accepted(self, mock_cloud, mock_lan, mock_db, mock_cleanup,
+    def test_valid_modes_accepted(self, mock_cloud, mock_lan, mock_db,
                                   mock_bridge, mock_log, mock_cfg):
         # Both legs enabled: every valid mode routes to the right pipeline(s).
         mock_config = MagicMock()
@@ -71,10 +65,9 @@ class TestBackupModeRouting:
     @patch("flow.load_config")
     @patch("flow.configure_logging")
     @patch("flow.configure_prefect_bridge")
-    @patch("flow.cleanup_orphaned_robocopy_logs")
     @patch("flow.ManifestDB")
     @patch("flow._run_cloud_pipeline")
-    def test_mode_case_insensitive(self, mock_cloud, mock_db, mock_cleanup,
+    def test_mode_case_insensitive(self, mock_cloud, mock_db,
                                    mock_bridge, mock_log, mock_cfg):
         mock_config = MagicMock()
         mock_config.cloud.enabled = True
@@ -181,72 +174,6 @@ class TestWolCheckTask:
         config.wol.enabled = True
         wol_check_task.fn(config)
         mock_wol.assert_called_once()
-
-
-class TestLanPreflightTask:
-    @patch("flow.measure_planned_deletes", return_value={"planned_deletes": 0, "error": None})
-    @patch("flow.run_lan_dry_run", return_value={"ok": True, "exit_code": 0, "error": None,
-                                                  "planned_deletes": 0})
-    def test_success_returns_result(self, mock_dry, mock_measure):
-        config = MagicMock()
-        result = lan_preflight_task.fn(config)
-        assert result["ok"] is True and result["planned_deletes"] == 0
-
-    @patch("flow.run_lan_dry_run", return_value={"ok": False, "exit_code": 16, "error": "path not found"})
-    def test_failure_raises(self, mock_dry):
-        config = MagicMock()
-        with pytest.raises(RuntimeError, match="LAN preflight failed"):
-            lan_preflight_task.fn(config)
-
-
-class TestLanSyncTask:
-    @patch("flow.run_lan_sync", return_value={"status": "LAN_COMPLETE", "exit_code": 0, "error": None})
-    def test_success_returns_result(self, mock_sync):
-        config = MagicMock()
-        result = lan_sync_task.fn(config)
-        assert result["status"] == "LAN_COMPLETE"
-
-    @patch("flow.run_lan_sync", return_value={"status": "LAN_FAILED", "exit_code": 16, "error": "fatal"})
-    def test_failure_raises(self, mock_sync):
-        config = MagicMock()
-        with pytest.raises(RuntimeError, match="fatal"):
-            lan_sync_task.fn(config)
-
-
-class TestLanSnapshotTasks:
-    @patch("flow.walk_lan_destination", return_value=[])
-    @patch("flow.snapshot_to_dict", return_value={"a.txt": (100, 1.0)})
-    def test_snapshot_before_returns_dict(self, mock_snap, mock_walk):
-        config = MagicMock()
-        result = lan_snapshot_before_task.fn(config)
-        assert isinstance(result, dict)
-        assert "a.txt" in result
-
-    @patch("flow.walk_lan_destination", return_value=[])
-    @patch("flow.snapshot_to_dict", return_value={"b.txt": (200, 2.0)})
-    def test_snapshot_after_returns_dict(self, mock_snap, mock_walk):
-        config = MagicMock()
-        result = lan_snapshot_after_task.fn(config)
-        assert isinstance(result, dict)
-        assert "b.txt" in result
-
-
-class TestLanRecordTask:
-    @patch("flow.ManifestDB")
-    @patch("flow.record_sync_results")
-    @patch("flow.diff_snapshots", return_value={"added": {}, "removed": {}, "modified": {}})
-    def test_records_with_after_dict(self, mock_diff, mock_record, mock_db_cls):
-        mock_db = MagicMock()
-        mock_db_cls.from_config.return_value = mock_db
-        config = MagicMock()
-        # snapshot_to_dict returns {path: (size, mtime)} tuples
-        before = {"old.txt": (100, 1.0)}
-        after = {"new.txt": (200, 2.0)}
-        lan_record_task.fn(config, {"status": "LAN_COMPLETE"}, before, after)
-        mock_db_cls.from_config.assert_called_once_with(config)
-        mock_db_cls.assert_not_called()
-        mock_record.assert_called_once()
-        mock_db.close.assert_called_once()
 
 
 class TestLanShutdownTask:

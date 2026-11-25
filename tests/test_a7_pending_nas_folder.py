@@ -90,16 +90,14 @@ def test_lan_pipeline_runs_it_after_wake_and_before_the_guards():
     from tests.test_lan_shutdown_policy import _make_lan_config
     order = MagicMock()
     with patch("flow.notify"), patch("flow.lan_shutdown_task"), \
-            patch("flow.lan_publish_artifact_task"), patch("flow.lan_record_task"), \
-            patch("flow.lan_snapshot_after_task", return_value={"f": (1, 1.0)}), \
             patch("flow.lan_access_task", new=MagicMock()), \
             patch("flow.lan_guards_task", new=order.guards), \
-            patch("flow.lan_snapshot_before_task", return_value={}), \
+            patch("flow.lan_verify_task", new=MagicMock(return_value={"verified": True, "matching": 1, "missing": 0, "differ": 0, "changed_during_backup": 0, "reason": None})), \
             patch("flow.lan_sync_task") as sync, patch("flow.lan_preflight_task"), \
             patch("flow.wol_check_task", new=order.wake), \
             patch("flow._complete_pending_rollover_nas_folder", new=order.pending_folder), \
             patch("flow.health_check_task"), patch("flow._record_run"):
-        sync.with_options.return_value.return_value = {"status": "LAN_COMPLETE", "exit_code": 1}
+        sync.with_options.return_value.return_value = {"status": "LAN_COMPLETE", "exit_code": 0}
         flow._run_lan_pipeline(_make_lan_config(), "run-a7", "2026-04-02T21:00:00")
     names = [c[0] for c in order.mock_calls]
     assert names.index("wake") < names.index("pending_folder") < names.index("guards")

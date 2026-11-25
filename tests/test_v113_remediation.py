@@ -165,4 +165,4 @@ def test_k_fallbacks_match_model():
     assert CloudConfig.model_fields["cloud_size_timeout_seconds"].default == 300
     assert CloudConfig.model_fields["manifest_timeout_seconds"].default == 18000
     assert CloudConfig.model_fields["diff_timeout_seconds"].default == 18000
-    assert inspect.signature(lp.run_lan_dry_run).parameters["timeout"].default == LanConfig.model_fields["dry_run_timeout_seconds"].default == 900
+    assert LanConfig.model_fields["rclone_measure_timeout_seconds"].default == 1800

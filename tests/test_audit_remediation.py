@@ -18,7 +18,6 @@ from core.integrity import (
     _parse_combined_file,
     _run_rclone_check,
 )
-from core.lan_sync import decide_lan_result
 import flow
 from flow import _run_cloud_pipeline, integrity_audit_flow
 from test_support.fake_tools import SubprocessStyleRunTool
@@ -231,31 +230,6 @@ class TestBug04AuditFileReadErrors:
 
 # ── BUG-05: Robocopy Exit Codes 4–7 ──────────────────────────────────────────
 
-class TestBug05RobocopyExitCodes:
-    def test_exit_code_4_with_zero_failed_files_is_complete(self):
-        log_text = (
-            "------------------------------------------------------------------------------\n"
-            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-            "    Dirs :         3         0         3         0         0         0\n"
-            "   Files :        10         0         8         2         0         0\n"
-            "   Bytes :      1.0k         0      800        200         0         0\n"
-            "   Times :   0:00:01   0:00:00                       0:00:00   0:00:00\n"
-            "   Ended : Monday, September 07, 2026 10:00:00 AM\n"
-        )
-        res = decide_lan_result(4, log_text)
-        assert res["status"] == "LAN_COMPLETE"
-        assert res["termination"] == "normal"
-        assert "robocopy mismatches/extras" in res["reason"]
-
-    def test_exit_code_4_with_failed_files_contradiction_is_suspect(self):
-        log_text = (
-            "------------------------------------------------------------------------------\n"
-            "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-            "   Files :        10         0         8         2         1         0\n"
-            "   Ended : Monday, September 07, 2026 10:00:00 AM\n"
-        )
-        res = decide_lan_result(4, log_text)
-        assert res["status"] == "LAN_SUSPECT"
 
 
 # ── BUG-11: launch.py reconciliation of integrity-audit ──────────────────────

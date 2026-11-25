@@ -22,7 +22,6 @@ import pytest
 
 from core import integrity as integ_mod
 from core.integrity import _parse_combined_file, _run_rclone_check
-from core.lan_sync import decide_lan_result
 from flow import _cloud_gate_failure_message, _nullable_audit_count
 from test_support.fake_tools import SubprocessStyleRunTool
 
@@ -357,36 +356,3 @@ class TestOptionBDefault:
         assert cfg.shutdown_on_all_retries_exhausted is False
 
 
-_RC45_LOG = (
-    "------------------------------------------------------------------------------\n"
-    "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
-    "    Dirs :         3         0         3         0         0         0\n"
-    "   Files :        10         0         8         2         0         0\n"
-    "   Bytes :      1.0k         0      800        200         0         0\n"
-    "   Times :   0:00:01   0:00:00                       0:00:00   0:00:00\n"
-    "   Ended : Monday, September 07, 2026 10:00:00 AM\n"
-)
-
-
-class TestLanRc47Decision:
-    @pytest.mark.parametrize("code", [4, 5, 6, 7])
-    def test_rc_4_to_7_with_clean_summary_is_complete(self, code):
-        res = decide_lan_result(code, _RC45_LOG)
-        assert res["status"] == "LAN_COMPLETE"
-        assert res["termination"] == "normal"
-        assert res["log_complete"] is True
-
-    def test_rc_4_with_failed_files_is_suspect(self):
-        log = _RC45_LOG.replace(
-            "   Files :        10         0         8         2         0         0",
-            "   Files :        10         0         8         2         1         0")
-        res = decide_lan_result(4, log)
-        assert res["status"] == "LAN_SUSPECT"
-
-    def test_existing_valid_rc_behavior_retained(self):
-        clean = _RC45_LOG.replace(
-            "   Files :        10         0         8         2         0         0",
-            "   Files :        10        10         0         0         0         0")
-        assert decide_lan_result(1, clean)["status"] == "LAN_COMPLETE"
-        assert decide_lan_result(1, "truncated, no summary")["status"] == "LAN_SUSPECT"
-        assert decide_lan_result(16, clean)["status"] == "LAN_FAILED"

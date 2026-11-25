@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.cloud_sync import run_cloud_sync
-from core.lan_sync import run_lan_sync
 from core.cloud_verify import verify_cloud_integrity as _verify_cloud_integrity
 import functools
 
@@ -52,17 +51,20 @@ class TestNetworkConditions:
         assert result["status"] == "CLOUD_FAILED"
     def test_lan_sync_slow_smb(self, tmp_path):
         """LAN sync with slow SMB (timeout)."""
+        from core.lan_sync import run_lan_mirror
         from core.run_artefacts import RunArtefacts
         from models.config import LanConfig
-        from test_support.fake_tools import fake_run_tool
+        from test_support.fake_tools import fake_rclone_lan
 
-        config = LanConfig(subprocess_timeout_seconds=3600)  # model minimum is 3600
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "a.txt").write_text("x")
         art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
-        with patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.require_source_files"), \
-             fake_run_tool("core.lan_sync", timed_out=True):
-            result = run_lan_sync("E:\\", "\\\\nas\\share", config, artefacts=art)
+        with fake_rclone_lan({"rclone-lan-sync": {"exit_code": None, "timed_out": True}}):
+            result = run_lan_mirror(LanConfig(), str(src), str(tmp_path / "dst"), str(art.dir),
+                                    max_delete=0)
         assert result["status"] == "LAN_FAILED"
+        assert result["timed_out"] is True
 class TestDiskConditions:
     """Simulate various disk conditions."""
 
@@ -220,24 +222,6 @@ class TestRecoveryScenarios:
         assert len(calls) == 1  # no hidden process-level retry
         cmd = calls[0]["argv"]
         assert "--retries" in cmd and cmd[cmd.index("--retries") + 1] == "2"
-    def test_orphaned_log_cleanup_after_crash(self):
-        """Orphaned logs are cleaned up after crash."""
-        from core.lan_sync import cleanup_orphaned_robocopy_logs
-        with tempfile.TemporaryDirectory() as tmp:
-            old_log = Path(tmp) / "robocopy_sync_old.log"
-            old_log.write_text("old")
-            old_time = time.time() - 48 * 3600  # 48 hours ago
-            os.utime(old_log, (old_time, old_time))
-            # A fresh log must survive.
-            fresh_log = Path(tmp) / "robocopy_sync_new.log"
-            fresh_log.write_text("new")
-
-            with patch("core.lan_sync.tempfile.gettempdir", return_value=tmp):
-                result = cleanup_orphaned_robocopy_logs(max_age_hours=24)
-
-            assert result == 1
-            assert not old_log.exists()
-            assert fresh_log.exists()
 
 
 class TestFYBoundaryConditions:

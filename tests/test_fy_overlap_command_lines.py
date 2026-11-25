@@ -10,13 +10,17 @@ folders and prefix must never appear as a destination in it.
 
 import contextlib
 import time
+from pathlib import Path
 from unittest.mock import patch
+
+import pendulum
 
 import flow
 from core import fy_overlap
 from models.config import CONFIG_PATH, load_config
 from test_fy_overlap_pipelines import CLOUD_BASE, LAN_BASE, STARTED, cloud_env, lan_env
-from test_support.fake_tools import fake_run_tool, robocopy_log
+from core.run_artefacts import RunArtefacts
+from test_support.fake_tools import fake_rclone_lan, fake_run_tool
 
 # captured before any test patches the module attributes: the real task bodies
 REAL_CLOUD_SYNC = flow.cloud_sync_task.fn
@@ -69,17 +73,19 @@ def test_cloud_next_pass_syncs_the_next_folder_to_the_next_prefix(tmp_path):
 
 def test_lan_next_pass_mirrors_the_next_folder_to_the_next_nas_folder(tmp_path):
     nxt, cur_source, next_source, nas_root = next_year_pass(tmp_path)
-    with lan_env() as env, \
-            fake_run_tool("core.lan_sync", exit_code=1, log=robocopy_log(total=1, copied=1),
-                          log_encoding="utf-16") as calls:
-        env.sync.with_options.return_value.side_effect = REAL_LAN_SYNC
+    clean = (Path(__file__).resolve().parents[1] / "test_support" / "rclone_logs"
+             / "lan_clean.jsonl").read_text(encoding="utf-8")
+    artefacts = RunArtefacts(tmp_path / "runlogs", LAN_BASE, started=pendulum.datetime(2027, 1, 10, 2, 0))
+    with lan_env() as env,             fake_rclone_lan({"rclone-lan-sync": {"exit_code": 0, "log": clean}}) as fake:
+        env.sync.with_options.return_value.side_effect = (
+            lambda config, artefacts_dir, **kw: REAL_LAN_SYNC(config, str(artefacts.dir), **kw))
         with contextlib.suppress(Exception):
             flow._run_lan_pipeline(nxt.config, LAN_BASE, STARTED, time.monotonic(),
                                    budget_start=time.monotonic(), allow_shutdown=False, fy_pass=nxt)
-    [mirror] = [c for c in calls if c["name"] == "robocopy"]
+    [mirror] = [c for c in fake.calls if c["step"] == "rclone-lan-sync"]
     argv = mirror["argv"]
-    assert argv[1] == str(next_source)
-    assert argv[2] == str(nas_root / "FY27-28")
+    assert argv[argv.index("sync") + 1] == str(next_source)
+    assert argv[argv.index("sync") + 2] == str(nas_root / "FY27-28")
     assert (nas_root / "FY27-28").is_dir()   # made by the pass itself (plan 2.3)
     joined = " ".join(argv)
     assert "FY26-27" not in joined and str(cur_source) not in joined

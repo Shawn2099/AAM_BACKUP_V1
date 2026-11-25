@@ -67,7 +67,6 @@ def backup_env(cfg, *, cloud=None, lan=None, lateness=0.0, reloads=None, record=
 
         p("flow.configure_logging")
         p("flow.configure_prefect_bridge")
-        p("flow.cleanup_orphaned_robocopy_logs")
         p("flow._scheduled_lateness_seconds", return_value=lateness)
         p("flow._stable_run_id", side_effect=lambda mode: f"run-{mode}")
         if reloads is None:

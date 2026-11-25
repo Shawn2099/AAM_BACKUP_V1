@@ -228,21 +228,3 @@ class TestEndToEndPipeline:
                 # May fail due to complex mocking — that's OK
                 pass
 
-    def test_lan_pipeline_diff_metrics(self, tmp_path):
-        """Test LAN pipeline diff metrics computation."""
-        from core.lan_manifest import diff_snapshots
-
-        before = {
-            "file1.txt": (100, 1700000000.0),
-            "file2.txt": (200, 1700000000.0),
-        }
-        after = {
-            "file1.txt": (100, 1700000000.0),
-            "file2.txt": (250, 1700000000.0),  # modified
-            "file3.txt": (300, 1700000000.0),  # added
-        }
-
-        result = diff_snapshots(before, after)
-        assert "file2.txt" in result["modified"]
-        assert "file3.txt" in result["added"]
-        assert "file1.txt" in result["unchanged"]

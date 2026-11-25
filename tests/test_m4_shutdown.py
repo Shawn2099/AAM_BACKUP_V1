@@ -25,7 +25,7 @@ from core import shutdown as sd
 from core.attention import AMBER, compute_attention
 from core.manifest import ManifestDB
 from core.run_artefacts import RunArtefacts
-from core.time_utils import IST, now_iso
+from core.time_utils import IST
 from models.config import WolConfig
 from test_support.fake_tools import fake_run_tool
 
@@ -201,39 +201,6 @@ class TestLanShutdownTask:
         notify.assert_called_once()
 
 
-@patch("flow._send_recovery_if_needed")
-@patch("flow.notify")
-@patch("flow._record_running")
-@patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_publish_artifact_task")
-@patch("flow.lan_record_task")
-@patch("flow.lan_snapshot_after_task", return_value={"a": (1, 1.0)})
-@patch("flow.lan_shutdown_task")
-@patch("flow.lan_sync_task")
-@patch("flow.lan_access_task")
-@patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={})
-@patch("flow.lan_preflight_task")
-@patch("flow.wol_check_task")
-@patch("flow.health_check_task")
-@patch("flow._record_run")
-def test_lan_run_row_records_the_shutdown_result_and_status_stays_complete(
-    record, _h, _w, _pre, _snap, _g, _acc, sync, shutdown, _after, _rt, _pub, _art, _running,
-    _notify, _recov,
-):
-    cfg = MagicMock()
-    cfg.paths.database_path = ":memory:"
-    cfg.paths.source_drive = "E:\\DATA\\FY26-27"
-    cfg.lan.shutdown_on_all_retries_exhausted = False
-    sync.with_options.return_value.return_value = {
-        "status": "LAN_COMPLETE", "exit_code": 1, "counts": {"copied": 1}, "bytes": {"copied": 1}}
-    shutdown.return_value = {"outcome": sd.FAILED, "server_ip": "10.0.0.5", "exit_code": 5,
-                             "detail": "Access is denied.(5)", "elapsed_s": 0.1}
-    flow._run_lan_pipeline(cfg, "run-sd", now_iso())
-    args, kwargs = record.call_args
-    assert args[4] == "LAN_COMPLETE"
-    em = json.loads(kwargs["extended_metrics"])
-    assert em["nas_shutdown"]["outcome"] == sd.FAILED
 
 
 @pytest.fixture

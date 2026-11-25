@@ -88,7 +88,6 @@ def test_pipeline_records_artefacts_dir_and_finalizes(tmp_path):
     with patch.object(flow, "health_check_task"), \
          patch.object(flow, "wol_check_task"), \
          patch.object(flow, "lan_preflight_task", MagicMock()), \
-         patch.object(flow, "lan_snapshot_before_task", return_value={}), \
          patch.object(flow, "lan_guards_task", MagicMock()), \
          patch.object(flow, "lan_access_task", MagicMock()), \
          patch.object(flow, "lan_sync_task", sync_mock), \
@@ -103,7 +102,7 @@ def test_pipeline_records_artefacts_dir_and_finalizes(tmp_path):
     manifest = json.loads((art_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["notes"][-1]["text"] == "finalized"
     # the sync task received the folder path (Prefect-safe plain string)
-    sync_mock.with_options.return_value.assert_called_once_with(cfg, str(art_dir), budget=ANY)
+    sync_mock.with_options.return_value.assert_called_once_with(cfg, str(art_dir), max_delete=ANY, budget=ANY)
 
 
 def test_artefact_folder_failure_never_blocks_the_backup(tmp_path):

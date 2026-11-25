@@ -9,251 +9,48 @@ from unittest.mock import MagicMock, patch
 from hypothesis import given, settings, strategies as st
 
 from core.hashing import PENDING_CHECKSUM, compute_md5, verify_checksum
-from core.lan_sync import classify_exit_code, count_failed_lines, decide_lan_result, failed_file_count, log_shows_completed_summary
-from core.lan_manifest import diff_snapshots
 from core.cloud_reporter import get_cloud_diff
+from core.lan_sync import decide_lan_rclone_result
 from test_support.fake_tools import SubprocessStyleRunTool
 
 
 # ── diff_snapshots properties ──────────────────────────────────────────
 
-class TestDiffSnapshotsProperties:
-    @given(
-        before=st.dictionaries(
-            st.text(min_size=1, max_size=50, alphabet=st.characters(blacklist_categories=("Cs",))),
-            st.tuples(st.integers(min_value=0), st.floats(min_value=0, max_value=2e9)),
-        ),
-        after=st.dictionaries(
-            st.text(min_size=1, max_size=50, alphabet=st.characters(blacklist_categories=("Cs",))),
-            st.tuples(st.integers(min_value=0), st.floats(min_value=0, max_value=2e9)),
-        ),
-    )
-    @settings(max_examples=200)
-    def test_partition_invariant(self, before, after):
-        """added/modified/removed/unchanged are disjoint and cover all keys."""
-        result = diff_snapshots(before, after)
-        added = set(result["added"])
-        removed = set(result["removed"])
-        modified = set(result["modified"])
-        unchanged = set(result["unchanged"])
-
-        # Disjoint
-        assert not (added & removed)
-        assert not (added & modified)
-        assert not (added & unchanged)
-        assert not (removed & modified)
-        assert not (removed & unchanged)
-        assert not (modified & unchanged)
-
-        # Cover all keys
-        all_keys = set(before.keys()) | set(after.keys())
-        assert added | removed | modified | unchanged == all_keys
-
-    @given(
-        data=st.dictionaries(
-            st.text(min_size=1, max_size=50, alphabet=st.characters(blacklist_categories=("Cs",))),
-            st.tuples(st.integers(min_value=0), st.floats(min_value=0, max_value=2e9)),
-        ),
-    )
-    @settings(max_examples=100)
-    def test_identical_snapshots_no_changes(self, data):
-        """Identical before/after → all unchanged, no added/removed/modified."""
-        result = diff_snapshots(data, data)
-        assert result["added"] == []
-        assert result["removed"] == []
-        assert result["modified"] == []
-        assert set(result["unchanged"]) == set(data.keys())
-
-    @given(
-        before=st.dictionaries(
-            st.text(min_size=1, max_size=30, alphabet=st.characters(blacklist_categories=("Cs",))),
-            st.tuples(st.integers(min_value=0), st.floats(min_value=0, max_value=2e9)),
-        ),
-    )
-    @settings(max_examples=100)
-    def test_empty_before_all_added(self, before):
-        """Empty before → everything in after is added."""
-        result = diff_snapshots({}, before)
-        assert set(result["added"]) == set(before.keys())
-        assert result["removed"] == []
-        assert result["modified"] == []
-        assert result["unchanged"] == []
-
-    @given(
-        after=st.dictionaries(
-            st.text(min_size=1, max_size=30, alphabet=st.characters(blacklist_categories=("Cs",))),
-            st.tuples(st.integers(min_value=0), st.floats(min_value=0, max_value=2e9)),
-        ),
-    )
-    @settings(max_examples=100)
-    def test_empty_after_all_removed(self, after):
-        """Empty after → everything in before is removed."""
-        result = diff_snapshots(after, {})
-        assert set(result["removed"]) == set(after.keys())
-        assert result["added"] == []
-        assert result["modified"] == []
-        assert result["unchanged"] == []
 
 
 # ── classify_exit_code properties ──────────────────────────────────────
 
-class TestClassifyExitCodeProperties:
-    @given(st.integers(min_value=0, max_value=255))
-    @settings(max_examples=300)
-    def test_bit4_always_failed(self, code):
-        """Bit 4 set → always LAN_FAILED."""
-        if code & 16:
-            assert classify_exit_code(code) == "LAN_FAILED"
-
-    @given(st.integers(min_value=0, max_value=255))
-    @settings(max_examples=300)
-    def test_bit3_always_partial(self, code):
-        """Bit 3 set (without bit 4) → always LAN_PARTIAL."""
-        if code & 8 and not code & 16:
-            assert classify_exit_code(code) == "LAN_PARTIAL"
-
-    @given(st.integers(min_value=0, max_value=255))
-    @settings(max_examples=300)
-    def test_no_bits_complete(self, code):
-        """No bits set → LAN_COMPLETE."""
-        if code == 0:
-            assert classify_exit_code(code) == "LAN_COMPLETE"
-
-    @given(st.integers(min_value=-100, max_value=-1))
-    @settings(max_examples=50)
-    def test_negative_without_bit3_or_bit4_failed(self, code):
-        """Characterized behaviour: classify_exit_code checks the bitmask FIRST.
-
-        A negative code only maps to LAN_FAILED via the bitmask precedence when
-        bit 3 (8) and bit 4 (16) are both clear; a negative code whose two's
-        complement happens to set bit 3 yields LAN_PARTIAL. The dedicated -1
-        timeout sentinel (all bits set) still maps to LAN_FAILED.
-        """
-        if not (code & 8) and not (code & 16):
-            assert classify_exit_code(code) == "LAN_FAILED"
-
-    def test_negative_timeout_sentinel_failed(self):
-        """The -1 sentinel used for timeouts is LAN_FAILED."""
-        assert classify_exit_code(-1) == "LAN_FAILED"
-
-    @given(st.integers(min_value=0, max_value=255))
-    @settings(max_examples=400)
-    def test_mapping_matches_documented_precedence(self, code):
-        """The documented precedence holds for the whole valid robocopy range."""
-        if code & 16:
-            expected = "LAN_FAILED"
-        elif code & 8:
-            expected = "LAN_PARTIAL"
-        elif code <= 7:
-            expected = "LAN_COMPLETE"
-        else:
-            expected = "LAN_FAILED"
-        assert classify_exit_code(code) == expected
 
 
 # ── decide_lan_result properties ───────────────────────────────────────
 
-class TestDecideLanResultProperties:
-    @given(st.integers(min_value=0, max_value=255))
-    @settings(max_examples=300)
-    def test_bit4_with_complete_log_failed(self, code):
-        """Bit 4 + complete log → LAN_FAILED."""
-        log = "Files : 10 10 0 0 0 0\nEnded : Mon Jan 01 00:00:00 2026\n"
-        if code & 16:
-            result = decide_lan_result(code, log)
-            assert result["status"] == "LAN_FAILED"
-            assert result["termination"] == "abnormal"
-
-    @given(st.integers(min_value=0, max_value=255))
-    @settings(max_examples=300)
-    def test_incomplete_log_suspect_unless_bit4(self, code):
-        """Characterized behaviour: bit 4 is evaluated before log completeness.
-
-        A truncated log with a bit-4 code is LAN_FAILED (fatal process error),
-        not LAN_SUSPECT — the bit-4 check precedes the log-summary check.
-        Any code without bit 4 and no completed summary is LAN_SUSPECT.
-        """
-        result = decide_lan_result(code, "truncated log without summary")
-        if code & 16:
-            assert result["status"] == "LAN_FAILED"
-        else:
-            assert result["status"] == "LAN_SUSPECT"
-        assert result["termination"] == "abnormal"
-
-    @given(st.integers(min_value=0, max_value=255))
-    @settings(max_examples=300)
-    def test_none_exit_code_failed(self, result_code):
-        """None exit code → LAN_FAILED."""
-        log = "Files : 10 10 0 0 0 0\nEnded : Mon Jan 01 00:00:00 2026\n"
-        result = decide_lan_result(None, log)
-        assert result["status"] == "LAN_FAILED"
-
-    @given(st.text(min_size=0, max_size=1000, alphabet=st.characters(blacklist_categories=("Cs",))))
-    @settings(max_examples=200)
-    def test_contradictory_evidence_fails_closed(self, log_text):
-        """Exit 0-7 with failed markers in log → LAN_SUSPECT."""
-        contradictory_log = log_text + "\n** FAILED: some_file.txt\n"
-        result = decide_lan_result(1, contradictory_log)
-        # If the log has a completed summary AND failed markers → SUSPECT
-        if log_shows_completed_summary(contradictory_log):
-            assert result["status"] == "LAN_SUSPECT"
 
 
 # ── failed_file_count properties ───────────────────────────────────────
 
-class TestFailedFileCountProperties:
-    @given(st.text(min_size=0, max_size=5000, alphabet=st.characters(blacklist_categories=("Cs",))))
-    @settings(max_examples=100)
-    def test_bit3_floor(self, log_text):
-        """Bit 3 set → at least 1 failed file."""
-        result = failed_file_count(log_text, exit_code=8)
-        assert result >= 1
-
-    @given(st.text(min_size=0, max_size=5000, alphabet=st.characters(blacklist_categories=("Cs",))))
-    @settings(max_examples=100)
-    def test_no_bit3_no_summary_returns_zero(self, log_text):
-        """No bit 3, no parseable summary → 0."""
-        # Use a log that won't match the summary pattern
-        result = failed_file_count("no summary here", exit_code=1)
-        assert result == 0
-
-    def test_summary_with_failed_column(self):
-        """Summary with FAILED > 0 → returns that count."""
-        log = "Files : 10 10 0 0 5 0\nEnded : Mon Jan 01 00:00:00 2026\n"
-        result = failed_file_count(log, exit_code=8)
-        assert result == 5
-
-    def test_bit3_floor_even_with_zero_in_summary(self):
-        """Bit 3 set but summary says 0 → returns 1 (max of both)."""
-        log = "Files : 10 10 0 0 0 0\nEnded : Mon Jan 01 00:00:00 2026\n"
-        result = failed_file_count(log, exit_code=8)
-        assert result == 1
 
 
 # ── count_failed_lines properties ──────────────────────────────────────
 
-class TestCountFailedLinesProperties:
-    @given(
-        num_failures=st.integers(min_value=0, max_value=50),
-        # The marker regex is anchored to line start (^\s*\*\*), so only
-        # whitespace may precede it — any other prefix legitimately hides the
-        # marker. Restrict the generator to what the contract recognizes.
-        indent=st.text(min_size=0, max_size=8, alphabet=" \t"),
-    )
-    @settings(max_examples=100)
-    def test_counts_failed_lines(self, num_failures, indent):
-        """Counts line-start '** FAILED:' markers, tolerating leading whitespace."""
-        lines = [f"{indent}** FAILED: file_{i}.txt" for i in range(num_failures)]
-        log = "\n".join(lines)
-        assert count_failed_lines(log) == num_failures
 
-    @given(st.text(min_size=1, max_size=20, alphabet="abcXYZ019"))
-    @settings(max_examples=50)
-    def test_non_whitespace_prefix_hides_marker(self, prefix):
-        """A non-whitespace character before the marker means it is not counted."""
-        log = f"{prefix}** FAILED: file.txt"
-        assert count_failed_lines(log) == 0
 
+
+# ── decide_lan_rclone_result properties (plan P1 matrix D) ─────────────
+
+class TestDecideLanRcloneResultProperties:
+    @given(st.integers(min_value=-5, max_value=300).filter(lambda c: c not in (0, 1, 4, 5, 6, 10)))
+    @settings(max_examples=200)
+    def test_codes_outside_table_always_failed(self, code):
+        assert decide_lan_rclone_result(code, "")["status"] == "LAN_FAILED"
+
+    @given(st.integers(min_value=0, max_value=20), st.text(max_size=300, alphabet=st.characters(blacklist_categories=("Cs",))))
+    @settings(max_examples=200)
+    def test_never_complete_without_final_stats(self, code, log_text):
+        assert decide_lan_rclone_result(code, log_text)["status"] != "LAN_COMPLETE"
+
+    def test_unusable_exit_codes_failed(self):
+        for bad in (None, -1, True):
+            assert decide_lan_rclone_result(bad, "")["status"] == "LAN_FAILED"
 
 # ── compute_md5 properties ─────────────────────────────────────────────
 

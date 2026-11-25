@@ -166,7 +166,8 @@ def test_lan_preflight_message_names_attempts(tmp_path):
 
     with patch.object(lp, "_is_smb_reachable", return_value=False) as probe:
         with pytest.raises(HealthError) as exc:
-            lp.run_lan_dry_run(str(tmp_path), "\\\\10.10.151.53\\share\\FY26-27",
-                               smb_attempts=8, smb_wait_seconds=15, smb_connect_timeout_seconds=15)
+            lp.check_lan_destination("\\\\10.10.151.53\\share\\FY26-27",
+                                     smb_attempts=8, smb_wait_seconds=15,
+                                     smb_connect_timeout_seconds=15)
     assert probe.call_args.kwargs == {"port": 445, "timeout": 15, "attempts": 8, "wait_s": 15}
     assert "after 8 attempt(s) (15s each, 15s apart)" in str(exc.value)

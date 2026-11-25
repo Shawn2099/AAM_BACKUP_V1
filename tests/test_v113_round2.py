@@ -87,9 +87,8 @@ def test_a_untouched_timeouts_stable():
     assert inspect.signature(cp.run_cloud_dry_run).parameters["timeout"].default is inspect.Parameter.empty
     assert inspect.signature(cr.get_cloud_size).parameters["timeout"].default is inspect.Parameter.empty
     assert CloudConfig.model_fields["cloud_size_timeout_seconds"].default == 300
-    assert inspect.signature(lp.run_lan_dry_run).parameters["timeout"].default == 900
     assert CloudConfig.model_fields["preflight_timeout_seconds"].default == 300
-    assert LanConfig.model_fields["dry_run_timeout_seconds"].default == 900
+    assert LanConfig.model_fields["rclone_measure_timeout_seconds"].default == 1800
 
 
 # B — stage telemetry carries through verify task
@@ -203,7 +202,6 @@ def test_c_flow_all_mode_runs_enabled_leg_only(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(flow, "_run_cloud_pipeline", lambda *a, **k: calls.append("cloud"))
     monkeypatch.setattr(flow, "_run_lan_pipeline", lambda *a, **k: calls.append("lan"))
-    monkeypatch.setattr(flow, "cleanup_orphaned_robocopy_logs", lambda **k: None)
     monkeypatch.setattr(flow, "configure_logging", lambda *a, **k: None)
     monkeypatch.setattr(flow, "configure_prefect_bridge", lambda: None)
     flow.backup.fn(str(p), mode="all")

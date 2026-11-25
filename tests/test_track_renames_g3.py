@@ -83,23 +83,3 @@ def test_g3_does_not_block_a_rename_but_blocks_real_loss(tmp_path, local_rclone)
     assert lost == 318 and not g.g3_mass_delete(lost, 319, 500, 10.0).passed
 
 
-def test_lan_preflight_task_uses_the_shared_measurement():
-    cfg = MagicMock()
-    cfg.paths.source_drive, cfg.paths.lan_destination = "S:\\", "\\\\nas\\share"
-    cfg.cloud.track_renames = True
-    cfg.lan.track_renames = True
-    robocopy = {"ok": True, "planned_deletes": 316, "counts": {"extras": 316}}
-    measured = {"planned_deletes": 0, "moves": 316, "error": None}
-    with patch("flow.run_lan_dry_run", return_value=dict(robocopy)), \
-         patch("flow.measure_planned_deletes", return_value=measured) as m:
-        res = flow.lan_preflight_task.fn(cfg)
-    assert res["planned_deletes"] == 0 and res["robocopy_planned_deletes"] == 316
-    kw = m.call_args.kwargs
-    assert kw["track_renames"] is True and ".AAM_TARGET_MOUNTED" in kw["excludes"]
-    assert "fast_list" not in kw
-    # a failed rclone measurement fails the run closed (never a silent 0)
-    with patch("flow.run_lan_dry_run", return_value=dict(robocopy)), \
-         patch("flow.measure_planned_deletes",
-               return_value={"planned_deletes": None, "error": "boom"}), \
-         pytest.raises(RuntimeError, match="boom"):
-        flow.lan_preflight_task.fn(cfg)

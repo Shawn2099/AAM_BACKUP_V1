@@ -189,12 +189,9 @@ class TestCloudFailureStatus:
 
 class TestLanFailureStatus:
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task")
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value={"verified": True, "matching": 1, "missing": 0, "differ": 0, "changed_during_backup": 0, "reason": None}))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -202,7 +199,7 @@ class TestLanFailureStatus:
     @patch("flow._record_run")
     def test_lan_sync_failure_records_failed_not_skipped(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown,
+        mock_shutdown,
     ):
         mock_sync.with_options.return_value.side_effect = RuntimeError("LAN sync failed")
         cfg = _make_config()
@@ -214,12 +211,9 @@ class TestLanFailureStatus:
         assert args[4] == "LAN_FAILED"  # was LAN_SKIPPED before the fix
 
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task")
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task")
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value={"verified": True, "matching": 1, "missing": 0, "differ": 0, "changed_during_backup": 0, "reason": None}))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -227,7 +221,7 @@ class TestLanFailureStatus:
     @patch("flow._record_run")
     def test_lan_preflight_failure_records_skipped(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown,
+        mock_shutdown,
     ):
         cfg = _make_config()
 
@@ -245,12 +239,9 @@ class TestLanFailureStatus:
 class TestLanPartialShutdown:
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value={"verified": True, "matching": 1, "missing": 0, "differ": 0, "changed_during_backup": 0, "reason": None}))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -258,11 +249,11 @@ class TestLanPartialShutdown:
     @patch("flow._record_run")
     def test_partial_alerts_and_skips_shutdown(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown, mock_alert,
+        mock_shutdown, mock_alert,
     ):
         mock_sync.with_options.return_value.return_value = {
-            "status": "LAN_PARTIAL", "exit_code": 9,
-            "error": "robocopy tail: 3 files FAILED",
+            "status": "LAN_PARTIAL", "exit_code": 1,
+            "error": "rclone exit 1: 3 file(s) could not be copied",
         }
         cfg = _make_config()
 
@@ -273,18 +264,15 @@ class TestLanPartialShutdown:
         mock_shutdown.assert_not_called()  # THE F3 BUG: used to shut the NAS down
         mock_alert.assert_called_once()
         alert_msg = mock_alert.call_args.args[1].message
-        assert "PARTIAL" in alert_msg and "9" in alert_msg
+        assert "PARTIAL" in alert_msg and "rclone exit 1" in alert_msg
         args = mock_record.call_args.args
         assert args[4] == "LAN_PARTIAL"
 
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value={"verified": True, "matching": 1, "missing": 0, "differ": 0, "changed_during_backup": 0, "reason": None}))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -292,10 +280,10 @@ class TestLanPartialShutdown:
     @patch("flow._record_run")
     def test_complete_shuts_down_and_no_alert(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown, mock_alert,
+        mock_shutdown, mock_alert,
     ):
         mock_sync.with_options.return_value.return_value = {
-            "status": "LAN_COMPLETE", "exit_code": 1, "error": None,
+            "status": "LAN_COMPLETE", "exit_code": 0, "error": None,
         }
         cfg = _make_config()
 

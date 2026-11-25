@@ -134,19 +134,19 @@ class TestHealthCharacterization:
         with pytest.raises(HealthError, match="Invalid mode"):
             pre_backup_health(str(tmp_path), mode="banana")
 
-    def test_pre_backup_health_lan_requires_robocopy(self, tmp_path):
+    def test_pre_backup_health_lan_requires_rclone(self, tmp_path):
         from core.health import HealthError, pre_backup_health
 
         (tmp_path / "a.txt").write_text("x")
         with patch("core.health.check_binary_exists", return_value=False):
-            with pytest.raises(HealthError, match="robocopy"):
+            with pytest.raises(HealthError, match="rclone"):
                 pre_backup_health(str(tmp_path), mode="lan")
 
     def test_pre_backup_health_lan_passes(self, tmp_path):
         from core.health import pre_backup_health
 
         (tmp_path / "a.txt").write_text("x")
-        # Only robocopy is required for lan mode; force it present.
+        # Only rclone is required for lan mode; force it present.
         with patch("core.health.check_binary_exists", return_value=True):
             pre_backup_health(str(tmp_path), mode="lan")
 
@@ -554,48 +554,6 @@ class TestLanPreflightCharacterization:
         assert _extract_unc_host("//nas/share") == "nas"
         assert _extract_unc_host(r"D:\data") is None
         assert _extract_unc_host("relative/path") is None
-
-    def test_dry_run_missing_canary_is_reported_for_g5(self, tmp_path):
-        from core.lan_preflight import run_lan_dry_run
-
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        from test_support.fake_tools import fake_run_tool
-        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0):
-            assert run_lan_dry_run(source=str(tmp_path), dest=str(dest))["canary_present"] is False
-
-    def test_dry_run_with_canary_and_ok_exit(self, tmp_path):
-        from core.lan_preflight import run_lan_dry_run
-
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        (dest / ".AAM_TARGET_MOUNTED").write_text("")
-        from test_support.fake_tools import fake_run_tool
-        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=1):
-            result = run_lan_dry_run(source=str(tmp_path), dest=str(dest))
-        assert result["ok"] is True
-        assert result["exit_code"] == 1
-
-    def test_dry_run_high_exit_fails(self, tmp_path):
-        from core.lan_preflight import run_lan_dry_run
-
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        (dest / ".AAM_TARGET_MOUNTED").write_text("")
-        from test_support.fake_tools import fake_run_tool
-        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=8, log="copy error\n"):
-            result = run_lan_dry_run(source=str(tmp_path), dest=str(dest))
-        assert result["ok"] is False
-        assert result["exit_code"] == 8
-
-    def test_dry_run_unreachable_unc_raises(self):
-        from core.health import HealthError
-        from core.lan_preflight import run_lan_dry_run
-
-        with patch("core.lan_preflight._is_smb_reachable", return_value=False):
-            with pytest.raises(HealthError, match="Cannot reach"):
-                run_lan_dry_run(source="E:\\", dest=r"\\10.0.0.9\share")
-
 
 # ══════════════════════════════════════════════════════════════════════════
 # wol — port guard, magic packet fan-out, wait/ensure

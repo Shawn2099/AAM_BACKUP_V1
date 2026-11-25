@@ -10,8 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.hashing import compute_md5, verify_checksum
-from core.lan_manifest import diff_snapshots
-from core.lan_sync import classify_exit_code, decide_lan_result, failed_file_count
+from core.lan_sync import decide_lan_rclone_result
 from core.cloud_reporter import get_cloud_diff
 from core.cloud_preflight import run_cloud_dry_run
 from test_support.fake_tools import SubprocessStyleRunTool
@@ -41,103 +40,31 @@ def _mock_rclone_check(diff_content=None, *, exit_code=0):
         yield mock_run
 
 
-class TestUnicodePaths:
-    def test_diff_snapshots_unicode_keys(self):
-        """diff_snapshots handles unicode filenames."""
-        before = {"文档/报告.pdf": (100, 1700000000.0)}
-        after = {"文档/报告.pdf": (200, 1700000000.0)}
-        result = diff_snapshots(before, after)
-        assert "文档/报告.pdf" in result["modified"]
-
-    def test_diff_snapshots_emoji_keys(self):
-        """diff_snapshots handles emoji filenames."""
-        before = {"📁/📄.txt": (100, 1700000000.0)}
-        after = {}
-        result = diff_snapshots(before, after)
-        assert "📁/📄.txt" in result["removed"]
-
-    def test_diff_snapshots_chinese_keys(self):
-        """diff_snapshots handles Chinese filenames."""
-        before = {"新建文件夹/测试文件.docx": (100, 1700000000.0)}
-        after = {"新建文件夹/测试文件.docx": (100, 1700000000.0)}
-        result = diff_snapshots(before, after)
-        assert "新建文件夹/测试文件.docx" in result["unchanged"]
 
 
-class TestLongPaths:
-    def test_diff_snapshots_long_path(self):
-        """diff_snapshots handles very long paths."""
-        long_name = "a" * 500
-        before = {long_name: (100, 1700000000.0)}
-        after = {long_name: (200, 1700000000.0)}
-        result = diff_snapshots(before, after)
-        assert long_name in result["modified"]
-
-    def test_diff_snapshots_deep_nesting(self):
-        """diff_snapshots handles deeply nested paths."""
-        deep = "/".join(["dir"] * 100) + "/file.txt"
-        before = {deep: (100, 1700000000.0)}
-        after = {}
-        result = diff_snapshots(before, after)
-        assert deep in result["removed"]
 
 
-class TestSpecialValues:
-    def test_diff_snapshots_zero_size(self):
-        """Files with zero size are handled."""
-        before = {"empty.txt": (0, 1700000000.0)}
-        after = {"empty.txt": (0, 1700000000.0)}
-        result = diff_snapshots(before, after)
-        assert "empty.txt" in result["unchanged"]
-
-    def test_diff_snapshots_negative_size(self):
-        """Negative sizes (shouldn't happen but shouldn't crash)."""
-        before = {"file.txt": (-1, 1700000000.0)}
-        after = {"file.txt": (-1, 1700000000.0)}
-        result = diff_snapshots(before, after)
-        assert "file.txt" in result["unchanged"]
-
-    def test_diff_snapshots_very_large_size(self):
-        """Very large file sizes."""
-        before = {"large.bin": (999999999999, 1700000000.0)}
-        after = {"large.bin": (999999999999, 1700000000.0)}
-        result = diff_snapshots(before, after)
-        assert "large.bin" in result["unchanged"]
-
-    def test_diff_snapshots_mtime_zero(self):
-        """Zero mtime is handled."""
-        before = {"file.txt": (100, 0.0)}
-        after = {"file.txt": (100, 0.0)}
-        result = diff_snapshots(before, after)
-        assert "file.txt" in result["unchanged"]
 
 
 class TestExitCodeEdgeCases:
-    def test_exit_code_zero(self):
-        assert classify_exit_code(0) == "LAN_COMPLETE"
+    def test_exit_code_zero_without_stats_is_suspect(self):
+        assert decide_lan_rclone_result(0, "")["status"] == "LAN_SUSPECT"
 
     def test_exit_code_255(self):
-        """All bits set."""
-        assert classify_exit_code(255) == "LAN_FAILED"
+        assert decide_lan_rclone_result(255, "")["status"] == "LAN_FAILED"
 
     def test_exit_code_negative(self):
-        assert classify_exit_code(-1) == "LAN_FAILED"
+        assert decide_lan_rclone_result(-1, "")["status"] == "LAN_FAILED"
 
     def test_exit_code_very_large(self):
-        """An implausibly large exit code is classified by its BITMASK, not
-        its magnitude: 9999 = 0b10011100001111 → bit 3 (copy errors) set,
-        bit 4 (fatal) clear → LAN_PARTIAL. Only bit 4 makes a large code
-        LAN_FAILED (e.g. 255 = all bits set)."""
-        assert 9999 & 16 == 0 and 9999 & 8 == 8   # bit 3 set, bit 4 clear
-        assert classify_exit_code(9999) == "LAN_PARTIAL"
+        """An implausibly large exit code is not in the table: LAN_FAILED."""
+        assert decide_lan_rclone_result(9999, "")["status"] == "LAN_FAILED"
 
     def test_decide_lan_result_empty_log(self):
-        result = decide_lan_result(0, "")
-        assert result["status"] == "LAN_SUSPECT"
+        assert decide_lan_rclone_result(0, "")["status"] == "LAN_SUSPECT"
 
     def test_decide_lan_result_none_log(self):
-        result = decide_lan_result(0, None)
-        assert result["status"] == "LAN_SUSPECT"
+        assert decide_lan_rclone_result(0, None)["status"] == "LAN_SUSPECT"
 
 
 class TestHashingEdgeCases:
@@ -216,25 +143,3 @@ class TestGetCloudDiffEdgeCases:
             assert "file1.txt" in result["added"]
 
 
-class TestFailedFileCountEdgeCases:
-    def test_summary_with_3digit_thousands(self):
-        """Summary with comma-separated thousands."""
-        log = "Files : 1,000 1,000 0 0 0 0\nEnded : Mon Jan 01 00:00:00 2026\n"
-        result = failed_file_count(log, exit_code=8)
-        assert result == 1  # bit3 floor
-
-    def test_summary_extra_columns(self):
-        """Summary with extra columns."""
-        log = "Files : 10 10 0 0 0 0 99 99\nEnded : Mon Jan 01 00:00:00 2026\n"
-        result = failed_file_count(log, exit_code=8)
-        assert result == 1
-
-    def test_no_summary_with_bit3(self):
-        """No summary but bit 3 set → 1."""
-        result = failed_file_count("no summary", exit_code=8)
-        assert result == 1
-
-    def test_no_summary_no_bit3(self):
-        """No summary, no bit 3 → 0."""
-        result = failed_file_count("no summary", exit_code=1)
-        assert result == 0

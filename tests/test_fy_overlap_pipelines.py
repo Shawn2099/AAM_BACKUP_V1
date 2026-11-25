@@ -112,16 +112,16 @@ def lan_env():
         env.preflight = p("flow.lan_preflight_task")
         env.preflight.with_options.return_value.side_effect = (
             lambda config, artefacts_dir: (env.order.append("preflight"), {})[1])
-        env.before = p("flow.lan_snapshot_before_task", return_value={})
-        env.after = p("flow.lan_snapshot_after_task", return_value={"a.txt": (100, 1.0)})
-        env.guards = p("flow.lan_guards_task", new=MagicMock())
+        env.guards = p("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
         p("flow.lan_access_task", new=MagicMock())
         env.sync = p("flow.lan_sync_task")
         env.sync.with_options.return_value.return_value = {
-            "status": "LAN_COMPLETE", "exit_code": 1, "files_failed": 0,
-            "counts": {"copied": 1}, "bytes": {"copied": 100}, "files_deleted": 0}
-        env.record_task = p("flow.lan_record_task")
-        env.publish = p("flow.lan_publish_artifact_task")
+            "status": "LAN_COMPLETE", "exit_code": 0, "files_failed": 0,
+            "stats": {"transfers": 1, "bytes": 100, "deletes": 0, "renames": 0,
+                      "errors": 0, "checks": 0}}
+        env.verify = p("flow.lan_verify_task", new=MagicMock(return_value={
+            "verified": True, "matching": 1, "missing": 0, "differ": 0,
+            "changed_during_backup": 0, "reason": None}))
         env.shutdown = p("flow.lan_shutdown_task")
         env.complete_pending = p("flow._complete_pending_rollover_nas_folder")
         yield env
@@ -317,24 +317,14 @@ class TestLanNextPass:
         assert not (nas_root / "FY27-28").exists()
         assert env.record_run.call_args.args[4] == "LAN_FAILED"
 
-    def test_next_pass_writes_no_file_entries(self, tmp_path):
+    def test_next_pass_row_is_tagged_with_its_fy(self, tmp_path):
         nas_root = tmp_path / "nas" / "backup"
         nas_root.mkdir(parents=True)
         cfg = make_config("E:\\FY27-28", str(nas_root / "FY27-28"))
         with lan_env() as env:
             flow._run_lan_pipeline(cfg, LAN_BASE, STARTED, time.monotonic(),
                                    allow_shutdown=False, fy_pass=next_pass(cfg))
-        env.record_task.assert_not_called()
         assert metrics(env)["fy"] == "FY27-28" and metrics(env)["overlap"] is True
-
-    def test_artifact_key_is_its_own(self, tmp_path):
-        nas_root = tmp_path / "nas" / "backup"
-        nas_root.mkdir(parents=True)
-        cfg = make_config("E:\\FY27-28", str(nas_root / "FY27-28"))
-        with lan_env() as env:
-            flow._run_lan_pipeline(cfg, LAN_BASE, STARTED, time.monotonic(),
-                                   allow_shutdown=False, fy_pass=next_pass(cfg))
-        assert env.publish.call_args.kwargs["key"] == "lan-backup-summary-fy27-28"
 
     def test_missing_nas_folder_step_is_not_the_rollover_step(self, tmp_path):
         nas_root = tmp_path / "nas" / "backup"
@@ -363,7 +353,7 @@ class TestLanNextPass:
 
 
 class TestLanConfiguredAndBaseline:
-    def test_configured_pass_keeps_the_rollover_step_and_entries(self, tmp_path):
+    def test_configured_pass_keeps_the_rollover_step(self, tmp_path):
         nas_root = tmp_path / "nas" / "backup"
         nas_root.mkdir(parents=True)
         cur = make_config("E:\\FY26-27", str(nas_root / "FY26-27"))
@@ -372,9 +362,7 @@ class TestLanConfiguredAndBaseline:
                                    allow_shutdown=False, fy_pass=cur_pass(cur))
         ensure.assert_not_called()
         env.complete_pending.assert_called_once()
-        env.record_task.assert_called_once()
         assert env.record_run.call_args.args[1] == LAN_BASE
-        assert "key" not in env.publish.call_args.kwargs
         assert metrics(env)["fy"] == "FY26-27" and "overlap" not in metrics(env)
 
     def test_no_pass_is_todays_call(self, tmp_path):
@@ -384,10 +372,8 @@ class TestLanConfiguredAndBaseline:
         with lan_env() as env:
             flow._run_lan_pipeline(cur, LAN_BASE, STARTED, time.monotonic(), allow_shutdown=False)
         env.complete_pending.assert_called_once()
-        env.record_task.assert_called_once()
         assert env.record_run.call_args.args[1] == LAN_BASE
         assert "fy" not in metrics(env)
-        assert "key" not in env.publish.call_args.kwargs
 
 
 # ── helpers used by the passes ───────────────────────────────────────────────────────────────────

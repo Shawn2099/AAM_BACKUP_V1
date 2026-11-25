@@ -15,6 +15,9 @@ import flow
 
 _REAL_SHUTDOWN_TASK_FN = flow.lan_shutdown_task.fn
 
+_ARRIVAL_OK = {"verified": True, "matching": 1, "missing": 0, "differ": 0,
+               "changed_during_backup": 0, "reason": None}
+
 
 def _make_lan_config(
     shutdown_after_backup: bool = True,
@@ -33,7 +36,7 @@ def _make_lan_config(
     cfg.lan.retry_delay_seconds = 600
     cfg.lan.shutdown_after_backup = shutdown_after_backup
     cfg.lan.shutdown_on_all_retries_exhausted = shutdown_on_all_retries_exhausted
-    cfg.lan.dry_run_timeout_seconds = 900
+    cfg.lan.error_tail_lines = 100
 
     cfg.wol.enabled = wol_enabled
     cfg.wol.server_ip = "192.168.1.100"
@@ -48,12 +51,9 @@ class TestLanShutdownPolicy:
 
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value=_ARRIVAL_OK))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -61,12 +61,12 @@ class TestLanShutdownPolicy:
     @patch("flow._record_run")
     def test_default_f3_partial_skips_shutdown_and_alerts(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown, mock_alert,
+        mock_shutdown, mock_alert,
     ):
         """When shutdown_on_all_retries_exhausted=False, F3 contract prevents shutdown."""
         mock_sync.with_options.return_value.return_value = {
-            "status": "LAN_PARTIAL", "exit_code": 9,
-            "error": "robocopy tail: 1 file FAILED",
+            "status": "LAN_PARTIAL", "exit_code": 1,
+            "error": "rclone exit 1: 1 file(s) could not be copied: locked.xlsx",
         }
         cfg = _make_lan_config(shutdown_on_all_retries_exhausted=False)
 
@@ -83,12 +83,9 @@ class TestLanShutdownPolicy:
 
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value=_ARRIVAL_OK))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -96,12 +93,12 @@ class TestLanShutdownPolicy:
     @patch("flow._record_run")
     def test_option_b_partial_shuts_down_after_alert(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown, mock_alert,
+        mock_shutdown, mock_alert,
     ):
         """When shutdown_on_all_retries_exhausted=True, alert fires first and NAS is powered down."""
         mock_sync.with_options.return_value.return_value = {
-            "status": "LAN_PARTIAL", "exit_code": 9,
-            "error": "robocopy tail: 1 file FAILED",
+            "status": "LAN_PARTIAL", "exit_code": 1,
+            "error": "rclone exit 1: 1 file(s) could not be copied: locked.xlsx",
         }
         cfg = _make_lan_config(shutdown_on_all_retries_exhausted=True)
 
@@ -119,12 +116,9 @@ class TestLanShutdownPolicy:
 
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task", return_value=None)
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value=_ARRIVAL_OK))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -132,7 +126,7 @@ class TestLanShutdownPolicy:
     @patch("flow._record_run")
     def test_option_b_failed_exception_shuts_down(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown, mock_alert,
+        mock_shutdown, mock_alert,
     ):
         """When a sync exception occurs and Option B is enabled, NAS is shut down."""
         mock_sync.with_options.return_value.side_effect = RuntimeError("network dropped")
@@ -147,12 +141,9 @@ class TestLanShutdownPolicy:
 
     @patch("flow.notify")
     @patch("flow.lan_shutdown_task")
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value=_ARRIVAL_OK))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -160,11 +151,11 @@ class TestLanShutdownPolicy:
     @patch("flow._record_run")
     def test_complete_shuts_down_normally(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_shutdown, mock_alert,
+        mock_shutdown, mock_alert,
     ):
         """LAN_COMPLETE always powers down regardless of the failure flag."""
         mock_sync.with_options.return_value.return_value = {
-            "status": "LAN_COMPLETE", "exit_code": 1,
+            "status": "LAN_COMPLETE", "exit_code": 0,
         }
         cfg = _make_lan_config(shutdown_on_all_retries_exhausted=False)
 
@@ -179,12 +170,9 @@ class TestLanShutdownPolicy:
     # The real lan_shutdown_task, run as a plain function: as a Prefect task outside a flow it
     # needs a running API, so the test only passed when an earlier test had left one behind.
     @patch("flow.lan_shutdown_task", new=lambda *a, **k: _REAL_SHUTDOWN_TASK_FN(*a, **k))
-    @patch("flow.lan_publish_artifact_task")
-    @patch("flow.lan_record_task")
-    @patch("flow.lan_snapshot_after_task", return_value={"file.txt": (100, 1.0)})
     @patch("flow.lan_access_task", new=MagicMock())
-    @patch("flow.lan_guards_task", new=MagicMock())
-    @patch("flow.lan_snapshot_before_task", return_value={})
+    @patch("flow.lan_guards_task", new=MagicMock(return_value={"max_delete": 10}))
+    @patch("flow.lan_verify_task", new=MagicMock(return_value=_ARRIVAL_OK))
     @patch("flow.lan_sync_task")
     @patch("flow.lan_preflight_task")
     @patch("flow.wol_check_task")
@@ -192,12 +180,12 @@ class TestLanShutdownPolicy:
     @patch("flow._record_run")
     def test_global_shutdown_disabled_overrides_option_b(
         self, mock_record, mock_health, mock_wol, mock_preflight, mock_sync,
-        mock_before, mock_after, mock_record_task, mock_artifact, mock_server_shutdown, mock_alert,
+        mock_server_shutdown, mock_alert,
     ):
         """If shutdown_after_backup=False, the shutdown is never called even if Option B is on."""
         mock_sync.with_options.return_value.return_value = {
-            "status": "LAN_PARTIAL", "exit_code": 9,
-            "error": "robocopy tail: 1 file FAILED",
+            "status": "LAN_PARTIAL", "exit_code": 1,
+            "error": "rclone exit 1: 1 file(s) could not be copied: locked.xlsx",
         }
         cfg = _make_lan_config(
             shutdown_after_backup=False,

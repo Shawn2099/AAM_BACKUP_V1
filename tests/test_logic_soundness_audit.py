@@ -168,9 +168,9 @@ class TestPreBackupHealth:
             with pytest.raises(health.HealthError, match="rclone"):
                 health.pre_backup_health("E:\\", "cloud", gcs_key_path="C:\\k.json")
 
-    def test_lan_missing_robocopy(self):
+    def test_lan_missing_rclone(self):
         with patch("core.health.check_binary_exists", return_value=False):
-            with pytest.raises(health.HealthError, match="robocopy"):
+            with pytest.raises(health.HealthError, match="rclone"):
                 health.pre_backup_health("E:\\", "lan")
 
     def test_all_good_passes(self):
@@ -221,41 +221,6 @@ class TestCronToHuman:
 from core import lan_sync
 
 
-class TestClassifyExitCode:
-    @pytest.mark.parametrize("code,expected", [
-        (0, "LAN_COMPLETE"),
-        (1, "LAN_COMPLETE"),
-        (2, "LAN_COMPLETE"),
-        (4, "LAN_COMPLETE"),
-        (7, "LAN_COMPLETE"),
-        (8, "LAN_PARTIAL"),
-        (12, "LAN_PARTIAL"),
-        (15, "LAN_PARTIAL"),
-        (16, "LAN_FAILED"),
-        (24, "LAN_FAILED"),   # 16|8 -> bit 4 wins (FAILED, not PARTIAL)
-        (100, "LAN_FAILED"),
-        (-1, "LAN_FAILED"),   # timeout sentinel
-    ])
-    def test_table(self, code, expected):
-        assert lan_sync.classify_exit_code(code) == expected
-
-    @given(st.integers(-10_000, 10_000))
-    def test_partial_implies_bit3(self, code):
-        """Finding L-1: LAN_PARTIAL is *always* a bit-3 code.
-
-        Therefore fy_rollover.run_final_backup's second success disjunct
-        `lan_status == "LAN_PARTIAL" and not (exit_code & 8)` is dead code:
-        the `and` can never be true."""
-        if lan_sync.classify_exit_code(code) == "LAN_PARTIAL":
-            assert code & 8
-
-    @given(st.integers(-10_000, 10_000))
-    def test_always_a_known_status(self, code):
-        assert lan_sync.classify_exit_code(code) in {
-            "LAN_COMPLETE", "LAN_PARTIAL", "LAN_FAILED",
-        }
-
-
 _SYNC_HEADER = (
     "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
 )
@@ -270,115 +235,6 @@ def _summary(total, copied, skipped, mismatch, failed, extras, with_ended=True):
     if with_ended:
         text += "   Ended : Wednesday, October 14, 2026 1:00:00 AM\n"
     return text
-
-
-class TestFailedFileCount:
-    def test_parsed_from_summary(self):
-        assert lan_sync.failed_file_count(_summary(10, 5, 3, 1, 2, 0), 3) == 2
-
-    def test_bit3_floor_when_log_unparseable(self):
-        assert lan_sync.failed_file_count("garbage", 8) == 1
-
-    def test_bit3_floor_beats_zero_summary(self):
-        """Pinned: a summary claiming 0 FAILED with bit 3 set resolves loud (1)."""
-        assert lan_sync.failed_file_count(_summary(10, 5, 3, 1, 0, 0), 8) == 1
-
-    def test_clean(self):
-        assert lan_sync.failed_file_count(_summary(10, 10, 0, 0, 0, 0), 0) == 0
-
-
-class TestSummaryFilesRow:
-    def test_exact_six_columns(self):
-        assert lan_sync.summarize_log_counts(_summary(10, 5, 3, 1, 2, 0)) == {
-            "total": 10, "copied": 5, "skipped": 3,
-            "mismatch": 1, "failed": 2, "extras": 0,
-        }
-
-    def test_extra_columns_silently_truncated(self):
-        """Finding L-2: a row with 7 numeric columns keeps only the first 6.
-
-        `dict(zip(...))` without strict=True silently discards the surplus,
-        so a future robocopy format addition would be lost without error."""
-        text = (
-            "    Files : 10 5 3 1 2 0 99\n"
-            "   Ended : x\n"
-        )
-        counts = lan_sync.summarize_log_counts(text)
-        assert counts is not None
-        assert len(counts) == 6
-        assert 99 not in counts.values()
-
-    def test_non_numeric_column_returns_none(self):
-        text = "    Files : 10 5 3 1 2 x\n   Ended : x\n"
-        assert lan_sync.summarize_log_counts(text) is None
-
-    def test_missing_row_returns_none(self):
-        assert lan_sync.summarize_log_counts("no summary here") is None
-
-
-class TestLogShowsCompletedSummary:
-    def test_requires_both_files_row_and_ended(self):
-        assert lan_sync.log_shows_completed_summary(_summary(1, 1, 0, 0, 0, 0)) is True
-        assert lan_sync.log_shows_completed_summary(_summary(1, 1, 0, 0, 0, 0, False)) is False
-        assert lan_sync.log_shows_completed_summary("   Ended : x\n") is False
-        assert lan_sync.log_shows_completed_summary("") is False
-
-
-class TestDecideLanResult:
-    def test_negative_code_failed(self):
-        r = lan_sync.decide_lan_result(-1, _summary(1, 1, 0, 0, 0, 0))
-        assert r["status"] == "LAN_FAILED" and r["termination"] == "abnormal"
-
-    def test_bit4_wins_over_truncated_log(self):
-        """Finding L-3: bit 4 is checked BEFORE log completeness -> FAILED."""
-        r = lan_sync.decide_lan_result(16, "")
-        assert r["status"] == "LAN_FAILED"
-
-    def test_truncated_log_is_suspect(self):
-        r = lan_sync.decide_lan_result(0, "")
-        assert r["status"] == "LAN_SUSPECT" and r["log_complete"] is False
-
-    def test_bit3_with_summary_is_partial(self):
-        r = lan_sync.decide_lan_result(8, _summary(3, 1, 1, 0, 2, 0))
-        assert r["status"] == "LAN_PARTIAL" and r["termination"] == "normal"
-
-    def test_zero_with_failed_markers_is_suspect(self):
-        text = _summary(2, 1, 0, 0, 0, 0) + "  ** FAILED: a.txt\n"
-        r = lan_sync.decide_lan_result(0, text)
-        assert r["status"] == "LAN_SUSPECT"
-
-    def test_zero_with_failed_summary_is_suspect(self):
-        r = lan_sync.decide_lan_result(0, _summary(2, 1, 0, 0, 1, 0))
-        assert r["status"] == "LAN_SUSPECT"
-
-    def test_mismatch_with_finished_pass_is_complete(self):
-        r = lan_sync.decide_lan_result(4, _summary(4, 2, 2, 2, 0, 0))
-        assert r["status"] == "LAN_COMPLETE" and r["reason"] is not None
-
-    def test_plain_success(self):
-        r = lan_sync.decide_lan_result(1, _summary(3, 1, 2, 0, 0, 0))
-        assert r["status"] == "LAN_COMPLETE" and r["reason"] is None
-
-    @given(st.integers(-10_000, 10_000))
-    def test_partial_implies_bit3_here_too(self, code):
-        r = lan_sync.decide_lan_result(code, _summary(1, 0, 0, 0, 1, 0))
-        if r["status"] == "LAN_PARTIAL":
-            assert code & 8
-
-    @given(st.integers(-10_000, 10_000))
-    def test_never_raises_and_termination_consistent(self, code):
-        r = lan_sync.decide_lan_result(code, _summary(1, 1, 0, 0, 0, 0))
-        assert r["status"] in {"LAN_COMPLETE", "LAN_PARTIAL", "LAN_SUSPECT", "LAN_FAILED"}
-        assert r["termination"] in {"normal", "abnormal"}
-
-
-class TestRequiredFlags:
-    def test_nc_forbidden(self):
-        with pytest.raises(ValueError):
-            lan_sync._validate_required_flags(["/MIR", "/NC"])
-
-    def test_other_flags_allowed(self):
-        lan_sync._validate_required_flags(["/MIR", "/V"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -511,72 +367,6 @@ class TestHashing:
             assert hashing.compute_md5(path) == hashing.compute_md5(path)
         finally:
             os.unlink(path)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# core.lan_manifest
-# ═══════════════════════════════════════════════════════════════════════════
-
-from core import lan_manifest
-
-
-class TestWalkLanDestination:
-    def test_walks_files(self, tmp_path):
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "a.txt").write_text("a")
-        (tmp_path / "sub" / "b.txt").write_text("bb")
-        files = lan_manifest.walk_lan_destination(str(tmp_path))
-        paths = {f["path"] for f in files}
-        assert paths == {"a.txt", "sub/b.txt"}
-
-    def test_empty_share_returns_empty(self, tmp_path):
-        assert lan_manifest.walk_lan_destination(str(tmp_path)) == []
-
-    def test_root_error_raises(self, tmp_path):
-        def fake_walk(path, onerror=None, **kw):
-            if onerror:
-                onerror(OSError(13, "denied", str(tmp_path)))
-            return iter([])
-
-        with patch("core.lan_manifest.os.walk", side_effect=fake_walk):
-            with pytest.raises(OSError):
-                lan_manifest.walk_lan_destination(str(tmp_path))
-
-    def test_root_error_with_odd_filename_does_not_raise(self, tmp_path):
-        """Finding M-1: root-failure detection is a brittle string match on
-        OSError.filename. If the filename differs even by a separator, the
-        'must be loud' contract fails open and [] is returned."""
-        def fake_walk(path, onerror=None, **kw):
-            if onerror:
-                onerror(OSError(13, "denied", str(tmp_path) + os.sep))
-            return iter([])
-
-        with patch("core.lan_manifest.os.walk", side_effect=fake_walk):
-            assert lan_manifest.walk_lan_destination(str(tmp_path)) == []
-
-
-class TestDiffSnapshots:
-    @given(
-        st.dictionaries(st.text(min_size=1, max_size=8), st.tuples(st.integers(), st.floats(allow_nan=False, allow_infinity=False)), max_size=20),
-        st.dictionaries(st.text(min_size=1, max_size=8), st.tuples(st.integers(), st.floats(allow_nan=False, allow_infinity=False)), max_size=20),
-    )
-    def test_partition_is_total_and_disjoint(self, before, after):
-        d = lan_manifest.diff_snapshots(before, after)
-        all_sets = [set(d["added"]), set(d["removed"]),
-                    set(d["modified"]), set(d["unchanged"])]
-        # disjoint
-        for i in range(len(all_sets)):
-            for j in range(i + 1, len(all_sets)):
-                assert all_sets[i].isdisjoint(all_sets[j])
-        # union == all keys
-        assert set().union(*all_sets) == set(before) | set(after)
-
-    def test_every_change_is_classified(self):
-        d = lan_manifest.diff_snapshots({"a": (1, 1.0)}, {"b": (1, 1.0), "a": (2, 1.0)})
-        assert d["added"] == ["b"]
-        assert d["removed"] == []
-        assert d["modified"] == ["a"]
-        assert d["unchanged"] == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -997,12 +787,3 @@ class TestManifestModeGuards:
         assert db.file_count("cloud_status") == 1
 
 
-def test_run_final_backup_lan_partial_guard_is_unreachable():
-    """Finding F-2: the `(lan_status == 'LAN_PARTIAL' and not (exit_code & 8))`
-    success disjunct in run_final_backup can never be true, because every
-    producer of LAN_PARTIAL guarantees bit 3 is set (see the classify
-    invariant above)."""
-    for code in range(-5, 40):
-        status = lan_sync.classify_exit_code(code)
-        if status == "LAN_PARTIAL":
-            assert (code & 8) != 0

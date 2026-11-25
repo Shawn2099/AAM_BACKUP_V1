@@ -31,17 +31,6 @@ def test_cloud_summary_published_when_counts_unknown(create):
 
 
 @patch("prefect.artifacts.create_markdown_artifact")
-def test_lan_summary_published_when_counts_unknown(create):
-    flow.lan_publish_artifact_task.fn(
-        {"status": "LAN_COMPLETE", "exit_code": 1},
-        {"added": ["a"], "modified": [], "removed": []},
-        None, None, 5,
-    )
-    md = _published_markdown(create)
-    assert "unknown" in md
-
-
-@patch("prefect.artifacts.create_markdown_artifact")
 def test_cloud_summary_still_shows_real_counts(create):
     flow.cloud_publish_artifact_task.fn(
         {"verified": True, "size": {"count": 3, "bytes": 30}},
@@ -95,34 +84,3 @@ def test_cloud_publish_failure_is_logged_and_run_still_recorded(
     assert rec.call_args.args[4] == "CLOUD_COMPLETE"
     assert any("prefect api down" in w for w in warnings), warnings
 
-
-@patch("flow._record_running")
-@patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_publish_artifact_task", side_effect=RuntimeError("prefect api down"))
-@patch("flow.lan_record_task")
-@patch("flow.lan_snapshot_after_task", return_value={"a": (1, 2.0)})
-@patch("flow.lan_shutdown_task")
-@patch("flow.lan_sync_task")
-@patch("flow.lan_access_task")
-@patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={"a": (1, 1.0)})
-@patch("flow.lan_preflight_task")
-@patch("flow.wol_check_task")
-@patch("flow.health_check_task")
-@patch("flow._record_run")
-def test_lan_publish_failure_is_logged_and_run_still_recorded(
-    rec, _h, _w, _pre, _snap, _g, _acc, sync, _shut, _after, _rt, _pub, _art, _running,
-):
-    sync.with_options.return_value.return_value = {
-        "status": "LAN_COMPLETE", "exit_code": 1,
-        "counts": {"total": 1, "copied": 1, "skipped": 0, "mismatch": 0, "failed": 0, "extras": 0},
-        "bytes": {"total": 1, "copied": 1, "skipped": 0, "mismatch": 0, "failed": 0, "extras": 0},
-        "files_deleted": 0}
-    warnings = []
-    sink = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
-    try:
-        flow._run_lan_pipeline(_cfg(), "run-pub-l", "2026-10-16T21:00:00")
-    finally:
-        logger.remove(sink)
-    assert json.loads(rec.call_args.kwargs["extended_metrics"])["counts_source"] == "robocopy"
-    assert any("prefect api down" in w for w in warnings), warnings

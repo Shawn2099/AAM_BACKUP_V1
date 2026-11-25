@@ -120,9 +120,8 @@ def test_rollover_default_config_path_is_the_shared_constant():
 @pytest.mark.parametrize("code", [True, False, None, -1])
 def test_exit_code_deciders_reject_non_int(code):
     from core.cloud_sync import classify_rclone_exit
-    from core.lan_sync import classify_exit_code, decide_lan_result
+    from core.lan_sync import decide_lan_rclone_result
 
     log = "   Files :   1   1   0   0   0   0\n   Ended : x\n"
-    assert decide_lan_result(code, log)["status"] == "LAN_FAILED"
-    assert classify_exit_code(code) == "LAN_FAILED"
+    assert decide_lan_rclone_result(code, log)["status"] == "LAN_FAILED"
     assert classify_rclone_exit(code) == "CLOUD_FAILED"

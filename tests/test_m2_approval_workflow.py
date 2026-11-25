@@ -160,13 +160,12 @@ def _guard_blocked(leg):
 @patch("flow.lan_sync_task")
 @patch("flow.lan_access_task", new=MagicMock())
 @patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={})
 @patch("flow.lan_preflight_task")
 @patch("flow.wol_check_task")
 @patch("flow.health_check_task")
 @patch("flow._record_run")
 def test_blocked_run_opens_request_and_sends_attention_email(
-    _rec, _h, _w, _pre, _snap, guards_task, _sync, _art, mdb, notify,
+    _rec, _h, _w, _pre, guards_task, _sync, _art, mdb, notify,
 ):
     guards_task.side_effect = _guard_blocked("lan")
     db = mdb.from_config.return_value
@@ -196,7 +195,6 @@ def test_generic_failure_alert_skips_guard_blocks(tmp_path):
     cfg.lan.enabled = True
     with patch("flow.load_config", return_value=cfg), \
          patch("flow.configure_logging"), patch("flow.configure_prefect_bridge"), \
-         patch("flow.cleanup_orphaned_robocopy_logs"), \
          patch("flow._run_lan_pipeline", side_effect=_guard_blocked("lan")), \
          patch("flow.notify") as generic:
         with pytest.raises(ExceptionGroup):
@@ -218,9 +216,13 @@ def _lan_cfg(tmp_path):
     return cfg
 
 
-def _counts(total, extras):
-    return {"total": total, "copied": 0, "skipped": total, "mismatch": 0,
-            "failed": 0, "extras": extras}
+def _plan(source_files, dest_files, planned_deletes, **over):
+    """The rclone dry-run plan dict lan_preflight_task returns (plan P1 section 2 step 3)."""
+    plan = {"ok": True, "error": None, "exit_code": 0, "source_files": source_files,
+            "dest_files": dest_files, "planned_deletes": planned_deletes, "moves": 0,
+            "planned_copies": 0, "planned_bytes": 0, "canary_present": True}
+    plan.update(over)
+    return plan
 
 
 def _run_guards_with(tmp_path, approval, planned=600, approval_id="a1", mark_ok=True):
@@ -228,15 +230,14 @@ def _run_guards_with(tmp_path, approval, planned=600, approval_id="a1", mark_ok=
     db.guard_baseline.return_value = None
     db.get_approval.return_value = approval
     db.mark_approval_used.return_value = mark_ok
-    dry = {"ok": True, "counts": _counts(1000, planned), "planned_deletes": planned,
-           "canary_present": True}
+    plan = _plan(1000, 1000, planned)
     with patch("flow.ManifestDB") as mdb, \
          patch("flow.now_iso", return_value=LATER), \
          patch("flow.guards.resolve_host", return_value={"10.0.0.9"}), \
          patch("flow.guards.local_addresses", return_value={"127.0.0.1"}):
         mdb.from_config.return_value = db
         try:
-            out = flow.lan_guards_task.fn(_lan_cfg(tmp_path), "FY26-27", dry, 1000,
+            out = flow.lan_guards_task.fn(_lan_cfg(tmp_path), "FY26-27", plan,
                                           approval_id=approval_id, run_id="run-2")
         except Exception as e:  # noqa: BLE001 - returned for assertions
             out = e
@@ -285,7 +286,7 @@ def test_backup_flow_hands_approval_id_to_the_pipelines():
     cfg.lan.enabled = True
     with patch("flow.load_config", return_value=cfg), \
          patch("flow.configure_logging"), patch("flow.configure_prefect_bridge"), \
-         patch("flow.cleanup_orphaned_robocopy_logs"), patch("flow.ManifestDB"), \
+         patch("flow.ManifestDB"), \
          patch("flow._run_cloud_pipeline") as cloud, patch("flow._run_lan_pipeline") as lan:
         flow.backup.fn(config_path="x", mode="all", approval_id="a1")
     assert cloud.call_args.kwargs["approval_id"] == "a1"
@@ -355,18 +356,14 @@ def test_approved_cloud_mass_delete_backstop_is_the_remeasured_count(tmp_path):
 # ── 2.3d: G5 mount marker -> BLOCKED; approval creates the marker ─────────
 
 def test_missing_marker_no_longer_fails_preflight_it_is_measured(tmp_path):
+    """The mount marker is only measured at preflight (G5 decides); no rclone is involved."""
     from core import lan_preflight
 
     dest = tmp_path / "dest"
     dest.mkdir()
-    from test_support.fake_tools import fake_run_tool
-    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0) as calls:
-        res = lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))
-    assert res["ok"] is True and res["canary_present"] is False
-    assert "/L" in calls[0]["argv"]                      # read-only listing still runs
+    assert lan_preflight.check_lan_destination(str(dest)) is False
     (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0):
-        assert lan_preflight.run_lan_dry_run(str(tmp_path / "src"), str(dest))["canary_present"]
+    assert lan_preflight.check_lan_destination(str(dest)) is True
 
 
 def _g5_rig(tmp_path, canary, dest_files, approval=None):
@@ -384,13 +381,15 @@ def _g5_rig(tmp_path, canary, dest_files, approval=None):
     db.guard_baseline.return_value = None
     db.get_approval.return_value = approval
     db.mark_approval_used.return_value = True
-    dry = {"ok": True, "counts": _counts(10, 0), "planned_deletes": 0}
-    if canary != "absent-key":
-        dry["canary_present"] = canary
+    plan = _plan(10, dest_files, 0)
+    if canary == "absent-key":
+        del plan["canary_present"]
+    else:
+        plan["canary_present"] = canary
     with patch("flow.ManifestDB") as mdb, patch("flow.now_iso", return_value=LATER):
         mdb.from_config.return_value = db
         try:
-            out = flow.lan_guards_task.fn(cfg, "FY26-27", dry, dest_files,
+            out = flow.lan_guards_task.fn(cfg, "FY26-27", plan,
                                           approval_id="a1" if approval else None, run_id="r2")
         except Exception as e:  # noqa: BLE001
             out = e

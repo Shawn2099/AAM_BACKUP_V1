@@ -118,17 +118,6 @@ def _assert_marker_missing_listing_only(out: dict) -> None:
 # TEST 1 — Valid destination-root marker
 # ─────────────────────────────────────────────────────────────────
 
-def test_1a_preflight_passes_with_destination_root_marker(tmp_path, monkeypatch):
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    (dest / MARKER).touch()
-
-    out = _preflight(monkeypatch, dest)
-    assert "health_error" not in out, f"pre-flight unexpectedly failed: {out}"
-    assert out["result"]["ok"] is True
-    assert len(out["calls"]) == 1, "robocopy dry-run should have been attempted"
-
-
 def test_1b_dest_root_marker_is_not_reported_as_backup_content(monkeypatch):
     """The production-shaped case: source has data, dest has data + the
     root sentinel (which /XF never copies). The sentinel shows up as an
@@ -156,25 +145,6 @@ def test_1c_canary_does_not_trip_the_summary_consistency_gate(monkeypatch):
 # ─────────────────────────────────────────────────────────────────
 # TEST 2 — Missing destination-root marker
 # ─────────────────────────────────────────────────────────────────
-
-def test_2_missing_root_marker_fails_preflight(tmp_path, monkeypatch):
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    (dest / "Accounting").mkdir()
-    (dest / "Accounting" / "Q1.xlsx").write_text("data")
-
-    out = _preflight(monkeypatch, dest)
-    _assert_marker_missing_listing_only(out)
-
-
-def test_2b_integrity_fix_does_not_weaken_preflight(tmp_path, monkeypatch):
-    """Regression guard for the fix itself: a missing root marker is still a
-    hard pre-flight failure even though the audit now ignores the basename."""
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    out = _preflight(monkeypatch, dest)
-    _assert_marker_missing_listing_only(out)
-
 
 # ─────────────────────────────────────────────────────────────────
 # TESTS 3-5 — Genuine divergences must still fail (no suppression)
@@ -270,18 +240,6 @@ def test_9a_nested_canary_is_excluded_from_the_content_verdict(monkeypatch):
     assert result["raw_missing"] == 1
 
 
-def test_9b_nested_canary_does_NOT_satisfy_preflight(tmp_path, monkeypatch):
-    """Control-plane validity is ROOT-ONLY: a nested file with the same
-    basename is never accepted as the mount sentinel."""
-    dest = tmp_path / "dest"
-    (dest / "some" / "subdirectory").mkdir(parents=True)
-    (dest / "some" / "subdirectory" / MARKER).touch()
-    assert not (dest / MARKER).exists()
-
-    out = _preflight(monkeypatch, dest)
-    _assert_marker_missing_listing_only(out)   # a nested marker does NOT count
-
-
 # ─────────────────────────────────────────────────────────────────
 # TEST 10 — Source-side canary
 # ─────────────────────────────────────────────────────────────────
@@ -307,19 +265,6 @@ def test_10b_source_side_nested_canary_is_excluded_from_verdict(monkeypatch):
     assert result["mismatches"] == 0
     assert result["canary_excluded_paths"] == [reported]
     assert "content mismatch detected" not in result["detail"]
-
-
-def test_10c_source_side_canary_does_not_provision_the_destination(tmp_path, monkeypatch):
-    """A source-side marker is not backup content AND is not a destination
-    marker: pre-flight still fails when the destination root lacks one."""
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    source = tmp_path / "src"
-    source.mkdir()
-    (source / MARKER).touch()
-
-    out = _preflight(monkeypatch, dest, source=source)
-    _assert_marker_missing_listing_only(out)
 
 
 # ─────────────────────────────────────────────────────────────────

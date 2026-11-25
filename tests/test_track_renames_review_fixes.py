@@ -78,54 +78,7 @@ def test_measure_reports_rename_moves(tmp_path, local_rclone):
 
 
 # 1. LAN invariant
-def test_lan_preflight_fails_closed_when_robocopy_deletes_exceed_rclone_plus_moves(tmp_path):
-    cfg = _lan_cfg(tmp_path)
-    with pytest.raises(RuntimeError, match="disagree") as ei:
-        _preflight(cfg, 316, {"planned_deletes": 0, "moves": 3, "error": None})
-    assert faults.code_of(ei.value) == "AAM-LAN-01"
-    res, _ = _preflight(cfg, 316, {"planned_deletes": 0, "moves": 316, "error": None})
-    assert res["planned_deletes"] == 0 and res["rclone_moves"] == 316
-    assert res["robocopy_planned_deletes"] == 316
-    res, _ = _preflight(cfg, 12, {"planned_deletes": 10, "moves": 2, "error": None})
-    assert res["planned_deletes"] == 10
-
-
-def test_lan_guards_extras_message_names_robocopy_not_rclone():
-    dry = {"ok": True, "counts": {"total": 3, "extras": 1}, "planned_deletes": 0,
-           "robocopy_planned_deletes": 5, "canary_present": True}
-    cfg = MagicMock()
-    with pytest.raises(RuntimeError, match=r"5 '\*EXTRA File' lines"):
-        flow.lan_guards_task.fn(cfg, "FY26-27", dry, 10)
-
-
 # 2. retry already_deleted
-def test_lan_deletes_of_ignores_rename_halves():
-    assert flow.lan_deletes_of({"files_deleted": 20}, 20) == 0
-    assert flow.lan_deletes_of({"files_deleted": 25}, 20) == 5
-    assert flow.lan_deletes_of({"files_deleted": None}, 20) is None
-    assert flow.lan_deletes_of({}, 0) is None
-
-
-def test_lan_retry_after_partly_mirrored_rename_is_not_reblocked():
-    """Attempt 1 deleted 20 old-name halves of a renamed 20-file folder, then failed."""
-    seen = []
-    results = iter([{"status": "LAN_FAILED", "exit_code": 8, "files_deleted": 20},
-                    {"status": "LAN_COMPLETE", "files_deleted": 0}])
-
-    def run_once():
-        r = next(results)
-        if r["status"] == "LAN_FAILED":
-            raise flow.SyncFailed("failed", r)
-        return r
-
-    with patch("flow.time.sleep"):
-        flow._sync_with_retries(
-            "lan", run_once=run_once, remeasure=lambda n: seen.append(n),
-            deletes_of=lambda r: flow.lan_deletes_of(r, 20), retryable=lambda r: True,
-            max_attempts=2, delay_s=1, budget=None, reserve_s=0, state={})
-    assert seen == [0]   # rename halves are not this run's deletions
-
-
 @needs_rclone
 def test_cloud_stats_deletes_exclude_renames(tmp_path):
     """Cloud retry: already_deleted comes from rclone's stats 'deletes'; renames are separate."""
@@ -150,16 +103,6 @@ def test_lan_excludes_match_recycle_bin_case_insensitively(tmp_path, local_rclon
 
 
 # 4 + 6. lan keys
-def test_lan_measurement_uses_lan_keys_not_cloud_keys(tmp_path):
-    cfg = _lan_cfg(tmp_path)
-    cfg.cloud.track_renames, cfg.lan.track_renames = True, False
-    _, m = _preflight(cfg, 0, {"planned_deletes": 0, "moves": 0, "error": None})
-    kw = m.call_args.kwargs
-    assert kw["track_renames"] is False
-    assert kw["timeout"] == 1234
-    assert kw["ignore_case"] is True
-
-
 def test_new_lan_keys_have_defaults_and_bounds():
     f = LanConfig.model_fields
     assert f["track_renames"].default is True
@@ -169,19 +112,3 @@ def test_new_lan_keys_have_defaults_and_bounds():
 
 
 # 6. empty source still reaches G1 first
-def test_lan_empty_source_reaches_g1_before_the_rclone_failure(tmp_path):
-    cfg = _lan_cfg(tmp_path, with_file=False)
-    res, _ = _preflight(cfg, 0, {"planned_deletes": None, "moves": 0, "error": "boom"})
-    assert res["planned_deletes"] is None and "boom" in res["rclone_measure_error"]
-    res["counts"] = {"total": 0, "copied": 0, "skipped": 0, "mismatch": 0, "failed": 0, "extras": 0}
-    with patch("flow.ManifestDB"):
-        with pytest.raises(g.GuardBlocked) as ei:
-            flow.lan_guards_task.fn(cfg, "FY26-27", res, 5)
-    assert "G1_SOURCE_HAS_FILES" in repr(ei.value.record)
-
-
-def test_lan_nonempty_source_rclone_failure_fails_closed(tmp_path):
-    cfg = _lan_cfg(tmp_path)
-    with pytest.raises(RuntimeError, match="boom") as ei:
-        _preflight(cfg, 0, {"planned_deletes": None, "moves": 0, "error": "boom"})
-    assert faults.code_of(ei.value) == "AAM-LAN-01"

@@ -5,7 +5,6 @@ environment faults to repair, so they FAIL the run (never BLOCK it).
 """
 
 import contextlib
-import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -35,18 +34,8 @@ WHOAMI_WITH_BACKUP_LOCALIZED = (
 
 def test_new_config_keys_and_defaults():
     lan, cloud = LanConfig(), CloudConfig(enabled=False)
-    assert lan.use_backup_mode is True                       # DEC-8
     assert lan.min_free_dest_gb == 5
-    assert lan.privilege_check_timeout_seconds == 60
     assert cloud.write_probe_enabled is True                 # DEC-5
-
-
-def test_backup_mode_switch_controls_zb(tmp_path):
-    from core.lan_sync import build_robocopy_command
-    (tmp_path / "f.txt").write_text("x")
-    assert "/ZB" in build_robocopy_command(str(tmp_path), "\\\\nas\\s", LanConfig())
-    off = build_robocopy_command(str(tmp_path), "\\\\nas\\s", LanConfig(use_backup_mode=False))
-    assert "/ZB" not in off and "/Z" in off
 
 
 # ── SeBackupPrivilege ─────────────────────────────────────────────────────
@@ -77,31 +66,6 @@ def _fake_tool(results):
                           stderr_path=err, log_path=None, started_at=now_iso(),
                           ended_at=now_iso(), duration_s=0.0, timeout_s=timeout_s)
     return patch("core.permissions.run_tool", side_effect=fake), calls
-
-
-def test_backup_privilege_held(tmp_path):
-    p, calls = _fake_tool([{"stdout": WHOAMI_WITH_BACKUP_LOCALIZED}])
-    with p:
-        perm.check_backup_privilege(RunArtefacts(tmp_path, "r"), timeout_s=60)
-    assert calls[0][0].lower().endswith(os.path.join("system32", "whoami.exe"))
-    assert calls[0][1:] == ["/priv", "/fo", "csv", "/nh"]
-
-
-def test_backup_privilege_missing_names_the_right_and_the_fix(tmp_path):
-    p, _ = _fake_tool([{"stdout": WHOAMI_NO_BACKUP}])
-    with p, pytest.raises(perm.PermissionCheckError) as ei:
-        perm.check_backup_privilege(RunArtefacts(tmp_path, "r"), timeout_s=60)
-    msg = str(ei.value)
-    assert "SeBackupPrivilege" in msg and "secpol.msc" in msg
-    assert "lan.use_backup_mode" in msg
-
-
-@pytest.mark.parametrize("spec", [{"exit_code": 1, "stderr": "ERROR"}, {"timed_out": True},
-                                  {"stdout": ""}])
-def test_privilege_check_that_cannot_run_fails_closed(tmp_path, spec):
-    p, _ = _fake_tool([spec])
-    with p, pytest.raises(perm.PermissionCheckError, match="could not be checked"):
-        perm.check_backup_privilege(RunArtefacts(tmp_path, "r"), timeout_s=60)
 
 
 # ── Destination write probe ───────────────────────────────────────────────
@@ -170,32 +134,13 @@ def test_free_space_unmeasurable_fails(tmp_path):
         perm.check_destination_free_space(str(tmp_path), bytes_needed=None, min_free_gb=5)
 
 
-# ── robocopy /L byte count ────────────────────────────────────────────────
-
-def test_dry_run_uses_exact_bytes_and_excludes_probe_files(tmp_path):
-    from core import lan_preflight
-    from core.lan_sync import summarize_log_bytes
-
-    # real robocopy 10.0 output with /BYTES (probe 2026-10-15)
-    out = ("   Files :         2         2         0         0         0         1\n"
-           "   Bytes :   3501234   3501234         0         0         0         2\n")
-    assert summarize_log_bytes(out)["copied"] == 3501234
-    assert summarize_log_bytes("   Bytes :    3.33 m    3.33 m   0  0  0  2\n") is None
-    dest = tmp_path / "d"
-    dest.mkdir()
-    (dest / ".AAM_TARGET_MOUNTED").write_text("")
-    from test_support.fake_tools import fake_run_tool
-    with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=1, log="------\n" + out) as calls:
-        res = lan_preflight.run_lan_dry_run(str(tmp_path), str(dest))
-    argv = calls[0]["argv"]
-    assert "/BYTES" in argv and perm.PROBE_PATTERN in argv
-    assert res["bytes"]["copied"] == 3501234
-
+# ── LAN mirror command ────────────────────────────────────────────────────
 
 def test_sync_command_excludes_probe_files(tmp_path):
-    from core.lan_sync import build_robocopy_command
+    from core.lan_sync import build_lan_rclone_command
     (tmp_path / "f.txt").write_text("x")
-    assert perm.PROBE_PATTERN in build_robocopy_command(str(tmp_path), "\\\\n\\s", LanConfig())
+    argv = build_lan_rclone_command(LanConfig(), str(tmp_path), "\\\\n\\s", "log.txt")
+    assert ("--exclude", perm.PROBE_PATTERN) in list(zip(argv, argv[1:]))
 
 
 # ── Cloud write probe ─────────────────────────────────────────────────────
@@ -224,21 +169,6 @@ def test_cloud_probe_delete_failure_fails(tmp_path):
 
 # ── Pipeline wiring ───────────────────────────────────────────────────────
 
-def test_lan_health_task_checks_privilege_only_in_backup_mode():
-    import flow
-
-    cfg = MagicMock()
-    for mode_on, expected in ((True, 1), (False, 0)):
-        cfg.lan.use_backup_mode = mode_on
-        with patch("flow.pre_backup_health"), \
-             patch("flow.permissions.check_backup_privilege") as chk:
-            flow.health_check_task.fn(cfg, "lan", None)
-        assert chk.call_count == expected
-    with patch("flow.pre_backup_health"), patch("flow.permissions.check_backup_privilege") as chk:
-        flow.health_check_task.fn(cfg, "cloud", None)
-    chk.assert_not_called()
-
-
 def test_lan_access_task_runs_all_three_checks(tmp_path):
     import flow
 
@@ -247,7 +177,7 @@ def test_lan_access_task_runs_all_three_checks(tmp_path):
     cfg.paths.lan_destination = "D"
     cfg.lan.min_free_dest_gb = 5
     with patch("flow.permissions") as p:
-        flow.lan_access_task.fn(cfg, {"bytes": {"copied": 123}}, "run-1")
+        flow.lan_access_task.fn(cfg, {"planned_bytes": 123}, "run-1")
     p.probe_source_read.assert_called_once_with("S")
     p.probe_destination_write.assert_called_once_with("D", "run-1")
     p.check_destination_free_space.assert_called_once_with("D", bytes_needed=123, min_free_gb=5)
@@ -288,13 +218,12 @@ def _pcfg():
 @patch("flow.lan_sync_task")
 @patch("flow.lan_access_task", side_effect=perm.PermissionCheckError("Access is denied"))
 @patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={})
 @patch("flow.lan_preflight_task")
 @patch("flow.wol_check_task")
 @patch("flow.health_check_task")
 @patch("flow._record_run")
 def test_lan_access_failure_is_lan_failed_and_nothing_copied(
-    rec, _h, _w, _pre, _snap, _g, _acc, sync, _art,
+    rec, _h, _w, _pre, _g, _acc, sync, _art,
 ):
     import flow
 

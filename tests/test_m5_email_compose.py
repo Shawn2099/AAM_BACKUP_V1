@@ -131,7 +131,7 @@ def test_uncoded_event_still_reads_plainly(tmp_path, db):
 def test_exit_meanings():
     assert ec.exit_meaning("cloud", 7) == "fatal error (a retry will not fix it)"
     assert ec.exit_meaning("lan", 0) == "no change"
-    assert ec.exit_meaning("lan", 10) == "extra files in the backup; some files could not be copied"
+    assert ec.exit_meaning("lan", 10) == "--max-duration limit reached"
     assert ec.exit_meaning("lan", None) == "the tool did not run or did not finish"
 
 

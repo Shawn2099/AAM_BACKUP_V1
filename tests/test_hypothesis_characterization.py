@@ -18,9 +18,8 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 from core.backup_repository import _clean_path
 from core.cloud_sync import classify_rclone_exit, resolve_max_duration_seconds
 from core.fy_rollover import _child_path, _parent_path
-from core.lan_manifest import diff_snapshots
 from core.lan_preflight import _extract_unc_host
-from core.lan_sync import classify_exit_code
+from core.lan_sync import decide_lan_rclone_result
 from core.report import _csv_safe
 from core.time_utils import get_fy_prefix
 
@@ -90,53 +89,6 @@ _snapshot = st.dictionaries(
 )
 
 
-class TestDiffSnapshotProperties:
-    @given(before=_snapshot, after=_snapshot)
-    @settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
-    def test_partition_is_disjoint_and_total(self, before, after):
-        result = diff_snapshots(before, after)
-        buckets = {k: set(result[k]) for k in ("added", "removed", "modified", "unchanged")}
-        # pairwise disjoint
-        keys = list(buckets)
-        for i in range(len(keys)):
-            for j in range(i + 1, len(keys)):
-                assert not (buckets[keys[i]] & buckets[keys[j]])
-        # total coverage
-        assert set().union(*buckets.values()) == set(before) | set(after)
-
-    @given(data=_snapshot)
-    @settings(max_examples=100)
-    def test_size_change_is_modified(self, data):
-        """Changing only the size of a path marks it modified, not unchanged."""
-        if not data:
-            return
-        path = next(iter(data))
-        size, mtime = data[path]
-        after = dict(data)
-        after[path] = (size + 1, mtime)
-        result = diff_snapshots(data, after)
-        assert path in result["modified"]
-
-    @given(data=_snapshot)
-    @settings(max_examples=100)
-    def test_mtime_change_is_modified(self, data):
-        if not data:
-            return
-        path = next(iter(data))
-        size, mtime = data[path]
-        after = dict(data)
-        after[path] = (size, mtime + 1)
-        result = diff_snapshots(data, after)
-        assert path in result["modified"]
-
-    @given(data=_snapshot)
-    @settings(max_examples=100)
-    def test_identical_snapshot_all_unchanged(self, data):
-        result = diff_snapshots(data, data)
-        assert result["added"] == []
-        assert result["removed"] == []
-        assert result["modified"] == []
-        assert set(result["unchanged"]) == set(data)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -175,27 +127,22 @@ class TestRcloneExitProperties:
 
 
 class TestLanExitProperties:
-    _KNOWN = {"LAN_COMPLETE", "LAN_PARTIAL", "LAN_FAILED"}
+    _KNOWN = {"LAN_COMPLETE", "LAN_PARTIAL", "LAN_FAILED", "LAN_SUSPECT"}
 
     @given(st.integers(min_value=-1000, max_value=1000))
     @settings(max_examples=400)
     def test_always_in_known_set(self, code):
-        assert classify_exit_code(code) in self._KNOWN
+        assert decide_lan_rclone_result(code, "")["status"] in self._KNOWN
 
-    @given(st.integers(min_value=0, max_value=7))
+    @given(st.integers(min_value=11, max_value=1000))
     @settings(max_examples=50)
-    def test_low_codes_complete(self, code):
-        assert classify_exit_code(code) == "LAN_COMPLETE"
+    def test_codes_above_table_failed(self, code):
+        assert decide_lan_rclone_result(code, "")["status"] == "LAN_FAILED"
 
-    @given(st.integers(min_value=8, max_value=15))
+    @given(st.integers(min_value=-1000, max_value=-1))
     @settings(max_examples=50)
-    def test_bit3_partial(self, code):
-        assert classify_exit_code(code) == "LAN_PARTIAL"
-
-    @given(st.integers(min_value=16, max_value=31))
-    @settings(max_examples=50)
-    def test_bit4_failed(self, code):
-        assert classify_exit_code(code) == "LAN_FAILED"
+    def test_negative_failed(self, code):
+        assert decide_lan_rclone_result(code, "")["status"] == "LAN_FAILED"
 
 
 # ══════════════════════════════════════════════════════════════════════════

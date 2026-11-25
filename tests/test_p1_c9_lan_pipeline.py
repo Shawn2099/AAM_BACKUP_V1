@@ -460,7 +460,6 @@ def test_w10_two_passes_each_make_three_calls_on_their_own_destination(tmp_path)
 
 def test_w11_health_check_for_lan_needs_rclone_and_runs_no_privilege_probe(tmp_path):
     cfg = make_config(tmp_path)
-    cfg.lan.use_backup_mode = True   # the old SeBackupPrivilege path must not run
     checked: list[str] = []
 
     def binary(name):
@@ -470,7 +469,7 @@ def test_w11_health_check_for_lan_needs_rclone_and_runs_no_privilege_probe(tmp_p
     art = RunArtefacts(tmp_path / "health", RUN_ID, started=STARTED)
     with patch("core.health.source_drive_fault", return_value=(None, "")), \
             patch("core.health.check_binary_exists", side_effect=binary), \
-            patch("flow.permissions.check_backup_privilege") as privilege, \
+            patch("flow.permissions.check_backup_privilege", create=True) as privilege, \
             patch("core.health.run_tool") as health_tool, \
             patch("core.permissions.run_tool", create=True) as perm_tool:
         flow.health_check_task.fn(cfg, "lan", str(art.dir))
@@ -534,3 +533,19 @@ def test_wfx_arrival_check_gets_the_clock_from_just_before_the_last_sync_attempt
     first_start, last_start = w.stamps[0], w.stamps[-1]
     assert first_start < epoch <= last_start, "not from the last sync attempt"
     assert last_start - epoch < 5, "taken well before the sync: a stale clock would miss changes"
+
+
+# ── NAS shutdown result is recorded in the row; the status stays COMPLETE ──
+# (moved here from test_m4_shutdown.py when the robocopy pipeline mocks were removed, C11)
+
+def test_shutdown_result_is_recorded_in_the_row_and_status_stays_complete(tmp_path):
+    from core import shutdown as sd
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean()}
+    cfg = make_config(tmp_path)
+    with lan_world(tmp_path, script) as w:
+        w.shutdown.return_value = {"outcome": sd.FAILED, "server_ip": "10.0.0.5", "exit_code": 5,
+                                   "detail": "Access is denied.(5)", "elapsed_s": 0.1}
+        out = run_lan(w, cfg)
+    assert out.exc is None, out.exc
+    assert out.status == "LAN_COMPLETE"
+    assert out.metrics["nas_shutdown"]["outcome"] == sd.FAILED

@@ -163,22 +163,6 @@ class TestCloudSyncTask:
         assert "budget_stopped" not in out
 
 
-class TestLanSyncTask:
-    def test_robocopy_gets_what_is_left_and_a_kill_there_is_partial(self):
-        with patch("flow.run_lan_sync", return_value={
-                "status": "LAN_FAILED", "exit_code": -1, "timed_out": True,
-                "error": "Timeout"}) as run:
-            out = flow.lan_sync_task.fn(_cfg(), None, budget=_budget(2 * H, 4 * H))
-        assert run.call_args.kwargs["timeout_s"] <= 1.5 * H + 5   # 2 h - 30 min reserve
-        assert out["status"] == "LAN_PARTIAL" and out["budget_stopped"] is True
-
-    def test_own_timeout_still_fails_as_before(self):
-        with patch("flow.run_lan_sync", return_value={
-                "status": "LAN_FAILED", "exit_code": -1, "timed_out": True, "error": "Timeout"}):
-            with pytest.raises(RuntimeError):
-                flow.lan_sync_task.fn(_cfg(), None, budget=_budget(10 * H, 10 * H))
-
-
 _CLOUD = ["flow._record_running", "flow._open_run_artefacts", "flow.cloud_publish_artifact_task",
           "flow.cloud_record_task", "flow.cloud_verify_and_report_task", "flow.cloud_sync_task",
           "flow.cloud_access_task", "flow.cloud_guards_task", "flow.cloud_preflight_task",

@@ -78,12 +78,6 @@ class TestTransferProcessRunning:
         with patch("psutil.process_iter", return_value=[mock_proc]):
             assert watchdog._transfer_process_running() is True
 
-    def test_robocopy_found(self):
-        mock_proc = MagicMock()
-        mock_proc.info = {"name": "robocopy.exe"}
-        with patch("psutil.process_iter", return_value=[mock_proc]):
-            assert watchdog._transfer_process_running() is True
-
     def test_none_found(self):
         mock_proc = MagicMock()
         mock_proc.info = {"name": "explorer.exe"}

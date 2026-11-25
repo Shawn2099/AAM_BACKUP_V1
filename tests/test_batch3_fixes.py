@@ -15,92 +15,58 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core import lan_sync, lan_preflight, report, time_utils
-from core.lan_sync import (
-    _read_log_tail,
-    cleanup_orphaned_robocopy_logs,
-    count_failed_lines,
-    run_lan_sync,
-)
+from core.lan_sync import run_lan_mirror
 from models.config import AppConfig, CloudConfig, LanConfig, WolConfig
+
+
+# ═══════════════════════════════════════════════════════════════
+# F12 — files_failed from the rclone LAN run
+# ═══════════════════════════════════════════════════════════════
+
+class TestFilesFailed:
+    """F12 on the rclone LAN leg: files_failed comes from the rclone final stats / log."""
+
+    FIXTURES = Path(__file__).resolve().parents[1] / "test_support" / "rclone_logs"
+
+    def _run(self, tmp_path, spec):
+        from core.run_artefacts import RunArtefacts
+        from test_support.fake_tools import fake_rclone_lan
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "a.txt").write_text("x")
+        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
+        with fake_rclone_lan({"rclone-lan-sync": spec}):
+            return run_lan_mirror(LanConfig(), str(src), str(tmp_path / "dst"), str(art.dir),
+                                  max_delete=0)
+
+    def test_partial_with_copy_errors_counts_failed(self, tmp_path):
+        log = (self.FIXTURES / "locked_file_exit1.jsonl").read_text(encoding="utf-8")
+        result = self._run(tmp_path, {"exit_code": 1, "log": log})
+        assert result["status"] == "LAN_PARTIAL"
+        assert result["files_failed"] >= 1
+
+    def test_clean_run_files_failed_zero(self, tmp_path):
+        log = (self.FIXTURES / "lan_clean.jsonl").read_text(encoding="utf-8")
+        result = self._run(tmp_path, {"exit_code": 0, "log": log})
+        assert result["status"] == "LAN_COMPLETE"
+        assert result["files_failed"] == 0
+
+    def test_timeout_files_failed_zero(self, tmp_path):
+        result = self._run(tmp_path, {"exit_code": None, "timed_out": True})
+        assert result["status"] == "LAN_FAILED"
+        assert result["files_failed"] == 0
 
 
 # ═══════════════════════════════════════════════════════════════
 # F12 — files_failed extracted from robocopy log
 # ═══════════════════════════════════════════════════════════════
 
-class TestFilesFailed:
-    @pytest.fixture
-    def lan_cfg(self):
-        return LanConfig()
-
-    def test_partial_with_copy_errors_counts_failed_lines(self, tmp_path, lan_cfg):
-        """Exit 9 (bit 3) with summary FAILED=2 -> files_failed=2 (P1-COUNT)."""
-        from core.run_artefacts import RunArtefacts
-        from test_support.fake_tools import fake_run_tool, robocopy_log
-
-        log = robocopy_log(total=3, copied=1, failed=2, body=(
-            "      New File:            1 C:\\a\\ok.txt\n"
-            "          ** FAILED: \\\\nas\\FY25-26\\big.iso\n"
-            "          ** FAILED: \\\\nas\\FY25-26\\other.dat\n"))
-        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
-        with fake_run_tool("core.lan_sync", exit_code=9, log=log, log_encoding="utf-16"), \
-             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.require_source_files"):
-            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
-        assert result["status"] == "LAN_PARTIAL"
-        assert result["files_failed"] == 2
-    def test_clean_run_files_failed_zero(self, tmp_path, lan_cfg):
-        from core.run_artefacts import RunArtefacts
-        from test_support.fake_tools import fake_run_tool, robocopy_log
-
-        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
-        with fake_run_tool("core.lan_sync", exit_code=1, log=robocopy_log(total=2, copied=2),
-                           log_encoding="utf-16"), \
-             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.require_source_files"):
-            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
-        assert result["status"] == "LAN_COMPLETE"
-        assert result["termination"] == "normal"
-        assert result["files_failed"] == 0
-    def test_timeout_files_failed_zero(self, tmp_path, lan_cfg):
-        from core.run_artefacts import RunArtefacts
-        from test_support.fake_tools import fake_run_tool
-
-        art = RunArtefacts(tmp_path / "rl", "r", day="2026-10-14")
-        with fake_run_tool("core.lan_sync", timed_out=True), \
-             patch("core.lan_sync.resolve_binary", return_value="robocopy"), \
-             patch("core.lan_sync.require_source_files"):
-            result = run_lan_sync("D:\\", "\\\\nas\\FY25-26", lan_cfg, artefacts=art)
-        assert result["status"] == "LAN_FAILED"
-        assert result["files_failed"] == 0
-class TestCountFailedLines:
-    def test_counts_only_robocopy_failure_lines(self):
-        log = """x
-          ** FAILED: \\\\a\\1.bin
-    some line FAILED: but no asterisks
-          ** FAILED: \\\\a\\2.bin
-"""
-        assert count_failed_lines(log) == 2
 
 
 # ═══════════════════════════════════════════════════════════════
 # F15 — log tail reads from the end (bounded memory)
 # ═══════════════════════════════════════════════════════════════
 
-class TestLogTailSeek:
-    def test_large_log_tail_bounded(self, tmp_path):
-        p = tmp_path / "big.log"
-        payload = ("x" * 100 + "\n") * 20000  # ~2MB
-        p.write_text(payload + "TAILMARK\n")
-        tail = _read_log_tail(p, 100_000)
-        assert len(tail) <= 100_000
-        assert tail.rstrip().endswith("TAILMARK")
-
-    def test_multibyte_boundary_clean(self, tmp_path):
-        p = tmp_path / "mb.log"
-        p.write_bytes(("héllo wörld " * 50000).encode("utf-8"))
-        tail = _read_log_tail(p, 12345)
-        assert "\ufffd" not in tail
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -151,27 +117,6 @@ class TestCsvInjection:
 # G8 — orphaned robocopy temp log cleanup
 # ═══════════════════════════════════════════════════════════════
 
-class TestOrphanLogCleanup:
-    def test_removes_old_keeps_new(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-        old = tmp_path / "robocopy_sync_old.log"
-        fresh = tmp_path / "robocopy_sync_fresh.log"
-        other = tmp_path / "unrelated.log"
-        for f in (old, fresh, other):
-            f.write_text("x")
-        past = time.time() - 48 * 3600
-        os.utime(old, (past, past))
-
-        removed = cleanup_orphaned_robocopy_logs(max_age_hours=24)
-
-        assert removed == 1
-        assert not old.exists()
-        assert fresh.exists()
-        assert other.exists()
-
-    def test_never_raises(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "missing"))
-        assert cleanup_orphaned_robocopy_logs() == 0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -185,10 +130,7 @@ class TestCanaryMessage:
         from core import guards
         dest = tmp_path / "FY25-26"
         dest.mkdir()
-        from test_support.fake_tools import fake_run_tool
-        with fake_run_tool("core.lan_preflight", log_encoding="utf-16", exit_code=0):
-            res = lan_preflight.run_lan_dry_run(str(dest.parent), str(dest))
-        assert res["canary_present"] is False
+        assert lan_preflight.check_lan_destination(str(dest)) is False
         msg = guards.g5_canary(False, True, str(dest)).reason
         assert ".AAM_TARGET_MOUNTED" in msg and "Approve only if" in msg
 
@@ -277,8 +219,9 @@ class TestScaleDefaults:
         assert c.manifest_timeout_seconds == 18000
         assert c.diff_timeout_seconds == 18000
 
-    def test_lan_dry_run_timeout(self):
-        assert LanConfig().dry_run_timeout_seconds == 900
+    def test_lan_plan_timeout(self):
+        # the LAN dry-run is rclone now (plan P1 K2); old key dry_run_timeout_seconds is deprecated
+        assert LanConfig().rclone_measure_timeout_seconds == 1800
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -312,21 +255,6 @@ class TestDeployArtifacts:
 # G14 — post-sync walk failure must not fail the run
 # ═══════════════════════════════════════════════════════════════
 
-class TestAfterWalkTolerance:
-    def test_failed_walk_returns_none(self):
-        import flow as flow_mod
-        cfg = MagicMock()
-        with patch.object(flow_mod, "walk_lan_destination", side_effect=OSError("SMB session reset")):
-            result = flow_mod.lan_snapshot_after_task.fn(cfg)
-        assert result is None
-
-    def test_successful_walk_unchanged(self):
-        import flow as flow_mod
-        cfg = MagicMock()
-        with patch.object(flow_mod, "walk_lan_destination") as mock_walk:
-            mock_walk.return_value = [{"path": "x.txt", "size": 10, "mtime": 123.0}]
-            result = flow_mod.lan_snapshot_after_task.fn(cfg)
-        assert result == {"x.txt": (10, 123.0)}
 
 
 # ═══════════════════════════════════════════════════════════════

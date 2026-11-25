@@ -396,55 +396,6 @@ _LAN_OK = {"status": "LAN_COMPLETE", "exit_code": 1, "error": None, "files_delet
            "files_failed": 0, "counts": {"copied": 1}, "bytes": {"copied": 1}}
 
 
-@lan_patches
-def test_lan_retry_re_measures_the_guards_first(*mocks):
-    c = _Lan(mocks)
-    c.sync.side_effect = [_lan_fail(files_deleted=3), dict(_LAN_OK)]
-    flow._run_lan_pipeline(_cfg(), "run-l", now_iso())
-    assert c.sync.call_count == 2
-    assert c.pre.with_options.return_value.call_count == 2        # robocopy /L again
-    assert c.guards.call_count == 2
-    assert c.guards.call_args_list[1].kwargs["already_deleted"] == 3
-    assert c.access.call_count == 2
-    c.sleep.assert_called_once_with(600)
-    assert [a["deleted"] for a in c.row["metrics"]["sync_attempts"]] == [3, 0]
-
-
-@lan_patches
-def test_lan_retry_blocked_by_the_re_measure_stops(*mocks):
-    c = _Lan(mocks)
-    c.sync.side_effect = [_lan_fail(), dict(_LAN_OK)]
-    c.guards.side_effect = [{"results": []}, g.GuardBlocked("lan", {"results": []})]
-    c.run()
-    assert c.sync.call_count == 1
-    assert c.row["status"] == "LAN_BLOCKED" and c.row["exit_code"] == 16
-
-
-@lan_patches
-def test_lan_unknown_deletions_are_not_retried(*mocks):
-    c = _Lan(mocks)
-    c.sync.side_effect = [_lan_fail(files_deleted=None), dict(_LAN_OK)]
-    c.run()
-    assert c.sync.call_count == 1
-    assert c.row["status"] == "LAN_FAILED" and c.row["exit_code"] == 16
-
-
-@lan_patches
-def test_lan_suspect_and_timeout_are_not_retried(*mocks):
-    c = _Lan(mocks)
-    c.sync.side_effect = [_lan_fail(status="LAN_SUSPECT"), dict(_LAN_OK)]
-    c.run()
-    assert c.sync.call_count == 1 and c.row["status"] == "LAN_SUSPECT"
-
-
-@lan_patches
-def test_lan_timeout_is_not_retried(*mocks):
-    c = _Lan(mocks)
-    c.sync.side_effect = [_lan_fail(timed_out=True), dict(_LAN_OK)]
-    c.run()
-    assert c.sync.call_count == 1
-
-
 def _lan_guard_cfg(tmp_path):
     cfg = _cfg()
     cfg.paths.source_drive = str(tmp_path)
@@ -454,20 +405,3 @@ def _lan_guard_cfg(tmp_path):
     return cfg
 
 
-def test_lan_guard_counts_earlier_deletions_against_g3(tmp_path):
-    (tmp_path / "a.txt").write_text("x")
-    db = MagicMock()
-    db.guard_baseline.return_value = None
-    counts = {"total": 1000, "copied": 0, "skipped": 1000, "mismatch": 0, "failed": 0,
-              "extras": 25}
-    dry = {"counts": counts, "planned_deletes": 25, "canary_present": True}
-    with patch("flow.ManifestDB") as mdb, \
-            patch("flow.guards.resolve_host", return_value={"10.0.0.9"}), \
-            patch("flow.guards.local_addresses", return_value={"127.0.0.1"}):
-        mdb.from_config.return_value = db
-        with pytest.raises(g.GuardBlocked) as info:
-            flow.lan_guards_task.fn(_lan_guard_cfg(tmp_path), "FY26-27", dry, 970,
-                                    run_id="run-l", already_deleted=30)
-    g3 = [r for r in info.value.record["results"] if r["guard"] == "G3_MASS_DELETE"][0]
-    assert g3["metrics"]["planned_deletes"] == 55
-    assert g3["metrics"]["destination_files"] == 1000

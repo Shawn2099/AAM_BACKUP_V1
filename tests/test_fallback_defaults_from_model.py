@@ -26,8 +26,6 @@ CASES = [
     (manifest.ManifestDB.__init__, "synchronous", MaintenanceConfig, "sqlite_synchronous"),
     (manifest.ManifestDB.purge_old_runs, "retention_days", MaintenanceConfig, "db_retention_days"),
     (logging.configure, "log_retention_days", MaintenanceConfig, "log_retention_days"),
-    (lan_sync.cleanup_orphaned_robocopy_logs, "max_age_hours", MaintenanceConfig,
-     "orphan_robocopy_log_max_age_hours"),
     (wol._send_magic_packet, "repeat", WolConfig, "wake_retry_count"),
     (wol._send_magic_packet, "interval", WolConfig, "wake_retry_interval_seconds"),
     (wol._smb_port_open, "timeout", WolConfig, "smb_connect_timeout_seconds"),
@@ -49,9 +47,8 @@ CASES = [
     (health.pre_backup_health, "max_clock_skew_seconds", HealthConfig, "max_clock_skew_seconds"),
     (health.pre_backup_health, "ntp_server", HealthConfig, "ntp_server"),
     (health.pre_backup_health, "w32tm_timeout_seconds", HealthConfig, "w32tm_timeout_seconds"),
-    (lan_preflight.run_lan_dry_run, "timeout", LanConfig, "dry_run_timeout_seconds"),
-    (lan_preflight.run_lan_dry_run, "smb_attempts", LanConfig, "preflight_smb_attempts"),
-    (lan_preflight.run_lan_dry_run, "log_tail_kb", LanConfig, "log_tail_kb"),
+    (lan_preflight.check_lan_destination, "smb_attempts", LanConfig, "preflight_smb_attempts"),
+    (lan_sync.decide_lan_rclone_result, "error_tail_lines", LanConfig, "error_tail_lines"),
 ]
 
 
@@ -61,21 +58,6 @@ def test_fallback_equals_model_default(fn, param, model, field):
     assert inspect.signature(fn).parameters[param].default == model_default(model, field)
 
 
-def test_orphan_log_cleanup_age_comes_from_config():
-    import flow
-    cfg = MagicMock()
-    cfg.cloud.enabled = True
-    cfg.maintenance.orphan_robocopy_log_max_age_hours = 7
-    with patch("flow.load_config", return_value=cfg), \
-         patch("flow.configure_logging"), patch("flow.configure_prefect_bridge"), \
-         patch("flow.cleanup_orphaned_robocopy_logs") as cleanup, \
-         patch("flow._run_cloud_pipeline", return_value={"status": "CLOUD_COMPLETE"}), \
-         patch("flow._run_lan_pipeline"):
-        try:
-            flow.backup.fn(config_path="x.yaml", mode="cloud")
-        except Exception:  # noqa: BLE001 - only the cleanup argument matters here
-            pass
-    cleanup.assert_called_once_with(max_age_hours=7)
 
 
 def test_sync_command_flags_come_from_the_parameters(tmp_path):
@@ -97,9 +79,10 @@ def test_sync_flag_defaults_are_the_model_defaults():
 
 def test_flow_passes_the_sync_flag_keys():
     src = inspect.getsource(__import__("flow"))
-    # the two guard measurements (cloud + LAN) and the real sync (+ verify and diff for modify-window)
-    for key, n in (("modify_window_seconds=config.cloud.modify_window_seconds", 5),
-                   ("retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds", 3),
+    # the cloud guard measurement and the real sync (+ verify and diff for modify-window); the LAN leg
+    # reads its own lan.* keys since plan P1
+    for key, n in (("modify_window_seconds=config.cloud.modify_window_seconds", 4),
+                   ("retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds", 2),
                    ("stats_interval_seconds=config.cloud.stats_interval_seconds", 1)):
         assert src.count(key) >= n, key   # at least the known call sites (no exact-count pin)
 

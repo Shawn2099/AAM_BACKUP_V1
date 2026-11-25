@@ -17,7 +17,7 @@ import flow
 from core.manifest import SCHEMA_VERSION, ManifestDB
 from core.run_artefacts import RunArtefacts
 from models.config import LanConfig
-from test_support.fake_tools import fake_run_tool, robocopy_log
+from test_support.fake_tools import fake_run_tool
 
 # Real rclone v1.74.3 final stats line (probe 2026-10-15): 1 new + 1 changed
 # file uploaded (5002 bytes), 1 extra deleted.
@@ -53,30 +53,6 @@ def test_run_cloud_sync_returns_the_final_stats(tmp_path):
         res = run_cloud_sync(source=str(tmp_path), bucket="b", fy_prefix="FY26-27",
                              gcs_key_path="/k", project_number="1", storage_class="STANDARD")
     assert res["stats"]["transfers"] == 2 and res["stats"]["bytes"] == 5002
-
-
-# ── robocopy summary ──────────────────────────────────────────────────────
-
-def test_mirror_command_uses_exact_bytes(tmp_path):
-    from core.lan_sync import build_robocopy_command
-    (tmp_path / "f.txt").write_text("x")
-    assert "/BYTES" in build_robocopy_command(str(tmp_path), "\\\\n\\s", LanConfig())
-
-
-def test_run_lan_sync_reports_copied_bytes_and_deleted_files(tmp_path):
-    from core.lan_sync import run_lan_sync
-
-    body = ("\t  *EXTRA File \t\t       2\told1.txt\n"
-            "\t  *EXTRA File \t\t       2\tsub\\old2.txt\n"
-            "\t    New File  \t\t    1234\tnew.txt\n")
-    log = robocopy_log(total=10, copied=3, skipped=7, bytes_copied=4567, body=body)
-    with fake_run_tool("core.lan_sync", exit_code=3, log=log, log_encoding="utf-16"), \
-         patch("core.lan_sync.require_source_files"):
-        res = run_lan_sync("E:\\", "\\\\nas\\s", LanConfig(),
-                           artefacts=RunArtefacts(tmp_path, "r"))
-    assert res["counts"]["copied"] == 3
-    assert res["bytes"]["copied"] == 4567
-    assert res["files_deleted"] == 2
 
 
 # ── schema v2: size/mtime per leg ─────────────────────────────────────────
@@ -216,34 +192,3 @@ def test_cloud_counts_unknown_without_stats(
     kwargs = rec.call_args.kwargs
     assert kwargs["files_copied"] is None and kwargs["bytes_copied"] is None
     assert json.loads(kwargs["extended_metrics"])["counts_source"] == "unavailable"
-
-
-@patch("flow._record_running")
-@patch("flow._open_run_artefacts", return_value=None)
-@patch("flow.lan_publish_artifact_task")
-@patch("flow.lan_record_task")
-@patch("flow.lan_snapshot_after_task", return_value={"a": (1, 2.0), "b": (5, 1.0)})
-@patch("flow.lan_shutdown_task")
-@patch("flow.lan_sync_task")
-@patch("flow.lan_access_task")
-@patch("flow.lan_guards_task")
-@patch("flow.lan_snapshot_before_task", return_value={"a": (1, 1.0)})
-@patch("flow.lan_preflight_task")
-@patch("flow.wol_check_task")
-@patch("flow.health_check_task")
-@patch("flow._record_run")
-def test_lan_counts_come_from_the_robocopy_summary(
-    rec, _h, _w, _pre, _snap, _g, _acc, sync, _shut, _after, _rt, _pub, _art, _running,
-):
-    sync.with_options.return_value.return_value = {
-        "status": "LAN_COMPLETE", "exit_code": 1,
-        "counts": {"total": 2, "copied": 2, "skipped": 0, "mismatch": 0, "failed": 0, "extras": 0},
-        "bytes": {"total": 6, "copied": 6, "skipped": 0, "mismatch": 0, "failed": 0, "extras": 0},
-        "files_deleted": 0}
-    flow._run_lan_pipeline(_cfg(), "run-l", "2026-10-14T21:00:00")
-    kwargs = rec.call_args.kwargs
-    assert kwargs["files_copied"] == 2 and kwargs["bytes_copied"] == 6
-    em = json.loads(kwargs["extended_metrics"])
-    assert em["counts_source"] == "robocopy"
-    assert em["diff_copied"] == 2 and em["metrics_consistent"] is True
-    assert em["files_deleted"] == 0
