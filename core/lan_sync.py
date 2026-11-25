@@ -4,6 +4,7 @@ Builder, pure exit decision, plan (dry-run), the sync itself and the arrival che
 The LAN copier that ran before it (replaced in P1 C10a) is gone.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -379,3 +380,42 @@ def check_lan_arrival(
         return max(st.st_mtime, st.st_ctime) >= threshold
 
     return decide_lan_arrival(result.exit_code, result.stderr_text(), combined_text, changed_since)
+
+
+_COPIED_MSGS = ("Copied (new)", "Copied (replaced existing)")
+
+
+def transferred_files(log_texts) -> tuple[list[str], int | None]:
+    """Files an rclone sync copied, from its JSON log(s) (one text per attempt).
+
+    Returns (paths, total_bytes): unique paths in first-seen order, bytes = sum of the
+    last seen size of each path, None if any listed path has no int size. Only info-level
+    "Copied (new)" / "Copied (replaced existing)" entries with an object count; failed
+    files, deletes, renames and dry-runs are not listed.
+    """
+    sizes: dict[str, int | None] = {}
+    for text in log_texts:
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("level") != "info":
+                continue
+            if entry.get("msg") not in _COPIED_MSGS:
+                continue
+            obj = entry.get("object")
+            if not isinstance(obj, str) or not obj:
+                continue
+            size = entry.get("size")
+            sizes[obj] = size if isinstance(size, int) and not isinstance(size, bool) else None
+    total: int | None = 0
+    for size in sizes.values():
+        if size is None:
+            total = None
+            break
+        total += size
+    return list(sizes), total

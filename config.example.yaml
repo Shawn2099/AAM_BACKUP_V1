@@ -86,6 +86,12 @@ lan:
   # between tries (each try waits up to wol.smb_connect_timeout_seconds)
   preflight_smb_attempts: 8
   preflight_smb_wait_seconds: 15
+  # After the copy, also compare checksums of the files copied in this run (true/false)
+  arrival_hash_transferred: true
+  # Skip that checksum check when this run copied more than this many GB (0-10000; 0 = no limit)
+  arrival_hash_max_gb: 50
+  # Timeout (seconds) of the checksum check (60-14400)
+  arrival_hash_timeout_seconds: 3600
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
