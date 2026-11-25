@@ -140,3 +140,48 @@ def evaluate_approval(approval: dict | None, *, leg: str, guard: str,
                 False, f"worse than approved: {key} approved {was}, now {now} "
                        f"(tolerance {tolerance_percent}%) - a new approval is needed")
     return ApprovalDecision(True, "approval valid for this run")
+
+
+def due_reminder_rung(
+    created_at_iso: str,
+    now_iso: str,
+    reminder_days: list[int] | tuple[int, ...] = (1, 2, 4, 7),
+    sent_rungs: set[int] = frozenset(),
+) -> int | None:
+    """Return the reminder rung day due now, or None on day 0 / quiet days / already-sent rungs."""
+    try:
+        age_days = max(0, int((pendulum.parse(now_iso) - pendulum.parse(created_at_iso)).total_seconds() // 86400))
+    except Exception:  # noqa: BLE001
+        return None
+    if age_days == 0:
+        return None
+    rungs = sorted({int(d) for d in (reminder_days or (1, 2, 4, 7)) if int(d) > 0})
+    last = rungs[-1]
+    if age_days in rungs and age_days not in sent_rungs:
+        return age_days
+    if age_days > last and (age_days - last) % 7 == 0 and age_days not in sent_rungs:
+        return age_days
+    return None
+
+
+def waiting_summary(req: dict, now_iso: str | None = None) -> dict:
+    """Dashboard summary for a pending approval: deletions_waiting, waiting_days, waiting_label."""
+    planned = 0
+    for r in (req.get("results") or ()):
+        if isinstance(r, dict) and r.get("guard") == "G3_MASS_DELETE":
+            planned = int((r.get("metrics") or {}).get("planned_deletes") or 0)
+            break
+    if not planned:
+        planned = int((req.get("metrics") or {}).get("planned_deletes") or 0)
+    days = 0
+    if req.get("created_at"):
+        try:
+            now_dt = pendulum.parse(now_iso) if now_iso else pendulum.now("UTC")
+            days = max(0, int((now_dt - pendulum.parse(req["created_at"])).total_seconds() // 86400))
+        except Exception:  # noqa: BLE001
+            days = 0
+    return {
+        "deletions_waiting": planned,
+        "waiting_days": days,
+        "waiting_label": f"{planned} deletions waiting, {days} days",
+    }

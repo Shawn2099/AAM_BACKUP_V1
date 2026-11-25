@@ -2657,9 +2657,41 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
         # then sees the placeholder-only folder). Never raises; a waiting clock is mailed inside.
         fy_overlap.activate_if_due(config, db)
         _alarm_unprotected_new_fy(config, db)     # first: the blocked days below raise before the end
+        _send_pending_approval_reminders(config, db)
         return _rollover_resume(config, config_path, approval_id, db)
     finally:
         db.close()
+
+
+def _send_pending_approval_reminders(config, db) -> None:
+    """B5: send at most one reminder per due ladder rung (1, 2, 4, 7, then weekly) for PENDING approvals."""
+    try:
+        pending = db.list_approvals(status="PENDING") if hasattr(db, "list_approvals") else []
+        now = now_iso()
+        rungs = list(getattr(getattr(config, "approvals", None), "reminder_days", [1, 2, 4, 7]))
+        for req in pending:
+            aid = req.get("approval_id")
+            if not aid or not req.get("created_at"):
+                continue
+            sent = set()
+            for r in rungs + [rungs[-1] + 7 * k for k in range(1, 53)]:
+                if db.last_notification(f"approval:reminder:{aid}:day{r}", status="SENT"):
+                    sent.add(r)
+            due = approvals.due_reminder_rung(req["created_at"], now, rungs, sent)
+            if due is None:
+                continue
+            summary = approvals.waiting_summary(req, now_iso=now)
+            notify(config, AlertEvent(
+                key=f"approval:reminder:{aid}:day{due}",
+                kind="ACTION_REQUIRED",
+                mode=req.get("leg") or "lan",
+                title=f"Reminder: {summary['waiting_label']}",
+                message=f"Pending mass-delete approval {aid}: {summary['waiting_label']}.",
+                status="LAN_BLOCKED" if req.get("leg") == "lan" else "CLOUD_BLOCKED",
+                fault_code="AAM-DEL-01",
+            ), db=db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Approval reminder check failed: {e}")
 
 
 def _resolve_unprotected_new_fy(config, db, new_fy: str | None = None) -> None:

@@ -986,7 +986,12 @@ def _approval_view(req: dict) -> dict:
     keys = ("approval_id", "leg", "status", "created_at", "blocked_run_id", "fy",
             "guards", "phrase", "approved_at", "approved_by", "expires_at")
     # one word confirms every approval, including requests stored with an older, longer phrase
-    return {**{k: req.get(k) for k in keys}, "phrase": approvals.APPROVE_PHRASE, "expired": expired}
+    return {
+        **{k: req.get(k) for k in keys},
+        **approvals.waiting_summary(req),
+        "phrase": approvals.APPROVE_PHRASE,
+        "expired": expired,
+    }
 
 
 def _load_open_approval(approval_id: str) -> dict:
