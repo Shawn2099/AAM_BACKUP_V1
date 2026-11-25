@@ -338,8 +338,10 @@ def check_lan_arrival(
 ) -> dict:
     """Run `rclone check --one-way --size-only` source -> NAS and decide with
     decide_lan_arrival. A file counts as changed during the backup when
-    max(st_mtime, st_ctime) of the source file >= changed_after_epoch -
-    lan.modify_window_seconds (OSError counts as not changed)."""
+    max(st_mtime, st_ctime) of the source file >= changed_after_epoch (the
+    sync start, exactly; no modify-window slack). OSError counts as not changed.
+    Note: on Windows with Python 3.12 st_ctime is the creation time, so a file
+    moved into the tree during the backup is a false SUSPECT (safe direction)."""
     artefacts = RunArtefacts.open(artefacts_dir)
     step = "rclone-lan-check"
     timeout = config.verify_timeout_seconds if timeout is None else timeout
@@ -367,7 +369,7 @@ def check_lan_arrival(
         combined_text = Path(combined_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         combined_text = ""
-    threshold = changed_after_epoch - config.modify_window_seconds
+    threshold = changed_after_epoch
 
     def changed_since(rel_path: str) -> bool:
         try:
