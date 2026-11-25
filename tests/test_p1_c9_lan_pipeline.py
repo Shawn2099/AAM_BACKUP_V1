@@ -45,6 +45,7 @@ STARTED_ISO = "2026-11-25T09:00:00+05:30"
 LAN_BASE = "flowrun-9-lan"
 CANARY = ".AAM_TARGET_MOUNTED"
 PLAN, SYNC, CHECK = "rclone-lan-plan", "rclone-lan-sync", "rclone-lan-check"
+HASH = "rclone-lan-hash"   # R8d: the hash check of tonight's copies (matrix section 8)
 
 
 # ── fixtures and specs ────────────────────────────────────────────────────
@@ -89,6 +90,29 @@ def check_missing() -> dict:
             "combined": _fx("lan_check_missing_combined.txt")}
 
 
+def hash_clean() -> dict:
+    """Real hash check (R8b fixture): no differences, exit 0."""
+    return {"exit_code": 0, "stderr": _fx("lan_hash_clean.stderr.txt"),
+            "combined": _fx("lan_hash_clean_combined.txt")}
+
+
+def copy_log(files: list[tuple[str, int | None]]) -> str:
+    """A synthetic sync JSON log: one `Copied (new)` entry per (name, size) (size None = no size
+    field), then a stats line with the transfer totals, as rclone prints at exit."""
+    lines = []
+    for name, size in files:
+        entry = {"level": "info", "msg": "Copied (new)", "object": name,
+                 "objectType": "*local.Object"}
+        if size is not None:
+            entry["size"] = size
+        lines.append(json.dumps(entry))
+    total = sum(size for _, size in files if size is not None)
+    lines.append(json.dumps({"level": "info", "msg": "stats", "stats": {
+        "transfers": len(files), "bytes": total, "deletes": 0, "errors": 0,
+        "renames": 0, "checks": 0}}))
+    return "\n".join(lines) + "\n"
+
+
 def _argv_value(argv: list[str], flag: str) -> str | None:
     return argv[argv.index(flag) + 1] if flag in argv and argv.index(flag) + 1 < len(argv) else None
 
@@ -126,7 +150,7 @@ def make_destination(root: Path, name: str = "dest") -> Path:
 
 
 def make_config(root: Path, *, dest_name: str = "dest", max_attempts: int = 2,
-                modify_window_seconds: int = 2, lan_hours: float = 6.0):
+                modify_window_seconds: int = 2, lan_hours: float = 6.0, **lan_overrides):
     src = make_source(root)
     dest = make_destination(root, dest_name)
     cfg = MagicMock()
@@ -143,7 +167,7 @@ def make_config(root: Path, *, dest_name: str = "dest", max_attempts: int = 2,
     cfg.guards = GuardsConfig()
     cfg.lan = LanConfig(max_attempts=max_attempts, retry_delay_seconds=60,
                         preflight_retries=0, shutdown_on_all_retries_exhausted=False,
-                        modify_window_seconds=modify_window_seconds)
+                        modify_window_seconds=modify_window_seconds, **lan_overrides)
     return cfg
 
 
@@ -267,14 +291,14 @@ def sync_argvs(w) -> list[list[str]]:
 # ── W1 happy path ──────────────────────────────────────────────────────────
 
 def test_w1_happy_path_is_complete_with_three_rclone_calls_and_the_post_metrics(tmp_path):
-    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean()}
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
     cfg = make_config(tmp_path)
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)
     assert out.exc is None, f"LAN run raised: {out.exc!r}; rclone calls: {steps(w)}"
     assert out.status == "LAN_COMPLETE"
-    # exactly three rclone calls in order, and no robocopy anywhere
-    assert steps(w) == [PLAN, SYNC, CHECK]
+    # the four rclone calls in order (the hash runs because files were copied), no robocopy
+    assert steps(w) == [PLAN, SYNC, CHECK, HASH]
     assert not any("robocopy" in " ".join(c["argv"]).lower() for c in w.fake.calls)
     # run row: the rclone transfer totals
     stats = cloud_sync.final_stats(_fx("lan_clean.jsonl"))
@@ -367,7 +391,7 @@ def test_w6_file_changed_during_the_backup_only_is_complete_and_counted(tmp_path
     changed = cfg.paths.source_drive
     future = time.time() + 3600
     os.utime(Path(changed) / "sub" / "deep" / "c.txt", (future, future))
-    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_missing()}
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_missing(), HASH: hash_clean()}
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)
     assert out.exc is None, f"exc {out.exc!r}"
@@ -380,7 +404,7 @@ def test_w6_file_changed_during_the_backup_only_is_complete_and_counted(tmp_path
 def _w7_script():
     return {PLAN: [plan_spec(1000, 0), plan_spec(1000, 0)],
             SYNC: [{"exit_code": 5, "log": _fx("lan_deletes.jsonl")}, sync_ok()],
-            CHECK: check_clean()}
+            CHECK: check_clean(), HASH: hash_clean()}
 
 
 def test_w7_retryable_failure_remeasures_and_lowers_the_second_cap(tmp_path):
@@ -390,7 +414,7 @@ def test_w7_retryable_failure_remeasures_and_lowers_the_second_cap(tmp_path):
         out = run_lan(w, cfg)
     assert out.exc is None, f"exc {out.exc!r}"
     assert out.status == "LAN_COMPLETE"
-    assert steps(w) == [PLAN, SYNC, PLAN, SYNC, CHECK], "each retry measures again first"
+    assert steps(w) == [PLAN, SYNC, PLAN, SYNC, CHECK, HASH], "each retry measures again first"
     first, second = (int(_argv_value(a, "--max-delete")) for a in sync_argvs(w))
     assert second == first - deleted_first
     assert len(out.metrics["sync_attempts"]) == 2
@@ -437,7 +461,7 @@ def test_w10_two_passes_each_make_three_calls_on_their_own_destination(tmp_path)
     cfg_cur = make_config(tmp_path, dest_name="FY26-27")
     cfg_next = make_config(tmp_path, dest_name="FY27-28")
     script = {PLAN: [clean_plan(), clean_plan()], SYNC: [sync_ok(), sync_ok()],
-              CHECK: [check_clean(), check_clean()]}
+              CHECK: [check_clean(), check_clean()], HASH: hash_clean()}
     cur = fy_overlap.FyPass(fy="FY26-27", extra=False, config=cfg_cur)
     nxt = fy_overlap.FyPass(fy="FY27-28", extra=True, config=cfg_next)
     with lan_world(tmp_path, script) as w:
@@ -446,7 +470,7 @@ def test_w10_two_passes_each_make_three_calls_on_their_own_destination(tmp_path)
         second = run_lan(w, cfg_next, fy_pass=nxt, allow_shutdown=True)
     assert first.exc is None and second.exc is None, (first.exc, second.exc)
     assert first.status == "LAN_COMPLETE" and second.status == "LAN_COMPLETE"
-    assert steps(w) == [PLAN, SYNC, CHECK] * 2
+    assert steps(w) == [PLAN, SYNC, CHECK, HASH] * 2
     dest_now, dest_next = str(cfg_cur.paths.lan_destination), str(cfg_next.paths.lan_destination)
     sync_dests = [c["argv"] for c in w.fake.calls if c["step"] == SYNC]
     assert dest_now in " ".join(sync_dests[0]) and dest_next not in " ".join(sync_dests[0])
@@ -511,7 +535,7 @@ def test_w12_run_row_is_written_when_a_tool_raises(tmp_path, failing_step):
 
 def test_w13_no_file_entries_and_no_snapshot_record_or_publish_calls(tmp_path):
     cfg = make_config(tmp_path)
-    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean()}
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
     with lan_world(tmp_path, script) as w:
         out = run_lan(w, cfg)
     assert out.status == "LAN_COMPLETE", f"exc {out.exc!r}"
@@ -540,7 +564,7 @@ def test_wfx_arrival_check_gets_the_clock_from_just_before_the_last_sync_attempt
 
 def test_shutdown_result_is_recorded_in_the_row_and_status_stays_complete(tmp_path):
     from core import shutdown as sd
-    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean()}
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
     cfg = make_config(tmp_path)
     with lan_world(tmp_path, script) as w:
         w.shutdown.return_value = {"outcome": sd.FAILED, "server_ip": "10.0.0.5", "exit_code": 5,
@@ -637,3 +661,171 @@ def test_w14_row_carries_fault_code_aam_lan_04_and_verify_text_says_killed(tmp_p
     assert out.metrics.get("fault_code") == "AAM-LAN-04", out.metrics
     assert out.metrics.get("verify") == "skipped - rclone was killed after its time limit", (
         out.metrics.get("verify"))
+
+
+# ── R8d: S3 hash check of tonight's transfers, flow wiring ───────────────
+# Matrix: docs/TESTMATRIX_P1_REVIEW_2026-11-25.md section 8 (W15, W16, A13b-A13g). The hash
+# runs only after an arrival that verified, when at least one file was copied, when
+# arrival_hash_transferred is on and the copies fit arrival_hash_max_gb. Its metrics live in
+# metrics["arrival"]["hash"]. The hash fixtures are the R8b ones (three matching files in their
+# summary); the verdict does not read that count, so W15 asserts files/bytes from the sync log.
+
+HASH_TIMEOUT_MARK = 4321   # distinct from every other timeout in the LAN leg (see A13b)
+
+
+def _hash_metrics(out) -> dict:
+    return out.metrics["arrival"]["hash"]
+
+
+def _cap_raises_for_timeout(timeout_value: int):
+    """Patches RunBudget.cap: the one call asking for `timeout_value` (the hash timeout) raises
+    BudgetExceeded, every other call is the real one."""
+    from core.budget import BudgetExceeded
+    real_cap = RunBudget.cap
+
+    def capped(self, timeout_s, reserve_s=0.0, clock=time.monotonic):
+        if timeout_s == timeout_value:
+            raise BudgetExceeded("test: no time left for the hash check")
+        return real_cap(self, timeout_s, reserve_s, clock=clock)
+
+    return patch.object(RunBudget, "cap", capped)
+
+
+def _hash_argv(w) -> list[str] | None:
+    calls = [c["argv"] for c in w.fake.calls if c["step"] == HASH]
+    return calls[0] if calls else None
+
+
+# ── W15 happy path with copies: the hash runs and its metrics are recorded ──
+
+def test_w15_happy_path_with_copies_runs_the_hash_and_records_it(tmp_path):
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
+    cfg = make_config(tmp_path)
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}; rclone calls: {steps(w)}"
+    assert out.status == "LAN_COMPLETE"
+    assert steps(w) == [PLAN, SYNC, CHECK, HASH]
+    paths, total = lan_sync.transferred_files([_fx("lan_clean.jsonl")])
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is True
+    assert hash_["verified"] is True
+    assert hash_["files"] == len(paths) == 12
+    assert hash_["bytes"] == total == 13062
+
+
+# ── W16 retry union: the hash list holds the copies of every attempt ──────
+
+def test_w16_hash_list_is_the_union_of_both_attempts_copies(tmp_path):
+    first_attempt = copy_log([("retry_first_a.txt", 5), ("retry_first_b.txt", 7)])
+    script = _w7_script()
+    script[SYNC] = [{"exit_code": 5, "log": first_attempt}, sync_ok()]
+    cfg = make_config(tmp_path)
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert out.status == "LAN_COMPLETE"
+    assert steps(w) == [PLAN, SYNC, PLAN, SYNC, CHECK, HASH]
+    argv = _hash_argv(w)
+    assert argv is not None
+    listed = Path(_argv_value(argv, "--files-from-raw")).read_text(encoding="utf-8").splitlines()
+    expected = ["retry_first_a.txt", "retry_first_b.txt"] + lan_sync.transferred_files(
+        [_fx("lan_clean.jsonl")])[0]
+    assert listed == expected, "only the last attempt's copies were hash-checked"
+
+
+# ── A13b no run budget for the hash: partial, not suspect ─────────────────
+
+def test_a13b_no_budget_for_the_hash_is_partial_budget_stopped_and_no_shutdown(tmp_path):
+    cfg = make_config(tmp_path, arrival_hash_timeout_seconds=HASH_TIMEOUT_MARK)
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w, _cap_raises_for_timeout(HASH_TIMEOUT_MARK):
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_PARTIAL", f"status {out.status}; exc {out.exc!r}"
+    assert isinstance(out.exc, flow.PartialRun)
+    assert steps(w) == [PLAN, SYNC, CHECK], "no time left: the hash is never run"
+    alerts = failures(w)
+    assert len(alerts) == 1, [a.message for a in alerts]
+    assert alerts[0].fault_code == "AAM-LAN-03"
+    assert "no time left for tonight's hash check" in alerts[0].message
+    assert w.shutdown.call_count == 0
+
+
+# ── A13c over the size cap: the hash is not run, the size-only verdict stands ──
+
+def test_a13c_copies_over_the_size_cap_skip_the_hash_with_the_reason(tmp_path):
+    cfg = make_config(tmp_path, arrival_hash_max_gb=0)
+    one_byte = copy_log([("tiny.txt", 1)])
+    script = {PLAN: clean_plan(), SYNC: {"exit_code": 0, "log": one_byte},
+              CHECK: check_clean(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert out.status == "LAN_COMPLETE"
+    assert steps(w) == [PLAN, SYNC, CHECK]
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is False
+    assert "arrival_hash_max_gb" in hash_["reason"]
+
+
+# ── A13d switch off: no hash step, nothing else changes ───────────────────
+
+def test_a13d_switch_off_runs_no_hash_and_the_run_is_complete(tmp_path):
+    cfg = make_config(tmp_path, arrival_hash_transferred=False)
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert out.status == "LAN_COMPLETE"
+    assert steps(w) == [PLAN, SYNC, CHECK]
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is False
+    assert hash_["reason"] == "off (lan.arrival_hash_transferred)"
+
+
+# ── A13e nothing copied tonight: no hash step ─────────────────────────────
+
+def test_a13e_nothing_copied_runs_no_hash_and_the_run_is_complete(tmp_path):
+    script = {PLAN: clean_plan(), SYNC: {"exit_code": 0, "log": _fx("lan_nochange.jsonl")},
+              CHECK: check_clean(), HASH: hash_clean()}
+    cfg = make_config(tmp_path)
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert out.status == "LAN_COMPLETE"
+    assert steps(w) == [PLAN, SYNC, CHECK], "an empty list must never reach rclone check"
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is False
+    assert hash_["reason"] == "nothing copied tonight"
+
+
+# ── A13f size-only arrival already failed: no hash after a failed arrival ──
+
+def test_a13f_failed_arrival_runs_no_hash_and_is_suspect(tmp_path):
+    cfg = make_config(tmp_path, modify_window_seconds=0)
+    time.sleep(0.3)   # sub/deep/c.txt is older than the sync: not changed during the backup
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_missing(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert steps(w) == [PLAN, SYNC, CHECK], "no hash after a failed size-only arrival"
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is False
+    assert hash_["reason"] == "arrival not verified"
+
+
+# ── A13g copies without a size: the hash cannot be budgeted, so it is not run ──
+
+def test_a13g_copies_with_unknown_bytes_skip_the_hash_and_complete(tmp_path):
+    cfg = make_config(tmp_path)
+    no_size = copy_log([("no_size.txt", None), ("sized.txt", 4)])
+    script = {PLAN: clean_plan(), SYNC: {"exit_code": 0, "log": no_size},
+              CHECK: check_clean(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert out.status == "LAN_COMPLETE"
+    assert steps(w) == [PLAN, SYNC, CHECK]
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is False
+    assert "size" in hash_["reason"] and "unknown" in hash_["reason"]
