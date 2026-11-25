@@ -408,7 +408,10 @@ def check_lan_transfers_hash(
     step = "rclone-lan-hash"
     timeout = config.verify_timeout_seconds if timeout is None else timeout
     list_path = artefacts.new_path(f"{step}-files", "txt")
-    Path(list_path).write_bytes("".join(f"{p}\n" for p in paths).encode("utf-8"))
+    try:
+        Path(list_path).write_bytes("".join(f"{p}\n" for p in paths).encode("utf-8"))
+    except OSError as e:
+        return _arrival_failed(f"hash check could not start: {e}")
     combined_path = artefacts.new_path(f"{step}-combined", "txt")
     cmd = [
         resolve_binary("rclone") or "rclone", "check", source, dest,

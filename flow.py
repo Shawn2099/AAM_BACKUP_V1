@@ -2211,6 +2211,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                         if hash_res is not None:
                             hash_info.update(ran=True, verified=hash_res.get("verified") is True,
                                              reason=hash_res.get("reason"))
+                            for _k in ("matching", "missing", "differ", "changed_during_backup"):
+                                hash_info[_k] = hash_res.get(_k)
+                            hash_info["unverified_paths"] = list(
+                                hash_res.get("unverified_paths") or [])[:config.lan.error_tail_lines]
                             if hash_res.get("verified") is not True:
                                 status = "LAN_SUSPECT"
                                 sync_result = {**sync_result, "status": status,
