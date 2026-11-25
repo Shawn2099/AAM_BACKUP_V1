@@ -222,7 +222,6 @@ def _by_pass(rows: list[dict]) -> dict[str, dict]:
 @pytest.fixture()
 def overlap_rig(sandbox, monkeypatch):
     import flow
-    import core.lan_sync as ls
     from core import fy_overlap
     from core.health import CLOCK_OK, ClockResult
 
@@ -259,8 +258,6 @@ def overlap_rig(sandbox, monkeypatch):
 
     rc = L.write_local_rclone_config(sandbox / "runtime" / "rclone_local.conf")
     saved = L.patch_cloud_modules_to_local(rc)
-    orig_build = ls.build_robocopy_command
-    ls.build_robocopy_command = lambda s, d, c: L.strip_zb(orig_build(s, d, c))
 
     events: list = []
     wol_calls: list = []
@@ -294,7 +291,6 @@ def overlap_rig(sandbox, monkeypatch):
                 c = call.args[0]
                 assert c.lan.shutdown_after_backup is False and c.wol.enabled is False, "NAS shutdown not forced off"
     finally:
-        ls.build_robocopy_command = orig_build
         for (mod, attr), o in saved.items():
             setattr(mod, attr, o)
 
@@ -388,18 +384,18 @@ def test_fyov_two_mirrors_two_prefixes(overlap_rig):
     logs = [p for p in Path(runtime).rglob("*.log") if f"_cloud_{FY2}_" in p.name or f"_lan_{FY2}_" in p.name]
     lan_logs = [p for p in logs if f"_lan_{FY2}_" in p.name]
     cloud_logs = [p for p in logs if f"_cloud_{FY2}_" in p.name]
-    utf16_hit = False
+    utf8_hit = False
     for p in lan_logs:
         try:
-            if FY2 in p.read_bytes().decode("utf-16", errors="ignore"):
-                utf16_hit = True
+            if FY2 in p.read_bytes().decode("utf-8", errors="ignore"):
+                utf8_hit = True
         except OSError:
             pass
     L.record("FYOV.S2.logs", "FY27-28 run-log folders and files", f"folders={len(folders)} lan_logs={len(lan_logs)} "
-             f"cloud_logs={len(cloud_logs)} utf16_has_fy={utf16_hit}", "OK" if folders and lan_logs and cloud_logs else "ISSUE")
+             f"cloud_logs={len(cloud_logs)} utf8_has_fy={utf8_hit}", "OK" if folders and lan_logs and cloud_logs else "ISSUE")
     assert folders, "no run-log folder *_FY27-28"
     assert lan_logs and cloud_logs, "no *_lan_FY27-28_*.log / *_cloud_FY27-28_*.log"
-    assert utf16_hit, "no robocopy log (UTF-16) holding FY27-28 paths"
+    assert utf8_hit, "no rclone LAN log (UTF-8 JSON) holding FY27-28 paths"
     # shutdown task calls (if any) all saw shutdown_after_backup False (asserted in the fixture teardown)
 
     # S3 - delete in the next FY only

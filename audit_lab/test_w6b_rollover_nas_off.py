@@ -5,14 +5,64 @@ creates the folder + mount marker itself and finishes COMPLETE without any appro
 """
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from audit_lab import labconf as L
-from audit_lab.test_w6_flow import _db_rows, rig  # noqa: F401 - the production-wired rig fixture
+from audit_lab.test_w6_flow import _db_rows, write_lab_config
 
 import pytest
 
 pytestmark = pytest.mark.timeout(1500)
+
+
+@pytest.fixture()
+def rig(sandbox, monkeypatch):
+    """Production-wired rig (same as test_w6_flow.rig, C12b): config.yaml on disk, real flow
+    runtime, local GCS stand-in, real rclone LAN mirror to the loopback share. test_w6_flow.rig
+    still patches the removed robocopy builder, so this file keeps its own copy."""
+    src = sandbox / "source" / "FY26-26"
+    for i in range(60):
+        L.write_file(src / "Clients" / f"f_{i:04d}.txt", f"LEDGER {i}\n".encode() * 40)
+    nas = L.make_canary(sandbox / "nas" / "FY26-26")
+    L.write_file(sandbox / "lab-key.json", b'{"type": "service_account"}')
+
+    cfg = L.build_config(sandbox, source=src, lan_dest=str(nas), runtime=sandbox / "runtime")
+
+    from flow import _effective_fy_prefix
+
+    bucket_root = sandbox / "buckets"
+    bucket_root.mkdir(parents=True, exist_ok=True)
+    (bucket_root / "lab-bucket" / _effective_fy_prefix(cfg)).mkdir(parents=True, exist_ok=True)
+
+    cfg_path = write_lab_config(sandbox, cfg)
+
+    rc = L.write_local_rclone_config(sandbox / "runtime" / "rclone_local.conf")
+    saved = L.patch_cloud_modules_to_local(rc)
+
+    import flow
+
+    alerts: list = []
+    monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
+    monkeypatch.setattr(flow, "temp_rclone_config",
+                        lambda *a, **k: contextlib.nullcontext(rc))
+    monkeypatch.chdir(bucket_root)
+
+    monkeypatch.delenv("PREFECT_TEST_MODE", raising=False)   # use the REAL concurrency slot
+    from prefect.testing.utilities import prefect_test_harness
+
+    try:
+        with prefect_test_harness():
+            from launch import _ensure_concurrency_limit
+
+            _ensure_concurrency_limit()
+            yield {
+                "cfg": cfg, "cfg_path": cfg_path, "sandbox": sandbox, "src": src, "nas": nas,
+                "buckets": bucket_root, "alerts": alerts, "rc": rc, "flow": flow,
+            }
+    finally:
+        for (mod, attr), o in saved.items():
+            setattr(mod, attr, o)
 
 
 def test_w6b_nas_off_during_rollover_then_next_lan_night_completes(rig, monkeypatch):  # noqa: F811

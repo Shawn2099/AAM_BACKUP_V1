@@ -3,8 +3,8 @@
 W4.1 cloud happy path     : real rclone (local backend) -> gate -> DB -> artifacts
 W4.2 cloud killed mid-sync: TerminateProcess(rclone, 0) mid-transfer, then the
                             REAL evidence gate must reject the incomplete result
-W4.3 LAN happy path       : real robocopy to a loopback UNC share (no /ZB, see C1)
-                            with the canary, and the destination is verified
+W4.3 LAN happy path       : real rclone (plan P1) to a loopback UNC share with the
+                            canary, and the destination is verified
 """
 from __future__ import annotations
 
@@ -257,8 +257,7 @@ def test_w4_cloud_killed_mid_sync_is_rejected_by_gate(sandbox, monkeypatch):
 
 # â”€â”€ W4.3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def test_w4_lan_pipeline_happy_path_loopback_unc(sandbox, monkeypatch):
-    """Full LAN pipeline: robocopy /MIR onto \\\\127.0.0.1\\C$ (no /ZB, no WoL)."""
-    import core.lan_sync as ls
+    """Full LAN pipeline: real rclone sync onto \\\\127.0.0.1\\C$ (no WoL)."""
     import flow
 
     monkeypatch.setenv("PREFECT_TEST_MODE", "1")
@@ -275,13 +274,6 @@ def test_w4_lan_pipeline_happy_path_loopback_unc(sandbox, monkeypatch):
     cfg = L.build_config(sandbox, source=src, lan_dest=unc, runtime=sandbox / "runtime")
     cfg.lan.shutdown_after_backup = False
 
-    # /ZB requires SeBackupPrivilege (proven in C1) -> run the same command without it
-    orig_build = ls.build_robocopy_command
-
-    def _no_zb(s, d, c):
-        return [a for a in orig_build(s, d, c) if a.upper() != "/ZB"]
-
-    monkeypatch.setattr(ls, "build_robocopy_command", _no_zb)
     alerts: list[tuple] = []
     monkeypatch.setattr(flow, "notify", lambda *a, **k: alerts.append(a) or True)
 
@@ -301,7 +293,7 @@ def test_w4_lan_pipeline_happy_path_loopback_unc(sandbox, monkeypatch):
              f"returned {out} | files on NAS={len(copied)} (expected 40 ledger files) | "
              f"canary present on dest={canary} | run_history={[r['status'] for r in runs]} | "
              f"lan_status='synced' entries={entries} | alerts={len(alerts)}",
-             "OK â€” LAN leg works over real SMB; /XF keeps the canary out of the mirror"
+             "OK â€” LAN leg works over real SMB; the rclone excludes keep the canary out of the mirror"
              if len(copied) == 40 and not canary and runs else "see evidence")
     print(f"[W4.3] {out} files={len(copied)} canary={canary} runs={[r['status'] for r in runs]} "
           f"entries={entries} alerts={len(alerts)}")
