@@ -1264,6 +1264,22 @@ def resolve_versions_root(lan_destination: str, versions_folder: str) -> str:
     return str(resolved)
 
 
+class ToolsConfig(StrictModel):
+    """External tool execution guards (S6 stall watchdog)."""
+
+    stall_timeout_seconds: int = Field(
+        default=1800, ge=0, le=14400,
+        description="Kill rclone if no output/log progress is seen for this many seconds (0 = off, 300..14400).",
+    )
+
+    @field_validator("stall_timeout_seconds")
+    @classmethod
+    def _valid_stall_timeout(cls, v: int) -> int:
+        if v != 0 and not (300 <= v <= 14400):
+            raise ValueError("tools.stall_timeout_seconds must be 0 (off) or between 300 and 14400.")
+        return v
+
+
 class AppConfig(StrictModel):
     firm_name: str = "AAM Associates"
     paths: PathsConfig
@@ -1283,6 +1299,7 @@ class AppConfig(StrictModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @model_validator(mode="after")
     def _schedule_fits_the_budgets(self) -> "AppConfig":

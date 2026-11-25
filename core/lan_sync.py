@@ -89,6 +89,8 @@ def build_lan_rclone_command(
     ]
     for pattern in LAN_EXCLUDES:
         cmd.extend(["--exclude", pattern])
+    if mode == "sync":
+        cmd.append("--delete-after")
     if config.track_renames and mode == "sync":
         cmd.append("--track-renames")
     if backup_dir:
@@ -212,7 +214,7 @@ def run_lan_mirror(
     logger.info(f"LAN rclone sync: {source} -> {dest} (full log: {log_path})")
     result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts, log_path=log_path)
 
-    base = {"exit_code": None, "timed_out": False, "log_path": str(log_path)}
+    base = {"exit_code": None, "timed_out": False, "stalled": False, "stats_at_least": False, "log_path": str(log_path)}
     if result.spawn_error:
         missing = "FileNotFoundError" in result.spawn_error
         reason = "rclone not found" if missing else result.spawn_error
@@ -222,11 +224,16 @@ def run_lan_mirror(
             out["fault_code"] = "AAM-SYS-04"
         return out
     log_text = "\n".join(t for t in (result.log_text(), result.stderr_text()) if t)
+    if getattr(result, "stalled", False):
+        out = decide_lan_rclone_result(None, log_text, error_tail_lines=config.error_tail_lines)
+        reason = result.describe_failure() or "rclone stalled (no progress) and was terminated"
+        out.update(base, stalled=True, retryable=True, stats_at_least=True, reason=reason, error=reason)
+        return out
     if result.timed_out:
         out = decide_lan_rclone_result(None, log_text, error_tail_lines=config.error_tail_lines)
         reason = (f"Timeout after {timeout}s - rclone sync is resumable; progress is "
                   "preserved and the next run continues from where this one left off")
-        out.update(base, timed_out=True, reason=reason, error=reason)
+        out.update(base, timed_out=True, stats_at_least=True, reason=reason, error=reason)
         return out
     out = decide_lan_rclone_result(result.exit_code, log_text, error_tail_lines=config.error_tail_lines)
     out.update(base, exit_code=result.exit_code)
@@ -320,7 +327,7 @@ def decide_lan_arrival(exit_code, stderr: str, combined_text: str, changed_since
     for line in (combined_text or "").splitlines():
         if not line.strip():
             continue
-        kind, path = line[0], line[2:].strip()
+        kind, path = line[0], line[2:].rstrip("\r\n")
         if kind == "+":
             missing_paths.append(path)
         elif kind == "*":

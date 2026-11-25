@@ -132,6 +132,7 @@ class TestM1ExactFlagSet:
             ("--exclude", "System Volume Information/**"),
             ("--exclude", "$RECYCLE.BIN/**"),
             ("--track-renames", None),
+            ("--delete-after", None),
             ("--max-delete", "7"),
         ]
         key = lambda pairs: sorted((flag, value or "") for flag, value in pairs)

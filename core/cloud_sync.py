@@ -111,7 +111,7 @@ def scan_rclone_log_for_errors(log_text: str, max_lines: int = model_default(Clo
     attempt's verdict and is kept with that attempt's errors.
     """
     entries = list(_json_entries(log_text))
-    start = _final_attempt_start(entries)
+    start = _final_attempt_start(entries) + 1
     bad_lines: list[str] = []
     for i, (line, entry) in enumerate(entries):
         if entry is None:
@@ -227,6 +227,24 @@ def planned_copy_bytes(log_text: str) -> int | None:
     return total
 
 
+def counted_deletes(log_text: str) -> int | None:
+    """Count real deletions from final-attempt INFO entries (F1: excludes failed delete attempts)."""
+    entries = list(_json_entries(log_text))
+    if not entries:
+        return None
+    start = _final_attempt_start(entries) + 1
+    real_del = sum(
+        1 for _, e in entries[start:]
+        if e is not None and e.get("level") == "info" and e.get("msg") in ("Deleted", "Moved into backup dir")
+    )
+    if real_del > 0:
+        return real_del
+    stats = final_stats(log_text)
+    if isinstance(stats, dict) and type(stats.get("deletes")) is int and (stats.get("errors") or 0) == 0:
+        return stats["deletes"]
+    return 0 if isinstance(stats, dict) else None
+
+
 def planned_versions_bytes(log_text: str) -> int:
     """Bytes moved into `--backup-dir` (replaced `'move'` + deleted `'move into backup dir'`)."""
     total = 0
@@ -247,7 +265,7 @@ def failed_object_paths(log_text: str, limit: int) -> list[str]:
     failed" and "Couldn't delete" errors (unique, in log order, at most
     `limit`); rclone's `.<8 hex>.partial` temp suffix is stripped."""
     entries = list(_json_entries(log_text))
-    start = _final_attempt_start(entries)
+    start = _final_attempt_start(entries) + 1
     paths: list[str] = []
     for i, (_, entry) in enumerate(entries):
         if i <= start or entry is None:
@@ -357,6 +375,11 @@ def measure_planned_deletes(
     if result.spawn_error:
         out["error"] = result.spawn_error
         return out
+    if getattr(result, "stalled", False):
+        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "stalled": True,
+                "retryable": True, "stats_at_least": True,
+                "stats": final_stats(result.log_text()),
+                "error": result.describe_failure() or "rclone stalled (no progress) and was terminated"}
     if result.timed_out:
         out["error"] = f"Timeout after {timeout}s"
         return out
@@ -605,6 +628,11 @@ def run_cloud_sync(
         return {**base, "status": "CLOUD_FAILED", "exit_code": -1,
                 "error": "rclone not found" if missing else result.spawn_error,
                 **({"fault_code": "AAM-SYS-04"} if missing else {})}
+    if getattr(result, "stalled", False):
+        return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "stalled": True,
+                "retryable": True, "stats_at_least": True,
+                "stats": final_stats(result.log_text()),
+                "error": result.describe_failure() or "rclone stalled (no progress) and was terminated"}
     if result.timed_out:
         # G7: a timeout is an interruption, not a data event — rclone sync
         # is resumable. Not retried (XR-6): rclone overran its own

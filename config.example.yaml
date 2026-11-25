@@ -543,6 +543,9 @@ approvals:
   tolerance_percent: 0
   reminder_days: [1, 2, 4, 7]
 
+tools:
+  stall_timeout_seconds: 1800
+
 # ═══════════════════════════════════════════════════
 # FY ROLLOVER (checked daily by the rollover-check schedule)
 # ═══════════════════════════════════════════════════

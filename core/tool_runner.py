@@ -52,11 +52,12 @@ class ToolResult:
     duration_s: float
     timeout_s: float | None = None
     extra: dict = field(default_factory=dict)
+    stalled: bool = False
 
     @property
     def completed(self) -> bool:
         """The process ran and exited on its own (any exit code)."""
-        return self.exit_code is not None and not self.timed_out and self.spawn_error is None
+        return self.exit_code is not None and not self.timed_out and not self.stalled and self.spawn_error is None
 
     def stdout_text(self, encoding: str = "utf-8") -> str:
         return _read(self.stdout_path, encoding)
@@ -71,6 +72,8 @@ class ToolResult:
         """Short operator-facing reason when the process did not complete."""
         if self.spawn_error:
             return f"{self.name} could not be started: {self.spawn_error}"
+        if self.stalled:
+            return f"{self.name} stalled (no output/log progress) and was terminated"
         if self.timed_out:
             return f"{self.name} timed out after {self.timeout_s:.0f}s and was terminated"
         return ""
@@ -109,18 +112,65 @@ def _configured_poll_seconds(config_path: str | None = None) -> float:
         return default
 
 
-def _wait_polling(proc: subprocess.Popen, timeout_s: float | None, poll_s: float) -> int:
-    """`proc.wait(timeout_s)` in short steps. One long blocking wait cannot be interrupted on
-    Windows (Prefect's cancel only sets a flag in the main thread), so the flag would be seen
-    only when the tool exits by itself. Raises TimeoutExpired exactly at the deadline."""
-    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+class _StallExpired(Exception):
+    """Raised when a child process makes no output/log progress for stall_timeout_s."""
+
+
+def _configured_stall_seconds(config_path: str | None = None) -> float:
+    from core.config_file import load_round_trip
+    from models.config import CONFIG_PATH, ToolsConfig, model_default
+
+    default = model_default(ToolsConfig, "stall_timeout_seconds")
+    try:
+        _, doc = load_round_trip(config_path or CONFIG_PATH)
+        value = ((doc or {}).get("tools") or {}).get("stall_timeout_seconds", default)
+        return float(ToolsConfig(stall_timeout_seconds=value).stall_timeout_seconds)
+    except Exception:  # noqa: BLE001
+        return float(default)
+
+
+def _watch_bytes(paths: tuple[Path | None, ...]) -> int:
+    total = 0
+    for p in paths:
+        if p is not None:
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _wait_polling(
+    proc: subprocess.Popen,
+    timeout_s: float | None,
+    poll_s: float,
+    *,
+    stall_timeout_s: float = 0.0,
+    watch_paths: tuple[Path | None, ...] = (),
+) -> int:
+    """`proc.wait(timeout_s)` in short steps, with optional S6 stall detection."""
+    now = time.monotonic()
+    deadline = None if timeout_s is None else now + timeout_s
+    last_bytes = _watch_bytes(watch_paths) if stall_timeout_s > 0 else 0
+    last_progress = now
     while True:
-        step = poll_s if deadline is None else min(poll_s, max(deadline - time.monotonic(), 0.0))
+        now = time.monotonic()
+        step = poll_s if deadline is None else min(poll_s, max(deadline - now, 0.0))
+        if stall_timeout_s > 0:
+            step = min(step, max(stall_timeout_s - (now - last_progress), 0.0))
         try:
             return proc.wait(timeout=step)
         except subprocess.TimeoutExpired:
-            if deadline is not None and time.monotonic() >= deadline:
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
                 raise
+            if stall_timeout_s > 0:
+                cur_bytes = _watch_bytes(watch_paths)
+                if cur_bytes != last_bytes:
+                    last_bytes = cur_bytes
+                    last_progress = now
+                elif now - last_progress >= stall_timeout_s:
+                    raise _StallExpired() from None
 
 
 def _kill_tree(pid: int) -> None:
@@ -189,6 +239,7 @@ def run_tool(
     log_path: Path | None = None,
     env: dict | None = None,
     cwd: str | os.PathLike | None = None,
+    stall_timeout_s: float | None = None,
 ) -> ToolResult:
     """Run one external tool; see module docstring for the guarantees.
 
@@ -201,8 +252,10 @@ def run_tool(
     t0 = time.monotonic()
     exit_code: int | None = None
     timed_out = False
+    stalled = False
     spawn_error: str | None = None
     interrupt: BaseException | None = None
+    effective_stall = _configured_stall_seconds() if stall_timeout_s is None else float(stall_timeout_s)
     logger.info(f"Running {name}: {' '.join(str(a) for a in argv[:4])}... "
                 f"(artefacts: {artefacts.dir})")
     try:
@@ -216,8 +269,20 @@ def run_tool(
                 spawn_error = f"{type(e).__name__}: {e}"
             else:
                 try:
-                    rc = _wait_polling(proc, timeout_s, _configured_poll_seconds())
+                    rc = _wait_polling(
+                        proc, timeout_s, _configured_poll_seconds(),
+                        stall_timeout_s=effective_stall,
+                        watch_paths=(stdout_path, stderr_path, log_path),
+                    )
                     exit_code = rc if type(rc) is int else None
+                except _StallExpired:
+                    stalled = True
+                    logger.error(f"{name} stalled for {effective_stall}s - terminating process tree")
+                    _kill_tree(proc.pid)
+                    try:
+                        proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        logger.error(f"{name} (pid {proc.pid}) did not exit after kill")
                 except subprocess.TimeoutExpired:
                     timed_out = True
                     logger.error(f"{name} exceeded {timeout_s}s - terminating process tree")
@@ -242,10 +307,12 @@ def run_tool(
         stdout_path=stdout_path, stderr_path=stderr_path, log_path=log_path,
         started_at=started_at, ended_at=now_iso(),
         duration_s=round(time.monotonic() - t0, 3), timeout_s=timeout_s,
+        extra={"stalled": True} if stalled else {},
+        stalled=stalled,
     )
     artefacts.record({
         "tool": name, "argv": result.argv, "exit_code": exit_code,
-        "timed_out": timed_out, "spawn_error": spawn_error,
+        "timed_out": timed_out, "stalled": stalled, "spawn_error": spawn_error,
         "started_at": started_at, "ended_at": result.ended_at,
         "duration_s": result.duration_s, "timeout_s": timeout_s,
         "stdout": stdout_path.name, "stderr": stderr_path.name,
