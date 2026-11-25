@@ -2048,7 +2048,8 @@ def _complete_pending_rollover_nas_folder(config) -> None:
 def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: float | None = None,
                        budget_hours: float | None = None,
                       approval_id: str | None = None, allow_shutdown: bool = True,
-                      late_seconds: float = 0.0, fy_pass=None, budget_start: float | None = None):
+                      late_seconds: float = 0.0, fy_pass=None, budget_start: float | None = None,
+                      wake_nas=None):
     """Execute LAN backup tasks sequentially. Each task is independently tracked.
 
     allow_shutdown=False (the final backup of an FY rollover, plan A4): the NAS is NOT powered
@@ -2101,7 +2102,10 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         try:
             approval_id = _approval_of_pass(config, approval_id, fy_pass)
             health_check_task(config, "lan", artefacts_dir)
-            wol_check_task(config)
+            if wake_nas is not None:
+                wake_nas()
+            else:
+                wol_check_task(config)
             if fy_pass is not None and fy_pass.extra:
                 # plan 2.3: the next FY's NAS folder is made once the NAS is awake (offline-safe)
                 _ensure_pass_nas_folder(config, fy_pass.fy)
@@ -3456,6 +3460,19 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             lan_run_id = _stable_run_id("lan")
             leg_start = time.monotonic()
             earlier_completed = True   # every pass before this one ended LAN_COMPLETE (plan D-8)
+            nas = {"woken": False, "wake_error": None}
+
+            def _wake_nas_once() -> None:
+                if nas["wake_error"] is not None:
+                    raise nas["wake_error"]
+                if not nas["woken"]:
+                    try:
+                        wol_check_task(config)
+                    except Exception as e:
+                        nas["wake_error"] = e
+                        raise
+                    nas["woken"] = True
+
             for index, p in enumerate(runs):
                 if overlap_on and pass_no and switched_to is None:
                     switched_to = _switched_fy(config_path, started_fy)
@@ -3474,7 +3491,8 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
                     result = _run_lan_pipeline(p.config if p is not None else config, lan_run_id, now_iso(),
                                                time.monotonic(), approval_id=approval_id,
                                                budget_hours=budget_hours,
-                                               late_seconds=late_s if index == 0 else 0.0, **extra)
+                                               late_seconds=late_s if index == 0 else 0.0,
+                                               wake_nas=_wake_nas_once, **extra)
                     earlier_completed = earlier_completed and isinstance(result, dict) \
                         and result.get("status") == "LAN_COMPLETE"
                 except Exception as e:
