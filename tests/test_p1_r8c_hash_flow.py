@@ -211,7 +211,8 @@ def test_m1_hash_metrics_keys_present_when_the_hash_ran_clean(tmp_path):
     hash_ = _hash_metrics(out)
     assert hash_["ran"] is True
     assert HASH_METRIC_KEYS <= set(hash_), f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
-    assert hash_["matching"] == 12
+    # rclone's own 'N matching files' count from the hash check stderr (fixture lan_hash_clean: 3), not the copied-file count
+    assert hash_["matching"] == 3
     assert hash_["unverified_paths"] == []
 
 
