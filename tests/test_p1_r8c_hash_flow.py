@@ -17,9 +17,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-import flow
-from core import lan_sync
 from test_p1_c9_lan_pipeline import (  # noqa: F401 - shared world and fixtures of the C9 rows
     CHECK,
     HASH,
@@ -39,6 +36,9 @@ from test_p1_c9_lan_pipeline import (  # noqa: F401 - shared world and fixtures 
     steps,
     sync_ok,
 )
+
+import flow
+from core import lan_sync
 
 
 def _md5diff_hash() -> dict:
@@ -210,7 +210,7 @@ def test_m1_hash_metrics_keys_present_when_the_hash_ran_clean(tmp_path):
     assert steps(w) == [PLAN, SYNC, CHECK, HASH]
     hash_ = _hash_metrics(out)
     assert hash_["ran"] is True
-    assert HASH_METRIC_KEYS <= set(hash_), f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
+    assert set(hash_) >= HASH_METRIC_KEYS, f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
     # rclone's own 'N matching files' count from the hash check stderr (fixture lan_hash_clean: 3), not the copied-file count
     assert hash_["matching"] == 3
     assert hash_["unverified_paths"] == []
@@ -229,5 +229,5 @@ def test_m1_hash_metrics_keys_present_when_the_hash_ran_with_a_mismatch(tmp_path
     hash_ = _hash_metrics(out)
     assert hash_["ran"] is True
     assert hash_["verified"] is False
-    assert HASH_METRIC_KEYS <= set(hash_), f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
+    assert set(hash_) >= HASH_METRIC_KEYS, f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
     assert hash_["unverified_paths"] == ["new.txt"]

@@ -256,7 +256,7 @@ def test_a11_list_file_is_utf8_bytes_in_the_run_folder(tmp_path):
     listing = _arg(fake[0]["argv"], "--files-from-raw")
     assert listing.parent == Path(art)
     assert "rclone-lan-hash-files" in listing.name
-    assert listing.read_bytes() == "#hash.txt\n lead.txt\nsub/é.txt\n".encode("utf-8")
+    assert listing.read_bytes() == "#hash.txt\n lead.txt\nsub/é.txt\n".encode()
 
 
 @pytest.mark.parametrize("flag", [
@@ -337,7 +337,7 @@ def test_a13_timeout_result_has_the_arrival_dict_shape(tmp_path):
     spec = {"exit_code": None, "timed_out": True}
     result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
                                 epoch=time.time() + 100, timeout=900)
-    assert ARRIVAL_KEYS <= set(result)
+    assert set(result) >= ARRIVAL_KEYS
 
 
 # A14 (R8c, Opus ruling) the list file cannot be written: the hash check must not raise
@@ -361,4 +361,4 @@ def test_a14_list_file_write_error_returns_not_verified_and_never_raises(tmp_pat
     assert fake.steps() == [], "no rclone call without a list file"
     assert result["verified"] is False
     assert result["reason"].startswith("hash check could not start:")
-    assert ARRIVAL_KEYS <= set(result)
+    assert set(result) >= ARRIVAL_KEYS

@@ -378,7 +378,7 @@ def test_L11_empty_folder_removed_from_source_is_removed_at_nas(sandbox, unc_nas
 
 
 # ── L12 ────────────────────────────────────────────────────────────────────────
-def test_L12_read_only_destination_file_partial_then_clean_rerun(sandbox, unc_nas):
+def test_l12_read_only_destination_file_partial_then_clean_rerun(sandbox, unc_nas):
     local_dest, unc = unc_nas
     src = sandbox / "source" / "FY26-27"
     _seed_ledgers(src, 10)
@@ -422,7 +422,7 @@ def _tonight_files(src: Path) -> list[str]:
     return rels
 
 
-def test_L13_same_size_corruption_caught_by_hash_not_size(sandbox, unc_nas):
+def test_l13_same_size_corruption_caught_by_hash_not_size(sandbox, unc_nas):
     local_dest, unc = unc_nas
     src = sandbox / "source" / "FY26-27"
     _seed_ledgers(src, 5)
@@ -455,7 +455,7 @@ def test_L13_same_size_corruption_caught_by_hash_not_size(sandbox, unc_nas):
 
 
 # ── L13b ───────────────────────────────────────────────────────────────────────
-def test_L13b_clean_night_hash_verified(sandbox, unc_nas):
+def test_l13b_clean_night_hash_verified(sandbox, unc_nas):
     _, unc = unc_nas
     src = sandbox / "source" / "FY26-27"
     _seed_ledgers(src, 5)
@@ -478,7 +478,7 @@ def test_L13b_clean_night_hash_verified(sandbox, unc_nas):
 
 
 # ── L14 ────────────────────────────────────────────────────────────────────────
-def test_L14_weekly_audit_ignores_mirror_excludes(sandbox, unc_nas):
+def test_l14_weekly_audit_ignores_mirror_excludes(sandbox, unc_nas):
     local_dest, unc = unc_nas
     src = sandbox / "source" / "FY26-27"
     _seed_ledgers(src, 4)

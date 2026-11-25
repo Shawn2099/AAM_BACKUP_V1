@@ -5,8 +5,8 @@ The old model text said "destination walk", which is not what the reserve covers
 plain-language help had no mention of the arrival check at all.
 """
 
-from models.config import BudgetConfig
 from core.config_help import HELP, label_and_help
+from models.config import BudgetConfig
 
 KEY = "budget.lan_post_reserve_minutes"
 FIELD = "lan_post_reserve_minutes"
