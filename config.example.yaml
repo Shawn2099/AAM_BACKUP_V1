@@ -211,9 +211,6 @@ cloud:
   buffer_size: "64M"
   # Before each sync, create and delete a tiny test object under
   # <bucket>/_aam_preflight/ (outside every FY folder) to prove write and delete
-  # rights. Leaves one tiny old version in a versioned bucket; the lifecycle rule
-  # removes it. Uses preflight_timeout_seconds.
-  write_probe_enabled: true
   # rclone error lines carried into alerts/DB/dashboard (the FULL log is always
   # kept in run_logs). 1–10000
   error_tail_lines: 100

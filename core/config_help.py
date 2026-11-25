@@ -163,7 +163,6 @@ HELP: dict[str, tuple[str, str]] = {
     "cloud.project_number": ("Google project number", "Set up once by the support team."),
     "cloud.location": ("Cloud region", "Where Google keeps the data, e.g. asia-south1 (Mumbai)."),
     "cloud.storage_class": ("Storage type", "STANDARD for daily backups."),
-    "cloud.write_probe_enabled": ("Test cloud access before each backup", ""),
     "cloud.retry_count": ("Retries per file", ""),
     "cloud.subprocess_timeout_seconds": ("Longest upload run", "The upload is stopped after this long."),
     "cloud.max_attempts": ("Attempts per night", "How often the upload is tried if it fails."),

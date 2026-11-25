@@ -53,7 +53,7 @@ _RISKY_KEYS = frozenset({
     "rollover.create_source_folder_early", "cloud.scheduled", "lan.scheduled",
     "rollover.overlap_enabled", "rollover.overlap_activate_on",
     # data safety
-    "health.clock_unverified_policy", "cloud.write_probe_enabled",
+    "health.clock_unverified_policy",
     # what counts as "unchanged": a wide window skips same-size edits
     "cloud.modify_window_seconds", "audit.modify_window_seconds", "lan.modify_window_seconds",
     # silence a whole kind of alert email (the dashboard still shows the problem)

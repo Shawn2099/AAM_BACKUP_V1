@@ -33,9 +33,9 @@ WHOAMI_WITH_BACKUP_LOCALIZED = (
 # ── Config ────────────────────────────────────────────────────────────────
 
 def test_new_config_keys_and_defaults():
-    lan, cloud = LanConfig(), CloudConfig(enabled=False)
+    lan = LanConfig()
     assert lan.min_free_dest_gb == 5
-    assert cloud.write_probe_enabled is True                 # DEC-5
+    assert "write_probe_enabled" not in CloudConfig.model_fields
 
 
 # ── SeBackupPrivilege ─────────────────────────────────────────────────────
@@ -194,12 +194,10 @@ def test_cloud_access_task_respects_the_switch(tmp_path):
     def fake_cfg(*a, **k):
         yield "/c.conf"
 
-    for enabled, expected in ((True, 1), (False, 0)):
-        cfg.cloud.write_probe_enabled = enabled
-        with patch("flow.permissions") as p, patch("flow.temp_rclone_config", fake_cfg):
-            flow.cloud_access_task.fn(cfg, "run-1", None)
-        p.probe_source_read.assert_called_once_with("S")
-        assert p.probe_cloud_write.call_count == expected
+    with patch("flow.permissions") as p, patch("flow.temp_rclone_config", fake_cfg):
+        flow.cloud_access_task.fn(cfg, "run-1", None)
+    p.probe_source_read.assert_called_once_with("S")
+    p.probe_cloud_write.assert_not_called()
 
 
 def _pcfg():

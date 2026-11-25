@@ -368,7 +368,7 @@ def test_measure_planned_deletes_reports_planned_deletes(tmp_path, exit_code, lo
     from core.cloud_sync import measure_planned_deletes
     from test_support.fake_tools import fake_run_tool
 
-    with fake_run_tool("core.cloud_sync", exit_code=exit_code, log=log) as calls:
+    with fake_run_tool("core.cloud_sync", exit_code=exit_code, log=log, combined="= a.txt\n") as calls:
         res = measure_planned_deletes(str(tmp_path), "aam_gcs:b/FY26-27", config_path="/c",
                                       fast_list=True)
     argv = calls[0]["argv"]
@@ -439,24 +439,20 @@ def _cloud_cfg(tmp_path, with_file=True):
     return cfg
 
 
-def _run_cloud_guards(cfg, source_files, dest_files, planned, baseline=None):
+def _run_cloud_guards(cfg, source_files, dest_files, planned, baseline=None, error=None):
     """Run the real cloud-guards task with faked measurements.
 
     Returns (record or raised exception, run_cloud_sync mock)."""
     db = MagicMock()
     db.guard_baseline.return_value = baseline
-    counts = {cfg.paths.source_drive: source_files, "aam_gcs:bkt/FY26-27": dest_files}
-
-    def fake_count(target, *a, **k):
-        v = counts[target]
-        if isinstance(v, Exception):
-            raise v
-        return v
-
-    dry = {"error": None, "planned_deletes": planned}
+    dry = {
+        "error": error,
+        "planned_deletes": planned,
+        "source_files": source_files,
+        "dest_files": dest_files,
+    }
     with patch("flow.ManifestDB") as mdb, \
          patch("flow.temp_rclone_config", _fake_cfg_cm()), \
-         patch("flow.count_objects", side_effect=fake_count), \
          patch("flow.measure_planned_deletes", return_value=dry) as run_sync:
         mdb.from_config.return_value = db
         try:
@@ -497,14 +493,11 @@ def test_cloud_guards_dirs_only_source_blocks_without_dry_run(tmp_path):
 
 
 def test_cloud_guard_measurement_failures_fail_the_run(tmp_path):
-    from core.cloud_reporter import CloudReporterError
-
-    for src, dst, planned, match in (
-        (CloudReporterError("size exited 7"), 10, 0, "size exited 7"),
-        (10, CloudReporterError("dial tcp: no such host"), 0, "no such host"),
-        (10, 10, None, "dry-run"),
+    for src, dst, planned, error, match in (
+        (None, None, None, "dial tcp: no such host", "no such host"),
+        (10, 10, None, None, "dry-run"),
     ):
-        exc, _ = _run_cloud_guards(_cloud_cfg(tmp_path), src, dst, planned)
+        exc, _ = _run_cloud_guards(_cloud_cfg(tmp_path), src, dst, planned, error=error)
         assert isinstance(exc, RuntimeError) and not isinstance(exc, g.GuardBlocked)
         assert match in str(exc)
 

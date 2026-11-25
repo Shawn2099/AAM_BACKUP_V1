@@ -365,13 +365,15 @@ def measure_planned_deletes(
         cmd.append("--ignore-case")
     for pattern in excludes:
         cmd.extend(["--exclude", pattern])
+    combined_path = artefacts.new_path(f"{step}-combined", "txt")
     log_path = artefacts.new_path(step, "log")
-    cmd.extend(["--log-file", str(log_path)])
+    cmd.extend(["--combined", str(combined_path), "--log-file", str(log_path)])
     logger.info(f"Delete measurement: {source} -> {dest} (full log: {log_path})")
     result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts, log_path=log_path)
 
-    out = {"planned_deletes": None, "moves": 0, "exit_code": result.exit_code,
-           "error": None, "log_path": str(log_path)}
+    out = {"planned_deletes": None, "moves": 0, "source_files": None, "dest_files": None,
+           "exit_code": result.exit_code, "error": None, "log_path": str(log_path),
+           "combined_path": str(combined_path)}
     if result.spawn_error:
         out["error"] = result.spawn_error
         return out
@@ -386,6 +388,17 @@ def measure_planned_deletes(
         out["error"] = (f"rclone exit {result.exit_code}: "
                         f"{error_tail or tail_lines(log_text, error_tail_lines) or 'no log output'}")
         return out
+    try:
+        counts = combined_counts(combined_path)
+    except OSError as exc:
+        out["error"] = f"rclone wrote no combined file: {exc}"
+        return out
+    if counts["!"] or counts["?"]:
+        out["error"] = (f"rclone dry-run reported {counts['!']} unreadable and "
+                        f"{counts['?']} unknown entries")
+        return out
+    out["source_files"] = counts["="] + counts["*"] + counts["+"]
+    out["dest_files"] = counts["="] + counts["*"] + counts["-"]
     out["planned_deletes"] = count_planned_deletes(result.log_text())
     out["moves"] = count_planned_moves(result.log_text())
     return out

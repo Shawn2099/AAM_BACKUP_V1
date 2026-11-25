@@ -44,6 +44,8 @@ DEPRECATED_KEYS: dict[str, frozenset[str]] = {
     # plan P1 (C10b): the LAN leg is rclone now; these keys controlled the old LAN copier.
     "lan": frozenset({"mt_threads", "log_tail_kb", "dry_run_timeout_seconds", "use_backup_mode",
                       "privilege_check_timeout_seconds"}),
+    # plan Phase 2 (C3): cloud write probe removed.
+    "cloud": frozenset({"write_probe_enabled"}),
     "maintenance": frozenset({"orphan_robocopy_log_max_age_hours"}),  # DEPRECATED key
 }
 
@@ -425,12 +427,6 @@ class CloudConfig(StrictModel):
                     "--retries is cloud.retry_count")
     buffer_size: str = Field(default="64M", description="rclone --buffer-size per transfer slot. 2 transfers × 64M = 128M total.")
     error_tail_lines: int = Field(default=100, ge=1, le=10000, description="Max rclone error lines carried into alerts/DB/dashboard; the full log is always kept in run_logs")
-    write_probe_enabled: bool = Field(
-        default=True,
-        description="Preflight: create and delete a tiny test object under "
-                    "<bucket>/_aam_preflight/ (outside every FY folder) to prove write and "
-                    "delete rights before syncing (owner DEC-5). Uses "
-                    "preflight_timeout_seconds.")
 
     @field_validator("bucket")
     @classmethod

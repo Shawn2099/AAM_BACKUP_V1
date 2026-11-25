@@ -34,6 +34,7 @@ def fake_run_tool(
     timed_out: bool = False,
     spawn_error: str | None = None,
     log_encoding: str = "utf-8",
+    combined: str | None = None,
 ):
     calls: list[dict] = []
 
@@ -47,6 +48,9 @@ def fake_run_tool(
         err.write_text(stderr, encoding="utf-8")
         if log_path is not None and not spawn_error:
             log_path.write_text(log, encoding=log_encoding)
+        if combined is not None and not spawn_error and "--combined" in calls[-1]["argv"]:
+            idx = calls[-1]["argv"].index("--combined")
+            Path(calls[-1]["argv"][idx + 1]).write_text(combined, encoding="utf-8")
         return ToolResult(
             name=name, argv=[str(a) for a in argv],
             exit_code=None if (timed_out or spawn_error) else exit_code,

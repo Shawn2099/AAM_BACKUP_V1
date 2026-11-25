@@ -746,17 +746,6 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     artefacts = RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-guards")
 
     first_file = guards.first_regular_file(source, guards.SOURCE_IGNORE_NAMES)
-    try:
-        with temp_rclone_config(
-            config.paths.gcs_key_path, config.cloud.location,
-            config.cloud.project_number, config.cloud.storage_class,
-        ) as rclone_conf:
-            source_files = count_objects(source, rclone_conf,
-                                         config.cloud.dry_run_timeout_seconds, artefacts)
-            destination_files = count_objects(remote, rclone_conf,
-                                              config.cloud.cloud_size_timeout_seconds, artefacts)
-    except CloudReporterError as e:
-        raise RuntimeError(f"Cloud guard measurement failed: {e}") from e
 
     db = ManifestDB.from_config(config)
     try:
@@ -766,12 +755,12 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
 
     results = [
         guards.g1_source_has_files(first_file, source),
-        guards.g2_source_shrink(source_files, baseline.get("source_file_count"),
-                                limits.max_source_shrink_percent),
         # Not a host path: the "is this machine" check does not apply.
         guards.g4_destination_identity(destination, baseline.get("destination"),
                                        None, set(), forbid_local=False),
     ]
+    source_files = 0
+    destination_files = 0
     if first_file:
         # A source without files is already blocked by G1; its dry-run would
         # only plan the deletion of everything.
@@ -791,6 +780,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
             raise RuntimeError(
                 f"Cloud guard measurement failed: rclone sync --dry-run did not complete "
                 f"cleanly: {dry.get('error')}")
+        source_files = dry.get("source_files") or 0
+        destination_files = dry.get("dest_files") or 0
         results.append(guards.g3_mass_delete(
             dry["planned_deletes"], destination_files,
             limits.max_delete_files, limits.max_delete_percent,
@@ -817,22 +808,8 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
 
 @task(name="cloud-access")
 def cloud_access_task(config, run_id: str, artefacts_dir: str | None = None):
-    """Prove the rights the sync uses (plan WP4, CL3/CL13): read a real source
-    file; create + delete a probe object outside every FY prefix (DEC-5).
-    Runs after the guards; a missing right FAILS the run."""
+    """Prove the rights the sync uses (plan WP4, CL3/CL13): read a real source file."""
     permissions.probe_source_read(config.paths.source_drive)
-    if not config.cloud.write_probe_enabled:
-        logger.info("Cloud write probe disabled (cloud.write_probe_enabled: false)")
-        return
-    with temp_rclone_config(
-        config.paths.gcs_key_path, config.cloud.location,
-        config.cloud.project_number, config.cloud.storage_class,
-    ) as rclone_conf:
-        permissions.probe_cloud_write(
-            config.cloud.bucket, run_id, rclone_conf, config.cloud.preflight_timeout_seconds,
-            RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("cloud-access"),
-            error_tail_lines=config.cloud.error_tail_lines,
-        )
 
 
 def _sync_with_retries(leg: str, *, run_once, remeasure, deletes_of, retryable,
