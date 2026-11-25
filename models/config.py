@@ -202,6 +202,16 @@ class LanConfig(StrictModel):
     arrival_hash_timeout_seconds: int = Field(
         default=3600, ge=60, le=14400,
         description="Timeout for the transferred-files hash check after the NAS mirror (seconds)")
+    versions_enabled: bool = Field(
+        default=True,
+        description="Save deleted and replaced NAS files into a dated versions folder (--backup-dir)")
+    versions_folder: str = Field(
+        default="AAM_versions",
+        description="Versions folder name (sibling of the NAS mirror) or UNC path on the same share, "
+                    "outside the mirror root")
+    versions_retention_days: int = Field(
+        default=91, ge=7, le=3650,
+        description="Days to keep deleted/replaced file versions in the NAS versions folder before purge")
 
 
 class WolConfig(StrictModel):
@@ -801,6 +811,17 @@ class ApprovalsConfig(StrictModel):
         description="How much worse the re-measured numbers may be than the approved "
                     "ones (0 = must not be worse at all).",
     )
+    reminder_days: list[int] = Field(
+        default_factory=lambda: [1, 2, 4, 7],
+        description="Days after a G3 block on which reminder emails are sent (weekly after the last rung).",
+    )
+
+    @field_validator("reminder_days")
+    @classmethod
+    def _valid_reminder_days(cls, v: list[int]) -> list[int]:
+        if not v or any(type(d) is not int or d <= 0 for d in v):
+            raise ValueError("approvals.reminder_days must be a non-empty list of positive integers.")
+        return sorted(set(v))
 
 
 class AuditConfig(StrictModel):
@@ -1214,6 +1235,35 @@ class ScheduleConfig(StrictModel):
         return self
 
 
+def resolve_versions_root(lan_destination: str, versions_folder: str) -> str:
+    """Resolve `versions_folder` on the same share as `lan_destination`, never inside the mirror root (V10)."""
+    from pathlib import PureWindowsPath
+
+    vf = (versions_folder or "").strip()
+    if not vf:
+        raise ValueError("lan.versions_folder must not be empty when versions_enabled is true.")
+    vp = PureWindowsPath(vf)
+    if ".." in vp.parts:
+        raise ValueError(f"lan.versions_folder must not contain '..': {versions_folder!r}")
+
+    dst = PureWindowsPath(lan_destination)
+    if vp.drive or vf.startswith(("\\\\", "/")):
+        resolved = vp
+    else:
+        base = dst.parent if dst.parent != dst else PureWindowsPath(dst.drive + "\\")
+        resolved = base / vp
+
+    if dst.drive and resolved.drive.lower() != dst.drive.lower():
+        raise ValueError(
+            f"lan.versions_folder ({resolved}) must be on the same share/drive as lan_destination ({dst})."
+        )
+    if resolved == dst or resolved.is_relative_to(dst) or dst.is_relative_to(resolved):
+        raise ValueError(
+            f"lan.versions_folder ({resolved}) must be outside the mirror root ({dst})."
+        )
+    return str(resolved)
+
+
 class AppConfig(StrictModel):
     firm_name: str = "AAM Associates"
     paths: PathsConfig
@@ -1266,6 +1316,8 @@ class AppConfig(StrictModel):
     def cross_field_validation(self) -> "AppConfig":
         if self.lan.enabled and not self.paths.lan_destination.startswith("\\\\"):
             raise ValueError("Enter the NAS folder as \\\\server\\share, or switch the LAN backup off. The LAN backup needs a network folder.")
+        if self.lan.enabled and self.lan.versions_enabled:
+            resolve_versions_root(self.paths.lan_destination, self.lan.versions_folder)
         if self.cloud.enabled and not self.paths.gcs_key_path:
             raise ValueError("Choose the Google Cloud key file, or switch the cloud backup off. The cloud backup cannot sign in without it.")
         if not self.lan.enabled and not self.cloud.enabled:

@@ -92,6 +92,9 @@ lan:
   arrival_hash_max_gb: 50
   # Timeout (seconds) of the checksum check (60-14400)
   arrival_hash_timeout_seconds: 3600
+  versions_enabled: true
+  versions_folder: "AAM_versions"
+  versions_retention_days: 91
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
@@ -538,6 +541,7 @@ approvals:
   # How much worse the re-measured numbers may be than approved, in % (0–100).
   # 0 = not worse at all.
   tolerance_percent: 0
+  reminder_days: [1, 2, 4, 7]
 
 # ═══════════════════════════════════════════════════
 # FY ROLLOVER (checked daily by the rollover-check schedule)

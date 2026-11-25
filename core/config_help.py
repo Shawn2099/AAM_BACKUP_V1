@@ -123,6 +123,14 @@ HELP: dict[str, tuple[str, str]] = {
                                 "If this run copied more than this, the checksum check is skipped (the size check still runs). 0 = never hash (any copied bytes exceed the cap)."),
     "lan.arrival_hash_timeout_seconds": ("Time for the checksum check",
                                          "The checksum check of the copied files gives up after this long."),
+    "lan.versions_enabled": ("Keep deleted and replaced NAS files in a versions folder",
+                             "Saves old copies into a dated folder on the NAS share instead of losing them."),
+    "lan.versions_folder": ("NAS versions folder",
+                            "Folder name (next to the mirror) or UNC path on the same NAS share, outside the mirror."),
+    "lan.versions_retention_days": ("Days to keep old NAS versions",
+                                    "Deleted and replaced versions older than this many days are purged."),
+    "approvals.reminder_days": ("Days between pending-deletion reminders",
+                                "Days after a mass-delete block when reminders are sent (weekly after the last day)."),
 
     # ── WoL ──
     "wol.enabled": ("Switch the NAS on automatically", "Wake the NAS over the network before the backup."),
