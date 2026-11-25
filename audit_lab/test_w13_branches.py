@@ -39,78 +39,62 @@ IST_TZ = "Asia/Kolkata"
 
 
 # ── log renderers (ground truth known to the test) ────────────────────────────
-def _robocopy_log(*, total=5, copied=5, skipped=0, mismatch=0, failed=0, extras=0,
-                  ended=True, failed_markers=0) -> str:
-    """Render a robocopy log with a KNOWN job summary (or none, when ended=False)."""
-    text = (
-        "-------------------------------------------------------------------------------\n"
-        "               Total    Copied   Skipped  Mismatch  FAILED   Extras\n"
-        "    Dirs :        10         9         1         0         0         0\n"
-        f"   Files :     {total:>6}     {copied:>6}     {skipped:>6}"
-        f"     {mismatch:>6}     {failed:>6}    {extras:>6}\n"
-        "   Bytes :    99.0 m    98.0 m    1.0 m         0    5.0 k         0\n"
-        "   Times :   0:00:12   0:00:11                       0:00:00   0:00:01\n"
-        "\n"
-        "   Ended : Saturday, 10 October 2026 14:00:00\n"
-    )
-    if not ended:
-        text = text.split("\n\n")[0] + "\n"      # no summary table, no Ended line
-    if failed_markers:
-        text += "\n".join(f"** FAILED: C:\\src\\f{i}.txt" for i in range(failed_markers)) + "\n"
-    return text
+def _rclone_json_log(*, transfers=5, deletes=0, errors=0, ended=True) -> str:
+    """Render an rclone --use-json-log output with a KNOWN stats summary (or none)."""
+    import json
+    lines = [json.dumps({"level": "info", "msg": "starting"})]
+    if ended:
+        lines.append(json.dumps({
+            "level": "notice",
+            "msg": "Transferred",
+            "stats": {
+                "transfers": transfers,
+                "bytes": transfers * 1024,
+                "deletes": deletes,
+                "errors": errors,
+                "checks": transfers,
+            },
+        }))
+    return "\n".join(lines) + "\n"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# W13.1 - decide_lan_result: total branch coverage
+# W13.1 - decide_lan_rclone_result: total branch coverage
 # ══════════════════════════════════════════════════════════════════════════════
 def test_w13_decide_lan_result_full_matrix():
-    """Every documented rule of the transfer-result contract."""
-    from core.lan_sync import decide_lan_result
+    """Every documented rule of the rclone LAN transfer-result contract."""
+    from core.lan_sync import decide_lan_rclone_result
 
-    clean = _robocopy_log()
-    contradiction_summary = _robocopy_log(failed=3)
-    contradiction_markers = _robocopy_log() + "** FAILED: C:\\src\\x.txt\n"
+    clean = _rclone_json_log()
+    with_errors = _rclone_json_log(errors=3)
+    truncated = _rclone_json_log(ended=False)
     matrix = [
-        # (exit code, log, expected status, expected termination)
-        (0, clean, "LAN_COMPLETE", "normal"),
-        (1, clean, "LAN_COMPLETE", "normal"),
-        (2, clean, "LAN_COMPLETE", "normal"),
-        (3, clean, "LAN_COMPLETE", "normal"),
-        (4, clean, "LAN_COMPLETE", "normal"),      # extras/mismatch band, no copy errors
-        (7, clean, "LAN_COMPLETE", "normal"),
-        (8, clean, "LAN_PARTIAL", "normal"),       # bit 3 = copy errors
-        (9, clean, "LAN_PARTIAL", "normal"),
-        (15, clean, "LAN_PARTIAL", "normal"),
-        (16, clean, "LAN_FAILED", "abnormal"),     # bit 4 = fatal
-        (17, clean, "LAN_FAILED", "abnormal"),
-        (999, clean, "LAN_FAILED", "abnormal"),    # unexpected code
-        (-1, clean, "LAN_FAILED", "abnormal"),     # timeout sentinel
-        (None, clean, "LAN_FAILED", "abnormal"),   # not an int at all
-        ("0", clean, "LAN_FAILED", "abnormal"),    # str -> unusable
-        (0, "", "LAN_SUSPECT", "abnormal"),        # no log at all
-        (0, _robocopy_log(ended=False), "LAN_SUSPECT", "abnormal"),   # truncated log
-        (3, _robocopy_log(ended=False), "LAN_SUSPECT", "abnormal"),
-        (0, contradiction_summary, "LAN_SUSPECT", "abnormal"),        # exit 0 but FAILED=3
-        (4, contradiction_summary, "LAN_SUSPECT", "abnormal"),
-        (0, contradiction_markers, "LAN_SUSPECT", "abnormal"),       # FAILED markers
-        (9, contradiction_markers, "LAN_PARTIAL", "normal"),          # bit 3 wins
+        # (exit code, log, expected status, expected abnormal)
+        (0, clean, "LAN_COMPLETE", False),
+        (1, with_errors, "LAN_PARTIAL", False),
+        (10, clean, "LAN_PARTIAL", False),
+        (8, clean, "LAN_FAILED", False),
+        (-1, clean, "LAN_FAILED", True),
+        (None, clean, "LAN_FAILED", True),
+        ("0", clean, "LAN_FAILED", True),
+        (0, "", "LAN_SUSPECT", False),
+        (0, truncated, "LAN_SUSPECT", False),
+        (0, with_errors, "LAN_SUSPECT", False),
     ]
     rows, problems = [], []
-    for code, log, want_status, want_term in matrix:
-        got = decide_lan_result(code, log)
+    for code, log, want_status, want_abnormal in matrix:
+        got = decide_lan_rclone_result(code, log)
         label = f"exit={code!r:>6} log={'clean' if log == clean else ('empty' if not log else 'special')}"
-        rows.append(f"{label:34} -> {got['status']:13} {got['termination']:9} "
-                    f"log_complete={got['log_complete']!s:5} counts={got['counts']}")
-        if got["status"] != want_status or got["termination"] != want_term:
-            problems.append(f"{label}: got {got['status']}/{got['termination']}, "
-                            f"expected {want_status}/{want_term}")
-        # invariant: never COMPLETE on an abnormal termination
-        if got["termination"] == "abnormal" and got["status"] == "LAN_COMPLETE":
+        rows.append(f"{label:34} -> {got['status']:13} abnormal={got['abnormal']!s:5}")
+        if got["status"] != want_status or got["abnormal"] != want_abnormal:
+            problems.append(f"{label}: got {got['status']}/abnormal={got['abnormal']}, "
+                            f"expected {want_status}/abnormal={want_abnormal}")
+        if got["abnormal"] and got["status"] == "LAN_COMPLETE":
             problems.append(f"{label}: abnormal termination reported LAN_COMPLETE")
 
     L.record("W13.decide_lan_matrix",
-              "decide_lan_result() classifies every documented exit-code/log-evidence "
-              "combination, including the contradictory-evidence and non-integer cases",
+              "decide_lan_rclone_result() classifies every documented exit-code/log-evidence "
+              "combination, including contradictory-evidence and non-integer cases",
               "\n".join(rows),
               f"OK - all {len(matrix)} branches correct"
               if not problems else f"ISSUE - {problems[:3]}")
@@ -119,226 +103,72 @@ def test_w13_decide_lan_result_full_matrix():
 
 
 def test_w13_bool_exit_code_is_rejected_by_both_deciders():
-    """DOCUMENTED DIVERGENCE — the two deciders disagree on bool exit codes.
-
-    A bool is an int subclass in Python, so `isinstance(code, int)` alone lets
-    `True` through as exit code 1:
-
-      * core/cloud_verify.decide_cloud_verify_result() guards against this
-        explicitly (`isinstance(exit_code, bool)` -> unusable): `True` is
-        REJECTED with reason "unusable exit code True ...".
-      * core/lan_sync.decide_lan_result() does NOT: `True & 16` is 0 and
-        `0 <= True <= 7`, so a bool is classified as a clean, successful copy
-        (LAN_COMPLETE / normal) — i.e. read as exit code 1.
-
-    Nothing in the shipped code passes a bool today, so this is a latent
-    robustness hole rather than a live failure. This test previously asserted
-    the aspirational contract ("both deciders reject a bool") and was
-    permanently red; it now pins the ACTUAL behaviour of both deciders so any
-    future change in either direction is deliberate, and records the
-    disagreement as an open (unfixed) finding.
-    """
+    """Both LAN and cloud deciders reject boolean exit codes."""
     from core.cloud_verify import decide_cloud_verify_result
-    from core.lan_sync import decide_lan_result
+    from core.lan_sync import decide_lan_rclone_result
 
-    clean = _robocopy_log()
-    lan = decide_lan_result(True, clean)
+    clean = _rclone_json_log()
+    lan = decide_lan_rclone_result(True, clean)
     cloud = decide_cloud_verify_result(True, "0 differences found\n")
     lines = [
-        f"decide_lan_result(True, ...)         -> {lan['status']} / {lan['termination']}",
+        f"decide_lan_rclone_result(True, ...)  -> {lan['status']} / abnormal={lan['abnormal']}",
         f"decide_cloud_verify_result(True, ...) -> verified={cloud['verified']} "
         f"/ {cloud['termination']} reason={cloud['reason'][:60]!r}",
     ]
     L.record("W13.exit_code_bool",
-              "a boolean exit code is rejected by BOTH deciders "
-              "(mvp-hardening M1 1.8: type(code) is int guard in lan_sync)",
+              "a boolean exit code is rejected by BOTH deciders",
               "\n".join(lines),
-              "FIXED - decide_lan_result(True) and "
-              "decide_cloud_verify_result(True) both reject a bool as an "
-              "unusable exit code.")
-    print(f"[W13.1b]\n" + "\n".join(lines))
-    # cloud decider: a bool is rejected outright (the guard that exists today)
+              "OK - both deciders reject bool exit codes")
+    print("[W13.1b]\n" + "\n".join(lines))
     assert cloud["verified"] is False
     assert cloud["termination"] == "abnormal"
     assert "unusable exit code True" in cloud["reason"]
-    # LAN decider: same contract (fixed in mvp-hardening M1 1.8).
     assert lan["status"] == "LAN_FAILED"
-    assert lan["termination"] == "abnormal"
-    assert "unusable exit code True" in lan["reason"]
+    assert lan["abnormal"] is True
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# W13.2 - the lan_sync parsers
-# ══════════════════════════════════════════════════════════════════════════════
-def test_w13_lan_sync_parser_branches(sandbox):
-    """Summary-row parsing, log tail, failed counters and the /NC guard."""
-    from core.lan_sync import (_summary_files_row_values, count_failed_lines,
-                               failed_file_count, log_shows_completed_summary,
-                               summarize_log_counts)
-
-    # ---- _summary_files_row_values -------------------------------------------
-    value_cases = [
-        ("complete summary", _robocopy_log(), [5, 5, 0, 0, 0, 0]),
-        ("thousands separators",
-         "   Files :       1,234       1,200           3           1           4          26\n",
-         [1234, 1200, 3, 1, 4, 26]),
-        ("decimals stripped (localised separators)",
-         "   Files :        1.234           1           0           0           0           0\n",
-         [1234, 1, 0, 0, 0, 0]),
-        ("short row", "   Files :         1         2         3\n", [1, 2, 3]),
-        ("no Files row at all", "some random log text\n", None),
-        ("non-numeric token", "   Files :     a     b     c     d     e     f\n", None),
-        ("bare 'Files :' with nothing after", "   Files :\n", None),
-        ("CRLF line endings",
-         "   Files :     5     5     0     0     0     0\r\n   Ended : x\r\n", [5, 5, 0, 0, 0, 0]),
-        ("Dirs row only (must not be read as Files)", "    Dirs :         1         2\n", None),
-    ]
-    rows, problems = [], []
-    for label, text, want in value_cases:
-        got = _summary_files_row_values(text)
-        rows.append(f"{label:42} -> {got} (want {want})")
-        if got != want:
-            problems.append(f"{label}: got {got}, want {want}")
-        # summarize_log_counts: needs all six columns, else None (fails closed)
-        counts = summarize_log_counts(text)
-        if want and len(want) == 6:
-            expected_counts = {"total": want[0], "copied": want[1], "skipped": want[2],
-                               "mismatch": want[3], "failed": want[4], "extras": want[5]}
-            if counts != expected_counts:
-                problems.append(f"{label}: summarize_log_counts -> {counts}, want {expected_counts}")
-        elif counts is not None:
-            problems.append(f"{label}: summarize_log_counts returned {counts}, want None")
-
-    # ---- log_shows_completed_summary ----------------------------------------
-    if not log_shows_completed_summary(_robocopy_log()):
-        problems.append("a complete summary was not recognised")
-    if log_shows_completed_summary(_robocopy_log(ended=False)):
-        problems.append("a truncated log looked complete")
-    if log_shows_completed_summary("   Files :  1 2 3 4 5 6\n"):
-        problems.append("a summary without the 'Ended :' line looked complete")
-    if log_shows_completed_summary(""):
-        problems.append("an empty log looked complete")
-
-    # ---- failed_file_count / count_failed_lines ------------------------------
-    clean_log, fails_log, many = (_robocopy_log(), _robocopy_log(failed=2),
-                                  _robocopy_log(failed=2) + "** FAILED: a\n** FAILED: b\n")
-    floor_cases = [
-        ("clean log, exit 0", clean_log, 0, 0),
-        ("clean log, exit 8 (bit3 floor)", clean_log, 8, 1),
-        ("clean log, exit 9 (bit3 floor)", clean_log, 9, 1),
-        ("summary FAILED=2, exit 0", fails_log, 0, 2),
-        ("summary FAILED=2, exit 8 -> max(2,1)", fails_log, 8, 2),
-        ("no summary, exit 8 -> floor 1", _robocopy_log(ended=False), 8, 1),
-        ("no summary, exit 0 -> 0", _robocopy_log(ended=False), 0, 0),
-    ]
-    for label, text, code, want in floor_cases:
-        got = failed_file_count(text, code)
-        rows.append(f"failed_file_count[{label}] -> {got} (want {want})")
-        if got != want:
-            problems.append(f"{label}: got {got}, want {want}")
-    if count_failed_lines(many) != 2:
-        problems.append(f"count_failed_lines counted {count_failed_lines(many)} markers, want 2")
-
-    # ---- /NC is forbidden ---------------------------------------------------
-    from core.lan_sync import _validate_required_flags
-
-    for bad in (["/NC"], ["-NC"], ["/MIR", "/NC"], ["/MIR", "-nc"]):
-        try:
-            _validate_required_flags(bad)
-            problems.append(f"/NC guard did not raise for {bad}")
-        except ValueError:
-            pass
-    _validate_required_flags(["/MIR", "/XJ", "/MT:4"])       # must not raise
-
-    # ---- _read_log_tail ------------------------------------------------------
-    from core.lan_sync import _read_log_tail
-
-    big = sandbox / "big.log"
-    big.write_text("HEAD\n" + "x" * 5000 + "\nTAIL\n", encoding="utf-8")
-    tail = _read_log_tail(big, 100)
-    rows.append(f"_read_log_tail(100 of {big.stat().st_size} bytes) -> {len(tail)} chars, "
-                f"starts with {tail[:8]!r}")
-    if len(tail) > 120 or "TAIL" not in tail:
-        problems.append(f"_read_log_tail returned {len(tail)} chars, tail not bounded")
-    if tail.startswith("\ufffd"):
-        problems.append("_read_log_tail did not strip the mid-sequence replacement char")
-    small = sandbox / "small.log"
-    small.write_text("tiny\n", encoding="utf-8")
-    if _read_log_tail(small, 100_000) != "tiny\n":
-        problems.append("_read_log_tail rewrote a small file")
-    missing = sandbox / "nope.log"
-    fallback = _read_log_tail(missing, 100)
-    if "unreadable" not in fallback:
-        problems.append(f"missing log returned {fallback!r} instead of the fallback message")
-    as_dir = sandbox / "adir"
-    as_dir.mkdir()
-    if "unreadable" not in _read_log_tail(as_dir, 100):
-        problems.append("a directory in place of the log did not degrade to the fallback")
-
-    L.record("W13.lan_sync_parsers",
-              "summary-row parsing (separators, short rows, CRLF, non-numeric), "
-              "log-completeness detection, failed-file counters with the bit-3 floor, "
-              "the /NC guard and the bounded log tail reader",
-              "\n".join(rows),
-              "OK - every parser branch returns the documented value and fails closed"
-              if not problems else f"ISSUE - {problems[:3]}")
-    print(f"[W13.2] {len(rows)} checks, problems={problems[:3]}")
-    assert not problems, problems[:4]
+# W13.2 - removed (robocopy UTF-16 table parsers replaced by rclone JSON logs; see tests/test_p1_c3_lan_rclone_decider.py)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # W13.3 - the command builders' flag contracts
 # ══════════════════════════════════════════════════════════════════════════════
 def test_w13_command_builders_flag_contract(sandbox):
-    """The robocopy and rclone commands carry the flags the parsers depend on."""
+    """The LAN and cloud rclone commands carry the flags the parsers depend on."""
     from core.cloud_sync import build_rclone_sync_command
-    from core.lan_sync import build_robocopy_command
+    from core.lan_sync import build_lan_rclone_command
 
     src = sandbox / "source" / "FY26-26"
     L.write_file(src / "a.txt", b"a")
     dest = L.make_canary(sandbox / "nas" / "FY26-26")
-    cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime",
-                         lan=dict(L.PRODUCTION_LAN))
-    cfg.lan.mt_threads = 6
+    cfg = L.build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
     cfg.lan.retry_count = 3
-    cfg.lan.retry_wait_seconds = 7
 
-    robocopy = build_robocopy_command(str(src), str(dest), cfg.lan)
+    lan_log = str(sandbox / "runtime" / "lan.log")
+    lan_cmd = build_lan_rclone_command(cfg.lan, str(src), str(dest), lan_log, max_delete=12)
     rclone = build_rclone_sync_command(str(src), "lab-bucket", "FY26-26",
                                        str(sandbox / "runtime" / "rclone.conf"),
                                        "STANDARD", bwlimit="1000M", retries=2,
                                        transfers=3, checkers=4, buffer_size="16M",
                                        max_duration_seconds=0)
 
-    rows = [f"robocopy: {' '.join(robocopy)}", f"rclone   : {' '.join(rclone)}"]
+    rows = [f"lan_rclone: {' '.join(lan_cmd)}", f"rclone   : {' '.join(rclone)}"]
     problems = []
 
     def _need(cmd, flag, why):
         if flag not in cmd:
             problems.append(f"{why}: missing {flag}")
 
-    # the flags the log parsers and the fail-closed contract depend on
-    for flag, why in [("/MIR", "mirror semantics"),
-                      ("/XJ", "junction exclusion (W9)"),
-                      ("/XF", "canary exclusion"),
-                      (".AAM_TARGET_MOUNTED", "canary filter argument"),
-                      ("/V", "verbose per-file lines"),
-                      ("/TS", "timestamps in the log"),
-                      ("/FP", "full paths for failure diagnosis"),
-                      ("/NJH", "no job header"),
-                      ("/MT:6", "configured multithread count"),
-                      ("/R:3", "configured retry count"),
-                      ("/W:7", "configured retry wait"),
-                      ("/ZB", "backup-mode fallback (C-2: must stay visible)")]:
-        _need(robocopy, flag, why)
-    _need(robocopy, "/MIR", "mirror")
-    for forbidden in ("/NJS", "/NC", "/NP-"):
-        if forbidden in robocopy:
-            problems.append(f"robocopy carries the forbidden flag {forbidden}")
-    if str(src) not in robocopy[1] or str(dest) not in robocopy[2]:
-        problems.append(f"robocopy source/destination misplaced: {robocopy[:3]}")
+    for flag, why in [("sync", "mirror verb"),
+                      ("--delete-after", "delete after"),
+                      ("--use-json-log", "json log"),
+                      ("--track-renames", "track renames"),
+                      ("--retries", "retry count"),
+                      ("--max-delete", "delete backstop")]:
+        _need(lan_cmd, flag, why)
+    if lan_cmd[lan_cmd.index("--max-delete") + 1] != "12":
+        problems.append(f"lan --max-delete mismatch: {lan_cmd}")
 
-    # rclone: sync verb, remote shape, and every tunable wired through
     for flag in ("sync", "--transfers", "3", "--checkers", "4", "--bwlimit", "1000M",
                  "--buffer-size", "16M", "--retries", "2", "--config"):
         _need(rclone, flag, "rclone command")
@@ -347,7 +177,6 @@ def test_w13_command_builders_flag_contract(sandbox):
     if "--max-duration" in rclone:
         problems.append("max_duration_seconds=0 must disable the cap entirely")
 
-    # a non-zero max_duration must appear, together with the SOFT cutoff mode
     capped = build_rclone_sync_command(str(src), "lab-bucket", "FY26-26",
                                        str(sandbox / "runtime" / "rclone.conf"), "STANDARD",
                                        bwlimit="1000M", retries=1, transfers=2, checkers=2,
@@ -362,9 +191,8 @@ def test_w13_command_builders_flag_contract(sandbox):
         problems.append("max_duration_seconds=None must disable the cap entirely")
 
     L.record("W13.command_contracts",
-              "build_robocopy_command() and build_rclone_sync_command() carry the "
-              "flags the parsers, the junction/canary exclusions and the fail-closed "
-              "contract depend on, and honour every config tunable",
+              "build_lan_rclone_command() and build_rclone_sync_command() carry the "
+              "required flags and honour every config tunable",
               "\n".join(rows),
               "OK - both command builders match their documented flag contract"
               if not problems else f"ISSUE - {problems[:3]}")
@@ -816,15 +644,15 @@ def test_w13_health_check_branches(sandbox, monkeypatch):
     finally:
         health.resolve_binary = orig
 
-    health.resolve_binary = lambda name: None if name == "robocopy" else orig(name)
+    health.resolve_binary = lambda name: None if name == "rclone" else orig(name)
     try:
         try:
             pre_backup_health(str(files), "lan", min_free_source_gb=1)
-            problems.append("pre_backup_health passed with robocopy missing")
+            problems.append("pre_backup_health passed with rclone missing (mode=lan)")
         except HealthError as e:
-            rows.append(f"robocopy missing, mode=lan -> HealthError: {str(e)[:60]!r}")
-            if "robocopy" not in str(e):
-                problems.append(f"the wrong check fired for a missing robocopy: {e}")
+            rows.append(f"rclone missing, mode=lan -> HealthError: {str(e)[:60]!r}")
+            if "rclone" not in str(e):
+                problems.append(f"the wrong check fired for a missing rclone: {e}")
     finally:
         health.resolve_binary = orig
 
@@ -1398,74 +1226,4 @@ def test_w13_cloud_reporter_against_local_backend(sandbox):
     assert not problems, problems[:4]
 
 
-# ------------------------------------------------------------------------------
-# W13.11 - the G8 orphaned-log reaper
-# ------------------------------------------------------------------------------
-def test_w13_cleanup_orphaned_robocopy_logs(sandbox, monkeypatch):
-    """cleanup_orphaned_robocopy_logs() must reap only stale logs, never raise,
-    and leave a concurrently running log alone. %TEMP% is redirected so the W11
-    evidence corpus is not destroyed by this test."""
-    import time as _time
-
-    import tempfile
-
-    from core.lan_sync import cleanup_orphaned_robocopy_logs
-
-    fake_temp = sandbox / "temp"
-    fake_temp.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_temp))
-
-    fresh = fake_temp / "robocopy_sync_fresh.log"
-    stale = fake_temp / "robocopy_sync_stale.log"
-    other = fake_temp / "not_a_robocopy_log.log"
-    nested = fake_temp / "sub"
-    nested.mkdir()
-    nested_stale = nested / "robocopy_sync_nested.log"
-    for p in (fresh, stale, other, nested_stale):
-        p.write_text("log content\n", encoding="utf-8")
-    old_ts = _time.time() - 48 * 3600
-    for p in (stale, nested_stale):
-        os.utime(p, (old_ts, old_ts))
-
-    problems, rows = [], []
-    removed = cleanup_orphaned_robocopy_logs(max_age_hours=24)
-    rows.append(f"first pass  -> removed={removed} fresh={fresh.exists()} "
-                f"stale={stale.exists()} other={other.exists()} nested={nested_stale.exists()}")
-    # glob("robocopy_sync_*.log") is NOT recursive: only the flat stale log is
-    # reaped. Production always writes flat (%TEMP%\robocopy_sync_<rand>.log), so
-    # a nested match cannot occur; keep the non-recursive semantics asserted.
-    if removed != 1:
-        problems.append(f"expected exactly 1 removal (the flat stale log), got {removed}")
-    if not fresh.exists():
-        problems.append("a fresh robocopy log was reaped")
-    if not other.exists():
-        problems.append("a non-matching file was reaped")
-    if stale.exists():
-        problems.append("a stale log was left behind")
-    if not nested_stale.exists():
-        problems.append("a nested file was reaped - the glob is unexpectedly recursive")
-
-    # a second pass is a no-op and must not raise
-    removed2 = cleanup_orphaned_robocopy_logs(max_age_hours=24)
-    rows.append(f"second pass -> removed={removed2} (want 0)")
-    if removed2 != 0:
-        problems.append(f"the second pass removed {removed2} more files")
-
-    # an empty directory must not raise
-    for p in fake_temp.glob("*"):
-        if p.is_file():
-            p.unlink()
-    removed3 = cleanup_orphaned_robocopy_logs(max_age_hours=24)
-    rows.append(f"empty dir   -> removed={removed3} (want 0, no exception)")
-    if removed3 != 0:
-        problems.append(f"an empty temp dir reported {removed3} removals")
-
-    L.record("W13.robocopy_log_cleanup",
-              "cleanup_orphaned_robocopy_logs() reaps only logs older than the age "
-              "gate (including nested ones), never touches a fresh log or a "
-              "non-matching file, and is a no-op on a second pass",
-              "\n".join(rows),
-              "OK - the G8 reaper is age-gated and safe"
-              if not problems else f"ISSUE - {problems[:3]}")
-    print(f"[W13.11]\n" + "\n".join(rows))
-    assert not problems, problems[:3]
+# W13.11 - removed (cleanup_orphaned_robocopy_logs removed in P1)
