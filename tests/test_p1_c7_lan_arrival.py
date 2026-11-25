@@ -234,10 +234,76 @@ def _write_source_file(src: Path, mtime: float) -> None:
     os.utime(path, (mtime, mtime))
 
 
+def _set_source_mtime_ns(src: Path, whole_seconds: int) -> None:
+    path = src / "sub" / "deep" / "c.txt"
+    path.write_text("content", encoding="utf-8")
+    os.utime(path, ns=(whole_seconds * 10**9, whole_seconds * 10**9))
+
+
+def _check(src, dst, art, *, after, window=None, spec=None):
+    config = LanConfig() if window is None else LanConfig(modify_window_seconds=window)
+    with fake_rclone_lan({"rclone-lan-check": spec or _missing_spec()}):
+        return lan_sync.check_lan_arrival(config, str(src), dst, art,
+                                          changed_after_epoch=after, timeout=60)
+
+
+# ── R1 (M2) rows: the threshold is the epoch, no tolerance window ───
+
+def test_a2b_file_exactly_at_the_epoch_counts_as_changed(tmp_path):
+    src, dst, art = _setup(tmp_path)
+    after = float(int(time.time()) + 100)
+    _set_source_mtime_ns(src, int(after))
+    result = _check(src, dst, art, after=after)
+    assert result["verified"] is True
+    assert result["changed_during_backup"] == 1
+
+
+def test_a3b_file_one_second_before_the_epoch_is_not_verified(tmp_path):
+    src, dst, art = _setup(tmp_path)
+    after = float(int(time.time()) + 100)
+    _set_source_mtime_ns(src, int(after) - 1)
+    result = _check(src, dst, art, after=after)
+    assert result["verified"] is False
+    assert result["unverified_paths"] == [MISSING_PATH]
+
+
+def test_a3c_a_wide_modify_window_does_not_widen_the_threshold(tmp_path):
+    src, dst, art = _setup(tmp_path)
+    after = float(int(time.time()) + 100)
+    _set_source_mtime_ns(src, int(after) - 1)
+    result = _check(src, dst, art, after=after, window=10)
+    assert result["verified"] is False
+
+
+def test_a3d_creation_time_counts_when_mtime_is_old(tmp_path):
+    src, dst, art = _setup(tmp_path)
+    after = time.time() - 5
+    _write_source_file(src, after - 3600)  # created now (ctime now), mtime an hour old
+    result = _check(src, dst, art, after=after)
+    assert result["verified"] is True
+    assert result["changed_during_backup"] == 1
+
+
+# ── R2 (S2) rows: errors beyond differences (branch already in decide_lan_arrival) ──
+
+def test_a10_more_check_errors_than_differences_is_not_verified():
+    stderr = MISSING_ERR.replace("1 errors while checking", "3 errors while checking")
+    assert "3 errors while checking" in stderr
+    r = lan_sync.decide_lan_arrival(1, stderr, "+ a.txt\n", lambda p: True)
+    assert r["verified"] is False
+    assert "3 error(s) beyond its 1 difference(s)" in r["reason"]
+
+
+def test_a10b_errors_equal_to_differences_stays_verified():
+    r = lan_sync.decide_lan_arrival(1, MISSING_ERR, MISSING_COMB, _all_changed)
+    assert r["verified"] is True
+    assert r["reason"] is None
+
+
 def test_a2_changed_since_reads_the_source_mtime_and_verifies(tmp_path):
     src, dst, art = _setup(tmp_path)
     after = time.time() + 100
-    _write_source_file(src, after - 1)  # written inside the window: changed during the backup
+    _write_source_file(src, after + 1)  # written after the epoch: changed during the backup
     with fake_rclone_lan({"rclone-lan-check": _missing_spec()}):
         result = lan_sync.check_lan_arrival(LanConfig(), str(src), dst, art,
                                             changed_after_epoch=after, timeout=60)
@@ -246,15 +312,15 @@ def test_a2_changed_since_reads_the_source_mtime_and_verifies(tmp_path):
 
 
 @pytest.mark.parametrize("window, offset, changed", [
-    (2, -2, True),   # exactly at the window edge counts as changed (>=)
-    (2, -3, False),  # one second before the window does not
-    (5, -4, True),   # the window comes from lan.modify_window_seconds, not a literal
-    (5, -6, False),
+    (2, 0, True),    # exactly at the epoch counts as changed (>=)
+    (2, -1, False),  # one second before the epoch does not, even with a window of 2
+    (10, -1, False), # a wide lan.modify_window_seconds must not move the epoch
+    (0, 0, True),
 ])
-def test_a2_modify_window_edge_comes_from_config(tmp_path, window, offset, changed):
+def test_a2_changed_since_threshold_is_the_epoch_not_the_window(tmp_path, window, offset, changed):
     src, dst, art = _setup(tmp_path)
-    after = time.time() + 100
-    _write_source_file(src, after + offset)
+    after = float(int(time.time()) + 100)  # integer epoch: exactly representable
+    _set_source_mtime_ns(src, int(after) + offset)
     config = LanConfig(modify_window_seconds=window)
     with fake_rclone_lan({"rclone-lan-check": _missing_spec()}):
         result = lan_sync.check_lan_arrival(config, str(src), dst, art,
