@@ -12,10 +12,56 @@ on deploy day (see §4f).
 
 ## >>> 2026-11-25 - P1 RCLONE LAN ENGINE (branch `rclone-engine`, worktree `C:\Users\malliath\Desktop\aam_rclone`) <<<
 
-**Position:** plan `docs/PLAN_P1_RCLONE_LAN_2026-11-25.md` (binding). Robocopy removal and config deprecation are done
+**NEWEST STATE (end of session 2026-11-25, read this first):**
+- Phase 1 chunks C0-C12 and the review amendments R1-R10 are DONE and committed (R1 `142ccde`, R3/R4 `5c01dc0`, R5 `2195b18`,
+  R6 `91cbd4e`, R7 `0f82948`, R8a `2bf761a`, R8b `0e664e5`, R8d `407d9f9`, A13i `34ae4c4`, A14/hash metrics `c0b6a44`,
+  R10 lab rows `680dd84`, ruff cleanup `88891a1`). Plan: `docs/PLAN_P1_RCLONE_LAN_2026-11-25.md` ('Review amendments'),
+  matrix `docs/TESTMATRIX_P1_REVIEW_2026-11-25.md`, master plan for parallel work `docs/PLAN_MASTER_PARALLEL_2026-11-25.md`,
+  one brief per workstream in `docs/briefs/` (WS-A..WS-G). Owner rule (later): NO fixes on other branches, document only.
+- Gate results on 680dd84: fast loop 3714 passed (known red: 2x test_v113_round3 need config.yaml; test_review2_driver
+  is red only on a dirty tree; test_k_config_store flaked once under load, passes alone); slow file 9 passed; audit lab
+  w25/w4/fy_overlap/w6b 25 passed 1 skipped; robocopy grep clean (4 allow-listed hits). Opus R11 review: 20 mutants killed.
+- **OPEN, in order (WS-A tail before the `rclone-rc1` tag):**
+  1. R11 findings, tests were being written by a Haiku agent (files under `test_support/rclone_logs/lan_hash12_*`,
+     `lan_hash_silent*`, `lan_multithread_*` are its UNTRACKED fixtures; check `git log` for a `test(R11)` commit, if none
+     redo the tests). Rows: A12d/A12e MUST-FIX (hash verified only if matching is not None and
+     matching+missing+differ == len(listed paths); a listed path gone from the source counts as changed during backup),
+     A13j (stats.transfers > 0 but no 'Copied (' lines in the log -> LAN_SUSPECT AAM-LAN-04, not 'nothing copied'),
+     H7 (`transferred_files` also lists 'Multi-thread Copied (...)', 'Copied (Rcat, new)', 'Copied (server-side copy)':
+     match 'Copied (' after an optional 'Multi-thread ' prefix), W14 extension (R6 error text per matrix incl. the 300 s
+     MAX_DURATION_MARGIN_S), and `metrics.arrival.verified` = the hash verdict when the hash ran. Then Sonnet writes the code
+     (core/lan_sync.py, flow.py), then rerun the gate, then tag `rclone-rc1` (owner confirms).
+  2. Remaining SHOULD/NICE from R11: stale header docstring in tests/test_p1_r8c_hash_flow.py, `.Fs` check as `endswith(".Fs")`,
+     ruff I001 in flow.py; 17 older ruff findings in the touched test files.
+  3. Deferred and recorded: `lan_hash_task` is a plain function in `_run_lan_pipeline` (not a Prefect @task: frozen
+     lan_world harness cannot mock a new task; cost = no separate Prefect task run in the UI, only stage_seconds.hash_s);
+     b70a03f deleted about 5000 lines of old root audit/handoff docs (owner-approved prune; open items of removed plans
+     PLAN_AUDIT_PENDING step 5, the old-year bulk upload, the restore drill now exist only in git history).
+- Owner decisions: Q4 alert wording approved ('K file(s) could not be copied or updated on the NAS: <paths>'); copy-only on
+  G3 block YES; `--backup-dir` 91 days YES; floor 20 YES. Still open: OD1 one-time `attrib -R /S` of the NAS mirror (decide
+  after the shadow-trial count of read-only files; touches backup data, NOT built), OD2 stall watchdog (default 1800 s,
+  Phase 2), OD3 shadow-trial dates, OD6 rollover NAS wake, OD10 deploy window.
+- Review facts (Opus review, rclone 1.74.3): `--checksum`/`--ignore-times`/sync `--size-only`/`--inplace`/`-M`/`--links`/
+  `--update`/`--delete-before` stay rejected; `--timeout`/`--contact-timeout` do nothing for local/SMB (only the run_tool
+  tree kill stops a hang, hence the S6 watchdog in Phase 2); a killed sync leaves `--transfers` many `*.partial` files and
+  no deletions, next night re-copies (no resume); read-only files left by robocopy break replace on the NAS (R11 in plan,
+  count them in shadow step A); `--backup-dir` makes deletes AND replaces show as 'move ...' in the dry-run (R4 handled
+  the counters; Phase 1b V13); `--files-from` cannot combine with `--exclude`, hence `--files-from-raw`; timeouts to size in
+  shadow step A (dry-run and check, >= 3x measured).
+- **NEXT AFTER THE TAG** (see the master plan): E4 (P6 wake once per FY pass, flow.py, `ws-e-p6`), WS-B Phase 1b
+  (copy-only on a G3 block, reminder ladder, `--backup-dir` versions with 91-day purge, V1-V13, notify fixes), WS-C Phase 2
+  (cloud guard trims, robocopy-era lab rewrites, stall watchdog), WS-D rest (D4/D7 after Phase 1b, D8 box run needs the
+  tag and the owner's go), WS-F shadow trial (owner at the NAS).
+- Other session (harness, `tools/livebox/**` only) committed D0-D3, D5-D8 docs/oracles: `1cc4f2c`, `d4cebaa`, `f31d214`,
+  `2986c82`, `c1f284c`; D1 report `agent_runs/d1_livebox_compat.md`; wire-injection scenarios X17/X37-X39/X45-X48 documented
+  as out of scope for rclone-rc1 (their 35 tests in test_wire_injections.py stay red; confirm they are skipped or removed
+  deliberately, not silently). The 1 Jan 2027 audit failure of lane a2y26 was a HARNESS bug (churn files stamped at noon,
+  fixed here in tools/livebox/churn.py; NOT fixed on baseline-v1-overlap, by owner rule).
+- Commit hygiene: other agents' work shares this worktree. Always `git commit --only <explicit paths>`; never `git add -A`.
+
+**Earlier position:** plan `docs/PLAN_P1_RCLONE_LAN_2026-11-25.md` (binding). Robocopy removal and config deprecation are done
 and committed: C10a-c `3483065` (tests `1adbae2`), C11 test sweep `fe48776` + `c7512ee` (log
-`agent_runs/p1_sweep.md`). **C12 (audit lab) is next**: new `audit_lab/test_w25_rclone_lan.py`, adapt
-`test_w4_pipeline.py` (LAN case), `test_fy_overlap_lab.py`, `test_w6b_rollover_nas_off.py`; needs a clean `PREFECT_HOME`.
+`agent_runs/p1_sweep.md`). C12 (audit lab) done in `65a16a0`.
 
 **Environmental caveats (not code):**
 - The worktree has no `.venv`. Run tests with `PYTHONPATH=.` and `..\aam_backup\.venv\Scripts\python.exe`.

@@ -24,7 +24,17 @@ Roles: Opus plans and reviews. Sonnet writes code only. Haiku writes tests first
 | Prefect retries on preflight/verify; cloud `max_attempts` | Prefect phase. |
 | Notify fixes (P1, P8/R2, P7) | Not engine work. |
 | Rollover re-running final backups (P5), new-FY audit, retention keeps last success | Separate logic. |
-| Shadow trial on the box (step A dry-run vs real mirror, step B NAS test folder, cable pull) | Box and real NAS off-limits in this phase. Gate before deploying. |
+| Shadow trial on the box (step A dry-run vs real mirror, step B NAS test folder, cable pull) | Box and real NAS off-limits in this phase. Gate before deploying. Step A (review amendments M4, R11) also: records the wall time of the dry-run, of the size-only `rclone check` and of a hash check over a typical night's copies; counts read-only files on the NAS mirror, read-only (no attribute change). |
+| S6 progress/stall watchdog in `run_tool` (kill rclone when its log stops growing) | Phase 2. Measured: `--timeout` / `--contact-timeout` have no effect on the local/SMB backend, so a hung SMB read is only caught by the hard timeout (S5 now names it). |
+| S8a measure `--retries 3` vs 2 on a locked night | Shadow trial (see R2). |
+| S8b `--fix-case` | Measure in the shadow trial: case-only renames on the source vs Samba. |
+| S8c explicit `--delete-after` | rclone's default for `sync` already deletes after transfers; making it explicit is a builder change with a never/always-list test. Phase 2. |
+| S8d rotating sample hash (a slice of the whole mirror each night) | Weekly audit covers it; Phase 2 if the audit runs out of budget. |
+| S8e arrival/hash check timeout classified as "not verified" (SUSPECT) vs a distinct "check ran out of time" | Kept as SUSPECT (fail closed) in Phase 1; revisit with shadow-trial timings. |
+| S8f stats-snapshot marking on killed runs (last periodic stats of a killed rclone shown as "at least") | Phase 2 (dashboard/metrics). |
+| F1 (found in review amendments) `stats.deletes` counts each FAILED delete attempt (measured: 3 with only 2 files gone after a "Couldn't delete" with `--retries 2`) | Safe direction for the backstop (`rclone_deletes_of` lowers the next attempt's cap), but `files_deleted` in metrics overstates. Phase 2, with the metrics truth audit. |
+| F2 the same `stopped = ... or (limited and timed_out)` pattern in `cloud_sync_task` (flow.py:966) | Cloud leg is proven on the box; fix with the Phase 2 cloud chunk using the R6 rule. |
+| F3 `decide_lan_arrival` parses `line[2:].strip()`, so a NAS path with a leading/trailing space does not match the source file and is reported unverified | Fails closed (false SUSPECT only, never a false pass). Phase 2: `rstrip("\r\n")` with a row. |
 | TCP 3 s probe NETWORK vs AUTH | Only the regex reorder now. |
 | `--multi-thread-streams`, LAN bandwidth limit | Measure in shadow trial first. |
 | Rewrite robocopy-era audit-lab files (w13, w5a/b/c, w11, w1a/b/c/d2, w12, w8, w9, w10, w16, w18) | Phase 2 lab sweep. Out of the Phase 1 gate, listed in handoff, no skip hacks. |
@@ -56,6 +66,7 @@ Roles: Opus plans and reviews. Sonnet writes code only. Haiku writes tests first
 7. Only when sync status is `LAN_COMPLETE`: `lan_sync.check_lan_arrival(..., changed_after_epoch=<wall clock just before last sync attempt>)`, `timeout = budget.cap(lan.verify_timeout_seconds, 0)`.
    - `BudgetExceeded` -> `LAN_PARTIAL`, `budget_stopped`, "copied but not verified: no time left" (`AAM-LAN-03`).
    - Not verified -> `LAN_SUSPECT` with reason, one alert (`AAM-LAN-04`), then `PartialRun`. (`decide_terminal_status` keeps SUSPECT, statuses.py:287-288.)
+   - (Review amendment S3) When the size-only check is verified, `lan_verify_task` also hashes tonight's transfers: `lan_sync.check_lan_transfers_hash` over the `Copied (...)` objects of every sync attempt log of this pass (§2.1 second command). Skipped (verdict stays size-only, reason in metrics) when `lan.arrival_hash_transferred` is false, nothing was copied, the byte total is unknown or above `lan.arrival_hash_max_gb`. Hash not verified or timed out -> `LAN_SUSPECT` (`AAM-LAN-04`); no budget left for it (`budget.cap(lan.arrival_hash_timeout_seconds, 0)` raises) -> `LAN_PARTIAL`, `budget_stopped`, "copied and size-checked, but no time left for tonight's hash check" (`AAM-LAN-03`). Rows: `docs/TESTMATRIX_P1_REVIEW_2026-11-25.md` §8.
 
 **Post phase**
 8. `extended_metrics`: `stage_seconds`; `counts_source: "rclone"`; `tool_counts` (transfers, bytes, deletes, renames, errors, checks); `files_deleted`, `moves`, `deletes_held`, `failed_paths` (capped); `arrival` {verified, matching, missing, differ, changed_during_backup}; `total_files = arrival.matching` (ui.py:1902). Row: `files_copied = stats.transfers`, `bytes_copied = stats.bytes`, `files_failed`.
@@ -85,6 +96,13 @@ rclone check SRC DST --one-way --size-only --ignore-case --skip-links --checkers
 ```
 Plain stderr, no `--log-file`/JSON, so `cloud_verify.decide_cloud_verify_result` is reused unchanged.
 
+Hash check of tonight's transfers (review amendment S3, step `rclone-lan-hash`, runs only after a verified size-only check):
+```
+rclone check SRC DST --one-way --files-from-raw LIST --skip-links --ignore-case --checkers {lan.checkers}
+  --combined HASH_COMBINED
+```
+`LIST` = run-folder file `rclone-lan-hash-files` (UTF-8, one relative path per line) built by `lan_sync.transferred_files` from the sync JSON logs (`msg` starting `Copied (`: `Copied (new)`, `Copied (replaced existing)`). No `--size-only`, so the local backend reads both copies and compares MD5. No excludes: rclone refuses `--exclude` with `--files-from` (CRITICAL, exit 1, measured) and the list already passed the sync's excludes. `--files-from-raw`, not `--files-from`: the latter silently drops names starting with `#`/`;` and strips leading spaces (measured: such files were not checked). Decided by `decide_lan_arrival` with the same `changed_since` rule. Caveat: the NAS may serve the just-written data from its RAM cache, so this proves the SMB path and the NAS's view, not the disk surface; the weekly `integrity.audit_lan` stays the proof.
+
 **Never passed** (each has a test): `--ignore-errors --size-only(sync) --checksum --ignore-checksum --local-no-check-updated --local-nounc --error-on-no-transfer --delete-excluded --immutable --ignore-existing --config`.
 
 Exit 9: never expected (no `--error-on-no-transfer` on LAN). A no-change night is `LAN_COMPLETE` with `transfers == 0`. No new status; legacy `LAN_NO_CHANGES_COMPLETE` stays read-only.
@@ -102,7 +120,7 @@ Reuses `final_stats`, `scan_rclone_log_for_errors`, `max_delete_reached`, `rclon
 | 7 | exit 0 with ERROR signals or `stats.errors > 0` | LAN_SUSPECT | |
 | 8 | exit 10 | LAN_PARTIAL | `time_limit_stopped=True` |
 | 9 | exit 5, stats present, `fatalError` not true | LAN_FAILED | `retryable=True` |
-| 10 | exit in {1,4,6}, stats present, `fatalError` not true | LAN_PARTIAL | `files_failed = max(stats.errors,1)`, `failed_paths` = final-attempt "Failed to copy" objects (capped `lan.error_tail_lines`), `deletes_held` = log has "not deleting files as there were IO errors" |
+| 10 | exit in {1,4,6}, stats present, `fatalError` not true | LAN_PARTIAL | `files_failed = max(stats.errors,1)`, `failed_paths` = final-attempt ERROR objects of "Failed to copy", "partial file rename failed" (read-only NAS file, R11) and "Couldn't delete" (file open on the NAS), never `*.Fs` objects, rclone's `.<8 hex>.partial` suffix stripped (capped `lan.error_tail_lines`; review amendment S1), `deletes_held` = log has "not deleting files as there were IO errors" |
 | 11 | `fatalError` true | LAN_FAILED | retryable False |
 
 A locked file = row 10: LAN_PARTIAL with no deletions (fixture `test_support/rclone_logs/locked_file_exit1.jsonl`). PARTIAL is never retried at flow level.
@@ -112,10 +130,12 @@ Added to `core/cloud_sync.py` (additive; cloud unchanged):
 - `combined_counts(path) -> {"=","*","+","-","!","?"}` (streams, counts by first char).
 - `planned_copy_bytes(log_text) -> int|None` (sum `size` over `skipped == "copy"`; any copy entry without int size -> None [VERIFY] so free-space fails closed).
 - `failed_object_paths(log_text, limit)`; `deletes_were_held(log_text)`; `rclone_deletes_of(result, max_delete)` (template: cloud closure flow.py:1829-1834; cloud keeps its closure for now).
+- (Review amendment S1) `failed_object_paths` accepts final-attempt ERROR/CRITICAL entries whose msg starts with `Failed to copy`, `partial file rename failed` or `Couldn't delete`, whose `object` is a non-empty str and whose `objectType` does not end in `.Fs`; applies `re.sub(r"\.[0-9a-f]{8}\.partial$", "", obj)`, then de-duplicates (log order) and caps.
+- (Review amendment M3) With `--backup-dir` the dry-run reports a deletion as `"skipped":"move into backup dir"` and a replaced file as `"skipped":"move"` (measured). `count_planned_deletes` counts `"delete"` and `"move into backup dir"`; `count_planned_moves` counts only `skipped` starting with `"move to "` (today's `startswith("move")` would count deletions and replaces as renames under Phase 1b and hide them from G3).
 
 `plan_lan_mirror` output: `source_files = = + * + +`; `dest_files = = + * + -`; `planned_deletes = count_planned_deletes`; `moves = count_planned_moves` (existing); `planned_copies`; `planned_bytes`. Any `!`/`?` line, exit != 0, ERROR signals or `stats.errors > 0` -> `ok=False`.
 
-`decide_lan_arrival(exit_code, stderr, combined_text, changed_since)` (pure): `decide_cloud_verify_result` decides completion/termination. Verified only if: completion true and exit in {0,1}; no `!` lines; `differences == (+ lines) + (* lines)` (else fail closed) [VERIFY]; every `+`/`*` path p has `changed_since(p)` true. `changed_since` = `max(st_mtime, st_ctime) >= changed_after_epoch - lan.modify_window_seconds` on the source file; OSError = not changed. `matching` parsed from "N matching files".
+`decide_lan_arrival(exit_code, stderr, combined_text, changed_since)` (pure): `decide_cloud_verify_result` decides completion/termination. Verified only if: completion true and exit in {0,1}; no `!` lines; `differences == (+ lines) + (* lines)` (else fail closed) [VERIFY]; every `+`/`*` path p has `changed_since(p)` true. `changed_since` = `max(st_mtime, st_ctime) >= changed_after_epoch` on the source file (review amendment M2: no `- lan.modify_window_seconds` tolerance; a file last written before the attempt started was seen by that attempt, so a difference on it is real); OSError = not changed. Docstring note: on Windows with Python 3.12 `st_ctime` is the creation time (`== st_birthtime`, measured), so a file created during the backup counts even when its mtime is old. `matching` parsed from "N matching files". A summary with more "errors while checking" than differences is not verified (row A10).
 
 ## 3. Config
 New keys (each added in the chunk whose code reads it, with `config_help` entry):
@@ -123,12 +143,17 @@ New keys (each added in the chunk whose code reads it, with `config_help` entry)
 |---|---|---|---|
 | `lan.transfers` | 4 | 1..32 | builder (replaces `mt_threads`) |
 | `lan.checkers` | 4 | 1..32 | builder, check |
-| `lan.modify_window_seconds` | 2 | 0..10 | builder, arrival tolerance (LAN no longer reads `cloud.modify_window_seconds`) |
+| `lan.modify_window_seconds` | 2 | 0..10 | builder only (review amendment M2: no longer the arrival tolerance; LAN no longer reads `cloud.modify_window_seconds`) |
 | `lan.error_tail_lines` | 100 | 1..10000 | decision, plan, alerts (LAN no longer reads cloud's) |
 | `lan.verify_timeout_seconds` | 1800 | 60..14400 | arrival check |
 | `guards.min_delete_floor_files` | 20 | 0..100_000 | `max_delete_allowance` (both legs) |
+| `lan.arrival_hash_transferred` | true | bool | `flow.lan_verify_task` (review S3, chunk R8a). config_help: "Hash-check tonight's copied files" / "After the size check, the files copied tonight are read back from the NAS and compared by content." |
+| `lan.arrival_hash_max_gb` | 50 | 0..10000 (GB = 1024**3, `permissions.GB`) | `flow.lan_verify_task`: above it the hash is skipped and recorded (`metrics.arrival.hash.reason`), size-only verdict kept. config_help: "Largest nightly copy that is hash-checked" / "On nights that copied more than this, only sizes are checked; the weekly safety check still compares content." |
+| `lan.arrival_hash_timeout_seconds` | 3600 | 60..14400 | `lan_sync.check_lan_transfers_hash` via `budget.cap(..., 0)`. config_help: "Time for the nightly hash check" / "The hash check of tonight's copied files gives up after this long." |
 
-Kept, new meaning (descriptions updated): `lan.retry_count` -> `--retries`; `lan.retry_wait_seconds` -> `--retries-sleep`; `lan.rclone_measure_timeout_seconds` = dry-run timeout; `lan.track_renames` also applies to the copier; `lan.subprocess_timeout_seconds` = sync timeout; `lan.max_attempts`, `lan.retry_delay_seconds` = flow retries (exit 5 only); `budget.lan_post_reserve_minutes` covers arrival check + shutdown.
+Decision (S3 timeout): a new key, not a share of `lan.verify_timeout_seconds`. The size-only check scales with the file count of the whole tree (a walk); the hash check scales with tonight's bytes (both copies read in full). One number cannot be right for both, and a shared budget would let a slow walk silently starve the hash (or the reverse). Both are still capped by the run budget, and `budget.lan_post_reserve_minutes` must cover both (§6 gate step).
+
+Kept, new meaning (descriptions updated): `lan.retry_count` -> `--retries`; `lan.retry_wait_seconds` -> `--retries-sleep`; `lan.rclone_measure_timeout_seconds` = dry-run timeout; `lan.track_renames` also applies to the copier; `lan.subprocess_timeout_seconds` = sync timeout; `lan.max_attempts`, `lan.retry_delay_seconds` = flow retries (exit 5 only); `budget.lan_post_reserve_minutes` covers the arrival check, the hash check of tonight's transfers and the verified NAS shutdown (review amendment S7: models/config.py description still says "destination walk", config_help label says only "switching the NAS off"; both fixed in chunk R7).
 
 To `DEPRECATED_KEYS`: `"lan": {mt_threads, log_tail_kb, dry_run_timeout_seconds, use_backup_mode, privilege_check_timeout_seconds}`, `"maintenance": {orphan_robocopy_log_max_age_hours}`. Also remove from config_edit.py:56,:137; config_help.py:98-117,:250; config.example.yaml; deploy/probe_service_account.py:80-88; tools/livebox/rig.py:598-599.
 
@@ -168,6 +193,27 @@ Each chunk: Haiku writes tests FIRST from the matrix rows and shows them fail on
 | C12 | Audit lab | new `audit_lab/test_w25_rclone_lan.py`; adapt `test_w4_pipeline.py` (LAN case), `test_fy_overlap_lab.py` (drop `strip_zb` patch; :402 looks for UTF-8 rclone log), `test_w6b_rollover_nas_off.py` | L1-L11 | - | 4 files green with clean `PREFECT_HOME` | Haiku |
 
 **Status 2026-11-25:** C10a-c and C11 are DONE (code `3483065`, tests `1adbae2`; sweep `fe48776`, `c7512ee`; log `agent_runs/p1_sweep.md`). Next: C12.
+
+**Review amendments 2026-11-25 (owner-approved items M2, M3, M4, R11, S1, S2, S3, S4, S5, S7 of the Opus robustness review; S6, S8 deferred).** Status: PLANNED, nothing built. Reference rows and measured facts: `docs/TESTMATRIX_P1_REVIEW_2026-11-25.md`. M4 and R11 are doc-only (§6). Same process as §5: Haiku writes the tests first and shows them red on the current code (R2: red on the named mutant instead, the branch already exists); Sonnet writes the code and may not edit those tests (a wrong test goes back to Opus); Haiku runs the loops; `git diff --stat` per chunk is compared with the scope below; Opus reviews each chunk with the §11 mutation list. Commit per chunk, citing the R-ID and the review item. Rows marked "to be rewritten by the test agent under Opus" are the only existing tests whose expectations change.
+
+Acceptance command form (from the repo root, `PYTHONPATH=.`): `C:\Users\malliath\Desktop\aam_backup\.venv\Scripts\python.exe -m pytest <files> -q -p no:cacheprovider -o addopts="" --timeout=600`.
+
+| # | Item | Files (~lines) | Behaviour | Tests first (Haiku) | Code (Sonnet) | Acceptance |
+|---|---|---|---|---|---|---|
+| R1 | M2 | core/lan_sync.py `check_lan_arrival` (~6: threshold, docstring incl. st_ctime note) | `changed_since` threshold = epoch | A2b, A3b, A3c, A3d + the two rewritten tests in tests/test_p1_c7_lan_arrival.py (matrix §1) | yes | test_p1_c7_lan_arrival.py, test_p1_c9_lan_pipeline.py |
+| R2 | S2 | tests/test_p1_c7_lan_arrival.py only (~20) | none (test-only) | A10, A10b | none | test_p1_c7 green; Opus: deleting the branch turns A10 red |
+| R3 | S1 | core/cloud_sync.py `failed_object_paths` (~15); fixtures `test_support/rclone_logs/lan_readonly_dst_exit1.jsonl`, `lan_locked_dst_delete_exit1.jsonl` + LAN_FIXTURES.md entries (test agent generates) | §2.3 S1 rule; reason wording only after owner Q4 | D17-D17f in tests/test_p1_c5_lan_decision.py / test_p1_c3_parsers.py | yes | test_p1_c3, test_p1_c5, test_p1_c6, test_cloud_sync* |
+| R4 | M3 | core/cloud_sync.py `count_planned_deletes`, `count_planned_moves` (~8, docstrings) ; fixture `lan_backupdir_dryrun.jsonl` (test agent generates) | §2.3 M3 rule (cloud never uses `--backup-dir`, so no cloud change) | P7, P7b, P7c in tests/test_p1_c3_parsers.py | yes | test_p1_c3, test_p1_c8, test_cloud_sync* |
+| R5 | S4 | core/integrity.py `audit_lan` (~20; imports `lan_sync.LAN_EXCLUDES`, local import if a cycle appears) | matrix §5 rule, ordered `--filter` for shards | AU1-AU4 in new tests/test_p1_r5_audit_filters.py (AU3/AU4 real rclone local -> local) | yes | new file + test_integrity_audit.py, test_lan_canary_integrity.py, test_integrity_tool_runner.py |
+| R6 | S5 | flow.py `lan_sync_task` (~15) + post-block verify text (~2); core/cloud_sync.py `MAX_DURATION_MARGIN_S` constant used by `resolve_max_duration_seconds` (~3) | matrix §6 rule (`killed_after_cutoff`, `AAM-LAN-04`, LAN_PARTIAL) | W14, W14b, W14c in tests/test_p1_c9_lan_pipeline.py | yes | test_p1_c9, test_characterization_core.py, test_cloud_sync_comprehensive.py |
+| R7 | S7 | models/config.py (`lan_post_reserve_minutes` description), core/config_help.py label/help (~4) | text | K4 in new tests/test_p1_r7_reserve_text.py | yes | new file + test_m4_settings*, test_config_validation.py |
+| R8a | S3 keys + list | models/config.py 3 keys (~12), core/config_help.py (~6), core/lan_sync.py `transferred_files` (~25); fixture `lan_replaced.jsonl` | matrix §8 keys and `transferred_files` | K5, H1-H6 in new tests/test_p1_r8_hash.py | yes | new file + test_config_validation.py, test_m4_settings* |
+| R8b | S3 check | core/lan_sync.py `check_lan_transfers_hash` + shared `changed_since` helper used by both checks (~55); test_support/fake_tools.py `LAN_RCLONE_STEPS` + `"rclone-lan-hash"` (test agent, ~2); fixtures `lan_hash_clean.*`, `lan_hash_md5diff.*` | §2.1 second command | A11, A12, A12b, A12c, A13 (wrapper part), T1 self-test | yes | test_p1_r8_hash.py, test_p1_t0_fake_rclone_lan.py, test_p1_c7 |
+| R8c | S3 task | flow.py `lan_verify_task` (~45) | matrix §8 task rules (skip reasons, cap, budget, OSError) | A13 (task), A13h, A13i via `lan_verify_task.fn` with fakes | yes | test_p1_r8_hash.py |
+| R8d | S3 wiring | flow.py `_run_lan_pipeline` run_once log collection, hash budget branch, metrics (~25) | matrix §8 flow rules | W15, W16, A13b-A13g + rewrites of W1/W7/W10 (matrix §8) | yes | test_p1_c9, then the mechanical sweep below |
+| R9 | sweep | test files using `fake_rclone_lan` in a flow | only "no spec for step 'rclone-lan-hash'" fixed (add a clean hash spec); log `agent_runs/p1_review_sweep.md`; anything else to Opus | - | Haiku runs, Sonnet fixes | fast loop + slow file (CLAUDE.md) green |
+| R10 | labs | audit_lab/test_w25_rclone_lan.py (~120) | L12, L13, L13b, L14 (matrix §9) | Haiku writes and runs (lab rows are the tests) | none expected; a real-rclone surprise goes to Opus | w25 file green with a clean `PREFECT_HOME`; L1-L11 still green |
+| R11 | review | - | Opus: full-suite result, `git diff --stat` vs scope, matrix §11 mutations, `ruff check` on changed files | - | - | gate item 7 (§6) |
 
 ### Test files
 - **Rewrite** (10): test_lan_sync.py (M,D,R), test_lan_result_contract.py (D), test_lan_preflight_comprehensive.py (G-1..4, PL), test_lan_canary_integrity.py (G-2, L9 unit form), test_track_renames_g3.py, test_track_renames_review_fixes.py (G-6, cross-check gone), test_m2_guard_wiring.py LAN part, test_m2_preflight_permissions.py (drop privilege; G-11), test_xr_sync_attempts.py LAN part (W3,W7), test_f1_run_artefact_names.py.
@@ -211,6 +257,7 @@ Each chunk: Haiku writes tests FIRST from the matrix rows and shows them fail on
 - R8 Robocopy-era lab files stay red until Phase 2; listed in handoff.
 - R9 Lost NTFS metadata (ACLs, attributes, creation times, `/ZB`). Accepted by owner's rclone-only decision; record in handoff.
 - R10 rclone prints "Config file not found - using defaults" at NOTICE; a D-row fixture includes it so it never counts as an error.
+- R11 Read-only files on the NAS mirror (review amendment). Robocopy copied the read-only attribute to the NAS; rclone does not copy attributes but cannot REPLACE a read-only destination file: `partial file rename failed: rename <file>.<8 hex>.partial <file>: Access is denied`, then "not deleting files as there were IO errors", exit 1 (measured on the loopback share). Every night that file's source changes: `LAN_PARTIAL`, all deletions held, the sync repeated `lan.retry_count` (3) times. Deleting a read-only destination file works (measured), so only changed files are hit. Mitigation now: S1 names the file in the PARTIAL alert (row D17, lab L12). Shadow step A counts read-only files on the mirror, read-only. A one-time `attrib -R /S` of the mirror (or a per-file clear) is an OWNER decision because it touches backup data; it is NOT built in Phase 1. On Samba the attribute depends on `map readonly` / `store dos attributes`, so the count on the real NAS is the number that matters.
 
 **Gate (Phase 1 done when):**
 1. Full unit suite green (fast loop + slow file per CLAUDE.md).
@@ -219,11 +266,19 @@ Each chunk: Haiku writes tests FIRST from the matrix rows and shows them fail on
 4. `ruff check` clean on changed files.
 5. Opus diff review incl. R5 mutation checks passes; `git diff --stat` per chunk within scope.
 6. `SESSION_HANDOFF.md` and the fact sheet updated; deferred list copied into the handoff.
+7. Review amendments R1-R10 done (status line below), their test matrix rows green, R5 mutation list of `docs/TESTMATRIX_P1_REVIEW_2026-11-25.md` §11 red on each mutant.
+
+**Before the box switch (review amendment M4, timeouts; doc only, measured in shadow step A):**
+1. Record the wall time of the LAN dry-run (`rclone-lan-plan`), the size-only arrival check (`rclone-lan-check`) and the hash check of a typical night (`rclone-lan-hash`) against the real mirror.
+2. Set `lan.rclone_measure_timeout_seconds` >= 3x the measured dry-run, `lan.verify_timeout_seconds` >= 3x the measured size-only check, `lan.arrival_hash_timeout_seconds` >= 3x the measured hash check (each within its bounds; a value above the bound is an owner question, not a bound change).
+3. Check `budget.lan_post_reserve_minutes * 60` >= measured check + measured hash + `wol.shutdown_verify_timeout_seconds`, with margin; otherwise raise it (owner sees the number) so a budget-limited night still verifies and shuts the NAS down.
 
 ## 7. Owner questions (none block Phase 1; all needed before the box switch, Phase 1b)
 1. Copy-only on a G3-only block (new/changed files copied, deletions wait for approval)? Default yes, Phase 1b, both legs.
 2. `--backup-dir` on the NAS: how many days, how much space? Default 60 days, Phase 1b before the switch.
 3. Small-tree floor of 20 files (min of 500, max of 20 or 10%). Default 20 (built in C1).
+4. (Review amendments) PARTIAL wording: with S1 a PARTIAL can name a file that was not REMOVED on the NAS (open there) or not REPLACED (read-only there). Today's reason says "K file(s) could not be copied" and `AAM-LAN-02` advises "close programs (Tally, Excel)", which is wrong for those two. Proposed default: reason "K file(s) could not be copied or updated on the NAS: <paths>" in R3; fault text unchanged until the notify work. Needs a yes before R3 changes the reason text (R3 builds only the paths otherwise).
+5. (R11) One-time `attrib -R` of the NAS mirror after shadow step A counts the read-only files: yes/no (touches backup data; not built).
 
 ## Fact sheet (C0b output goes here)
 
@@ -272,3 +327,4 @@ Test rows (written first, by the test agent)
 - V10: backup-dir inside the mirror root or on another share is refused at config validation / preflight.
 - V11: free-space check counts the versions folder growth; low space -> FAIL before the sync.
 - V12: real rclone local->UNC (audit lab): deletes + replaces land in the run folder with identical relative paths and content.
+- V13 (review amendment M3; counters fixed now in chunk R4): with `--backup-dir` the plan counts `move into backup dir` as deletes and only `move to ...` as moves (P7); `--max-delete` counts backup-dir deletions (measured: exit 7 after 1 of 3) and not replace moves (measured: `--max-delete 0` + 1 replace = exit 0); metrics `moves` must not be `stats.renames` under backup-dir (it also counts backup moves: measured 6 for 3 renames + 1 replace + 2 deletes); a replaced file logs `Copied (new)`, so the S3 hash list still holds it; the space check counts the sizes of `"skipped":"move"` (replaced) and `move into backup dir` entries as versions-folder growth. Rows: `docs/TESTMATRIX_P1_REVIEW_2026-11-25.md` §10.
