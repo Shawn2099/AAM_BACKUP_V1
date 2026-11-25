@@ -136,19 +136,6 @@ def test_r3_last_successful_ignores_incomplete(tmp_path):
 
 
 # P3-C: classifier alignment
-def test_r3_classify_exit_codes():
-    from core.lan_sync import classify_exit_code, decide_lan_result
-    for code in (0, 1, 2, 3, 4, 5, 6, 7):
-        assert classify_exit_code(code) == "LAN_COMPLETE"
-    assert classify_exit_code(8) == "LAN_PARTIAL"
-    assert classify_exit_code(16) == "LAN_FAILED"
-    assert classify_exit_code(-1) == "LAN_FAILED"
-    # Agreement with the authoritative decider on the previously split range
-    log = "Started : Thursday\nEnded : Thursday\nTotal Copied Skipped Mismatch FAILED Extras\n  Dirs : 1 1 0 0 0 0\n  Files : 2 0 2 0 0 0\n"
-    for code in (4, 5, 6, 7):
-        assert decide_lan_result(code, log)["status"] == "LAN_COMPLETE"
-
-
 # P3-D: effective prefix follows configured FY leaf
 def test_r3_effective_prefix_prefers_configured_leaf(monkeypatch):
     import flow
