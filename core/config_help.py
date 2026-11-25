@@ -25,6 +25,7 @@ SECTION_TITLES = {
     "run_logs": "Detailed logs",
     "guards": "Protection against accidental deletion",
     "approvals": "Approvals",
+    "tools": "Backup tool safety",
     "rollover": "New financial year",
     "audit": "Weekly safety check",
     "watchdog": "Self-repair (watchdog)",

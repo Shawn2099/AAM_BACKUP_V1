@@ -679,15 +679,17 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
                      if (event.kind != "RECOVERED" and dup_s > 0) else None)
         is_dup = (prior_any is not None
                   and _KIND_RANK.get(prior_any.get("kind"), 0) >= _KIND_RANK.get(event.kind, 0)
+                  and not db.sent_in_mode_after(incident_group(event), prior_any["id"], recovered=True)
+                  and not _incident_closed(event, db, config, prior_any)
                   and _within_seconds(prior_any["created_at"], dup_s))
-        if is_dup:
-            result = DeliveryResult(
-                SUPPRESSED, f"duplicate alert already sent at {prior_any['created_at']} "
-                            f"(window {dup_s}s)")
-        elif same and cooldown_h > 0 and _within_hours(same["created_at"], cooldown_h):
+        if same and cooldown_h > 0 and _within_hours(same["created_at"], cooldown_h):
             result = DeliveryResult(
                 SUPPRESSED, f"same alert already sent at {same['created_at']} "
                             f"(cooldown {cooldown_h}h)")
+        elif is_dup:
+            result = DeliveryResult(
+                SUPPRESSED, f"duplicate alert already sent at {prior_any['created_at']} "
+                            f"(window {dup_s}s)")
         else:
             headers = {"X-AAM-Reference": event.run_id or event.key}
             if event.fault_code:

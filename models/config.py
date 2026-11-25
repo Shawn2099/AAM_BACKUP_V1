@@ -1333,8 +1333,6 @@ class AppConfig(StrictModel):
     def cross_field_validation(self) -> "AppConfig":
         if self.lan.enabled and not self.paths.lan_destination.startswith("\\\\"):
             raise ValueError("Enter the NAS folder as \\\\server\\share, or switch the LAN backup off. The LAN backup needs a network folder.")
-        if self.lan.enabled and self.lan.versions_enabled:
-            resolve_versions_root(self.paths.lan_destination, self.lan.versions_folder)
         if self.cloud.enabled and not self.paths.gcs_key_path:
             raise ValueError("Choose the Google Cloud key file, or switch the cloud backup off. The cloud backup cannot sign in without it.")
         if not self.lan.enabled and not self.cloud.enabled:
@@ -1396,6 +1394,9 @@ class AppConfig(StrictModel):
                 "The system refuses to start otherwise: the backup would overwrite the old "
                 "year's data with the new year's. Fix the NAS folder under Settings > Advanced (or ask support)."
             )
+
+        if self.lan.enabled and self.lan.versions_enabled:
+            resolve_versions_root(self.paths.lan_destination, self.lan.versions_folder)
 
         return self
 

@@ -55,6 +55,7 @@ def _msgs(srv):
 def test_unchanged_problem_is_suppressed_a_new_cause_is_not(tmp_path, db):
     with smtp_server() as srv:
         cfg = _cfg(tmp_path, srv.server_address[1])
+        cfg.alerts.duplicate_window_seconds = 0
         assert nt.notify(cfg, _fail(), db=db).status == nt.SENT
         assert nt.notify(cfg, _fail(), db=db).status == nt.SUPPRESSED
         assert nt.notify(cfg, _fail("AAM-NAS-03"), db=db).status == nt.SENT   # new cause
@@ -75,6 +76,7 @@ def test_failure_after_a_recovery_is_never_suppressed(tmp_path, db):
 def test_reminders_and_resolved_reply_to_the_first_email(tmp_path, db):
     with smtp_server() as srv:
         cfg = _cfg(tmp_path, srv.server_address[1], cooldown=0)     # 0 = every repeat is sent
+        cfg.alerts.duplicate_window_seconds = 0
         nt.notify(cfg, _fail(), db=db)
         nt.notify(cfg, _fail(), db=db)
         nt.notify(cfg, _resolved(), db=db)

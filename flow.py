@@ -1129,6 +1129,23 @@ def wol_check_task(config):
     ensure_server_online(config)
 
 
+def _auto_backup_dir(config, artefacts_dir: str | None = None) -> str | None:
+    """Resolve per-run, per-FY `--backup-dir` when versions are enabled on a real config."""
+    lan = getattr(config, "lan", None)
+    if not lan or getattr(lan, "versions_enabled", False) is not True:
+        return None
+    vf = getattr(lan, "versions_folder", None)
+    dst = getattr(getattr(config, "paths", None), "lan_destination", None)
+    if not isinstance(vf, str) or not isinstance(dst, str):
+        return None
+    try:
+        fy = _effective_fy_prefix(config)
+        tag = Path(artefacts_dir).name[-6:] if artefacts_dir else ""
+        return lan_sync.backup_dir_for_run(dst, vf, fy, run_tag=tag)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @task(name="lan-preflight")
 def lan_preflight_task(config, artefacts_dir: str, backup_dir: str | None = None):
     """SMB probe, mount marker, G1 first file, then ONE rclone dry-run (plan P1 section 2 step 3).
@@ -1154,7 +1171,7 @@ def lan_preflight_task(config, artefacts_dir: str, backup_dir: str | None = None
         return {"source_empty": True, "canary_present": canary_present}
     plan = plan_lan_mirror(config.lan, config.paths.source_drive,
                            config.paths.lan_destination, artefacts_dir,
-                           backup_dir=backup_dir)
+                           backup_dir=backup_dir or _auto_backup_dir(config, artefacts_dir))
     if not plan["ok"]:
         raise faults.coded(RuntimeError(
             f"LAN guard measurement failed: rclone sync --dry-run did not complete "
@@ -1400,7 +1417,7 @@ def lan_sync_task(config, artefacts_dir: str, max_delete: int,
     result = lan_sync.run_lan_mirror(
         config.lan, config.paths.source_drive, config.paths.lan_destination, artefacts_dir,
         max_delete=max_delete, max_duration_s=max_duration, timeout=timeout,
-        mode=mode, backup_dir=backup_dir)
+        mode=mode, backup_dir=backup_dir or _auto_backup_dir(config, artefacts_dir))
     if limited and result.get("timed_out") and max_duration is not None:
         # S5: rclone had --max-duration with --cutoff-mode SOFT and still did not stop in
         # time: it hung (NAS I/O) and was killed. That is not a clean budget stop.
@@ -2146,14 +2163,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
                 # completed now that the NAS is awake - before G5 looks for the mount marker
                 _complete_pending_rollover_nas_folder(config)
-            backup_dir = (
-                lan_sync.backup_dir_for_run(
-                    config.paths.lan_destination, config.lan.versions_folder,
-                    _effective_fy_prefix(config), started_at, run_tag=run_id[-6:],
-                )
-                if getattr(config.lan, "versions_enabled", False) else None
-            )
-            plan = preflight(config, artefacts_dir, backup_dir=backup_dir)
+            plan = preflight(config, artefacts_dir)
             try:
                 guard_record = lan_guards_task(
                     config, _effective_fy_prefix(config), plan,
@@ -2165,15 +2175,14 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     lan_access_task(config, plan, run_id)
                     try:
                         copy_res = sync(config, artefacts_dir, max_delete=0,
-                                        budget=budget, mode="copy", backup_dir=backup_dir)
+                                        budget=budget, mode="copy")
                         cstats = (copy_res or {}).get("stats") or {}
                         files_copied = int(cstats.get("transfers") or 0)
                         bytes_copied = int(cstats.get("bytes") or 0)
                         gb.record["copy_only"] = {
                             "copied": files_copied,
                             "bytes": bytes_copied,
-                            "deletes_held": plan.get("planned_deletes", 0),
-                            "backup_dir": backup_dir,
+                            "deletes_held": plan.get("planned_deletes", 0) if isinstance(plan, dict) else 0,
                         }
                     except Exception as copy_exc:  # noqa: BLE001 - copy-only failure never hides the G3 block
                         logger.warning(f"LAN copy-only on G3 block failed: {copy_exc}")
@@ -2200,7 +2209,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 attempt_clock["epoch"] = time.time()
                 try:
                     result = sync(config, artefacts_dir, max_delete=caps["max_delete"],
-                                  budget=budget, backup_dir=backup_dir)
+                                  budget=budget)
                 except SyncFailed as e:
                     if isinstance(e.result, dict) and e.result.get("log_path"):
                         sync_logs.append(e.result["log_path"])
@@ -2302,7 +2311,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 if isinstance(stats, dict) else None,
                 "files_deleted": stats.get("deletes") if isinstance(stats, dict) else None,
                 "moves": (plan.get("moves")
-                          if isinstance(plan, dict) and getattr(config.lan, "versions_enabled", False)
+                          if isinstance(plan, dict) and getattr(config.lan, "versions_enabled", False) is True
                           else (stats.get("renames") if isinstance(stats, dict) else None)),
                 "deletes_held": deletes_held,
                 "failed_paths": failed_paths,
@@ -2326,7 +2335,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             # powering off the NAS now strands them until the next WoL, and the
             # partial state must be reported, not silent.
             if status == "LAN_COMPLETE":
-                if getattr(config.lan, "versions_enabled", False):
+                if getattr(config.lan, "versions_enabled", False) is True:
                     try:
                         from core import lan_versions
                         lan_versions.purge_old_versions(
@@ -3592,12 +3601,12 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
                     # (or the failure shutdown is configured, the rule of today)
                     extra["allow_shutdown"] = last and (
                         earlier_completed or config.lan.shutdown_on_all_retries_exhausted is True)
+                    extra["wake_nas"] = _wake_nas_once
                 try:
                     result = _run_lan_pipeline(p.config if p is not None else config, lan_run_id, now_iso(),
                                                time.monotonic(), approval_id=approval_id,
                                                budget_hours=budget_hours,
-                                               late_seconds=late_s if index == 0 else 0.0,
-                                               wake_nas=_wake_nas_once, **extra)
+                                               late_seconds=late_s if index == 0 else 0.0, **extra)
                     earlier_completed = earlier_completed and isinstance(result, dict) \
                         and result.get("status") == "LAN_COMPLETE"
                 except Exception as e:
