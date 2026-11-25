@@ -1448,7 +1448,12 @@ def _hash_plan(config, log_paths: list[str], arrival: dict) -> tuple[dict, list[
         try:
             texts.append(Path(p).read_text(encoding="utf-8", errors="replace"))
         except OSError as e:
-            return skip(f"copy log unreadable: {e}")
+            # Fail closed: files may have been copied but cannot be listed, so the
+            # size-only verdict must not stand as verified (caller makes it LAN_SUSPECT).
+            info, no_paths = skip("copy log unreadable: could not read tonight's sync log "
+                                  f"({e})")
+            info["verified"] = False
+            return info, no_paths
     paths, total = lan_sync.transferred_files(texts)
     if not paths:
         return skip("nothing copied tonight", 0, 0)
@@ -2178,6 +2183,12 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 if arrival is not None:
                     # S3: content check of tonight's copies, only after a verified arrival
                     hash_info, hash_paths = _hash_plan(config, sync_logs, arrival)
+                    if hash_info.get("verified") is False and not hash_paths:
+                        status = "LAN_SUSPECT"
+                        sync_result = {**sync_result, "status": status,
+                                       "error": "Hash check of tonight's copied files not "
+                                                f"possible: {hash_info.get('reason')}"}
+                        sync_state["result"] = sync_result
                     if hash_paths:
                         _t_hash = time.monotonic()
                         hash_res = None
