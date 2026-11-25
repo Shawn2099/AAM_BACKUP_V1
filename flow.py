@@ -1331,16 +1331,20 @@ def lan_guards_task(config, fy_prefix: str, plan: dict,
 
 
 @task(name="lan-access")
-def lan_access_task(config, plan: dict, run_id: str):
+def lan_access_task(config, plan: dict, run_id: str, copy_only: bool = False):
     """Prove the rights the mirror uses (plan WP4, CL3/LA7/LA9): read a real
     source file; create/read/delete a probe at the destination; NAS free
-    space for the bytes the rclone dry-run says will be copied. Runs AFTER the guards, so
+    space for the bytes the rclone dry-run says will be copied (plus planned
+    move bytes in copy-only mode, RF-4). Runs AFTER the guards, so
     nothing is ever written to a destination whose mount marker is not
     confirmed. A missing right FAILS the run."""
     dest = config.paths.lan_destination
     permissions.probe_source_read(config.paths.source_drive)
     permissions.probe_destination_write(dest, run_id)
     bytes_needed = (plan or {}).get("planned_bytes")
+    if copy_only and bytes_needed is not None:
+        move_bytes = (plan or {}).get("planned_move_bytes")
+        bytes_needed = None if move_bytes is None else bytes_needed + move_bytes
     if bytes_needed is not None and getattr(config.lan, "versions_enabled", False):
         log_path = (plan or {}).get("log_path")
         if log_path:
@@ -2158,7 +2162,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             except guards.GuardBlocked as gb:
                 if guards.is_g3_only_block(gb.record):
                     guard_record = gb.record
-                    lan_access_task(config, plan, run_id)
+                    lan_access_task(config, plan, run_id, copy_only=True)
                     gb.record["copy_only"] = {
                         "attempted": True,
                         "copied": None,

@@ -227,6 +227,22 @@ def planned_copy_bytes(log_text: str) -> int | None:
     return total
 
 
+def planned_move_bytes(log_text: str) -> int | None:
+    """Bytes a copy-only run would copy for files a full sync would rename.
+
+    None when any `move to ` entry has no int size, so the free-space check
+    fails closed instead of trusting a partial sum.
+    """
+    total = 0
+    for _, entry in _json_entries(log_text):
+        if entry is not None and str(entry.get("skipped", "")).startswith("move to "):
+            size = entry.get("size")
+            if type(size) is not int:
+                return None
+            total += size
+    return total
+
+
 def counted_deletes(log_text: str) -> int | None:
     """Count real deletions from final-attempt INFO entries (F1: excludes failed delete attempts)."""
     entries = list(_json_entries(log_text))

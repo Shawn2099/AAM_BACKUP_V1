@@ -192,7 +192,7 @@ def test_x5_a_spawn_error_that_is_not_file_not_found_has_no_aam_sys_04(tmp_path)
 # ── PL: plan_lan_mirror ─────────────────────────────────────────────
 
 PLAN_KEYS = {"ok", "error", "exit_code", "source_files", "dest_files", "planned_deletes",
-             "moves", "planned_copies", "planned_bytes", "log_path", "combined_path"}
+             "moves", "planned_copies", "planned_bytes", "planned_move_bytes", "log_path", "combined_path"}
 
 
 def _plan_fixture(tmp_path, dryrun_log, combined, exit_code=0, stderr="", **spec_extra):

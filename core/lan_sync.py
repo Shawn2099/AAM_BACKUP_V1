@@ -270,6 +270,7 @@ def plan_lan_mirror(
     out = {"ok": False, "error": None, "exit_code": result.exit_code,
            "source_files": None, "dest_files": None, "planned_deletes": None,
            "moves": 0, "planned_copies": None, "planned_bytes": None,
+           "planned_move_bytes": None,
            "log_path": str(log_path), "combined_path": str(combined_path)}
     if result.spawn_error:
         out["error"] = result.spawn_error
@@ -304,6 +305,7 @@ def plan_lan_mirror(
         moves=cloud_sync.count_planned_moves(json_log),
         planned_copies=cloud_sync.planned_copy_count(json_log),
         planned_bytes=cloud_sync.planned_copy_bytes(json_log),
+        planned_move_bytes=cloud_sync.planned_move_bytes(json_log),
     )
     return out
 

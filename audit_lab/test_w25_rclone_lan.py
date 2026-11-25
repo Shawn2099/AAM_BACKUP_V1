@@ -500,3 +500,27 @@ def test_l14_weekly_audit_ignores_mirror_excludes(sandbox, unc_nas):
     assert sharded["status"] == "VERIFIED", sharded
     _verdict("L14", "weekly audit (full and sharded) VERIFIED: recycle bin, SVI, probe and marker not reported",
              True)
+
+
+# ── RF4-L ──────────────────────────────────────────────────────────────────────
+def test_rf4_l_plan_includes_planned_move_bytes(sandbox, unc_nas):
+    _, unc = unc_nas
+    src = sandbox / "source" / "FY26-27"
+    _seed_ledgers(src, 4)
+    cfg = _cfg()
+
+    res = _sync(cfg, src, unc, sandbox, "RF4L-seed")
+    assert res["status"] == "LAN_COMPLETE", res
+
+    target = next(p for p in (src / "Clients").rglob("*") if p.is_file())
+    size = target.stat().st_size
+    target.rename(target.with_name(f"renamed_rf4_{target.name}"))
+
+    art = sandbox / "runs" / "RF4L-plan"
+    art.mkdir(parents=True, exist_ok=True)
+    plan = plan_lan_mirror(cfg, str(src), unc, str(art))
+    assert plan["ok"] is True, plan
+    assert plan["moves"] >= 1, plan
+    assert plan["planned_move_bytes"] == size, plan
+    _verdict("RF4-L", f"plan_lan_mirror reported moves={plan['moves']} planned_move_bytes={plan['planned_move_bytes']}",
+             True)
