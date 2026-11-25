@@ -202,6 +202,25 @@ def label(status) -> str:
 BLOCKED_AFTER_CHANGES_NOTE = "Some files may already have been changed by this run before it was stopped."
 
 
+def copy_only_note(copy_only: dict | None) -> str:
+    """Return a truthful paragraph describing a G3 copy-only attempt, or empty string."""
+    if not copy_only or not copy_only.get("attempted"):
+        return ""
+    error = copy_only.get("error")
+    if error:
+        return (
+            f"Copy-only run was attempted but did not finish ({error}); "
+            "the number of files copied is unknown; no deletions were made."
+        )
+    copied = int(copy_only.get("copied") or 0)
+    mb = int(copy_only.get("bytes") or 0) / 1048576
+    held = int(copy_only.get("deletes_held") or 0)
+    return (
+        f"Copy-only run: {copied} file(s) ({mb:.2f} MB) were copied to the backup; "
+        f"no deletions were made, {held} planned deletion(s) are held until you approve."
+    )
+
+
 def describe(status, files_copied: int | None = 0, files_failed: int | None = 0,
              sync_attempted: bool = False) -> str:
     """One-sentence, truthful description for the dashboard card.

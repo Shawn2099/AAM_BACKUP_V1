@@ -1218,10 +1218,14 @@ def _open_block_request(config, leg: str, run_id: str, guard_record: dict,
     message = "\n".join(r.get("reason", "") for r in blocked)
     if rejected:
         message += f"\n\nThe approval supplied for this run was not applied: {rejected}"
+    sync_attempted = sync_attempted or bool((guard_record.get("copy_only") or {}).get("attempted"))
     changed = (statuses.BLOCKED_AFTER_CHANGES_NOTE if sync_attempted
                else "Nothing was copied or deleted.")
     message += (f"\n\n{changed} Open the dashboard to review the "
                 "numbers and either approve this backup once or dismiss it.")
+    co_note = statuses.copy_only_note(guard_record.get("copy_only"))
+    if co_note:
+        message += f"\n\n{co_note}"
     notify(config, AlertEvent(
         key=f"blocked:{leg}{_fy_key_part(fy)}", kind="ACTION_REQUIRED", mode=leg,
         title=f"{_leg_title(leg, title_fy or fy)} backup blocked - approval needed",
@@ -1750,18 +1754,23 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 if guards.is_g3_only_block(gb.record):
                     guard_record = gb.record
                     cloud_access_task(config, run_id, artefacts_dir)
+                    gb.record["copy_only"] = {
+                        "attempted": True,
+                        "copied": None,
+                        "bytes": None,
+                        "deletes_held": gb.record.get("planned_deletes", 0),
+                        "error": None,
+                    }
                     try:
                         copy_res = sync(config, fy_prefix, artefacts_dir,
                                         max_delete=0, budget=budget, mode="copy")
                         cstats = (copy_res or {}).get("stats") or {}
                         files_copied = int(cstats.get("transfers") or 0)
                         bytes_copied = int(cstats.get("bytes") or 0)
-                        gb.record["copy_only"] = {
-                            "copied": files_copied,
-                            "bytes": bytes_copied,
-                            "deletes_held": gb.record.get("planned_deletes", 0),
-                        }
+                        gb.record["copy_only"]["copied"] = files_copied
+                        gb.record["copy_only"]["bytes"] = bytes_copied
                     except Exception as copy_exc:  # noqa: BLE001 - copy-only failure never hides the G3 block
+                        gb.record["copy_only"]["error"] = str(copy_exc)[:300]
                         logger.warning(f"Cloud copy-only on G3 block failed: {copy_exc}")
                 raise
             cloud_access_task(config, run_id, artefacts_dir)
@@ -2150,18 +2159,23 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 if guards.is_g3_only_block(gb.record):
                     guard_record = gb.record
                     lan_access_task(config, plan, run_id)
+                    gb.record["copy_only"] = {
+                        "attempted": True,
+                        "copied": None,
+                        "bytes": None,
+                        "deletes_held": plan.get("planned_deletes", 0) if isinstance(plan, dict) else 0,
+                        "error": None,
+                    }
                     try:
                         copy_res = sync(config, artefacts_dir, max_delete=0,
                                         budget=budget, mode="copy")
                         cstats = (copy_res or {}).get("stats") or {}
                         files_copied = int(cstats.get("transfers") or 0)
                         bytes_copied = int(cstats.get("bytes") or 0)
-                        gb.record["copy_only"] = {
-                            "copied": files_copied,
-                            "bytes": bytes_copied,
-                            "deletes_held": plan.get("planned_deletes", 0) if isinstance(plan, dict) else 0,
-                        }
+                        gb.record["copy_only"]["copied"] = files_copied
+                        gb.record["copy_only"]["bytes"] = bytes_copied
                     except Exception as copy_exc:  # noqa: BLE001 - copy-only failure never hides the G3 block
+                        gb.record["copy_only"]["error"] = str(copy_exc)[:300]
                         logger.warning(f"LAN copy-only on G3 block failed: {copy_exc}")
                 raise
             lan_access_task(config, plan, run_id)
