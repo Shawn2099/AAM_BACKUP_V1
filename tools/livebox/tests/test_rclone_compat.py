@@ -54,7 +54,12 @@ def test_check_rclone_lan_metrics_validates_complete_partial_suspect_blocked(tmp
             "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             ("r1", "lan", ts, "LAN_COMPLETE", 3, 0, None,
-             json.dumps({"counts_source": "rclone", "arrival": {"verified": True, "hash": {"ran": True, "verified": True}}})),
+             json.dumps({"counts_source": "rclone", "arrival": {
+                 "verified": True,
+                 "hash": {"ran": True, "verified": True, "files": 3, "bytes": 120,
+                          "matching": 3, "missing": 0, "differ": 0, "changed_during_backup": 0,
+                          "reason": "", "unverified_paths": []},
+             }})),
         )
         conn.execute(
             "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
@@ -171,3 +176,37 @@ def test_spy_rollover_nas_allows_wake_on_switch_day_only(tmp_path):
     out2 = SimpleNamespace(new_rows=[], flow=SimpleNamespace(value=None, exc=None), value=None, exc=None, checks=[])
     h._event_checks(non_switch_day, ev, out2, wake=1, shut=0, arch=0)
     assert any(c["check_id"] == "SPY_ROLLOVER_NAS" and c["verdict"] == "FINDING" for c in out2.checks)
+
+
+def test_check_rclone_lan_metrics_flags_unverified_hash_without_aam_lan_04(tmp_path):
+    db = tmp_path / "manifest.db"
+    day = dt.date(2027, 1, 5)
+    conn = _make_db(db)
+    conn.execute(
+        "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r_hash_bad", "lan", "2027-01-05T21:05:00+05:30", "LAN_SUSPECT", 2, 0, "AAM-LAN-01",
+         json.dumps({"counts_source": "rclone", "arrival": {
+             "verified": False,
+             "hash": {"ran": True, "verified": False, "files": 2, "bytes": 10,
+                      "matching": 1, "missing": 0, "differ": 1, "changed_during_backup": 0,
+                      "reason": "1 differ", "unverified_paths": ["a.txt"]},
+         }})),
+    )
+    conn.commit()
+    conn.close()
+
+    ro = oracles.open_ro(db)
+    try:
+        v = oracles.check_rclone_lan_metrics(ro, day)
+        assert len(v) == 1 and "AAM-LAN-04" in v[0].detail
+    finally:
+        ro.close()
+
+
+def test_xr_scenario_skeletons_exist_and_are_ungated():
+    from tools.livebox.scenarios import rclone as rsc
+
+    ids = [s.id for s in rsc.SCENARIOS]
+    assert ids == ["XR1", "XR2", "XR3", "XR4"]
+    assert all(s.injection_wired is False for s in rsc.SCENARIOS)

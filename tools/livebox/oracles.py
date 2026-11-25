@@ -511,6 +511,10 @@ def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Vio
                 if h.get("ran") is True:
                     if h.get("verified") is not True:
                         out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_COMPLETE arrival.hash.ran=True but verified={h.get('verified')!r}"))
+                    if int(h.get("files") or 0) <= 0:
+                        out.append(Violation("METRICS", f"{day} {r['run_id']}: arrival.hash.ran=True with files={h.get('files')!r}"))
+                    if int(h.get("missing") or 0) != 0 or int(h.get("differ") or 0) != 0:
+                        out.append(Violation("METRICS", f"{day} {r['run_id']}: arrival.hash.ran=True on LAN_COMPLETE with missing={h.get('missing')} differ={h.get('differ')}"))
                 elif not h.get("reason"):
                     out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_COMPLETE with {copied} copies missing arrival.hash ran/reason"))
         elif status == "LAN_PARTIAL":
@@ -526,8 +530,11 @@ def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Vio
                     out.append(Violation("METRICS", f"{day} {r['run_id']}: unstripped partial suffix in failed_paths: {fp!r}"))
         elif status == "LAN_SUSPECT":
             arr = m.get("arrival") or {}
-            if arr.get("verified") is True:
+            h = arr.get("hash") or {}
+            if arr.get("verified") is True and not (h.get("ran") is True and h.get("verified") is False):
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_SUSPECT but arrival.verified=True"))
+            if h.get("ran") is True and h.get("verified") is False and r.get("fault_code") != "AAM-LAN-04":
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: hash unverified but fault_code={r.get('fault_code')!r}, want 'AAM-LAN-04'"))
         elif status == "LAN_BLOCKED" and r.get("fault_code") == "AAM-DEL-03":
             if m.get("max_delete_reached") is False:
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: AAM-DEL-03 with max_delete_reached=False"))
