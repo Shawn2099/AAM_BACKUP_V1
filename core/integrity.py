@@ -474,13 +474,21 @@ def audit_lan(
     reaches VERIFIED.
     """
     scope = "full" if not scope_prefixes else f"shard:{','.join(sorted(scope_prefixes))}"
-    extra = None
+    # S4: same filters as the mirror (LAN_EXCLUDES, skip symlinks, case-insensitive).
+    from core.lan_sync import LAN_EXCLUDES  # local import: avoids a circular import
+
+    extra = ["--skip-links", "--ignore-case"]
     if scope_prefixes:
-        extra = []
+        # rclone ignores --exclude when mixed with --include, so use ordered
+        # filter rules: excludes first, then the shard includes, then exclude the rest.
+        for e in LAN_EXCLUDES:
+            extra.extend(["--filter", f"- {e}"])
         for p in scope_prefixes:
-            extra.extend(["--include", f"{p.strip('/')}/**"])
-    # NOTE: include-filter form is validated by test_scope_sharding; if a
-    # future rclone changes filter semantics the test fails closed first.
+            extra.extend(["--filter", f"+ {p.strip('/')}/**"])
+        extra.extend(["--filter", "- **"])
+    else:
+        for e in LAN_EXCLUDES:
+            extra.extend(["--exclude", e])
     return _run_rclone_check(source, dest, f"lan/{scope}", timeout, extra_args=extra, **settings)
 
 
