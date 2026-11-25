@@ -543,6 +543,8 @@ approvals:
 
 tools:
   stall_timeout_seconds: 1800
+  rclone_expected_version: "1.74"
+  rclone_version_policy: "block"
 
 # ═══════════════════════════════════════════════════
 # FY ROLLOVER (checked daily by the rollover-check schedule)

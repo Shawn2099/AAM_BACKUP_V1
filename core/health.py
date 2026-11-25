@@ -70,6 +70,52 @@ def source_drive_fault(source_path: str,
     return None, ""
 
 
+_RCLONE_VERSION_CACHE: dict[tuple[str, str], str | None] = {}
+_RCLONE_VERSION_RE = re.compile(r"^rclone v(\d+\.\d+)\.\d+", re.MULTILINE)
+
+
+def rclone_version_fault(expected: str = "1.74", *,
+                         artefacts: RunArtefacts | None = None) -> str | None:
+    """Return a fault message if installed rclone major.minor != `expected`, else None.
+
+    Cached per (resolved binary path, expected) so `rclone version` runs at most once
+    per process for a given binary.
+    """
+    binary = resolve_binary("rclone")
+    if binary is None:
+        return "rclone not found in PATH"
+    cache_key = (str(binary), expected)
+    if cache_key in _RCLONE_VERSION_CACHE:
+        return _RCLONE_VERSION_CACHE[cache_key]
+    res = run_tool(
+        "rclone-version",
+        [binary, "version"],
+        timeout_s=30,
+        stall_timeout_s=0,
+        artefacts=artefacts or RunArtefacts.ephemeral("rclone-version"),
+    )
+    fault: str | None = None
+    if res.spawn_error:
+        fault = f"rclone version failed to start: {res.spawn_error}"
+    elif res.timed_out:
+        fault = "rclone version timed out after 30s"
+    elif res.exit_code != 0:
+        fault = f"rclone version exited {res.exit_code}"
+    else:
+        out = res.stdout_text()
+        m = _RCLONE_VERSION_RE.search(out)
+        if not m:
+            first_line = (out.splitlines()[0] if out.splitlines() else "").strip()
+            fault = f"Could not parse rclone version from {first_line!r}"
+        elif m.group(1) != expected:
+            fault = (
+                f"rclone {m.group(1)}.x at {binary} does not match "
+                f"expected tools.rclone_expected_version={expected}"
+            )
+    _RCLONE_VERSION_CACHE[cache_key] = fault
+    return fault
+
+
 def check_binary_exists(name: str) -> bool:
     """Check if binary is available locally or in PATH."""
     return resolve_binary(name) is not None

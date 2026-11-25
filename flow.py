@@ -23,7 +23,7 @@ from loguru import logger
 from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 
-from core import alert_class, approvals, faults, fy_overlap, fy_rollover, guards, permissions, report, statuses
+from core import alert_class, approvals, faults, fy_overlap, fy_rollover, guards, health, permissions, report, statuses
 from core.rclone_errors import find_transport_failure
 from core.backup_repository import (
     record_run_history,
@@ -678,6 +678,29 @@ def health_check_task(config, mode: str, artefacts_dir: str | None = None):
         w32tm_timeout_seconds=config.health.w32tm_timeout_seconds,
         artefacts=artefacts,
     )
+    if mode in ("cloud", "lan", "all"):
+        ver_fault = health.rclone_version_fault(
+            config.tools.rclone_expected_version, artefacts=artefacts,
+        )
+        if ver_fault:
+            if config.tools.rclone_version_policy == "block":
+                raise faults.coded(health.HealthError(ver_fault), "AAM-SYS-04")
+            logger.warning(
+                f"rclone version mismatch - continuing "
+                f"(tools.rclone_version_policy: warn): {ver_fault}"
+            )
+            notify(config, AlertEvent(
+                key="rclone_version",
+                kind="WARNING",
+                mode=mode,
+                title="rclone version mismatch",
+                message=ver_fault,
+                status="WARNING",
+                fault_code="AAM-SYS-04",
+                occurred_at=now_iso(),
+                artefacts_dir=artefacts_dir,
+                cooldown_hours=24,
+            ))
     # WP12: the clock verdict goes on the run row (dashboard: "clock unverified")
     return clock.to_metrics() if clock is not None else None
 

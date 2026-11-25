@@ -138,6 +138,10 @@ HELP: dict[str, tuple[str, str]] = {
                                 "Days after a mass-delete block when reminders are sent (weekly after the last day)."),
     "tools.stall_timeout_seconds": ("Kill a stalled backup tool after (seconds)",
                                     "Stops rclone sync and dry-run if its own progress counters do not change for this long (0 = off, 300-14400). Check, size and report tools are not stopped by this; they have their own time limits."),
+    "tools.rclone_expected_version": ("Expected rclone version (major.minor)",
+                                      "The rclone major.minor series this backup engine was tested against (e.g. 1.74)."),
+    "tools.rclone_version_policy": ("When rclone version differs",
+                                    "'block' stops the backup with AAM-SYS-04 if rclone's major.minor version does not match; 'warn' logs and emails once per day."),
 
     # ── WoL ──
     "wol.enabled": ("Switch the NAS on automatically", "Wake the NAS over the network before the backup."),

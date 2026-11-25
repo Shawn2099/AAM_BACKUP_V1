@@ -7,6 +7,7 @@ import ipaddress
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from loguru import logger
@@ -1269,6 +1270,14 @@ class ToolsConfig(StrictModel):
     stall_timeout_seconds: int = Field(
         default=1800, ge=0, le=14400,
         description="Kill rclone if no output/log progress is seen for this many seconds (0 = off, 300..14400).",
+    )
+    rclone_expected_version: str = Field(
+        default="1.74", pattern=r"^\d+\.\d+$",
+        description="Expected rclone major.minor version (e.g. '1.74').",
+    )
+    rclone_version_policy: Literal["block", "warn"] = Field(
+        default="block",
+        description="Action when installed rclone major.minor version differs from rclone_expected_version.",
     )
 
     @field_validator("stall_timeout_seconds")
