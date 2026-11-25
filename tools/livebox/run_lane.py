@@ -1845,14 +1845,11 @@ class LaneHooks:
             passes = max(1, len(statuses))
             self.lan_passes += passes
             if wake == passes and passes > 1 and shut == want_shut:
-                # D6 gate: plan 1.6 expects one wake per LAN flow; stays FINDING/KNOWN until WS-E E4 merges (then FAIL)
-                first = not self._wake_per_pass_seen
-                self._wake_per_pass_seen = True
+                # D6: E4 (wake once per LAN flow) is merged -> 2 wakes is a FAIL regression
                 out.checks.append(_check(
-                    "SPY_WAKE_PER_PASS", "FINDING" if first else "KNOWN",
-                    "NAS wake spy = 1 per LAN flow (plan 1.6)",
-                    f"{tag}: wake {wake}x for {passes} passes (flow.py:1129 wakes once per pass; the second call "
-                    f"finds the NAS up), shutdown {shut}x", finding="F-NEW-WAKE-PER-PASS"))
+                    "SPY_WAKE_PER_PASS", "FAIL",
+                    "NAS wake spy = 1 per LAN flow (plan 1.6 / E4)",
+                    f"{tag}: wake {wake}x for {passes} passes (expected 1 wake per LAN flow), shutdown {shut}x"))
             else:
                 out.checks += _viol_checks("SPY", [] if (wake == 1 and shut == want_shut) else
                                            [oracles.Violation("SPY", f"{tag}: wake {wake}x (want 1), shutdown {shut}x "

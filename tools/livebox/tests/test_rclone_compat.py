@@ -265,3 +265,21 @@ def test_check_rclone_lan_metrics_flags_hash_count_mismatch(tmp_path):
         assert len(v) == 1 and "checked=2 != files=3" in v[0].detail
     finally:
         ro.close()
+
+
+def test_spy_wake_per_pass_is_fail_after_e4(tmp_path):
+    lane = tmp_path / "stamp1" / "A"
+    lane.mkdir(parents=True)
+    h = rl.LaneHooks(lane, lane="A", stamp="stamp1", days=[], agent_runs=tmp_path / "ar", allow_dev_path=True)
+    h.rig = SimpleNamespace(config={"lan": {"shutdown_after_backup": True}}, runtime_dir=lane / "runtime")
+    ev = cal.Event(dt.datetime(2091, 1, 5, 21, 1, tzinfo=cal.IST), cal.LAN, "FY90-91")
+    day = SimpleNamespace(date=dt.date(2091, 1, 5), is_switch_day=False, rollover_result=None, rows=[], expect_raise=(), events=[],
+                          is_sunday=False, is_first_run=False, is_activation_day=False, is_first_of_month=False, is_leap_day=False, index=1)
+    out = SimpleNamespace(
+        new_rows=[{"run_id": "r1", "mode": cal.LAN, "status": "LAN_COMPLETE"},
+                  {"run_id": "r2", "mode": cal.LAN, "status": "LAN_COMPLETE"}],
+        flow=SimpleNamespace(value=None, exc=None),
+        checks=[],
+    )
+    h._event_checks(day, ev, out, wake=2, shut=1, arch=0)
+    assert any(c["check_id"] == "SPY_WAKE_PER_PASS" and c["verdict"] == "FAIL" for c in out.checks)

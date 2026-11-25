@@ -44,7 +44,7 @@ Launched via `box_run.ps1 -Action start` from `C:\AAMLivebox\harness_rclone` usi
 ## 6. Pass Criteria (G5)
 - `FAIL == 0` on every lane.
 - Every `FINDING` classified by Opus with evidence (`expected` / `harness` / `product`).
-- `SPY_WAKE_PER_PASS`: `FINDING`/`KNOWN` (`F-NEW-WAKE-PER-PASS`) until WS-E E4 merges; once E4 is merged, becomes required `PASS` (`1` wake per LAN flow; `2` wakes = `FAIL`).
+- `SPY_WAKE_PER_PASS`: `PASS` (1 wake per LAN flow; `2` wakes = `FAIL` regression, E4 merged).
 - `SPY_ROLLOVER_NAS`: `PASS` per OD6 (wake allowed at 1 Apr switch).
 - `2027-01-03` Sunday audit: `PASS` (with D0 churn mtime fix).
 - `0` watchdog `"Stale backup"` lines on `A2R`.
