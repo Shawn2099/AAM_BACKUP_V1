@@ -89,7 +89,7 @@ def build_lan_rclone_command(
     ]
     for pattern in LAN_EXCLUDES:
         cmd.extend(["--exclude", pattern])
-    if config.track_renames:
+    if config.track_renames and mode == "sync":
         cmd.append("--track-renames")
     if backup_dir:
         cmd.extend(["--backup-dir", str(backup_dir)])
