@@ -57,8 +57,8 @@ def _overlaps(runs: Any) -> list:
     out = []
     for i in range(1, len(spans)):
         if spans[i][0] < max(x[1] for x in spans[:i]):
-            out.append(f"robocopy overlap: {spans[i][2]!r} started {spans[i][0].isoformat()} "
-                       f"while an earlier robocopy was still running")
+            out.append(f"rclone LAN overlap: {spans[i][2]!r} started {spans[i][0].isoformat()} "
+                       f"while an earlier LAN rclone was still running")
     return out
 
 
@@ -89,12 +89,15 @@ def _expect_x36(res: Any) -> list:
 
 
 def _expect_no_overlap(res: Any) -> list:
-    return _overlaps(getattr(res, "robocopy_runs", None))
+    runs = getattr(res, "lan_rclone_runs", None) or getattr(res, "robocopy_runs", None)
+    return _overlaps(runs)
 
 
 def _expect_x39(res: Any) -> list:
-    out = [f"orphan robocopy left running after kill: {a}" for a in (getattr(res, "orphan_robocopy", None) or [])]
-    out += _overlaps(getattr(res, "robocopy_runs", None))
+    orphans = getattr(res, "orphan_rclone", None) or getattr(res, "orphan_robocopy", None) or []
+    out = [f"orphan rclone left running after kill: {a}" for a in orphans]
+    runs = getattr(res, "lan_rclone_runs", None) or getattr(res, "robocopy_runs", None)
+    out += _overlaps(runs)
     return out
 
 

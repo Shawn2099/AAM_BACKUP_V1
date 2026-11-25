@@ -1492,12 +1492,15 @@ class LaneHooks:
             {"allow_dev_path": self.allow_dev_path, "prod_facts": bool(self.prod), "results": rows}, indent=1),
             encoding="utf-8")
 
+    _LAN_RCLONE_STEPS = frozenset({"rclone-lan-plan", "rclone-lan-sync", "rclone-lan-check", "rclone-lan-hash"})
+
     def _install_run_tool_guard(self) -> None:
-        """S15 + S9: every robocopy / rclone argv stays inside the lane; gcloud / shutdown are refused."""
+        """S15 + S9: every rclone argv stays inside the lane; gcloud / shutdown are refused."""
         import core.tool_runner as tr
 
         real = tr.run_tool
         lane_root, viol, hooks = str(self.lane_root), self.argv_violations, self
+        lan_steps = self._LAN_RCLONE_STEPS
 
         def guarded(name, argv, **kw):
             exe = os.path.basename(str(argv[0])).lower()
@@ -1510,11 +1513,12 @@ class LaneHooks:
                 except SafetyRefusal as e:
                     viol.append(f"{e.rule}: {e.message}")
                     raise
-            fname = ("robocopy_runs.jsonl" if exe.startswith("robocopy") else
-                     "rclone_runs.jsonl" if exe.startswith("rclone") else None)
+            fname = ("lan_rclone_runs.jsonl" if name in lan_steps else
+                     "rclone_runs.jsonl" if exe.startswith("rclone") else
+                     "robocopy_runs.jsonl" if exe.startswith("robocopy") else None)
             if fname:
                 start = hooks.real.now()
-                row: dict = {"exit_code": None}
+                row: dict = {"step": name, "exit_code": None}
                 try:
                     result = real(name, argv, **kw)
                     code = getattr(result, "exit_code", None)
@@ -1870,10 +1874,18 @@ class LaneHooks:
         if base == cal.ROLLOVER_CHECK:
             self.rollover_wakes += wake
             self.rollover_shutdowns += shut
+            if day.is_switch_day:
+                # OD6: wake allowed at 1 Apr (new FY folder creation); shutdown follows lan.shutdown_after_backup or 0
+                shut_after = bool(self.rig.config.get("lan", {}).get("shutdown_after_backup", True))
+                shut_ok = (shut == 0) or (shut == 1 and shut_after)
+                verdict = "PASS" if shut_ok else "FAIL"
+            else:
+                verdict = "FINDING" if (wake or shut) else "PASS"
             out.checks.append(_check(
-                "SPY_ROLLOVER_NAS", "FINDING" if (wake or shut) else "PASS",
-                "owner 2026-11-23: the rollover check never touches the NAS (no wake, no shutdown)",
-                f"{tag}: wake {wake}, shutdown {shut}", finding="F-OWN-1" if (wake or shut) else None))
+                "SPY_ROLLOVER_NAS", verdict,
+                "OD6: wake allowed at 1 Apr switch; non-switch rollover never touches the NAS",
+                f"{tag}: wake {wake}, shutdown {shut}",
+                finding="F-OWN-1" if verdict == "FINDING" else None))
             exp_arch = 1 if day.is_switch_day else 0
             out.checks.append(_check("ARCHIVE", "PASS" if arch == exp_arch else "FAIL",
                                      f"archive transition calls: {exp_arch}", f"{tag}: {arch}"))
@@ -2032,9 +2044,11 @@ class LaneHooks:
             return [_check("ROWS", "FAIL" if day.rows else "PASS", f"{len(day.rows)} rows expected", "no manifest.db")]
         try:
             v = oracles.check_run_rows(conn, day)
+            mv = oracles.check_rclone_lan_metrics(conn, day.date)
         finally:
             conn.close()
-        return _viol_checks("ROWS", v, f"{len(day.rows)} expected rows (run_history + audits) with the allowed statuses")
+        return (_viol_checks("ROWS", v, f"{len(day.rows)} expected rows (run_history + audits) with the allowed statuses")
+                + _viol_checks("METRICS", mv, "rclone LAN metrics (counts_source, arrival, hash, deletes_held)"))
 
     def _day_mail(self, day) -> list[dict]:
         self.rig.drain_mail(cal.at_ist(day.date, (23, 59)))
@@ -2220,8 +2234,8 @@ class LaneHooks:
                           "no shutdown / wake / gcloud ever executed", f"violations {self.argv_violations}"))
         return out
 
-    def _orphan_robocopy(self) -> list[int]:
-        """pids of robocopy processes of THIS lane (command line holds the lane root) still alive."""
+    def _orphan_rclone(self) -> list[int]:
+        """pids of rclone processes of THIS lane (command line holds the lane root) still alive."""
         pids: list[int] = []
         try:
             import psutil
@@ -2229,7 +2243,7 @@ class LaneHooks:
             root = os.path.normcase(str(self.lane_root))
             for p in psutil.process_iter(["name", "cmdline"]):
                 try:
-                    if not (p.info.get("name") or "").lower().startswith("robocopy"):
+                    if not (p.info.get("name") or "").lower().startswith("rclone"):
                         continue
                     if root in os.path.normcase(" ".join(p.info.get("cmdline") or [])):
                         pids.append(p.pid)
@@ -2249,7 +2263,7 @@ class LaneHooks:
                    "shutdown_calls": len(rig.seams.shutdown_calls) if rig.seams else None,
                    "archive_calls": rig.seams.archive_calls if rig.seams else None,
                    "argv_violations": self.argv_violations, "seconds_per_day": self.day_seconds,
-                   "orphan_robocopy": self._orphan_robocopy(), "created_paths": list(self.created_paths),
+                   "orphan_rclone": self._orphan_rclone(), "created_paths": list(self.created_paths),
                    "junction_target_entries": list(self.junction_target_entries),
                    "switch_before_manual_lan": bool(self.switch_before_manual_lan),
                    "spies": self._spy_totals(), "evidence_errors": self.evidence_errors,

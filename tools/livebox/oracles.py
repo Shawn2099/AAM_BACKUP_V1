@@ -454,9 +454,70 @@ def compare_trees(a: Mapping[str, str] | str | Path, b: Mapping[str, str] | str 
     )
 
 
+def _empty_dirs(root: str | Path, ignore: Iterable[str] = ()) -> set[str]:
+    """Relative POSIX paths of empty directories under ``root`` (rclone --create-empty-src-dirs)."""
+    base = Path(root)
+    skip = set(ignore)
+    out: set[str] = set()
+    if not base.is_dir():
+        return out
+    for p in sorted(base.rglob("*")):
+        if not p.is_dir() or p.name in skip:
+            continue
+        entries = [c for c in p.iterdir() if c.name not in skip]
+        if not entries:
+            out.add(p.relative_to(base).as_posix())
+    return out
+
+
 def check_tree(src, dst, label: str = "", ignore: Iterable[str] = ()) -> list[Violation]:
     d = compare_trees(src, dst, ignore)
-    return [] if d.ok else [Violation("TREE", f"{label or dst}: {d}")]
+    violations: list[Violation] = []
+    if not d.ok:
+        violations.append(Violation("TREE", f"{label or dst}: {d}"))
+    if isinstance(src, (str, Path)) and isinstance(dst, (str, Path)):
+        sa, sb = _empty_dirs(src, ignore), _empty_dirs(dst, ignore)
+        miss_d, extra_d = sorted(sa - sb), sorted(sb - sa)
+        if miss_d or extra_d:
+            violations.append(Violation("TREE", f"{label or dst}: empty_dirs missing={miss_d} extra={extra_d}"))
+    return violations
+
+
+def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Violation]:
+    """D3/D5: validate rclone LAN extended_metrics (counts_source, arrival, hash, deletes_held)."""
+    out: list[Violation] = []
+    for r in run_rows(conn, day):
+        if r.get("mode") != "lan":
+            continue
+        status = r.get("status")
+        raw = r.get("extended_metrics")
+        try:
+            m = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw if isinstance(raw, dict) else {})
+        except ValueError:
+            m = {}
+        if status in ("LAN_COMPLETE", "LAN_PARTIAL", "LAN_SUSPECT"):
+            if m.get("counts_source") != "rclone":
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: counts_source={m.get('counts_source')!r}, want 'rclone'"))
+        if status == "LAN_COMPLETE":
+            arr = m.get("arrival") or {}
+            if arr.get("verified") is not True:
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_COMPLETE arrival.verified={arr.get('verified')!r}"))
+            copied = int(r.get("files_copied") or 0)
+            if copied > 0:
+                h = arr.get("hash") or {}
+                if not h.get("ran") and not h.get("reason"):
+                    out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_COMPLETE with {copied} copies missing arrival.hash ran/reason"))
+        elif status == "LAN_PARTIAL" and m.get("deletes_held") is True:
+            if int(r.get("files_deleted") or 0) != 0:
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: deletes_held=True but files_deleted={r.get('files_deleted')}"))
+        elif status == "LAN_SUSPECT":
+            arr = m.get("arrival") or {}
+            if arr.get("verified") is True:
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_SUSPECT but arrival.verified=True"))
+        elif status == "LAN_BLOCKED" and r.get("fault_code") == "AAM-DEL-03":
+            if m.get("max_delete_reached") is False:
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: AAM-DEL-03 with max_delete_reached=False"))
+    return out
 
 
 def check_frozen(snapshot: Mapping[str, str], root: str | Path, label: str = "",

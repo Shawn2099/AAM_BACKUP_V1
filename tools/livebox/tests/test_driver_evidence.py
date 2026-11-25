@@ -62,36 +62,42 @@ def _jsonl(p):
     return [json.loads(x) for x in Path(p).read_text(encoding="utf-8").splitlines() if x.strip()]
 
 
-# ------------------------------------------------------------------------------------------ robocopy_runs.jsonl
-def test_guard_records_every_robocopy_call_with_start_end_argv(tmp_path, monkeypatch):
+# ------------------------------------------------------------------------------------------ lan_rclone_runs.jsonl
+def test_guard_records_every_lan_rclone_step_with_start_end_argv(tmp_path, monkeypatch):
     import core.lan_sync as ls
     import core.tool_runner as tr
 
     calls = []
 
     def fake_run_tool(name, argv, **kw):
-        calls.append(argv)
-        return SimpleNamespace(exit_code=1)
+        calls.append((name, argv))
+        return SimpleNamespace(exit_code=0)
 
     monkeypatch.setattr(tr, "run_tool", fake_run_tool)
     monkeypatch.setattr(ls, "run_tool", fake_run_tool)
     h, lane = _hooks(tmp_path)
     try:
         h._install_run_tool_guard()
-        argv = ["robocopy.exe", str(lane / "src"), str(lane / "nas"), "/MIR"]
-        ls.run_tool("robocopy_main", argv)
-        ls.run_tool("robocopy_main", argv)
+        plan_argv = ["rclone.exe", "sync", str(lane / "src"), str(lane / "nas"), "--dry-run"]
+        sync_argv = ["rclone.exe", "sync", str(lane / "src"), str(lane / "nas")]
+        hash_argv = ["rclone.exe", "check", str(lane / "src"), str(lane / "nas"), "--files-from-raw", str(lane / "list.txt")]
+        ls.run_tool("rclone-lan-plan", plan_argv)
+        ls.run_tool("rclone-lan-sync", sync_argv)
+        ls.run_tool("rclone-lan-hash", hash_argv)
         ls.run_tool("rclone_sync", ["rclone.exe", "sync", str(lane / "src"), "x:"])
     finally:
         h._stack.close()
-    rows = _jsonl(h.ev_dir / "robocopy_runs.jsonl")
-    assert len(rows) == 2 and len(calls) == 3
+    rows = _jsonl(h.ev_dir / "lan_rclone_runs.jsonl")
+    assert len(rows) == 3 and len(calls) == 4
+    assert [r["step"] for r in rows] == ["rclone-lan-plan", "rclone-lan-sync", "rclone-lan-hash"]
     for r in rows:
-        assert set(r) >= {"start", "end", "argv"} and r["argv"] == argv
+        assert set(r) >= {"step", "start", "end", "argv", "exit_code"}
         assert dt.datetime.fromisoformat(r["start"]) <= dt.datetime.fromisoformat(r["end"])
+    cloud_rows = _jsonl(h.ev_dir / "rclone_runs.jsonl")
+    assert len(cloud_rows) == 1
 
 
-def test_guard_records_robocopy_even_when_tool_raises(tmp_path, monkeypatch):
+def test_guard_records_lan_rclone_even_when_tool_raises(tmp_path, monkeypatch):
     import core.lan_sync as ls
     import core.tool_runner as tr
 
@@ -104,23 +110,23 @@ def test_guard_records_robocopy_even_when_tool_raises(tmp_path, monkeypatch):
     try:
         h._install_run_tool_guard()
         with pytest.raises(TimeoutError):
-            ls.run_tool("robocopy_main", ["robocopy.exe", str(lane / "src"), str(lane / "nas")])
+            ls.run_tool("rclone-lan-sync", ["rclone.exe", "sync", str(lane / "src"), str(lane / "nas")])
     finally:
         h._stack.close()
-    assert len(_jsonl(h.ev_dir / "robocopy_runs.jsonl")) == 1
+    assert len(_jsonl(h.ev_dir / "lan_rclone_runs.jsonl")) == 1
 
 
 # ------------------------------------------------------------------------------------------ summary.json
 def test_summary_has_new_evidence_keys(tmp_path):
     h, lane = _hooks(tmp_path)
     h.rig = SimpleNamespace(seams=SimpleNamespace(wake_calls=[1, 2], shutdown_calls=[1], archive_calls=[]))
-    h._orphan_robocopy = lambda: [4242]
+    h._orphan_rclone = lambda: [4242]
     h.created_paths = [str(lane / "src" / "FY91-92")]
     h.junction_target_entries = []
     h.switch_before_manual_lan = True
     h._write_summary()
     s = json.loads((h.ev_dir / "summary.json").read_text(encoding="utf-8"))
-    assert s["orphan_robocopy"] == [4242]
+    assert s["orphan_rclone"] == [4242]
     assert s["created_paths"] == [str(lane / "src" / "FY91-92")]
     assert s["junction_target_entries"] == []
     assert s["switch_before_manual_lan"] is True
@@ -131,16 +137,16 @@ def test_summary_has_new_evidence_keys(tmp_path):
 def test_summary_keys_exist_with_neutral_defaults(tmp_path):
     h, _ = _hooks(tmp_path)
     h.rig = SimpleNamespace(seams=SimpleNamespace(wake_calls=[], shutdown_calls=[], archive_calls=[]))
-    h._orphan_robocopy = lambda: []
+    h._orphan_rclone = lambda: []
     h._write_summary()
     s = json.loads((h.ev_dir / "summary.json").read_text(encoding="utf-8"))
-    assert s["orphan_robocopy"] == [] and s["created_paths"] == [] and s["junction_target_entries"] == []
+    assert s["orphan_rclone"] == [] and s["created_paths"] == [] and s["junction_target_entries"] == []
     assert s["switch_before_manual_lan"] is False
 
 
-def test_orphan_robocopy_only_lists_lane_processes(tmp_path):
+def test_orphan_rclone_only_lists_lane_processes(tmp_path):
     h, _ = _hooks(tmp_path)
-    assert h._orphan_robocopy() == []                      # nothing of this lane is running
+    assert h._orphan_rclone() == []                      # nothing of this lane is running
 
 
 # ------------------------------------------------------------------------------------------ outages on Scenario

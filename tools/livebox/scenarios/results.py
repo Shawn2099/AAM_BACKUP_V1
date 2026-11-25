@@ -30,6 +30,8 @@ class Results:
     created_paths: list = field(default_factory=list)
     junction_target_entries: list = field(default_factory=list)
     archive_calls: list = field(default_factory=list)
+    orphan_rclone: list = field(default_factory=list)
+    lan_rclone_runs: list = field(default_factory=list)
     orphan_robocopy: list = field(default_factory=list)
     robocopy_runs: list = field(default_factory=list)
     lan_runs_0600: int = 0
@@ -286,12 +288,13 @@ def _fill(res: Results, ev: Path) -> None:
     summ = _json_file(ev / "summary.json")
     if isinstance(summ, dict):
         res.facts.update(summ)
-        for k in ("created_paths", "junction_target_entries", "archive_calls", "orphan_robocopy"):
+        for k in ("created_paths", "junction_target_entries", "archive_calls", "orphan_rclone", "orphan_robocopy"):
             if isinstance(summ.get(k), list):
                 setattr(res, k, list(summ[k]))
         res.switch_before_manual_lan = bool(summ.get("switch_before_manual_lan", False))
 
     res.approvals = _jsonl(ev / "approvals.jsonl")
+    res.lan_rclone_runs = _jsonl(ev / "lan_rclone_runs.jsonl")
     res.robocopy_runs = _jsonl(ev / "robocopy_runs.jsonl")
 
     res.lan_runs_0600 = sum(

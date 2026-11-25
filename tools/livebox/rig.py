@@ -118,7 +118,7 @@ def alias_config_text(bucket_dir) -> str:
 
 
 def assert_argv_in_lane(argv, lane_root) -> None:
-    """S15: every filesystem path in a robocopy / rclone argv is under the lane root (SafetyRefusal otherwise)."""
+    """S15: every filesystem path in an rclone argv is under the lane root (SafetyRefusal otherwise)."""
     safety.check_argv(list(argv), str(lane_root))
 
 

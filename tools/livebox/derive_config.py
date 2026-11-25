@@ -98,10 +98,30 @@ def derive_config(
     }
 
     lan = cfg.setdefault("lan", {})
+    for deprecated in (
+        "mt_threads",
+        "log_tail_kb",
+        "dry_run_timeout_seconds",
+        "use_backup_mode",
+        "privilege_check_timeout_seconds",
+    ):
+        lan.pop(deprecated, None)
+    lan.setdefault("transfers", 4)
+    lan.setdefault("checkers", 4)
+    lan.setdefault("modify_window_seconds", 2)
+    lan.setdefault("verify_timeout_seconds", 1800)
+    lan.setdefault("error_tail_lines", 100)
+    lan.setdefault("arrival_hash_transferred", True)
+    lan.setdefault("arrival_hash_max_gb", 50)
+    lan.setdefault("arrival_hash_timeout_seconds", 3600)
     lan["retry_wait_seconds"] = 1
     # shutdown_after_backup: as production (the LAN copier no longer has a backup-mode key).
 
-    cfg.setdefault("guards", {})["forbid_local_destination"] = False
+    guards = cfg.setdefault("guards", {})
+    guards["forbid_local_destination"] = False
+    guards.setdefault("min_delete_floor_files", 20)
+
+    cfg.setdefault("maintenance", {}).pop("orphan_robocopy_log_max_age_hours", None)
 
     health = cfg.setdefault("health", {})
     health["ntp_server"] = "127.0.0.1"

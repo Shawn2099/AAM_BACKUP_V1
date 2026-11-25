@@ -193,7 +193,7 @@ def test_fail_archive_toggles_recorder_result(rig):
 
 
 # ------------------------------------------------------------------------------------------------ kill_child_after
-def _spawn(folder: str, image: str = "robocopy.exe"):
+def _spawn(folder: str, image: str = "rclone.exe"):
     """A harmless long-running process whose image name is `image` and whose path (so cmdline) is inside `folder`."""
     import shutil
 

@@ -398,8 +398,9 @@ def _x17_expect(r):
     if not any(x.get("status") == "ROLLOVER_ABANDONED" for x in _rows(r)):
         out.append(f"{s}: expected a swept ROLLOVER_ABANDONED row after the crash")
     out += _switch_exactly(s, r, "2091-04-02")
-    if list(_g(r, "orphan_robocopy", [])):
-        out.append(f"{s}: orphan robocopy processes left behind {list(_g(r, 'orphan_robocopy', []))}")
+    orphans = list(_g(r, "orphan_rclone", [])) or list(_g(r, "orphan_robocopy", []))
+    if orphans:
+        out.append(f"{s}: orphan rclone processes left behind {orphans}")
     if len(_g(r, "archive_calls", [])) > 1:
         out.append(f"{s}: archive repeated after the resume ({len(_g(r, 'archive_calls', []))} calls)")
     return out

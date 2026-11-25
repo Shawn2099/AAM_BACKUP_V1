@@ -3,8 +3,8 @@
 Standard library only. Every random choice comes from ``random.Random`` seeded
 with ``"<seed>:<date>"`` so the same (seed, day) on the same starting tree
 always yields the same operations and bytes. Every written file gets its mtime
-set to noon of the simulated day. Nothing is read or written outside the
-``root`` that is passed in (``safe_path`` enforces it).
+set to 00:30 of the simulated day (before the first scheduled job). Nothing is
+read or written outside the ``root`` that is passed in (``safe_path`` enforces it).
 
 API:
     seed_tree(root, seed, scale=300, now=None) -> list[str]
@@ -52,9 +52,9 @@ class Op:
 
 # --------------------------------------------------------------------------- helpers
 
-def sim_timestamp(day: dt.date) -> float:
-    """Epoch seconds of noon (local time) on the simulated ``day``."""
-    return dt.datetime(day.year, day.month, day.day, 12, 0, 0).timestamp()
+def sim_timestamp(day: dt.date, at: dt.time = dt.time(0, 30, 0)) -> float:
+    """Epoch seconds of ``at`` (local time, default 00:30 before 02:01 cloud) on the simulated ``day``."""
+    return dt.datetime(day.year, day.month, day.day, at.hour, at.minute, at.second).timestamp()
 
 
 def safe_path(root, rel) -> Path:

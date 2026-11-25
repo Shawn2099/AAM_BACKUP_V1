@@ -70,7 +70,7 @@ def make_lane(root: Path, name: str, checks=(), mails=(), files=None, status="co
     jl(d / "checks.jsonl", list(checks))
     (d / "result.json").write_text(json.dumps({"status": status, "days_completed": days, "counts": {}}))
     (d / "summary.json").write_text(json.dumps({
-        "lane": name, "wake_calls": wake, "shutdown_calls": shut, "orphan_robocopy": list(orphans),
+        "lane": name, "wake_calls": wake, "shutdown_calls": shut, "orphan_rclone": list(orphans),
         "total_real_seconds": wall, "spies": {"wake": wake, "shutdown": shut, "archive": 0}}))
     (d / "safety.json").write_text(json.dumps({"results": [
         {"rule": r, "status": s, "message": ""} for r, s in safety]}))
@@ -231,10 +231,10 @@ def test_mail_summary_counts_and_m3_limit(tmp_path, run):
 
 def test_lane_run_facts(tmp_path, run):
     ev = tmp_path / "ev"
-    make_lane(ev, "A1", days=30, wall=226.1, status="completed", orphans=["robocopy.exe 99"], wake=48, shut=34,
+    make_lane(ev, "A1", days=30, wall=226.1, status="completed", orphans=["rclone.exe 99"], wake=48, shut=34,
               safety=(("S1", "ok"), ("S7", "FAIL")))
     _, text = run([ev])
-    for s in ("days simulated: 30", "wall time: 226.1", "status: completed", "orphan_robocopy: 1",
+    for s in ("days simulated: 30", "wall time: 226.1", "status: completed", "orphan_rclone: 1",
               "wake calls: 48", "shutdown calls: 34", "S1: ok", "S7: FAIL"):
         assert s in text, s
 

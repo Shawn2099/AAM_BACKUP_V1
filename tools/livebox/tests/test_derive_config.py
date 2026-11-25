@@ -262,14 +262,32 @@ def test_row_lan_shutdown_after_backup_kept_as_production_value():
     assert _get(cfg, "lan.shutdown_after_backup") is True
 
 
-def test_row_lan_use_backup_mode_follows_backup_privilege_when_present():
-    cfg = _derive(smtp_port=SMTP_PORT, has_backup_privilege=True)
-    assert _get(cfg, "lan.use_backup_mode") is True
+def test_row_deprecated_lan_and_maintenance_keys_are_dropped():
+    from tools.livebox.derive_config import derive_config
+
+    prod = copy.deepcopy(PROD_RAW)
+    prod["lan"].update({
+        "mt_threads": 16,
+        "log_tail_kb": 128,
+        "dry_run_timeout_seconds": 900,
+        "use_backup_mode": True,
+        "privilege_check_timeout_seconds": 30,
+    })
+    prod.setdefault("maintenance", {})["orphan_robocopy_log_max_age_hours"] = 48
+    cfg = derive_config(prod, LANE_DIR, smtp_port=SMTP_PORT, has_backup_privilege=True)
+    for k in ("mt_threads", "log_tail_kb", "dry_run_timeout_seconds",
+              "use_backup_mode", "privilege_check_timeout_seconds"):
+        assert k not in cfg["lan"]
+    assert "orphan_robocopy_log_max_age_hours" not in cfg["maintenance"]
 
 
-def test_row_lan_use_backup_mode_false_without_backup_privilege():
-    cfg = _derive(smtp_port=SMTP_PORT, has_backup_privilege=False)
-    assert _get(cfg, "lan.use_backup_mode") is False
+def test_row_rclone_lan_and_guard_keys_are_emitted():
+    cfg = _derive(smtp_port=SMTP_PORT)
+    for k in ("transfers", "checkers", "modify_window_seconds", "verify_timeout_seconds",
+              "error_tail_lines", "arrival_hash_transferred", "arrival_hash_max_gb",
+              "arrival_hash_timeout_seconds"):
+        assert k in cfg["lan"], f"missing lan.{k}"
+    assert "min_delete_floor_files" in cfg["guards"]
 
 
 def test_row_guards_forbid_local_destination_is_false_for_this_machine_target():

@@ -100,11 +100,11 @@ def test_x35_flags_archive_call_in_lan_only_lane():
     assert _by_id("X35").expect(res)
 
 
-def test_x37_x38_flag_overlapping_robocopy():
+def test_x37_x38_flag_overlapping_lan_rclone():
     res = _clean()
-    res.robocopy_runs = [
-        {"start": "2091-01-10T21:01:00", "end": "2091-01-10T21:30:00", "argv": "robocopy a b"},
-        {"start": "2091-01-10T21:10:00", "end": "2091-01-10T21:40:00", "argv": "robocopy a b"},
+    res.lan_rclone_runs = [
+        {"start": "2091-01-10T21:01:00", "end": "2091-01-10T21:30:00", "argv": "rclone sync a b"},
+        {"start": "2091-01-10T21:10:00", "end": "2091-01-10T21:40:00", "argv": "rclone sync a b"},
     ]
     assert _by_id("X37").expect(res)
     assert _by_id("X38").expect(res)
@@ -119,7 +119,7 @@ def test_x36_flags_lan_run_at_0600_and_early_switch():
     assert _by_id("X36").expect(res)
 
 
-def test_x39_flags_orphan_robocopy():
+def test_x39_flags_orphan_rclone():
     res = _clean()
-    res.orphan_robocopy = ["robocopy src dst /MIR"]
+    res.orphan_rclone = ["rclone sync src dst"]
     assert _by_id("X39").expect(res)

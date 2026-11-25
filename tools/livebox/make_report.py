@@ -283,7 +283,7 @@ def build_report(evidence_roots, out) -> dict:
         summ = _json(ln / "summary.json")
         summ = summ if isinstance(summ, dict) else {}
         spies = summ.get("spies") if isinstance(summ.get("spies"), dict) else {}
-        orph = summ.get("orphan_robocopy")
+        orph = summ.get("orphan_rclone") if "orphan_rclone" in summ else summ.get("orphan_robocopy")
         wake = summ.get("wake_calls", spies.get("wake"))
         shut = summ.get("shutdown_calls", spies.get("shutdown"))
         L.append(f"### {ln.name}")
@@ -291,7 +291,7 @@ def build_report(evidence_roots, out) -> dict:
               f"- wall time: {_num(summ.get('total_real_seconds'))} s",
               f"- status: {_num(res.get('status'))}",
               f"- flows: {_flow_counts(ln)}",
-              f"- orphan_robocopy: {len(orph) if isinstance(orph, list) else 0}",
+              f"- orphan_rclone: {len(orph) if isinstance(orph, list) else 0}",
               f"- wake calls: {_num(wake)}",
               f"- shutdown calls: {_num(shut)}"]
         saf = _json(ln / "safety.json")
