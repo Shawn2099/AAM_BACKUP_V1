@@ -1386,6 +1386,13 @@ def lan_sync_task(config, artefacts_dir: str, max_delete: int,
     result = lan_sync.run_lan_mirror(
         config.lan, config.paths.source_drive, config.paths.lan_destination, artefacts_dir,
         max_delete=max_delete, max_duration_s=max_duration, timeout=timeout)
+    if limited and result.get("timed_out") and max_duration is not None:
+        # S5: rclone had --max-duration with --cutoff-mode SOFT and still did not stop in
+        # time: it hung (NAS I/O) and was killed. That is not a clean budget stop.
+        logger.error("LAN mirror: rclone did not stop after its time limit and was killed")
+        return {**result, "status": "LAN_PARTIAL", "killed_after_cutoff": True,
+                "fault_code": "AAM-LAN-04",
+                "error": "rclone did not stop after its time limit - NAS I/O may be hung"}
     stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
     if stopped and limited:
         stats = result.get("stats") or {}
@@ -2141,7 +2148,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     "verified", "matching", "missing", "differ", "changed_during_backup", "reason")}
                 metrics["total_files"] = arrival.get("matching")
             else:
-                metrics["verify"] = ("skipped - stopped at the run budget"
+                metrics["verify"] = ("skipped - rclone was killed after its time limit"
+                                     if sync_result.get("killed_after_cutoff")
+                                     else "skipped - stopped at the run budget"
                                      if sync_result.get("budget_stopped")
                                      else "skipped - the mirror did not complete")
             extended_metrics = json.dumps(metrics)

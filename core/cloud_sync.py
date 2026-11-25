@@ -399,6 +399,9 @@ def classify_rclone_exit(code: int) -> str:
     return mapping.get(code, "CLOUD_FAILED")
 
 
+MAX_DURATION_MARGIN_S = 300   # auto --max-duration ends this long before the hard kill
+
+
 def resolve_max_duration_seconds(timeout: int, configured: int | None) -> int | None:
     """C-A: compute the effective --max-duration for a cloud sync.
 
@@ -411,8 +414,7 @@ def resolve_max_duration_seconds(timeout: int, configured: int | None) -> int | 
     """
     if configured is not None:
         return int(configured) if configured > 0 else None
-    margin = 300
-    auto = int(timeout) - margin
+    auto = int(timeout) - MAX_DURATION_MARGIN_S
     return auto if auto > 0 else None
 
 
