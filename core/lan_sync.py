@@ -147,7 +147,7 @@ def decide_lan_rclone_result(
     paths = cloud_sync.failed_object_paths(log_text, error_tail_lines)
     held = cloud_sync.deletes_were_held(log_text)
     failed = max(errors_n, 1)
-    reason = f"rclone exit {exit_code}: {failed} file(s) could not be copied"
+    reason = f"rclone exit {exit_code}: {failed} file(s) could not be copied or updated on the NAS"
     if paths:
         reason += f": {', '.join(paths)}"
     return done("LAN_PARTIAL", reason, files_failed=failed, failed_paths=paths, deletes_held=held)

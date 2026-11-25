@@ -166,7 +166,7 @@ def count_planned_deletes(log_text: str) -> int:
             entry = json.loads(line)
         except ValueError:
             continue
-        if isinstance(entry, dict) and entry.get("skipped") == "delete":
+        if isinstance(entry, dict) and entry.get("skipped") in ("delete", "move into backup dir"):
             planned += 1
     return planned
 
@@ -181,7 +181,7 @@ def count_planned_moves(log_text: str) -> int:
             entry = json.loads(line)
         except ValueError:
             continue
-        if isinstance(entry, dict) and str(entry.get("skipped", "")).startswith("move"):
+        if isinstance(entry, dict) and str(entry.get("skipped", "")).startswith("move to "):
             planned += 1
     return planned
 
@@ -227,9 +227,14 @@ def planned_copy_bytes(log_text: str) -> int | None:
     return total
 
 
+_LOCAL_OBJECT_ERROR_MSGS = ("partial file rename failed", "Couldn't delete")
+_RCLONE_PARTIAL_SUFFIX = re.compile(r"\.[0-9a-f]{8}\.partial$")
+
+
 def failed_object_paths(log_text: str, limit: int) -> list[str]:
-    """Objects of the FINAL attempt's "Failed to copy" errors (unique, in log
-    order, at most `limit`)."""
+    """Objects of the FINAL attempt's "Failed to copy", "partial file rename
+    failed" and "Couldn't delete" errors (unique, in log order, at most
+    `limit`); rclone's `.<8 hex>.partial` temp suffix is stripped."""
     entries = list(_json_entries(log_text))
     start = _final_attempt_start(entries)
     paths: list[str] = []
@@ -239,8 +244,19 @@ def failed_object_paths(log_text: str, limit: int) -> list[str]:
         if str(entry.get("level", "")).upper() not in ("ERROR", "CRITICAL"):
             continue
         obj = entry.get("object")
-        if (str(entry.get("msg", "")).startswith("Failed to copy")
-                and isinstance(obj, str) and obj and obj not in paths):
+        msg = str(entry.get("msg", ""))
+        if not isinstance(obj, str) or not obj:
+            continue
+        if msg.startswith("Failed to copy"):
+            pass
+        elif msg.startswith(_LOCAL_OBJECT_ERROR_MSGS):
+            # filesystem-level entries ("Local file system at ...") are no file
+            if str(entry.get("objectType", "")).endswith("Fs"):
+                continue
+            obj = _RCLONE_PARTIAL_SUFFIX.sub("", obj)
+        else:
+            continue
+        if obj not in paths:
             paths.append(obj)
             if len(paths) >= limit:
                 break
