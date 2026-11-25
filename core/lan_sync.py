@@ -16,7 +16,7 @@ from core.permissions import PROBE_PATTERN
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool, tail_lines
-from models.config import LanConfig, model_default
+from models.config import LanConfig, model_default, resolve_versions_root
 
 # ═══════════════════════════════════════════════════════════════
 # rclone LAN mirror (plan P1): builder and exit decision.
@@ -31,6 +31,28 @@ LAN_EXCLUDES = (
 )
 
 
+def backup_dir_for_run(
+    lan_destination: str,
+    versions_folder: str,
+    fy: str,
+    started_at: str | None = None,
+    *,
+    run_tag: str = "",
+) -> str:
+    """Per-run, per-FY `--backup-dir` path: `<versions_root>\\<YYYY-MM-DD_HHmm>_<FY>[_<tag>]`."""
+    from pathlib import PureWindowsPath
+
+    import pendulum
+
+    from core.time_utils import IST
+
+    root = resolve_versions_root(lan_destination, versions_folder)
+    ts = pendulum.parse(started_at).in_timezone(IST) if started_at else pendulum.now(IST)
+    stamp = ts.format("YYYY-MM-DD_HHmm")
+    suffix = f"_{run_tag}" if run_tag else ""
+    return str(PureWindowsPath(root) / f"{stamp}_{fy}{suffix}")
+
+
 def build_lan_rclone_command(
     config: LanConfig,
     source: str,
@@ -41,19 +63,21 @@ def build_lan_rclone_command(
     dry_run: bool = False,
     combined_path: str | None = None,
     max_duration_s: int | None = None,
+    mode: str = "sync",
+    backup_dir: str | None = None,
 ) -> list[str]:
-    """argv of the LAN `rclone sync` (plan P1 2.1).
+    """argv of the LAN `rclone sync` or `rclone copy` (plan P1 2.1, Phase 1b B3).
 
     Real sync: --max-delete (0 is emitted too) and, when the budget limits the
     run, --max-duration with a SOFT cutoff; the G1 backstop refuses an empty
-    source. Dry-run (the plan measurement): the same argv plus --dry-run and
-    --combined, without --max-delete/--max-duration/--cutoff-mode, so the
-    measurement describes exactly what the real sync decides.
+    source. Copy-only (G3 block): `rclone copy` without --max-delete.
     """
+    if mode not in ("sync", "copy"):
+        raise ValueError(f"mode must be 'sync' or 'copy', got {mode!r}")
     if not dry_run:
         require_source_files(source)  # G1 backstop
     cmd = [
-        resolve_binary("rclone") or "rclone", "sync", source, dest,
+        resolve_binary("rclone") or "rclone", mode, source, dest,
         "--check-first", "--create-empty-src-dirs", "--skip-links", "--ignore-case",
         "--modify-window", f"{int(config.modify_window_seconds)}s",
         "--transfers", str(int(config.transfers)),
@@ -67,12 +91,14 @@ def build_lan_rclone_command(
         cmd.extend(["--exclude", pattern])
     if config.track_renames:
         cmd.append("--track-renames")
+    if backup_dir:
+        cmd.extend(["--backup-dir", str(backup_dir)])
     if dry_run:
         cmd.append("--dry-run")
         if combined_path:
             cmd.extend(["--combined", str(combined_path)])
         return cmd
-    if max_delete is not None:
+    if mode == "sync" and max_delete is not None:
         cmd.extend(["--max-delete", str(int(max_delete))])
     if max_duration_s:
         cmd.extend(["--max-duration", f"{int(max_duration_s)}s", "--cutoff-mode", "SOFT"])
@@ -167,8 +193,10 @@ def run_lan_mirror(
     max_delete: int,
     max_duration_s: int | None = None,
     timeout: int | None = None,
+    mode: str = "sync",
+    backup_dir: str | None = None,
 ) -> dict:
-    """Run the real LAN `rclone sync` and return decide_lan_rclone_result's dict
+    """Run the real LAN `rclone sync` (or `copy` on G3 block) and return decide_lan_rclone_result's dict
     plus exit_code (None on spawn error/timeout, never a sentinel), timed_out,
     log_path and, when rclone is missing, fault_code AAM-SYS-04.
 
@@ -179,7 +207,8 @@ def run_lan_mirror(
     timeout = config.subprocess_timeout_seconds if timeout is None else timeout
     log_path = artefacts.new_path(step, "log")
     cmd = build_lan_rclone_command(config, source, dest, str(log_path),
-                                   max_delete=max_delete, max_duration_s=max_duration_s)
+                                   max_delete=max_delete, max_duration_s=max_duration_s,
+                                   mode=mode, backup_dir=backup_dir)
     logger.info(f"LAN rclone sync: {source} -> {dest} (full log: {log_path})")
     result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts, log_path=log_path)
 
@@ -211,6 +240,7 @@ def plan_lan_mirror(
     artefacts_dir: str,
     *,
     timeout: int | None = None,
+    backup_dir: str | None = None,
 ) -> dict:
     """Measure what the real LAN sync would do (`--dry-run --combined`).
 
@@ -225,7 +255,8 @@ def plan_lan_mirror(
     log_path = artefacts.new_path(step, "log")
     combined_path = artefacts.new_path(f"{step}-combined", "txt")
     cmd = build_lan_rclone_command(config, source, dest, str(log_path),
-                                   dry_run=True, combined_path=str(combined_path))
+                                   dry_run=True, combined_path=str(combined_path),
+                                   backup_dir=backup_dir)
     logger.info(f"LAN rclone plan: {source} -> {dest} (full log: {log_path})")
     result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts, log_path=log_path)
 

@@ -227,6 +227,17 @@ def planned_copy_bytes(log_text: str) -> int | None:
     return total
 
 
+def planned_versions_bytes(log_text: str) -> int:
+    """Bytes moved into `--backup-dir` (replaced `'move'` + deleted `'move into backup dir'`)."""
+    total = 0
+    for _, entry in _json_entries(log_text):
+        if entry is not None and entry.get("skipped") in ("move", "move into backup dir"):
+            size = entry.get("size")
+            if type(size) is int:
+                total += size
+    return total
+
+
 _LOCAL_OBJECT_ERROR_MSGS = ("partial file rename failed", "Couldn't delete")
 _RCLONE_PARTIAL_SUFFIX = re.compile(r"\.[0-9a-f]{8}\.partial$")
 
