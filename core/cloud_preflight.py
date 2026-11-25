@@ -67,35 +67,6 @@ def run_cloud_dry_run(
     Returns:
         {"ok": bool, "exit_code": int, "error": str | None}
     """
-    # ── Probe A: Source drive alive (Python, zero HDD IO) ──────────────────
-    source_path = Path(source)
-
-    if not source_path.exists():
-        msg = f"Source drive not accessible: {source}"
-        logger.error(f"Cloud preflight [A] FAILED - {msg}")
-        return {"ok": False, "exit_code": -1, "error": msg}
-
-    try:
-        # One iterdir() call: forces kernel to open the directory and prove
-        # the filesystem is readable. Not a traversal — stops after one entry.
-        next(source_path.iterdir())
-    except StopIteration:
-        # M8: this preflight probe is diagnostic-only. It does NOT mean the
-        # pipeline will run: guard G1 (flow.cloud_guards_task) blocks a
-        # source without real files because rclone sync would mirror the
-        # emptiness onto the destination. An empty source reaching here
-        # almost always means the drive is unmounted.
-        logger.warning(
-            f"Cloud preflight [A]: source drive is EMPTY ({source}) - "
-            "guard G1 will block the sync and ask for a human decision."
-        )
-    except OSError as exc:
-        msg = f"Source drive read error ({source}): {exc}"
-        logger.error(f"Cloud preflight [A] FAILED - {msg}")
-        return {"ok": False, "exit_code": -1, "error": msg}
-
-    logger.info(f"Cloud preflight [A] OK - source drive accessible: {source}")
-
     # ── Probe B: GCS auth + bucket probe (rclone lsjson, zero HDD IO) ──────
     with temp_rclone_config(gcs_key_path, location, project_number, storage_class) as config_path:
         dest = f"aam_gcs:{bucket}/{fy_prefix}"

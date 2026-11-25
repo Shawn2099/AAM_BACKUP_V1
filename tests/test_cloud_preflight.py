@@ -47,32 +47,14 @@ def _run(source, tmp_path=None, **overrides):
     return run_cloud_dry_run(**kwargs)
 
 
-class TestProbeA:
-    """Probe A — source drive alive check."""
+class TestProbeBOnly:
+    """C2: Probe A (duplicate of health.py source check) was removed; preflight runs Probe B only."""
 
-    def test_source_not_accessible(self, tmp_path):
-        with fake_run_tool(MODULE) as calls:
-            result = _run(tmp_path / "nonexistent_drive")
-        assert result["ok"] is False
-        assert result["exit_code"] == -1
-        assert "not accessible" in result["error"]
-        assert calls == []          # rclone never started
-
-    def test_source_empty_dir_warns_but_continues(self, tmp_path):
-        empty_dir = tmp_path / "empty_source"
-        empty_dir.mkdir()
+    def test_does_not_fail_on_missing_source_runs_probe_b(self, tmp_path):
         with fake_run_tool(MODULE, exit_code=0, stdout="[]") as calls:
-            result = _run(empty_dir)
+            result = _run(tmp_path / "nonexistent_drive")
         assert result["ok"] is True
-        assert len(calls) == 1      # Probe B still ran
-
-    def test_source_read_error(self, source):
-        with fake_run_tool(MODULE) as calls, \
-             patch.object(Path, "iterdir", side_effect=OSError("Access denied")):
-            result = _run(source)
-        assert result["ok"] is False
-        assert "read error" in result["error"]
-        assert calls == []
+        assert len(calls) == 1      # Probe B ran directly
 
 
 class TestProbeB:
