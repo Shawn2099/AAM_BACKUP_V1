@@ -198,7 +198,7 @@ class LanConfig(StrictModel):
     arrival_hash_max_gb: int = Field(
         default=50, ge=0, le=10000,
         description="The transferred-files hash check is skipped when this run transferred more "
-                    "than this many GB (0 = no limit by size)")
+                    "than this many GB (0 = never hash: any copied bytes exceed the cap)")
     arrival_hash_timeout_seconds: int = Field(
         default=3600, ge=60, le=14400,
         description="Timeout for the transferred-files hash check after the NAS mirror (seconds)")

@@ -16,6 +16,7 @@ import re
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 
 import pendulum
 from loguru import logger
@@ -1419,6 +1420,47 @@ def lan_verify_task(config, artefacts_dir: str, changed_after_epoch: float,
         changed_after_epoch=changed_after_epoch, timeout=timeout)
 
 
+def lan_hash_task(config, artefacts_dir: str, paths: list[str], changed_after_epoch: float,
+                  budget: RunBudget | None = None) -> dict:
+    """S3: content check of tonight's copied files. Raises BudgetExceeded when no run budget
+    is left for it."""
+    timeout = config.lan.arrival_hash_timeout_seconds
+    if budget is not None:
+        timeout = int(budget.cap(timeout, 0))
+    return lan_sync.check_lan_transfers_hash(
+        config.lan, config.paths.source_drive, config.paths.lan_destination, artefacts_dir,
+        paths=paths, changed_after_epoch=changed_after_epoch, timeout=timeout)
+
+
+def _hash_plan(config, log_paths: list[str], arrival: dict) -> tuple[dict, list[str]]:
+    """S3: decide whether tonight's hash check runs. Returns (metrics, paths to hash); the
+    metrics carry `ran` False and the reason whenever it does not."""
+    def skip(reason, files=None, nbytes=None):
+        return {"ran": False, "verified": None, "files": files, "bytes": nbytes,
+                "reason": reason}, []
+
+    if not config.lan.arrival_hash_transferred:
+        return skip("off (lan.arrival_hash_transferred)")
+    if arrival.get("verified") is not True:
+        return skip("arrival not verified")
+    texts = []
+    for p in log_paths:
+        try:
+            texts.append(Path(p).read_text(encoding="utf-8", errors="replace"))
+        except OSError as e:
+            return skip(f"copy log unreadable: {e}")
+    paths, total = lan_sync.transferred_files(texts)
+    if not paths:
+        return skip("nothing copied tonight", 0, 0)
+    if total is None:
+        return skip("size of the copied files unknown", len(paths), None)
+    if total > config.lan.arrival_hash_max_gb * permissions.GB:
+        return skip(f"copied {total} bytes: over lan.arrival_hash_max_gb "
+                    f"({config.lan.arrival_hash_max_gb} GB)", len(paths), total)
+    return {"ran": False, "verified": None, "files": len(paths), "bytes": total,
+            "reason": None}, paths
+
+
 @task(name="lan-shutdown")
 def lan_shutdown_task(config, artefacts_dir: str | None = None) -> dict | None:
     """Shut the NAS down and verify it went down (WP10).
@@ -2087,8 +2129,18 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             def run_once() -> dict:
                 # the arrival check asks "changed since the LAST attempt began?"
                 attempt_clock["epoch"] = time.time()
-                return sync(config, artefacts_dir, max_delete=caps["max_delete"], budget=budget)
+                try:
+                    result = sync(config, artefacts_dir, max_delete=caps["max_delete"],
+                                  budget=budget)
+                except SyncFailed as e:
+                    if isinstance(e.result, dict) and e.result.get("log_path"):
+                        sync_logs.append(e.result["log_path"])
+                    raise
+                if isinstance(result, dict) and result.get("log_path"):
+                    sync_logs.append(result["log_path"])
+                return result
 
+            sync_logs: list[str] = []   # S3: every attempt's copy log, in order
             sync_result = _sync_with_retries(
                 "lan",
                 run_once=run_once,
@@ -2123,6 +2175,37 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     sync_result = {**sync_result, "status": status,
                                    "error": f"Arrival check not verified: {arrival.get('reason')}"}
                     sync_state["result"] = sync_result
+                if arrival is not None:
+                    # S3: content check of tonight's copies, only after a verified arrival
+                    hash_info, hash_paths = _hash_plan(config, sync_logs, arrival)
+                    if hash_paths:
+                        _t_hash = time.monotonic()
+                        hash_res = None
+                        try:
+                            hash_res = lan_hash_task(
+                                config, artefacts_dir, hash_paths,
+                                changed_after_epoch=attempt_clock["epoch"], budget=budget)
+                        except BudgetExceeded as e:
+                            logger.error(str(e))
+                            status = "LAN_PARTIAL"
+                            hash_info.update(ran=False, verified=False,
+                                             reason="no time left for tonight's hash check")
+                            sync_result = {**sync_result, "status": status,
+                                           "budget_stopped": True,
+                                           "error": _budget_stop_text(
+                                               budget, "copied but not verified: no time left "
+                                                       "for tonight's hash check")}
+                            sync_state["result"] = sync_result
+                        stage_seconds["hash_s"] = round(time.monotonic() - _t_hash, 1)
+                        if hash_res is not None:
+                            hash_info.update(ran=True, verified=hash_res.get("verified") is True,
+                                             reason=hash_res.get("reason"))
+                            if hash_res.get("verified") is not True:
+                                status = "LAN_SUSPECT"
+                                sync_result = {**sync_result, "status": status,
+                                               "error": "Hash check of tonight's copied files "
+                                                        f"not verified: {hash_res.get('reason')}"}
+                                sync_state["result"] = sync_result
             phase = "post"
             files_failed = int(sync_result.get("files_failed") or 0)
             stats = sync_result.get("stats")
@@ -2146,6 +2229,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             if arrival is not None:
                 metrics["arrival"] = {k: arrival.get(k) for k in (
                     "verified", "matching", "missing", "differ", "changed_during_backup", "reason")}
+                metrics["arrival"]["hash"] = hash_info
                 metrics["total_files"] = arrival.get("matching")
             else:
                 metrics["verify"] = ("skipped - rclone was killed after its time limit"

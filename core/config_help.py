@@ -120,7 +120,7 @@ HELP: dict[str, tuple[str, str]] = {
     "lan.arrival_hash_transferred": ("Prove copied files arrived intact",
                                      "After the copy, compares checksums of the files copied in this run with the NAS, not only their size."),
     "lan.arrival_hash_max_gb": ("Largest copy that gets the checksum check (GB)",
-                                "If this run copied more than this, the checksum check is skipped (the size check still runs). 0 = no limit."),
+                                "If this run copied more than this, the checksum check is skipped (the size check still runs). 0 = never hash (any copied bytes exceed the cap)."),
     "lan.arrival_hash_timeout_seconds": ("Time for the checksum check",
                                          "The checksum check of the copied files gives up after this long."),
 
