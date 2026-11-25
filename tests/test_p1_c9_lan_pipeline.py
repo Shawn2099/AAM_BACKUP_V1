@@ -498,6 +498,7 @@ def test_w11_health_check_for_lan_needs_rclone_and_runs_no_privilege_probe(tmp_p
     art = RunArtefacts(tmp_path / "health", RUN_ID, started=STARTED)
     with patch("core.health.source_drive_fault", return_value=(None, "")), \
             patch("core.health.check_binary_exists", side_effect=binary), \
+            patch("core.health.rclone_version_fault", return_value=None), \
             patch("flow.permissions.check_backup_privilege", create=True) as privilege, \
             patch("core.health.run_tool") as health_tool, \
             patch("core.permissions.run_tool", create=True) as perm_tool:
