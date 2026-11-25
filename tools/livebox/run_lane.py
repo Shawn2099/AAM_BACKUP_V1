@@ -1845,7 +1845,7 @@ class LaneHooks:
             passes = max(1, len(statuses))
             self.lan_passes += passes
             if wake == passes and passes > 1 and shut == want_shut:
-                # plan 1.6 expects one wake per LAN flow; the product calls ensure_server_online once per FY pass
+                # D6 gate: plan 1.6 expects one wake per LAN flow; stays FINDING/KNOWN until WS-E E4 merges (then FAIL)
                 first = not self._wake_per_pass_seen
                 self._wake_per_pass_seen = True
                 out.checks.append(_check(

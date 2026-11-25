@@ -535,9 +535,15 @@ def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Vio
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_SUSPECT but arrival.verified=True"))
             if h.get("ran") is True and h.get("verified") is False and r.get("fault_code") != "AAM-LAN-04":
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: hash unverified but fault_code={r.get('fault_code')!r}, want 'AAM-LAN-04'"))
-        elif status == "LAN_BLOCKED" and r.get("fault_code") == "AAM-DEL-03":
-            if m.get("max_delete_reached") is False:
-                out.append(Violation("METRICS", f"{day} {r['run_id']}: AAM-DEL-03 with max_delete_reached=False"))
+        elif status == "LAN_BLOCKED" and (r.get("fault_code") == "AAM-DEL-03" or m.get("max_delete_reached") is True):
+            if r.get("fault_code") != "AAM-DEL-03":
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: max_delete_reached=True but fault_code={r.get('fault_code')!r}, want 'AAM-DEL-03'"))
+            if m.get("max_delete_reached") is not True:
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: AAM-DEL-03 with max_delete_reached={m.get('max_delete_reached')!r}, want True"))
+            if m.get("counts_source") != "rclone":
+                out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_BLOCKED exit-7 counts_source={m.get('counts_source')!r}, want 'rclone'"))
+        elif r.get("fault_code") == "AAM-DEL-03" and status != "LAN_BLOCKED":
+            out.append(Violation("METRICS", f"{day} {r['run_id']}: AAM-DEL-03 with status={status!r}, want 'LAN_BLOCKED'"))
     return out
 
 

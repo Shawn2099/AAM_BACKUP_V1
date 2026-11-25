@@ -77,7 +77,7 @@ def test_check_rclone_lan_metrics_validates_complete_partial_suspect_blocked(tmp
             "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             ("r4", "lan", ts, "LAN_BLOCKED", 0, 0, "AAM-DEL-03",
-             json.dumps({"max_delete_reached": True})),
+             json.dumps({"counts_source": "rclone", "max_delete_reached": True})),
         )
         conn.commit()
     finally:
@@ -210,3 +210,33 @@ def test_xr_scenario_skeletons_exist_and_are_ungated():
     ids = [s.id for s in rsc.SCENARIOS]
     assert ids == ["XR1", "XR2", "XR3", "XR4"]
     assert all(s.injection_wired is False for s in rsc.SCENARIOS)
+
+
+def test_check_rclone_lan_metrics_validates_exit7_backstop_blocked(tmp_path):
+    db = tmp_path / "manifest.db"
+    day = dt.date(2027, 1, 5)
+    conn = _make_db(db)
+    conn.execute(
+        "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r_b1", "lan", "2027-01-05T21:05:00+05:30", "LAN_BLOCKED", 0, 1, "AAM-DEL-01",
+         json.dumps({"counts_source": "rclone", "max_delete_reached": True})),
+    )
+    conn.execute(
+        "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r_b2", "lan", "2027-01-05T21:06:00+05:30", "LAN_FAILED", 0, 1, "AAM-DEL-03",
+         json.dumps({"counts_source": "rclone", "max_delete_reached": True})),
+    )
+    conn.commit()
+    conn.close()
+
+    ro = oracles.open_ro(db)
+    try:
+        v = oracles.check_rclone_lan_metrics(ro, day)
+        details = [x.detail for x in v]
+        assert len(v) == 2
+        assert any("AAM-DEL-03" in d for d in details)
+        assert any("LAN_BLOCKED" in d for d in details)
+    finally:
+        ro.close()
