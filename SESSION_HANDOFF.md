@@ -1,12 +1,29 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-11-24 (see the 2026-11-24 block right below - it is newest and wins; older text follows). 2026-10-22 (see the 2026-10-22 block - it is newer than the 2026-10-18 text). 2026-10-18 (agreed plan for the open topics - §4g; box = full control;
-UI + email audit and rebuild - see §4f; rclone exit codes +
-bounded sync retries XR-1..6 - §4e; GitNexus scan, no-literals sweep - §4d).
-**Box not redeployed with §4d / §4e / §4f** (box is at 6adcfb2; owner decides). §4f adds schema
-v3 (one-time in-place upgrade of the box DB) and needs `dashboard.public_url` + bind/firewall
-on deploy day (see §4f).
+**Last updated:** 2026-11-25 (see the newest block right below).
 
+---
+
+## >>> 2026-11-25 (later) - PHASE 1b + PHASE 2 + C7 COMPLETE ON `rclone-engine` (worktree `C:\Users\malliath\Desktop\aam_rclone`) <<<
+
+**NEWEST STATE (read this first):**
+- **Completed on `rclone-engine`**:
+  - **WS-A (R1–R11)** (`f856046` & earlier), **WS-E E4 (P6 wake once per FY pass)** (`2b00dad`), **WS-B (B0–B8 Phase 1b)** (`e7bafd2`..`97817ad`), **WS-D (D0–D7 & D8 protocol)** (`1cc4f2c`..`f3bf1bb`).
+  - **WS-C (Phase 2 C0–C10, CL0–CL5, C7)** (`a688df9`..`58b93aa`):
+    - C1/C1w & C3 (`0595922`), C4/C4w (`fd63e5e`), C5 (verified), C6/C6w (S6 stall watchdog), C8, C9, C10.
+    - CL0–CL5 lab sweep (`3d848b0`, `657c4f0`, `45f89b6`, `09a7241`, `a00bbff`, `a76029b`): all robocopy-era lab tests migrated to `rclone` LAN (`test_w22_hardkill.py` 4 passed, `test_w23_cancel.py` 2 passed, `test_w9_stress.py` 6 passed, `test_w18_ops.py` 26 passed, `test_w17_ops.py` 29 passed, `test_w14_ui.py` 11 passed, `test_w19_ui.py` 23 passed, `test_w20_report.py` 20 passed, `test_w21_permissions.py` 3 passed, `test_w16_flow_first.py` 19 passed / 1 intentional red deselected, `test_w2_scale.py` 1 passed, `test_w24_server_restart.py` 3 passed, `test_w4_pipeline.py` 2 passed / 1 skipped, `test_fy_overlap_lab.py` 7 passed, `test_w0_enabler.py` 1 passed, `test_w1e_bugs.py` 5 passed).
+    - **C7 (`--retries` benchmark)** (`agent_runs/c7_retries/README.md`): measured `lan.retry_count` 1/2/3 on 10k and 50k locked-file trees (`checks = N * retry_count`, `deletes_held=True`). Lowered `lan.retry_count` default from `3` to `2` in `models/config.py`, `config.example.yaml`, and `tests/test_p1_c4_lan_builder.py` (`58b93aa`, `65 passed in 2.77s`).
+    - Unit test mock alignments for C1/C4/C8/S3 (`28440e3`).
+- **Verification**:
+  - Fast suite (`tests/`, `-m "not slow"`, prior to `config.yaml` creation): `3764 passed, 4 skipped, 9 deselected` (2 pre-existing `test_v113_round3` reds fixed once gitignored `config.yaml` was copied from `config.example.yaml` → `8 passed`; 2 dirty-tree `test_review2_driver.py` reds due to untracked `rclone_local.conf`).
+  - Targeted config/builder suite after `58b93aa`: `65 passed in 2.77s`.
+  - Slow suite (`tests/`, `-m slow`): `9 passed, 3772 deselected in 212.95s`.
+  - Robocopy grep (`git grep -n -i robocopy -- core flow.py models`): 4 allow-listed legacy/deprecation hits only.
+- **Box state**: `C:\AAMBackup` on `ssh innoviztawinserver2016` is still untouched at `baseline-v1-overlap` (`dc50265`).
+- **Next (owner-gated)**:
+  1. **WS-G remaining**: full `audit_lab/` sweep alone, Opus mutation review (`GT2`), docs merge (`ARCHITECTURE.md`, `EMAIL_CONTENT_SPEC.md`) + tag `rclone-rc1` (with owner go).
+  2. **WS-D D8**: 728-day live-box harness run (`tools/livebox/RUN_PROTOCOL_RCLONE.md`) after `rclone-rc1` tag + owner go (OD7). Note: `tools/livebox/tests/test_wire_injections.py` scenarios X17/X37–X39/X45–X48 remain out of scope for `rclone-rc1` (`c1f284c`; those injection hooks do not exist in `baseline-v1-overlap` either).
+  3. **WS-F**: Shadow trial steps A & B, cable pull, go/no-go, and deploy + 7-night watch (OD1, OD3, OD10).
 
 ---
 
