@@ -216,10 +216,7 @@ def _lan_rig(ex: Path, files: dict[str, bytes], mtimes=None):
 
 
 def _patch_no_zb(monkeypatch, ls) -> None:
-    """Drop /ZB (needs SeBackupPrivilege — proven in C1) so the lab account can copy."""
-    orig = ls.build_robocopy_command
-    monkeypatch.setattr(ls, "build_robocopy_command",
-                        lambda s, d, c: L.strip_zb(orig(s, d, c)))
+    pass
 
 
 def _cloud_rig(ex: Path, monkeypatch, files):
@@ -463,8 +460,6 @@ class _FlowMirrorMachine(RuleBasedStateMachine):
                                   runtime=self.base / "runtime", lan_enabled=True,
                                   cloud_enabled=False)
         self.ls = ls
-        self._orig_build = ls.build_robocopy_command
-        ls.build_robocopy_command = lambda s, d, c: L.strip_zb(self._orig_build(s, d, c))
         self.model: dict[str, bytes] = {}
         self.n = 0
         self.statuses: list[str] = []
@@ -545,7 +540,6 @@ class _FlowMirrorMachine(RuleBasedStateMachine):
                 f"different={sorted(p for p in set(src) & set(dest) if src[p] != dest[p])[:3]}")
 
     def teardown(self):
-        self.ls.build_robocopy_command = self._orig_build
         # close the loguru sink that flow.backup() -> configure_logging() added;
         # otherwise the log file stays locked and the NEXT test that logs
         # (e.g. shutdown_server's warning) hits PermissionError
@@ -1035,7 +1029,10 @@ def test_w16_schedule_collisions_across_year():
 
     from models.config import load_config
 
-    cfg = load_config(str(Path(__file__).resolve().parent.parent / "config.yaml"))
+    cfg_file = Path(__file__).resolve().parent.parent / "config.yaml"
+    if not cfg_file.exists():
+        cfg_file = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    cfg = load_config(str(cfg_file))
     tz = cfg.schedule.timezone
 
     start_local = pendulum.datetime(2026, 10, 12, 0, 0, tz=tz).naive()

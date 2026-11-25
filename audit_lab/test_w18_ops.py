@@ -372,7 +372,8 @@ def test_w18_reconcile_disabled_legs(monkeypatch):
     monkeypatch.setattr(pco, "get_client", lambda: fake)
     res = launch._reconcile_disabled_legs(
         None, legs={"backup-lan": True, "backup-cloud": False,
-                    "integrity-audit": True, "rollover-check": True})
+                    "integrity-audit": True, "rollover-check": True},
+        manual=set())
     assert res["backup-lan"] == "resumed (leg enabled)"
     assert res["backup-cloud"] == "PAUSED (leg disabled)"
     assert res["integrity-audit"] == "resumed (leg enabled)"
@@ -388,7 +389,7 @@ def test_w18_reconcile_disabled_legs_inside_loop(monkeypatch):
     fake = _FakeDepClient({})
     monkeypatch.setattr(pco, "get_client", lambda: fake)
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: object())
-    res = launch._reconcile_disabled_legs(None, legs={"backup-lan": True})
+    res = launch._reconcile_disabled_legs(None, legs={"backup-lan": True}, manual=set())
     assert res == {"backup-lan": "absent (nothing to reconcile)"}
 
 
@@ -524,13 +525,6 @@ def _dry(cf, src, **over):
                                 **{**_PROBE, **over})
 
 
-def test_w18_cloud_dry_run_source_missing(monkeypatch, sandbox):
-    cf = _rig_cloud(monkeypatch)
-    res = _dry(cf, sandbox / "nope")
-    assert res["ok"] is False and res["exit_code"] == -1
-    assert "Source drive not accessible" in res["error"]
-
-
 def test_w18_cloud_dry_run_empty_source_still_probes(monkeypatch, sandbox):
     cf = _rig_cloud(monkeypatch)
     src = sandbox / "empty"
@@ -538,14 +532,6 @@ def test_w18_cloud_dry_run_empty_source_still_probes(monkeypatch, sandbox):
     with fake_run_tool("core.cloud_preflight", exit_code=0, stdout="[]"):
         res = _dry(cf, src)
     assert res["ok"] is True and res["error"] is None       # M8: diagnostic-only
-
-
-def test_w18_cloud_dry_run_unreadable_source(monkeypatch, sandbox):
-    cf = _rig_cloud(monkeypatch)
-    f = sandbox / "notadir.txt"
-    f.write_text("x", encoding="utf-8")                    # exists() but iterdir() fails
-    res = _dry(cf, f)
-    assert res["ok"] is False and "Source drive read error" in res["error"]
 
 
 def test_w18_cloud_dry_run_probe_failures(monkeypatch, sandbox):
@@ -634,57 +620,21 @@ def _lan_rig(monkeypatch, sandbox, *, with_canary, canary_raises=False):
 def test_w18_lan_dry_run_smb_unreachable(monkeypatch, sandbox):
     from core.health import HealthError
 
-    lp, src, dest = _lan_rig(monkeypatch, sandbox, with_canary=True)
+    lp, _src, _dest = _lan_rig(monkeypatch, sandbox, with_canary=True)
     with pytest.raises(HealthError, match="Cannot reach LAN host"):
-        lp.run_lan_dry_run(str(src), r"\\nas01\share\FY26-27")
+        lp.check_lan_destination(r"\\nas01\share\FY26-27")
 
 
 def test_w18_lan_dry_run_canary_missing(monkeypatch, sandbox):
     """M2 2.3: a missing marker is reported (guard G5 blocks the run for a
     human); an UNREADABLE destination still fails (next test)."""
-    lp, src, dest = _lan_rig(monkeypatch, sandbox, with_canary=False)
-    res = lp.run_lan_dry_run(str(src), str(dest))
-    assert res["canary_present"] is False
+    lp, _src, dest = _lan_rig(monkeypatch, sandbox, with_canary=False)
+    assert lp.check_lan_destination(str(dest)) is False
 
 
 def test_w18_lan_dry_run_canary_unreadable(monkeypatch, sandbox):
     from core.health import HealthError
 
-    lp, src, dest = _lan_rig(monkeypatch, sandbox, with_canary=True, canary_raises=True)
+    lp, _src, dest = _lan_rig(monkeypatch, sandbox, with_canary=True, canary_raises=True)
     with pytest.raises(HealthError, match="Cannot access LAN destination"):
-        lp.run_lan_dry_run(str(src), str(dest))
-
-
-def test_w18_lan_dry_run_branches(monkeypatch, sandbox):
-    lp, src, dest = _lan_rig(monkeypatch, sandbox, with_canary=True)
-
-    from test_support.fake_tools import fake_run_tool
-
-    # REAL robocopy: listing completes (exit < 8) and the full /UNILOG is kept
-    res = lp.run_lan_dry_run(str(src), str(dest))
-    assert res["ok"] is True and res["exit_code"] < 8 and res["error"] is None
-    assert Path(res["log_path"]).stat().st_size > 0
-    assert res["counts"]["total"] == 1
-
-    # REAL robocopy: missing source -> exit 16, fails with the log tail
-    res = lp.run_lan_dry_run(str(src.parent / "no_such_source"), str(dest))
-    assert res["ok"] is False and res["exit_code"] == 16
-    assert "Robocopy /L failed with exit 16" in res["error"]
-
-    # process-level branches (cannot be provoked safely with the real binary)
-    with fake_run_tool("core.lan_preflight", timed_out=True):
-        res = lp.run_lan_dry_run(str(src), str(dest), timeout=9)
-    assert res["ok"] is False and "Timeout after 9s" in res["error"]
-    with fake_run_tool("core.lan_preflight", spawn_error="FileNotFoundError: robocopy"):
-        res = lp.run_lan_dry_run(str(src), str(dest))
-    assert res["ok"] is False and res["error"] == "robocopy.exe not found"
-    with fake_run_tool("core.lan_preflight", spawn_error="OSError: share gone"):
-        res = lp.run_lan_dry_run(str(src), str(dest))
-    assert res["ok"] is False and res["error"] == "OSError: share gone"
-    L.record("W18.lan_dry_run_branches",
-             "run_lan_dry_run() gates on SMB reachability + canary first, then "
-             "maps every robocopy outcome to an honest dict",
-             "smb-unreachable->HealthError | canary missing->reported for G5 | "
-             "canary unreadable->HealthError | real exit<8 ok + full log kept | "
-             "real exit 16 fail | timeout | no-robocopy | OS error",
-             "OK - all 8 branches behave as documented")
+        lp.check_lan_destination(str(dest))

@@ -300,6 +300,7 @@ def test_fyov_before_activation_is_baseline(overlap_rig):
     """S0: no activation record -> exactly the baseline (two rows, no FY27-28 anywhere).
     S1: the daily check activates (source folder + placeholder only), once, NAS-independent, config untouched."""
     rig = overlap_rig
+    rig.rewrite_config(guards={"min_delete_floor_files": 0})
     seen: set = set()
     exc = rig.run(mode="all")
     rows = rig.new_rows(seen)
@@ -344,6 +345,7 @@ def test_fyov_two_mirrors_two_prefixes(overlap_rig):
     """S2: one nightly run = four rows, two mirrors per leg, nothing crosses. S3: a delete in FY27-28 never
     touches the FY26-27 targets."""
     rig = overlap_rig
+    rig.rewrite_config(guards={"min_delete_floor_files": 0})
     seen: set = set()
     rig.activate()
     _populate(rig.source(FY2), 20, "NEXTFY")          # f_0001.txt exists in both years with different content
@@ -417,6 +419,7 @@ def test_fyov_two_mirrors_two_prefixes(overlap_rig):
 def test_fyov_g3_blocks_per_fy(overlap_rig):
     """S4: the delete cap (G3) judges each FY on its own; approvals are per (leg, FY)."""
     rig = overlap_rig
+    rig.rewrite_config(guards={"min_delete_floor_files": 0})
     seen: set = set()
     rig.activate()
     _populate(rig.source(FY2), 20, "NEXTFY")
@@ -488,6 +491,7 @@ def test_fyov_g5_per_fy(overlap_rig):
     """S5: a NAS FY27-28 folder with files but no marker is blocked by G5 (approval per FY); one pass's block never
     stops the other."""
     rig = overlap_rig
+    rig.rewrite_config(guards={"min_delete_floor_files": 0})
     seen: set = set()
     rig.activate()
     _populate(rig.source(FY2), 5, "NEXTFY")
@@ -529,6 +533,7 @@ def test_fyov_g5_per_fy(overlap_rig):
 def test_fyov_empty_nas_folder_is_marked(overlap_rig):
     """S5b: an empty NAS FY27-28 folder is ours: marker written, no approval."""
     rig = overlap_rig
+    rig.rewrite_config(guards={"min_delete_floor_files": 0})
     seen: set = set()
     rig.activate()
     _populate(rig.source(FY2), 5, "NEXTFY")
@@ -546,6 +551,7 @@ def test_fyov_empty_nas_folder_is_marked(overlap_rig):
 def test_fyov_weekly_audit_both_fys(overlap_rig):
     """S6: the weekly audit checks both FYs per leg, next FY first; damage in FY27-28 shows on FY27-28 only."""
     rig = overlap_rig
+    rig.rewrite_config(guards={"min_delete_floor_files": 0})
     seen: set = set()
     rig.activate()
     _populate(rig.source(FY2), 20, "NEXTFY")
@@ -587,6 +593,7 @@ def test_fyov_weekly_audit_both_fys(overlap_rig):
 def test_fyov_manual_only_lan_and_overlap_off(overlap_rig):
     """S7: a manual-only NAS leg still takes part in a hand-started run; switching the overlap off is the baseline."""
     rig = overlap_rig
+    rig.rewrite_config(guards={"min_delete_floor_files": 0})
     seen: set = set()
     rig.rewrite_config(lan={"scheduled": False})
     assert rig.cfg().lan.scheduled is False and rig.cfg().cloud.scheduled is True

@@ -45,7 +45,6 @@ def _rss_mb() -> float:
 
 def test_w2_scale_manifest_and_snapshots(sandbox):
     import core.cloud_reporter as crep
-    from core.lan_manifest import snapshot_to_dict, walk_lan_destination
     from audit_lab.labconf import write_local_rclone_config
 
     # ── 1. generate a real file set in the fake bucket ────────────────────────
@@ -97,25 +96,7 @@ def test_w2_scale_manifest_and_snapshots(sandbox):
             f"pickled manifest is {pickle_len / 1e6:.1f} MB at {N} objects - "
             "M-3: this is what Prefect persists per task result")
 
-        # ── 3. LAN snapshot cost (os.walk path, used before AND after sync) ────
-        nas = sandbox / "nas" / "FY26-26"
-        t0 = time.perf_counter()
-        snap = snapshot_to_dict(walk_lan_destination(str(nas))) if nas.exists() else {}
-        t_snap = time.perf_counter() - t0
-        if snap:
-            rss2 = _rss_mb()
-            try:
-                pk = len(pickle.dumps(snap, protocol=pickle.HIGHEST_PROTOCOL))
-            except Exception:
-                pk = -1
-            L.record("W2.lan_snapshot",
-                     "LAN before/after snapshot cost (two of these per run, passed as task results)",
-                     f"files={len(snap)} | wall={t_snap:.1f}s | RSS now {rss2:.0f}MB "
-                     f"(+{(rss2 - rss1):.0f}MB) | pickle={pk / 1e6:.1f} MB",
-                     f"extrapolation -> 1M: ~{t_snap * 1e6 / max(1, len(snap)):.0f}s per snapshot, "
-                     f"~{pk * 1e6 / max(1, len(snap)) / 1e6:.0f} MB pickled each; two of them per run")
-
-        # ── 4. lsjson alone (rclone side) vs Python parsing ───────────────────
+        # ── 3. lsjson alone (rclone side) vs Python parsing ───────────────────
         from audit_lab.labconf import run as _run
 
         t0 = time.perf_counter()

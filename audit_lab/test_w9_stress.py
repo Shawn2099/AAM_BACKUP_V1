@@ -203,10 +203,7 @@ def _lan_rig(ex: Path, files: dict[str, bytes], mtimes=None):
 
 
 def _patch_no_zb(monkeypatch, ls) -> None:
-    """Drop /ZB (needs SeBackupPrivilege — proven in C1) so the lab account can copy."""
-    orig = ls.build_robocopy_command
-    monkeypatch.setattr(ls, "build_robocopy_command",
-                        lambda s, d, c: L.strip_zb(orig(s, d, c)))
+    pass
 
 
 def _cloud_rig(ex: Path, monkeypatch, files):

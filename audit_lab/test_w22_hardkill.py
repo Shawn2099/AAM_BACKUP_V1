@@ -114,8 +114,10 @@ def hardkill_rig(rig, real_prefect_server):  # noqa: F811
     slow = cfg_path.with_name("config_slow.yaml")
     slow.write_text(cfg_path.read_text(encoding="utf-8"), encoding="utf-8")
     _edit_config(slow, lambda d: d["cloud"].update(bandwidth_limit="1M"))
-    _edit_config(cfg_path, lambda d: d["maintenance"].update(
-        concurrency_wait_seconds=LEASE_WAIT_SECONDS))
+    _edit_config(cfg_path, lambda d: (
+        d["maintenance"].update(concurrency_wait_seconds=LEASE_WAIT_SECONDS),
+        d["lan"].update(retry_count=2),
+    ))
     _edit_config(slow, lambda d: d["maintenance"].update(
         concurrency_wait_seconds=LEASE_WAIT_SECONDS))
     return {**rig, "slow_cfg": slow}

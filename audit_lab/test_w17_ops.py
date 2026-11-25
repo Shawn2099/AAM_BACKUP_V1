@@ -243,7 +243,7 @@ def test_w17_transfer_process_running(monkeypatch):
     import watchdog as wd
 
     def _iter(attrs=None):
-        return [types.SimpleNamespace(info={"name": "Robocopy.exe"})]
+        return [types.SimpleNamespace(info={"name": "rclone.exe"})]
 
     monkeypatch.setattr(psutil, "process_iter", _iter)
     assert wd._transfer_process_running() is True

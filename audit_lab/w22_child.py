@@ -31,11 +31,11 @@ os.environ.pop("PREFECT_TEST_MODE", None)
 import core.lan_sync as ls  # noqa: E402
 import flow  # noqa: E402
 
-_orig_build = ls.build_robocopy_command
-# /IPG (throttle, so the kill lands mid-copy) cannot be combined with /MT
-ls.build_robocopy_command = lambda s, d, c: [
-    a for a in L.strip_zb(_orig_build(s, d, c)) if not a.upper().startswith("/MT")
-] + [f"/IPG:{spec['ipg']}"]
+_orig_build = ls.build_lan_rclone_command
+# Throttle rclone with --bwlimit when spec["ipg"] is set so kills land mid-copy
+ls.build_lan_rclone_command = lambda *a, **kw: (
+    _orig_build(*a, **kw) + (["--bwlimit", "500k"] if spec.get("ipg") else [])
+)
 L.patch_cloud_modules_to_local(spec["rc"])
 flow.temp_rclone_config = lambda *a, **k: contextlib.nullcontext(spec["rc"])
 flow.notify = lambda *a, **k: True
