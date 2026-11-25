@@ -1355,8 +1355,17 @@ def lan_access_task(config, plan: dict, run_id: str):
     dest = config.paths.lan_destination
     permissions.probe_source_read(config.paths.source_drive)
     permissions.probe_destination_write(dest, run_id)
+    bytes_needed = (plan or {}).get("planned_bytes")
+    if bytes_needed is not None and getattr(config.lan, "versions_enabled", False):
+        log_path = (plan or {}).get("log_path")
+        if log_path:
+            try:
+                log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+                bytes_needed += cloud_sync.planned_versions_bytes(log_text)
+            except OSError:
+                pass
     permissions.check_destination_free_space(
-        dest, bytes_needed=(plan or {}).get("planned_bytes"),
+        dest, bytes_needed=bytes_needed,
         min_free_gb=config.lan.min_free_dest_gb)
 
 
@@ -2317,6 +2326,17 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             # powering off the NAS now strands them until the next WoL, and the
             # partial state must be reported, not silent.
             if status == "LAN_COMPLETE":
+                if getattr(config.lan, "versions_enabled", False):
+                    try:
+                        from core import lan_versions
+                        lan_versions.purge_old_versions(
+                            config.paths.lan_destination,
+                            config.lan.versions_folder,
+                            config.lan.versions_retention_days,
+                            artefacts_dir=artefacts_dir,
+                        )
+                    except Exception as purge_exc:  # noqa: BLE001 - purge never fails a completed backup
+                        logger.warning(f"LAN versions purge failed: {purge_exc}")
                 if allow_shutdown:
                     nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             elif status == "LAN_PARTIAL":

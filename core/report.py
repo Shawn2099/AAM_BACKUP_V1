@@ -809,6 +809,22 @@ def _legs_in(runs: list[dict]) -> tuple[str, ...]:
     return tuple(leg for leg in ("cloud", "lan") if any(r.get("mode") == leg for r in runs))
 
 
+def versions_size_summary(config) -> str | None:
+    """Weekly report line for the NAS versions folder size (Phase 1b B7 / V11)."""
+    lan = getattr(config, "lan", None)
+    if not lan or not getattr(lan, "enabled", False) or not getattr(lan, "versions_enabled", False):
+        return None
+    try:
+        from core import lan_versions
+        from models.config import resolve_versions_root
+
+        vroot = resolve_versions_root(config.paths.lan_destination, lan.versions_folder)
+        size_b = lan_versions.versions_folder_size_bytes(vroot)
+        return f"NAS versions folder: {size_b / (1024 ** 3):.2f} GB ({vroot})"
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def send_weekly_report(
     db: ManifestDB,
     notifications: NotificationConfig,
