@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -15,7 +16,14 @@ from pathlib import Path
 import pytest
 
 from audit_lab import labconf as L
-from core.lan_sync import check_lan_arrival, plan_lan_mirror, run_lan_mirror
+from core.integrity import audit_lan
+from core.lan_sync import (
+    check_lan_arrival,
+    check_lan_transfers_hash,
+    plan_lan_mirror,
+    run_lan_mirror,
+    transferred_files,
+)
 from core.permissions import PROBE_PREFIX
 from models.config import LanConfig
 
@@ -367,3 +375,128 @@ def test_L11_empty_folder_removed_from_source_is_removed_at_nas(sandbox, unc_nas
     assert res["status"] == "LAN_COMPLETE", res
     assert not (local_dest / "gone_empty").exists(), "empty folder removed at the source still exists at the NAS"
     _verdict("L11", "empty folder removed from source is removed at the NAS", True)
+
+
+# ── L12 ────────────────────────────────────────────────────────────────────────
+def test_L12_read_only_destination_file_partial_then_clean_rerun(sandbox, unc_nas):
+    local_dest, unc = unc_nas
+    src = sandbox / "source" / "FY26-27"
+    _seed_ledgers(src, 10)
+    L.write_file(src / "ro.txt", b"OLD-RO" * 100)
+    cfg = _cfg()
+    assert _sync(cfg, src, unc, sandbox, "L12-first")["status"] == "LAN_COMPLETE"
+
+    nas_ro = local_dest / "ro.txt"
+    gone = "Clients/ledger_0000.txt"
+    try:
+        # the NAS copy becomes read-only (attrib +R) and the source changes and loses one file
+        os.chmod(nas_ro, stat.S_IREAD)
+        L.write_file(src / "ro.txt", b"NEW-RO-CONTENT" * 300)
+        (src / gone).unlink()
+
+        res = _sync(cfg, src, unc, sandbox, "L12-partial")
+        assert res["status"] == "LAN_PARTIAL", res
+        assert res["exit_code"] == 1, res
+        assert res["failed_paths"] == ["ro.txt"], res["failed_paths"]
+        assert res["deletes_held"] is True, res
+        assert "ro.txt" in (res["reason"] or ""), res["reason"]
+        assert (local_dest / gone).exists(), "delete was not held while the read-only copy failed"
+        assert nas_ro.read_bytes() == b"OLD-RO" * 100, "read-only NAS copy was altered"
+    finally:
+        os.chmod(nas_ro, stat.S_IWRITE)  # scratch copy only, so the sandbox can be cleaned up
+
+    res2 = _sync(cfg, src, unc, sandbox, "L12-rerun")
+    assert res2["status"] == "LAN_COMPLETE", res2
+    assert not (local_dest / gone).exists(), "held delete not applied on the clean rerun"
+    assert L.md5(src / "ro.txt") == L.md5(local_dest / "ro.txt"), "ro.txt not updated on the rerun"
+    _verdict("L12", "read-only NAS file: PARTIAL names ro.txt, delete held; clean rerun COMPLETE, delete applied",
+             True)
+
+
+# ── L13 ────────────────────────────────────────────────────────────────────────
+def _tonight_files(src: Path) -> list[str]:
+    """Three files that are NEW on the NAS tonight; written before the sync start (t0)."""
+    rels = ["Clients/new_0.bin", " lead space.txt", "#hash_note.txt"]
+    for i, rel in enumerate(rels):
+        L.write_file(src / rel, bytes([65 + i]) * 700, mtime=time.time() - 120)
+    return rels
+
+
+def test_L13_same_size_corruption_caught_by_hash_not_size(sandbox, unc_nas):
+    local_dest, unc = unc_nas
+    src = sandbox / "source" / "FY26-27"
+    _seed_ledgers(src, 5)
+    cfg = _cfg()
+    assert _sync(cfg, src, unc, sandbox, "L13-first")["status"] == "LAN_COMPLETE"
+
+    rels = _tonight_files(src)
+    time.sleep(1.5)  # source ctime (creation) is strictly before t0
+    t0 = time.time()
+    res = _sync(cfg, src, unc, sandbox, "L13-sync")
+    assert res["status"] == "LAN_COMPLETE", res
+    copied = transferred_files([Path(res["log_path"]).read_text(encoding="utf-8", errors="replace")])[0]
+    assert sorted(copied) == sorted(rels), copied
+
+    # same-size, different bytes on the NAS copy of one file copied tonight
+    bad = "Clients/new_0.bin"
+    L.write_file(local_dest / bad, b"Z" * 700)
+    assert (local_dest / bad).stat().st_size == (src / bad).stat().st_size == 700
+
+    arrival = _check(cfg, src, unc, sandbox, "L13-size", changed_after=t0)
+    assert arrival["verified"] is True, f"size-only check should not see same-size corruption: {arrival}"
+
+    hashed = check_lan_transfers_hash(cfg, str(src), unc, _artefacts(sandbox, "L13-hash"),
+                                      paths=copied, changed_after_epoch=t0)
+    assert hashed["verified"] is False, hashed
+    assert hashed["differ"] == 1, hashed
+    assert bad in hashed["unverified_paths"], hashed["unverified_paths"]
+    _verdict("L13", "same-size corruption: size-only verified, hash check NOT verified, the file is listed",
+             True)
+
+
+# ── L13b ───────────────────────────────────────────────────────────────────────
+def test_L13b_clean_night_hash_verified(sandbox, unc_nas):
+    _, unc = unc_nas
+    src = sandbox / "source" / "FY26-27"
+    _seed_ledgers(src, 5)
+    cfg = _cfg()
+    assert _sync(cfg, src, unc, sandbox, "L13b-first")["status"] == "LAN_COMPLETE"
+
+    rels = _tonight_files(src)
+    time.sleep(1.5)
+    t0 = time.time()
+    res = _sync(cfg, src, unc, sandbox, "L13b-sync")
+    assert res["status"] == "LAN_COMPLETE", res
+    copied = transferred_files([Path(res["log_path"]).read_text(encoding="utf-8", errors="replace")])[0]
+    assert sorted(copied) == sorted(rels), copied
+
+    hashed = check_lan_transfers_hash(cfg, str(src), unc, _artefacts(sandbox, "L13b-hash"),
+                                      paths=copied, changed_after_epoch=t0)
+    assert hashed["verified"] is True, hashed
+    assert hashed["matching"] == 3, hashed
+    _verdict("L13b", "clean night: hash check verified, matching 3 (leading-space and '#' names passed raw)", True)
+
+
+# ── L14 ────────────────────────────────────────────────────────────────────────
+def test_L14_weekly_audit_ignores_mirror_excludes(sandbox, unc_nas):
+    local_dest, unc = unc_nas
+    src = sandbox / "source" / "FY26-27"
+    _seed_ledgers(src, 4)
+    L.write_file(src / "$RECYCLE.BIN" / "r.txt", b"recycled" * 10)
+    L.write_file(src / "System Volume Information" / "s.txt", b"restore" * 10)
+    L.write_file(src / (PROBE_PREFIX + "ab12cd"), b"probe")
+    L.write_file(src / ".AAM_TARGET_MOUNTED", b"marker")
+    cfg = _cfg()
+
+    res = _sync(cfg, src, unc, sandbox, "L14-sync")
+    assert res["status"] == "LAN_COMPLETE", res
+    assert not (local_dest / "$RECYCLE.BIN").exists(), "excluded folder was copied to the NAS"
+
+    full = audit_lan(str(src), unc)
+    assert full["status"] == "VERIFIED", full
+    assert full["missing"] == [] and full["extra"] == [] and full["modified"] == [], full
+
+    sharded = audit_lan(str(src), unc, scope_prefixes=["Clients"])
+    assert sharded["status"] == "VERIFIED", sharded
+    _verdict("L14", "weekly audit (full and sharded) VERIFIED: recycle bin, SVI, probe and marker not reported",
+             True)
