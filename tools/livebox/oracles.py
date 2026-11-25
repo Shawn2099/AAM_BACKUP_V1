@@ -515,6 +515,9 @@ def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Vio
                         out.append(Violation("METRICS", f"{day} {r['run_id']}: arrival.hash.ran=True with files={h.get('files')!r}"))
                     if int(h.get("missing") or 0) != 0 or int(h.get("differ") or 0) != 0:
                         out.append(Violation("METRICS", f"{day} {r['run_id']}: arrival.hash.ran=True on LAN_COMPLETE with missing={h.get('missing')} differ={h.get('differ')}"))
+                    checked = int(h.get("matching") or 0) + int(h.get("missing") or 0) + int(h.get("differ") or 0)
+                    if checked != int(h.get("files") or 0):
+                        out.append(Violation("METRICS", f"{day} {r['run_id']}: arrival.hash checked={checked} != files={h.get('files')!r}"))
                 elif not h.get("reason"):
                     out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_COMPLETE with {copied} copies missing arrival.hash ran/reason"))
         elif status == "LAN_PARTIAL":
@@ -531,7 +534,7 @@ def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Vio
         elif status == "LAN_SUSPECT":
             arr = m.get("arrival") or {}
             h = arr.get("hash") or {}
-            if arr.get("verified") is True and not (h.get("ran") is True and h.get("verified") is False):
+            if arr.get("verified") is True:
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_SUSPECT but arrival.verified=True"))
             if h.get("ran") is True and h.get("verified") is False and r.get("fault_code") != "AAM-LAN-04":
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: hash unverified but fault_code={r.get('fault_code')!r}, want 'AAM-LAN-04'"))
