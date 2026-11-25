@@ -462,13 +462,16 @@ def build_rclone_sync_command(
     max_duration_seconds: int | None = None,
     max_delete: int | None = None,
     track_renames: bool = model_default(CloudConfig, "track_renames"),
+    mode: str = "sync",
 ) -> list[str]:
-    """Build rclone sync command with GCS-optimized flags.
+    """Build rclone sync (or copy on G3 block) command with GCS-optimized flags.
 
     All tunable values are passed as parameters — caller draws them from config.
     max_delete: rclone's own `--max-delete` backstop (M2 2.2): the sync stops
     with a fatal error (exit 7) instead of deleting more files than G3 allows.
     """
+    if mode not in ("sync", "copy"):
+        raise ValueError(f"mode must be 'sync' or 'copy', got {mode!r}")
     require_source_files(source)  # G1 backstop (M2 2.2)
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
 
@@ -478,7 +481,7 @@ def build_rclone_sync_command(
     rclone_exe = resolve_binary("rclone") or "rclone"
 
     cmd = [
-        rclone_exe, "sync",
+        rclone_exe, mode,
         source, dest,
         "--config", config_path,
         "--fast-list",
@@ -514,7 +517,7 @@ def build_rclone_sync_command(
             "--max-duration", f"{int(max_duration_seconds)}s",
             "--cutoff-mode", "SOFT",
         ])
-    if max_delete is not None:
+    if mode == "sync" and max_delete is not None:
         cmd.extend(["--max-delete", str(int(max_delete))])
     if track_renames:
         # A renamed file is moved server-side instead of deleted + uploaded; the
@@ -547,6 +550,7 @@ def run_cloud_sync(
     error_tail_lines: int = model_default(CloudConfig, "error_tail_lines"),
     max_delete: int | None = None,
     track_renames: bool = model_default(CloudConfig, "track_renames"),
+    mode: str = "sync",
 ) -> dict:
     """Execute rclone sync to mirror source -> GCS.
 
@@ -583,7 +587,7 @@ def run_cloud_sync(
             retries_sleep_seconds=retries_sleep_seconds,
             stats_interval_seconds=stats_interval_seconds,
             max_duration_seconds=effective_max_duration,
-            max_delete=max_delete, track_renames=track_renames,
+            max_delete=max_delete, track_renames=track_renames, mode=mode,
         )
         step = "rclone-sync"
         log_path = artefacts.new_path(step, "log")

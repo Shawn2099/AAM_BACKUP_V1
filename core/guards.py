@@ -323,6 +323,19 @@ def enforce(leg: str, results: list[GuardResult],
     return record
 
 
+def is_g3_only_block(record: dict | None) -> bool:
+    """True when `record` is blocked and G3_MASS_DELETE is the ONLY unapproved failing guard (Phase 1b)."""
+    if not isinstance(record, dict) or not record.get("blocked"):
+        return False
+    approved = set(record.get("approved_guards") or ())
+    failing = {
+        r.get("guard")
+        for r in (record.get("results") or ())
+        if isinstance(r, dict) and not r.get("passed") and r.get("guard") not in approved
+    }
+    return failing == {"G3_MASS_DELETE"}
+
+
 def max_delete_allowance(destination_files: int, max_delete_files: int,
                          max_delete_percent: float, min_floor_files: int = 0) -> int:
     """Most deletions G3 passes for this destination size - the ONE rule (B1).

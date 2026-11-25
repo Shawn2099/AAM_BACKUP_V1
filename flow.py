@@ -915,7 +915,8 @@ def _budget_stop_text(budget: RunBudget, what: str) -> str:
 
 @task(name="cloud-sync")
 def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
-                    max_delete: int | None = None, budget: RunBudget | None = None):
+                    max_delete: int | None = None, budget: RunBudget | None = None,
+                    mode: str = "sync"):
     """Run rclone sync to mirror source → GCS (max_delete: G3 backstop).
 
     WP14: with a run budget the upload gets what is left of it (minus the
@@ -963,6 +964,7 @@ def cloud_sync_task(config, fy_prefix: str, artefacts_dir: str | None = None,
         error_tail_lines=config.cloud.error_tail_lines,
         max_delete=max_delete,
         track_renames=config.cloud.track_renames,
+        mode=mode,
     )
     stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
     if stopped:
@@ -1128,7 +1130,7 @@ def wol_check_task(config):
 
 
 @task(name="lan-preflight")
-def lan_preflight_task(config, artefacts_dir: str):
+def lan_preflight_task(config, artefacts_dir: str, backup_dir: str | None = None):
     """SMB probe, mount marker, G1 first file, then ONE rclone dry-run (plan P1 section 2 step 3).
 
     Returns the plan dict (lan_sync.plan_lan_mirror) plus canary_present, or
@@ -1151,7 +1153,8 @@ def lan_preflight_task(config, artefacts_dir: str):
     if source_empty:
         return {"source_empty": True, "canary_present": canary_present}
     plan = plan_lan_mirror(config.lan, config.paths.source_drive,
-                           config.paths.lan_destination, artefacts_dir)
+                           config.paths.lan_destination, artefacts_dir,
+                           backup_dir=backup_dir)
     if not plan["ok"]:
         raise faults.coded(RuntimeError(
             f"LAN guard measurement failed: rclone sync --dry-run did not complete "
@@ -1359,7 +1362,8 @@ def lan_access_task(config, plan: dict, run_id: str):
 
 @task(name="lan-sync")
 def lan_sync_task(config, artefacts_dir: str, max_delete: int,
-                  budget: RunBudget | None = None):
+                  budget: RunBudget | None = None, mode: str = "sync",
+                  backup_dir: str | None = None):
     """Run the real LAN `rclone sync` (plan P1 section 2 step 6; max_delete: G3 backstop).
 
     With a run budget rclone gets what is left of it (minus the post reserve) as its own
@@ -1386,7 +1390,8 @@ def lan_sync_task(config, artefacts_dir: str, max_delete: int,
     logger.info(f"LAN sync: {config.paths.source_drive} -> {config.paths.lan_destination}")
     result = lan_sync.run_lan_mirror(
         config.lan, config.paths.source_drive, config.paths.lan_destination, artefacts_dir,
-        max_delete=max_delete, max_duration_s=max_duration, timeout=timeout)
+        max_delete=max_delete, max_duration_s=max_duration, timeout=timeout,
+        mode=mode, backup_dir=backup_dir)
     if limited and result.get("timed_out") and max_duration is not None:
         # S5: rclone had --max-duration with --cutoff-mode SOFT and still did not stop in
         # time: it hung (NAS I/O) and was killed. That is not a clean budget stop.
@@ -1735,8 +1740,27 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             approval_id = _approval_of_pass(config, approval_id, fy_pass)
             clock = health_check_task(config, "cloud", artefacts_dir)
             preflight(config, fy_prefix, artefacts_dir)
-            guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
-                                             approval_id=approval_id, run_id=run_id)
+            try:
+                guard_record = cloud_guards_task(config, fy_prefix, artefacts_dir,
+                                                 approval_id=approval_id, run_id=run_id)
+            except guards.GuardBlocked as gb:
+                if guards.is_g3_only_block(gb.record):
+                    guard_record = gb.record
+                    cloud_access_task(config, run_id, artefacts_dir)
+                    try:
+                        copy_res = sync(config, fy_prefix, artefacts_dir,
+                                        max_delete=0, budget=budget, mode="copy")
+                        cstats = (copy_res or {}).get("stats") or {}
+                        files_copied = int(cstats.get("transfers") or 0)
+                        bytes_copied = int(cstats.get("bytes") or 0)
+                        gb.record["copy_only"] = {
+                            "copied": files_copied,
+                            "bytes": bytes_copied,
+                            "deletes_held": gb.record.get("planned_deletes", 0),
+                        }
+                    except Exception as copy_exc:  # noqa: BLE001 - copy-only failure never hides the G3 block
+                        logger.warning(f"Cloud copy-only on G3 block failed: {copy_exc}")
+                raise
             cloud_access_task(config, run_id, artefacts_dir)
             phase = "sync"
             _t_sync = time.monotonic()
@@ -2113,11 +2137,38 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 # plan A7: a rollover whose NAS folder could not be made (NAS was off) is
                 # completed now that the NAS is awake - before G5 looks for the mount marker
                 _complete_pending_rollover_nas_folder(config)
-            plan = preflight(config, artefacts_dir)
-            guard_record = lan_guards_task(
-                config, _effective_fy_prefix(config), plan,
-                approval_id=approval_id, run_id=run_id,
+            backup_dir = (
+                lan_sync.backup_dir_for_run(
+                    config.paths.lan_destination, config.lan.versions_folder,
+                    _effective_fy_prefix(config), started_at, run_tag=run_id[-6:],
+                )
+                if getattr(config.lan, "versions_enabled", False) else None
             )
+            plan = preflight(config, artefacts_dir, backup_dir=backup_dir)
+            try:
+                guard_record = lan_guards_task(
+                    config, _effective_fy_prefix(config), plan,
+                    approval_id=approval_id, run_id=run_id,
+                )
+            except guards.GuardBlocked as gb:
+                if guards.is_g3_only_block(gb.record):
+                    guard_record = gb.record
+                    lan_access_task(config, plan, run_id)
+                    try:
+                        copy_res = sync(config, artefacts_dir, max_delete=0,
+                                        budget=budget, mode="copy", backup_dir=backup_dir)
+                        cstats = (copy_res or {}).get("stats") or {}
+                        files_copied = int(cstats.get("transfers") or 0)
+                        bytes_copied = int(cstats.get("bytes") or 0)
+                        gb.record["copy_only"] = {
+                            "copied": files_copied,
+                            "bytes": bytes_copied,
+                            "deletes_held": plan.get("planned_deletes", 0),
+                            "backup_dir": backup_dir,
+                        }
+                    except Exception as copy_exc:  # noqa: BLE001 - copy-only failure never hides the G3 block
+                        logger.warning(f"LAN copy-only on G3 block failed: {copy_exc}")
+                raise
             lan_access_task(config, plan, run_id)
             phase = "sync"
             _t_sync = time.monotonic()
@@ -2140,7 +2191,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 attempt_clock["epoch"] = time.time()
                 try:
                     result = sync(config, artefacts_dir, max_delete=caps["max_delete"],
-                                  budget=budget)
+                                  budget=budget, backup_dir=backup_dir)
                 except SyncFailed as e:
                     if isinstance(e.result, dict) and e.result.get("log_path"):
                         sync_logs.append(e.result["log_path"])
@@ -2241,7 +2292,9 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                                                           "renames", "errors", "checks")}
                 if isinstance(stats, dict) else None,
                 "files_deleted": stats.get("deletes") if isinstance(stats, dict) else None,
-                "moves": stats.get("renames") if isinstance(stats, dict) else None,
+                "moves": (plan.get("moves")
+                          if isinstance(plan, dict) and getattr(config.lan, "versions_enabled", False)
+                          else (stats.get("renames") if isinstance(stats, dict) else None)),
                 "deletes_held": deletes_held,
                 "failed_paths": failed_paths,
             }
