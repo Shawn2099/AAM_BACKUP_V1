@@ -22,9 +22,16 @@ on deploy day (see §4f).
   is red only on a dirty tree; test_k_config_store flaked once under load, passes alone); slow file 9 passed; audit lab
   w25/w4/fy_overlap/w6b 25 passed 1 skipped; robocopy grep clean (4 allow-listed hits). Opus R11 review: 20 mutants killed.
 - **OPEN, in order (WS-A tail before the `rclone-rc1` tag):**
-  1. R11 findings, tests were being written by a Haiku agent (files under `test_support/rclone_logs/lan_hash12_*`,
-     `lan_hash_silent*`, `lan_multithread_*` are its UNTRACKED fixtures; check `git log` for a `test(R11)` commit, if none
-     redo the tests). Rows: A12d/A12e MUST-FIX (hash verified only if matching is not None and
+  1. R11 findings: TESTS ARE COMMITTED as `bf3090a` (16 new tests red for the right reason; fixtures lan_hash12_*,
+     lan_hash_silent*, lan_multithread_*; existing hash tests moved to the real 12-file fixture). NEXT = Sonnet writes the
+     code to make them green (core/lan_sync.py, flow.py), frozen tests not to be edited. Opus rulings on the test agent's
+     open points: (a) the 'absent' differing-file parametrization is an impossible rclone state, keep it as a green guard;
+     (b) a listed path gone from the source counts as changed_during_backup AND as covered, so
+     matching+missing+differ+gone == len(paths) holds, verified stays True only if no real differ/missing remains (A12g);
+     (c) A13j across retries: fail closed when len(union of listed paths) < max(stats.transfers over the attempts); the
+     per-attempt stats are not summed; (d) the W14 progress suffix 'progress unknown (no rclone stats)' stays (add it to
+     the matrix). Run the other 14 LAN files (283 passed) and the full fast loop after the code lands; the full loop was
+     NOT run on bf3090a. Rows: A12d/A12e MUST-FIX (hash verified only if matching is not None and
      matching+missing+differ == len(listed paths); a listed path gone from the source counts as changed during backup),
      A13j (stats.transfers > 0 but no 'Copied (' lines in the log -> LAN_SUSPECT AAM-LAN-04, not 'nothing copied'),
      H7 (`transferred_files` also lists 'Multi-thread Copied (...)', 'Copied (Rcat, new)', 'Copied (server-side copy)':
