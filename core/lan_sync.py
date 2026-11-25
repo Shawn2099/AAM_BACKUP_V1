@@ -443,7 +443,12 @@ def check_lan_transfers_hash(
     """Hash check of tonight's transferred files only (plan P1 S3): `rclone check
     --one-way --files-from-raw` source -> NAS (no --size-only, so rclone compares
     hashes where both sides have one), decided with decide_lan_arrival and the same
-    changed_since rule as check_lan_arrival. Result is the arrival dict."""
+    changed_since rule as check_lan_arrival. Result is the arrival dict.
+
+    Caveat: the NAS may serve just-written data from its RAM cache, so this proves
+    the SMB path and the NAS's view, not the disk surface; the weekly
+    `integrity.audit_lan` stays the disk-surface proof.
+    """
     artefacts = RunArtefacts.open(artefacts_dir)
     step = "rclone-lan-hash"
     timeout = config.verify_timeout_seconds if timeout is None else timeout

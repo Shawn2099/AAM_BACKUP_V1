@@ -18,8 +18,8 @@ Roles: Opus plans and reviews. Sonnet writes code only. Haiku writes tests first
 **Deferred**
 | Item | Reason |
 |---|---|
-| `--backup-dir` + age purge | Needs purge job, space accounting, owner answer (days/space). Without it rclone is no less safe than today's `/MIR`. Phase 1b, before the box switch. |
-| Copy-only run on a G3-only block (audit F.2.1) | Changes status/approval/mail meaning on both legs; needs owner yes. Phase 1b (builder change is `sync`->`copy`). |
+| `--backup-dir` + age purge | Completed in Phase 1b (`WS-B`, `AAM_versions`) and hardened in `RF-1` (`rclone purge` per due run folder). |
+| Copy-only run on a G3-only block (audit F.2.1) | Completed in Phase 1b (`WS-B`) and hardened in `RF-3` (truthful blocked mail) & `RF-4` (copy-only free-space counts moves). |
 | Cloud guard trims (`--combined` replacing `rclone size` walks, drop G2 on cloud, probe A, write probe, merge verify checks) | Cloud leg is proven on the box. Small Phase 2 chunk using parsers built here. |
 | Prefect retries on preflight/verify; cloud `max_attempts` | Prefect phase. |
 | Notify fixes (P1, P8/R2, P7) | Not engine work. |

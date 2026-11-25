@@ -4,6 +4,17 @@
 
 ---
 
+## >>> 2026-11-25 (latest) - REVIEW FIXES RF-1..RF-6 COMPLETE ON `rclone-engine` (worktree `C:\Users\malliath\Desktop\aam_rclone`) <<<
+
+**NEWEST STATE (read this first):**
+- **Review fixes (`docs/PLAN_REVIEW_FIXES_2026-11-25.md`) on `rclone-engine`**:
+  - **RF-1 (`594a324`)**: `core/lan_versions.py` `purge_old_versions` now uses `folders_to_purge` + `rclone purge` per due run folder (with `resolved_root` parent guard and `RunArtefacts.ephemeral("versions-purge")` fallback); added `LanConfig.versions_purge_timeout_seconds` (`1800`, `60..14400`).
+  - **RF-2 (`819f539`)**: `core/tool_runner.py` `_LogProgressWatcher` now parses rclone JSON logs (`stats` tuple fingerprint + `level=="info"` with non-empty `object`); stall watch off when `log_path is None and stall_timeout_s is None`; explicit `stall_timeout_s > 0` keeps byte-growth watch.
+  - **RF-3 (`9637f55`)**: `flow.py` + `core/statuses.py` (`copy_only_note`): both LAN and cloud G3 copy-only branches record `gb.record["copy_only"]` truthfully (including failure -> `error`, `copied=None`), and `_open_block_request` marks `sync_attempted=True` and appends `copy_only_note`.
+  - **RF-4 (`2615a63`)**: `core/cloud_sync.planned_move_bytes` + `core/lan_sync.plan_lan_mirror` (`planned_move_bytes`) + `flow.lan_access_task(..., copy_only=True)` adds `planned_move_bytes` to `bytes_needed` (failing closed if `None`).
+  - **RF-5 (`c72dc4a`)**: `ToolsConfig.rclone_expected_version` (`"1.74"`) & `rclone_version_policy` (`"block"`/`"warn"`), `core/health.rclone_version_fault` (cached per binary path), wired in `flow.health_check_task` (`AAM-SYS-04` block or daily `WARNING` email).
+  - **RF-6**: Doc caveats (`core/lan_sync.py`, `docs/ARCHITECTURE.md`, `docs/PLAN_P1_RCLONE_LAN_2026-11-25.md`), `SESSION_HANDOFF.md`, and `docs/SHADOW_TRIAL_2026-11-25.md` §8 (E1–E7).
+
 ## >>> 2026-11-25 (later) - PHASE 1b + PHASE 2 + C7 COMPLETE ON `rclone-engine` (worktree `C:\Users\malliath\Desktop\aam_rclone`) <<<
 
 **NEWEST STATE (read this first):**

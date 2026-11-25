@@ -72,3 +72,17 @@ Owner Go/No-Go Decision (`GO` / `NO-GO`) & Date: `____________________`
 8. Watch first night (21:01 LAN, 02:01 cloud) and 7 nights (**G7**).
 
 **Rollback**: Stop `AamWatchdog` and `AamBackupAgent`, `git checkout --detach dc50265`, restore `config.yaml.bak-before-rclone-<stamp>` (and `manifest.db` only if schema `user_version` changed), restart services, verify `/health`.
+
+---
+
+## 8. Shadow Trial & Post-`rclone-rc1` Observations (E1–E7)
+
+| ID | Topic | What to check / record during shadow trial |
+|---|---|---|
+| **E1** | Dry-run + size-check + hash-check wall time | Measure `rclone-lan-plan`, `rclone-lan-check`, and `rclone-lan-hash` against the real mirror and verify `lan.rclone_measure_timeout_seconds`, `lan.verify_timeout_seconds`, and `lan.arrival_hash_timeout_seconds` are >= 3x measured. |
+| **E2** | Budget post-reserve margin | Confirm `budget.lan_post_reserve_minutes * 60` >= measured check + measured hash + `wol.shutdown_verify_timeout_seconds` with margin. |
+| **E3** | `--track-renames` vs NAS | Verify folder/file renames on the source produce `move to` rather than delete+copy against the real Samba share, and confirm `--fix-case` necessity. |
+| **E4** | Read-only files on NAS | Count any read-only attributes on the NAS mirror (read-only check, no attribute changes) to confirm rclone replacement/deletion behavior. |
+| **E5** | Retry count (`lan.retry_count = 2`) | Observe a locked-file night (e.g. open Tally/PDF) and confirm retry wall time stays well within the night budget. |
+| **E6** | Versions folder growth (`AAM_versions`) | Verify `AAM_versions\<YYYY-MM-DD_HHmm>_<FY>\` space accounting and `rclone purge` retention behavior after 91 days (or test retention window). |
+| **E7** | rclone version pin (`tools.rclone_expected_version`) | Confirm `deploy/bin/rclone.exe` on the box reports `v1.74.x` and `health_check_task` passes cleanly without triggering `AAM-SYS-04`. |
