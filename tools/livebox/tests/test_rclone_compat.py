@@ -240,3 +240,28 @@ def test_check_rclone_lan_metrics_validates_exit7_backstop_blocked(tmp_path):
         assert any("LAN_BLOCKED" in d for d in details)
     finally:
         ro.close()
+
+
+def test_check_rclone_lan_metrics_flags_hash_count_mismatch(tmp_path):
+    db = tmp_path / "manifest.db"
+    day = dt.date(2027, 1, 5)
+    conn = _make_db(db)
+    conn.execute(
+        "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r_cov", "lan", "2027-01-05T21:05:00+05:30", "LAN_COMPLETE", 3, 0, None,
+         json.dumps({"counts_source": "rclone", "arrival": {
+             "verified": True,
+             "hash": {"ran": True, "verified": True, "files": 3, "bytes": 120,
+                      "matching": 2, "missing": 0, "differ": 0},
+         }})),
+    )
+    conn.commit()
+    conn.close()
+
+    ro = oracles.open_ro(db)
+    try:
+        v = oracles.check_rclone_lan_metrics(ro, day)
+        assert len(v) == 1 and "checked=2 != files=3" in v[0].detail
+    finally:
+        ro.close()
