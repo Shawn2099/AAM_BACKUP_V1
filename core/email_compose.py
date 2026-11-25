@@ -224,7 +224,8 @@ def compose(config, event, db=None, now=None) -> tuple[str, str, str]:
         steps: tuple[str, ...] = ()
     elif event.kind != "INFO" and (event.fault_code is not None or event.status):
         fault = faults.get(effective_code(event))
-        severity = fault.severity
+        severity = (faults.WARNING if event.kind == "WARNING" and fault.severity == faults.ACTION
+                    else fault.severity)
         subject = f"[{firm} Backup] {severity}: {label} - {fault.title} ({fault.code})"
         headline = f"{label}: {fault.title}"
         what = fault.what.format(**facts)

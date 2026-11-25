@@ -627,12 +627,16 @@ def _is_after(a_iso: str, b_iso: str) -> bool:
     return pendulum.parse(a_iso).timestamp() > pendulum.parse(b_iso).timestamp()
 
 
+_KIND_RANK = {"INFO": 0, "WARNING": 1, "FAILURE": 2, "ACTION_REQUIRED": 3}
+
+
 def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | None]:
     """(the earlier SENT email of this same, unchanged incident or None,
     Message-ID of the incident's first email to reply to or None).
 
-    Audit 2026-10-18 item 6: a RESOLVED email or a different fault code on
-    the leg starts a new incident, so its first email is never suppressed. An incident also ends when
+    Audit 2026-10-18 item 6: a RESOLVED email, a different fault code, or an
+    escalation to a higher severity kind (P1) starts a new cooldown window,
+    so its first email is never suppressed. An incident also ends when
     the problem itself ended (`_incident_closed`), even if no RESOLVED mail was sent."""
     prior = db.last_notification(event.key, status=SENT)
     group = incident_group(event)
@@ -642,11 +646,15 @@ def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | No
         open_problem = db.last_open_incident(group) or {}
         root = open_problem.get("thread_id") or open_problem.get("message_id")
         return same, root
-    unchanged = (prior is not None and prior.get("fault_code") == event.fault_code
+    escalated = (prior is not None
+                 and _KIND_RANK.get(prior.get("kind"), 0) < _KIND_RANK.get(event.kind, 0))
+    unchanged = (prior is not None and not escalated
+                 and prior.get("fault_code") == event.fault_code
                  and not db.sent_in_mode_after(group, prior["id"], recovered=True)
                  and not (config is not None and _incident_closed(event, db, config, prior)))
     same = prior if unchanged else None
-    root = (same.get("thread_id") or same.get("message_id")) if same else None
+    root = ((same or (prior if escalated else None)).get("thread_id")
+            or (same or (prior if escalated else None)).get("message_id")) if (same or escalated) else None
     return same, root
 
 
@@ -666,7 +674,17 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
         result = DeliveryResult(DISABLED, off)
     else:
         cooldown_h = _cooldown_hours(config, event)
-        if same and cooldown_h > 0 and _within_hours(same["created_at"], cooldown_h):
+        dup_s = int(getattr(getattr(config, "alerts", None), "duplicate_window_seconds", 0) or 0)
+        prior_any = (db.last_notification(event.key, status=SENT)
+                     if (event.kind != "RECOVERED" and dup_s > 0) else None)
+        is_dup = (prior_any is not None
+                  and _KIND_RANK.get(prior_any.get("kind"), 0) >= _KIND_RANK.get(event.kind, 0)
+                  and _within_seconds(prior_any["created_at"], dup_s))
+        if is_dup:
+            result = DeliveryResult(
+                SUPPRESSED, f"duplicate alert already sent at {prior_any['created_at']} "
+                            f"(window {dup_s}s)")
+        elif same and cooldown_h > 0 and _within_hours(same["created_at"], cooldown_h):
             result = DeliveryResult(
                 SUPPRESSED, f"same alert already sent at {same['created_at']} "
                             f"(cooldown {cooldown_h}h)")
@@ -699,11 +717,15 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     return result
 
 
-def _within_hours(iso_ts: str, hours: float) -> bool:
+def _within_seconds(iso_ts: str, seconds: float) -> bool:
     import pendulum
 
     try:
         then = pendulum.parse(iso_ts)
     except Exception:  # noqa: BLE001
         return False
-    return (pendulum.now("UTC") - then).total_seconds() < hours * 3600
+    return (pendulum.now("UTC") - then).total_seconds() < seconds
+
+
+def _within_hours(iso_ts: str, hours: float) -> bool:
+    return _within_seconds(iso_ts, hours * 3600)

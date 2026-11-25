@@ -614,6 +614,11 @@ class AlertsConfig(StrictModel):
         description="The 'backup overdue' email for a leg is repeated at most once per this many "
                     "hours while the leg stays overdue (other alerts follow repeat_cooldown_hours).",
     )
+    duplicate_window_seconds: int = Field(
+        default=300, ge=0, le=86400,
+        description="Duplicate PROBLEM alerts on the same incident key within this many seconds "
+                    "are suppressed (0 = off).",
+    )
     body_max_chars: int = Field(default=1000, ge=100, le=100_000,
                                 description="Inline message length in the email body")
     # Support attachments (docs/EMAIL_CONTENT_SPEC.md §5, audit 2026-10-18)

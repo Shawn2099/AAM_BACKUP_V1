@@ -233,6 +233,8 @@ HELP: dict[str, tuple[str, str]] = {
                                      "Stops your inbox filling with the same alert."),
     "alerts.stale_repeat_hours": ("Repeat the 'backup overdue' email at most every",
                                   "While a backup stays overdue the reminder is sent this often (hours)."),
+    "alerts.duplicate_window_seconds": ("Suppress duplicate problem emails within (seconds)",
+                                        "Two problem emails on the same key within this window send only the first (0 = off)."),
     "watchdog.healthy_mark_seconds": ("How often the watchdog records that all is well", ""),
     "alerts.send_decision_needed": ("Email when a backup waits for your decision",
                                     "Off: no email, but the dashboard still shows it in red with its approval card."),
