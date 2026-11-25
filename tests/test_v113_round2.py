@@ -100,10 +100,8 @@ def test_b_verify_task_reports_stage_seconds(monkeypatch):
         yield "fake-rclone-cfg"
 
     monkeypatch.setattr(flow, "temp_rclone_config", fake_cfg_ctx)
-    monkeypatch.setattr(flow, "verify_cloud_integrity", lambda **k: {"verified": True})
+    monkeypatch.setattr(flow, "verify_cloud_and_diff", lambda **k: {"verified": True, "diff": {}, "manifest": [], "manifest_error": None})
     monkeypatch.setattr(flow, "get_cloud_size", lambda *a, **k: {"count": 2, "bytes": 20})
-    monkeypatch.setattr(flow, "get_cloud_manifest", lambda *a, **k: [])
-    monkeypatch.setattr(flow, "get_cloud_diff", lambda *a, **k: {})
     cfg = SimpleNamespace(
         paths=SimpleNamespace(source_drive="E:\\FY26-27", gcs_key_path="k"),
         cloud=SimpleNamespace(bucket="b", location="l", project_number="p", storage_class="s",
@@ -114,7 +112,7 @@ def test_b_verify_task_reports_stage_seconds(monkeypatch):
     )
     out = flow.cloud_verify_and_report_task.fn(cfg, "FY26-27")
     stages = out["stage_seconds"]
-    assert set(stages) == {"verify_s", "size_s", "manifest_s", "diff_s"}
+    assert set(stages) == {"verify_s", "size_s"}
     assert all(isinstance(v, float) and v >= 0 for v in stages.values())
 
 

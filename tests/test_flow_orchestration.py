@@ -340,25 +340,28 @@ class TestCloudVerifyAndReportDegradation:
     def _run_task(self, manifest_outcome):
         from flow import cloud_verify_and_report_task
 
-        mock_manifest = MagicMock()
-        if isinstance(manifest_outcome, Exception):
-            mock_manifest.side_effect = manifest_outcome
-        else:
-            mock_manifest.return_value = manifest_outcome
-
         cm = MagicMock()
         cm.__enter__.return_value = "/cfg"
         cm.__exit__.return_value = False
+        if isinstance(manifest_outcome, Exception):
+            vr = {
+                "verified": True, "exit_code": 0, "error": None,
+                "termination": "normal", "completion": True,
+                "differences": 0, "reason": None,
+                "diff": {"added": [], "removed": [], "modified": [], "unchanged": [], "_partial": True},
+                "manifest": [], "manifest_error": str(manifest_outcome),
+            }
+        else:
+            vr = {
+                "verified": True, "exit_code": 0, "error": None,
+                "termination": "normal", "completion": True,
+                "differences": 0, "reason": None,
+                "diff": {"added": [], "removed": [], "modified": [], "unchanged": []},
+                "manifest": manifest_outcome, "manifest_error": None,
+            }
         with patch("flow.temp_rclone_config", return_value=cm), \
-              patch("flow.verify_cloud_integrity",
-                    return_value={"verified": True, "exit_code": 0, "error": None,
-                                  "termination": "normal", "completion": True,
-                                  "differences": 0, "reason": None}), \
-             patch("flow.get_cloud_size",
-                   return_value={"count": 5, "bytes": 500}), \
-             patch("flow.get_cloud_manifest", mock_manifest), \
-             patch("flow.get_cloud_diff",
-                   return_value={"added": [], "removed": [], "modified": [], "unchanged": []}):
+             patch("flow.verify_cloud_and_diff", return_value=vr), \
+             patch("flow.get_cloud_size", return_value={"count": 5, "bytes": 500}):
             config = MagicMock()
             return cloud_verify_and_report_task.fn(config, "FY26-27")
 

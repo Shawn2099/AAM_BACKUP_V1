@@ -42,7 +42,7 @@ from core.cloud_reporter import (
 from core.budget import BudgetExceeded, RunBudget, late_seconds as seconds_late
 from core import cloud_sync
 from core.cloud_sync import measure_planned_deletes, resolve_max_duration_seconds, run_cloud_sync
-from core.cloud_verify import verify_cloud_integrity
+from core.cloud_verify import verify_cloud_and_diff, verify_cloud_integrity
 from core.health import CLOCK_OK, check_clock, pre_backup_health
 from core.lan_preflight import check_lan_destination
 from core import lan_sync
@@ -1000,9 +1000,9 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
         config.cloud.project_number,
         config.cloud.storage_class,
     ) as rclone_cfg:
-        logger.info("Verifying cloud integrity")
+        logger.info("Verifying cloud integrity and diff")
         _t_verify = time.monotonic()
-        verify_result = verify_cloud_integrity(
+        verify_result = verify_cloud_and_diff(
             source=config.paths.source_drive,
             bucket=config.cloud.bucket,
             fy_prefix=fy_prefix,
@@ -1010,11 +1010,13 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
             timeout=limit(config.cloud.verify_timeout_seconds),
             checkers=config.cloud.checkers,
             modify_window_seconds=config.cloud.modify_window_seconds,
+            retries=config.cloud.retry_count,
+            retries_sleep_seconds=config.cloud.retries_sleep_seconds,
             artefacts=artefacts,
         )
         verify_s = time.monotonic() - _t_verify
 
-        logger.info("Gathering cloud report data")
+        logger.info("Gathering cloud size")
         _t_size = time.monotonic()
         size = get_cloud_size(
             config.cloud.bucket, fy_prefix, rclone_cfg,
@@ -1022,41 +1024,12 @@ def cloud_verify_and_report_task(config, fy_prefix: str, budget: RunBudget | Non
             artefacts=artefacts,
         )
         size_s = time.monotonic() - _t_size
-        # M6: a failed manifest query must never look like an empty bucket.
-        # Catch and carry the failure as data; the pipeline decides policy.
-        manifest_error = None
-        _t_manifest = time.monotonic()
-        try:
-            manifest = get_cloud_manifest(
-                config.cloud.bucket, fy_prefix, rclone_cfg,
-                timeout=limit(config.cloud.manifest_timeout_seconds),
-                artefacts=artefacts,
-            )
-        except Exception as e:
-            logger.warning(
-                f"Cloud manifest query failed - metrics degraded this run: {e}"
-            )
-            manifest, manifest_error = [], str(e)
-        manifest_s = time.monotonic() - _t_manifest
-        _t_diff = time.monotonic()
-        cloud_diff = get_cloud_diff(
-            config.paths.source_drive,
-            config.cloud.bucket,
-            fy_prefix,
-            rclone_cfg,
-            timeout=limit(config.cloud.diff_timeout_seconds),
-            checkers=config.cloud.checkers,
-            modify_window_seconds=config.cloud.modify_window_seconds,
-            retries=config.cloud.retry_count,
-            retries_sleep_seconds=config.cloud.retries_sleep_seconds,
-            artefacts=artefacts,
-        )
-        diff_s = time.monotonic() - _t_diff
+        manifest = verify_result.get("manifest", [])
+        manifest_error = verify_result.get("manifest_error")
+        cloud_diff = verify_result.get("diff", {"added": [], "removed": [], "modified": [], "unchanged": []})
         stage_seconds = {
             "verify_s": round(verify_s, 1),
             "size_s": round(size_s, 1),
-            "manifest_s": round(manifest_s, 1),
-            "diff_s": round(diff_s, 1),
         }
         logger.info(f"Cloud stage timings (s): {stage_seconds}")
 

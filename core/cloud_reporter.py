@@ -145,6 +145,36 @@ def get_cloud_manifest(bucket: str, fy_prefix: str, config_path: str, *, timeout
     return files
 
 
+def parse_combined_diff(diff_file: str | Path) -> tuple[dict, bool]:
+    """Parse an `rclone check --combined` file into {added, removed, modified, unchanged}."""
+    diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
+    try:
+        with open(diff_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # rclone check --combined format: <prefix> <filename>
+                # Prefix: + (missing on dest/added), - (extra on dest/removed), * (modified), = (unchanged)
+                if len(line) >= 3 and line[1] == " ":
+                    symbol = line[0]
+                    raw_p = line[2:].strip()
+                    p = PureWindowsPath(raw_p).as_posix().lstrip("/")
+                    if not p or p == ".":
+                        continue
+                    if symbol == "+":
+                        diff["added"].append(p)
+                    elif symbol == "-":
+                        diff["removed"].append(p)
+                    elif symbol == "*":
+                        diff["modified"].append(p)
+                    elif symbol == "=":
+                        diff["unchanged"].append(p)
+        return diff, True
+    except FileNotFoundError:
+        return diff, False
+
+
 def get_cloud_diff(
     source: str,
     bucket: str,
@@ -212,31 +242,8 @@ def get_cloud_diff(
             error_msg = f"rclone check exited {result.exit_code}: {stderr_output}"
             logger.warning(f"Cloud diff rclone failed (exit {result.exit_code}): {stderr_output}")
 
-        diff = {"added": [], "removed": [], "modified": [], "unchanged": []}
-
-        try:
-            with open(diff_file, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # rclone check --combined format: <prefix> <filename>
-                    # Prefix: + (added to dest), - (removed from dest), * (modified), = (unchanged)
-                    if len(line) >= 3 and line[1] == " ":
-                        symbol = line[0]
-                        raw_p = line[2:].strip()
-                        p = PureWindowsPath(raw_p).as_posix().lstrip("/")
-                        if not p or p == ".":
-                            continue
-                        if symbol == "+":
-                            diff["added"].append(p)
-                        elif symbol == "-":
-                            diff["removed"].append(p)
-                        elif symbol == "*":
-                            diff["modified"].append(p)
-                        elif symbol == "=":
-                            diff["unchanged"].append(p)
-        except FileNotFoundError:
+        diff, found = parse_combined_diff(diff_file)
+        if not found:
             # Diff file missing — rclone failed to create it
             logger.warning("Cloud diff file not found after rclone check - rclone may have failed")
 

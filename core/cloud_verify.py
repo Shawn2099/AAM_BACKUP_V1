@@ -20,10 +20,13 @@ Exit codes (rclone check):
     2+ = error — connection failure, invalid config, etc.
 """
 
+import os
+from pathlib import Path
 import re
 
 from loguru import logger
 
+from core.cloud_reporter import parse_combined_diff
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool
@@ -239,3 +242,115 @@ def _build_error_message(exit_code: int, stderr_detail: str = "") -> str | None:
     if exit_code == _EXIT_MISMATCH:
         return f"Integrity mismatch — source and GCS file counts or sizes differ{suffix}"
     return f"Rclone check failed with exit code {exit_code} — check rclone logs for details{suffix}"
+
+
+def _manifest_from_unchanged(source: str, unchanged: list[str]) -> list[dict]:
+    """Build manifest entries [{Path, Size, ModTime}] from local source files."""
+    root = Path(source)
+    entries: list[dict] = []
+    for rel in unchanged:
+        try:
+            st = os.stat(root / rel)
+        except OSError:
+            continue
+        entries.append({"Path": rel, "Size": st.st_size, "ModTime": st.st_mtime})
+    return entries
+
+
+def verify_cloud_and_diff(
+    source: str,
+    bucket: str,
+    fy_prefix: str,
+    config_path: str,
+    *,
+    timeout: int,
+    checkers: int,
+    modify_window_seconds: int,
+    retries: int = 3,
+    retries_sleep_seconds: int = 10,
+    artefacts: RunArtefacts | None = None,
+) -> dict:
+    """Run one `rclone check --one-way --combined --size-only` for verify, diff, and manifest."""
+    dest = f"aam_gcs:{bucket}/{fy_prefix}"
+    art = artefacts or RunArtefacts.ephemeral("cloud-verify")
+    combined_path = art.new_path("rclone-verify-combined", "txt")
+    rclone_exe = resolve_binary("rclone") or "rclone"
+    cmd = [
+        rclone_exe, "check",
+        source, dest,
+        "--one-way",
+        "--combined", str(combined_path),
+        "--fast-list",
+        "--size-only",
+        "--modify-window", f"{int(modify_window_seconds)}s",
+        "--checkers", str(int(checkers)),
+        "--retries", str(int(retries)),
+        "--retries-sleep", f"{int(retries_sleep_seconds)}s",
+        "--config", config_path,
+        "--gcs-no-check-bucket",
+    ]
+    logger.info(f"Cloud verify+diff: checking {source} <-> {bucket}/{fy_prefix}")
+    result = run_tool("rclone-verify", cmd, timeout_s=timeout, artefacts=art)
+
+    empty_diff = {"added": [], "removed": [], "modified": [], "unchanged": [], "_partial": True}
+    if result.timed_out:
+        msg = f"Timeout after {timeout}s"
+        logger.error(f"Cloud verify timed out after {timeout}s")
+        return {
+            "verified": False, "exit_code": -1, "error": msg,
+            "termination": "abnormal", "completion": False,
+            "differences": None, "reason": "verification timed out — process did not complete",
+            "diff": {**empty_diff, "_error": msg}, "manifest": [], "manifest_error": msg,
+        }
+    if result.spawn_error:
+        err = "rclone not found" if "FileNotFoundError" in result.spawn_error else result.spawn_error
+        reason = ("rclone binary missing — no verification ran"
+                  if "FileNotFoundError" in result.spawn_error
+                  else f"verification spawn failed: {result.spawn_error}")
+        logger.error(f"Cloud verify error: {err}")
+        return {
+            "verified": False, "exit_code": -1, "error": err,
+            "termination": "abnormal", "completion": False,
+            "differences": None, "reason": reason,
+            "diff": {**empty_diff, "_error": err}, "manifest": [], "manifest_error": err,
+        }
+
+    stderr_text = result.stderr_text()
+    stdout_text = result.stdout_text()
+    decision = decide_cloud_verify_result(result.exit_code, stderr_text, stdout_text)
+    verified = decision["verified"]
+    stderr_output = stderr_text.strip() or "no stderr"
+    error = _build_error_message(result.exit_code, stderr_output)
+    if not verified and decision["reason"]:
+        error = f"{error} ({decision['reason']})" if error else decision["reason"]
+
+    diff, found = parse_combined_diff(combined_path)
+    manifest_error = None
+    if not found:
+        diff["_partial"] = True
+        diff["_error"] = "combined diff file missing"
+        manifest_error = "combined diff file missing"
+    elif result.exit_code >= 2:
+        diff["_partial"] = True
+        diff["_error"] = error or f"rclone check exited {result.exit_code}"
+        manifest_error = diff["_error"]
+
+    manifest = _manifest_from_unchanged(source, diff["unchanged"]) if verified and not manifest_error else []
+    if verified:
+        logger.info("Cloud integrity verified - source matches GCS")
+    else:
+        label = "mismatch" if result.exit_code == _EXIT_MISMATCH else "error"
+        logger.warning(f"Cloud verify {label} (exit {result.exit_code}): {stderr_output}")
+
+    return {
+        "verified": verified,
+        "exit_code": result.exit_code,
+        "error": error,
+        "termination": decision["termination"],
+        "completion": decision["completion"],
+        "differences": decision["differences"],
+        "reason": decision["reason"],
+        "diff": diff,
+        "manifest": manifest,
+        "manifest_error": manifest_error,
+    }

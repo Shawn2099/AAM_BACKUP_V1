@@ -188,9 +188,7 @@ class TestEndToEndPipeline:
         # Mock all the subprocess calls
         with patch("flow.run_cloud_dry_run") as mock_dry, \
              patch("flow.run_cloud_sync") as mock_sync, \
-             patch("flow.verify_cloud_integrity") as mock_verify, \
-             patch("flow.get_cloud_manifest") as mock_manifest, \
-             patch("flow.get_cloud_diff") as mock_diff, \
+             patch("flow.verify_cloud_and_diff") as mock_verify, \
              patch("flow.get_cloud_size") as mock_size, \
              patch("flow.ManifestDB") as mock_db:
 
@@ -206,13 +204,14 @@ class TestEndToEndPipeline:
                 "exit_code": 0,
                 "termination": "normal",
                 "differences": 0,
-            }
-            mock_manifest.return_value = [{"Path": "file.txt", "Size": 100}]
-            mock_diff.return_value = {
-                "added": [],
-                "removed": [],
-                "modified": [],
-                "unchanged": ["file.txt"],
+                "manifest": [{"Path": "file.txt", "Size": 100}],
+                "manifest_error": None,
+                "diff": {
+                    "added": [],
+                    "removed": [],
+                    "modified": [],
+                    "unchanged": ["file.txt"],
+                },
             }
             mock_size.return_value = {"count": 1, "bytes": 100}
             mock_db.return_value = MagicMock()
