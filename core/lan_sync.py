@@ -358,28 +358,74 @@ def check_lan_arrival(
     logger.info(f"LAN arrival check: {source} -> {dest}")
     result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts)
 
-    def failed(reason: str) -> dict:
-        return {"verified": False, "reason": reason, "matching": None, "missing": 0,
-                "differ": 0, "changed_during_backup": 0, "unverified_paths": []}
-
     if result.spawn_error:
-        return failed(f"arrival check could not start: {result.spawn_error}")
+        return _arrival_failed(f"arrival check could not start: {result.spawn_error}")
     if result.timed_out:
-        return failed(f"arrival check timed out after {timeout}s")
-    try:
-        combined_text = Path(combined_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        combined_text = ""
-    threshold = changed_after_epoch
+        return _arrival_failed(f"arrival check timed out after {timeout}s")
+    return decide_lan_arrival(result.exit_code, result.stderr_text(),
+                              _read_combined(combined_path),
+                              _make_changed_since(source, changed_after_epoch))
 
+
+def _arrival_failed(reason: str) -> dict:
+    return {"verified": False, "reason": reason, "matching": None, "missing": 0,
+            "differ": 0, "changed_during_backup": 0, "unverified_paths": []}
+
+
+def _read_combined(combined_path) -> str:
+    try:
+        return Path(combined_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _make_changed_since(source: str, threshold: float):
+    """changed_since(rel_path): max(mtime, ctime) of the source file >= threshold; OSError is False."""
     def changed_since(rel_path: str) -> bool:
         try:
             st = (Path(source) / rel_path).stat()
         except OSError:
             return False
         return max(st.st_mtime, st.st_ctime) >= threshold
+    return changed_since
 
-    return decide_lan_arrival(result.exit_code, result.stderr_text(), combined_text, changed_since)
+
+def check_lan_transfers_hash(
+    config: LanConfig,
+    source: str,
+    dest: str,
+    artefacts_dir: str,
+    *,
+    paths: list[str],
+    changed_after_epoch: float,
+    timeout: int | None = None,
+) -> dict:
+    """Hash check of tonight's transferred files only (plan P1 S3): `rclone check
+    --one-way --files-from-raw` source -> NAS (no --size-only, so rclone compares
+    hashes where both sides have one), decided with decide_lan_arrival and the same
+    changed_since rule as check_lan_arrival. Result is the arrival dict."""
+    artefacts = RunArtefacts.open(artefacts_dir)
+    step = "rclone-lan-hash"
+    timeout = config.verify_timeout_seconds if timeout is None else timeout
+    list_path = artefacts.new_path(f"{step}-files", "txt")
+    Path(list_path).write_bytes("".join(f"{p}\n" for p in paths).encode("utf-8"))
+    combined_path = artefacts.new_path(f"{step}-combined", "txt")
+    cmd = [
+        resolve_binary("rclone") or "rclone", "check", source, dest,
+        "--one-way", "--files-from-raw", str(list_path),
+        "--skip-links", "--ignore-case",
+        "--checkers", str(int(config.checkers)),
+        "--combined", str(combined_path),
+    ]
+    logger.info(f"LAN hash check of {len(paths)} transferred file(s): {source} -> {dest}")
+    result = run_tool(step, cmd, timeout_s=timeout, artefacts=artefacts)
+    if result.spawn_error:
+        return _arrival_failed(f"hash check could not start: {result.spawn_error}")
+    if result.timed_out:
+        return _arrival_failed(f"hash check timed out after {timeout}s")
+    return decide_lan_arrival(result.exit_code, result.stderr_text(),
+                              _read_combined(combined_path),
+                              _make_changed_since(source, changed_after_epoch))
 
 
 _COPIED_MSGS = ("Copied (new)", "Copied (replaced existing)")
