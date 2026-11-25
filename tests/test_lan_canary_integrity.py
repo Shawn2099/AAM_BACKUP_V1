@@ -420,8 +420,10 @@ def test_phase5_real_rclone_canary_only_discrepancy_verifies(tmp_path, monkeypat
     result = integrity.audit_lan(str(src), str(dst), timeout=300)
 
     assert result["status"] == "VERIFIED", result["detail"]
-    assert result["canary_excluded"] == 1
-    assert result["raw_extra"] == 1
+    # S4/R5: the canary is now filtered by the mirror excludes (LAN_EXCLUDES)
+    # before rclone's verdict, so it never reaches the counts below.
+    assert result["canary_excluded"] == 0
+    assert result["raw_extra"] == 0
     assert result["mismatches"] == 0
 
 
@@ -442,4 +444,6 @@ def test_phase5_real_rclone_genuine_missing_still_fails(tmp_path, monkeypatch):
 
     assert result["status"] == "VERIFICATION_FAILED", result["detail"]
     assert "missing.txt" in result["missing"]
-    assert result["canary_excluded"] == 1
+    # S4/R5: the canary is now filtered by the mirror excludes (LAN_EXCLUDES)
+    # before rclone's verdict, so it is not counted as excluded.
+    assert result["canary_excluded"] == 0
