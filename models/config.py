@@ -214,6 +214,9 @@ class LanConfig(StrictModel):
     versions_retention_days: int = Field(
         default=91, ge=7, le=3650,
         description="Days to keep deleted/replaced file versions in the NAS versions folder before purge")
+    versions_purge_timeout_seconds: int = Field(
+        default=1800, ge=60, le=14400,
+        description="Timeout in seconds for purging each expired NAS versions run folder")
 
 
 class WolConfig(StrictModel):

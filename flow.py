@@ -2319,12 +2319,15 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 if getattr(config.lan, "versions_enabled", False) is True:
                     try:
                         from core import lan_versions
-                        lan_versions.purge_old_versions(
+                        purge_res = lan_versions.purge_old_versions(
                             config.paths.lan_destination,
                             config.lan.versions_folder,
                             config.lan.versions_retention_days,
                             artefacts_dir=artefacts_dir,
+                            timeout_s=config.lan.versions_purge_timeout_seconds,
                         )
+                        if purge_res.get("failed"):
+                            logger.warning(f"LAN versions purge had failures: {purge_res['failed']}")
                     except Exception as purge_exc:  # noqa: BLE001 - purge never fails a completed backup
                         logger.warning(f"LAN versions purge failed: {purge_exc}")
                 if allow_shutdown:

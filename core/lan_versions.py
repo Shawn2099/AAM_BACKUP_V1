@@ -10,8 +10,9 @@ from loguru import logger
 
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
+from core.time_utils import IST
 from core.tool_runner import run_tool
-from models.config import resolve_versions_root
+from models.config import LanConfig, model_default, resolve_versions_root
 
 _RUN_FOLDER_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_\d{4}_FY\d{2}-\d{2}")
 
@@ -66,28 +67,45 @@ def purge_old_versions(
     retention_days: int,
     *,
     artefacts_dir: str | None = None,
-    timeout_s: int = 1800,
+    timeout_s: int | None = None,
+    today: dt.date | None = None,
 ) -> dict:
-    """Purge versions older than `retention_days` via `rclone delete --min-age Nd` + `rclone rmdirs`."""
+    """Purge due `<YYYY-MM-DD_HHmm>_<FY>...` run folders via `rclone purge`."""
     versions_root = resolve_versions_root(lan_destination, versions_folder)
-    if not Path(versions_root).is_dir():
-        return {"ok": True, "versions_root": versions_root, "skipped": "versions folder absent"}
+    root_path = Path(versions_root)
+    if not root_path.is_dir():
+        return {
+            "ok": True,
+            "versions_root": versions_root,
+            "skipped": "versions folder absent",
+            "purged": [],
+            "failed": [],
+        }
 
+    ref_today = today if today is not None else dt.datetime.now(IST).date()
+    due = folders_to_purge(versions_root, retention_days, ref_today)
+    effective_timeout = (
+        int(model_default(LanConfig, "versions_purge_timeout_seconds"))
+        if timeout_s is None
+        else int(timeout_s)
+    )
     rclone = resolve_binary("rclone") or "rclone"
-    art = RunArtefacts.open(artefacts_dir) if artefacts_dir else None
+    art = RunArtefacts.open(artefacts_dir) if artefacts_dir else RunArtefacts.ephemeral("versions-purge")
+    resolved_root = root_path.resolve()
 
-    del_cmd = [rclone, "delete", versions_root, "--min-age", f"{int(retention_days)}d", "--ignore-case"]
-    del_res = run_tool("rclone-versions-delete", del_cmd, timeout_s=timeout_s, artefacts=art)
-    if del_res.spawn_error or del_res.timed_out or del_res.exit_code != 0:
-        err = del_res.spawn_error or ("timeout" if del_res.timed_out else f"exit {del_res.exit_code}")
-        logger.warning(f"Versions purge delete failed ({versions_root}): {err}")
-        return {"ok": False, "versions_root": versions_root, "error": err}
+    purged: list[str] = []
+    failed: list[dict[str, str]] = []
+    for folder in due:
+        if folder.resolve().parent != resolved_root:
+            failed.append({"folder": folder.name, "error": "outside versions root"})
+            continue
+        cmd = [rclone, "purge", str(folder)]
+        res = run_tool("rclone-versions-purge", cmd, timeout_s=effective_timeout, artefacts=art)
+        if res.spawn_error or res.timed_out or res.exit_code != 0:
+            err = res.spawn_error or ("timeout" if res.timed_out else f"exit {res.exit_code}")
+            logger.warning(f"Versions purge failed ({folder}): {err}")
+            failed.append({"folder": folder.name, "error": err})
+        else:
+            purged.append(folder.name)
 
-    rm_cmd = [rclone, "rmdirs", versions_root, "--leave-root"]
-    rm_res = run_tool("rclone-versions-rmdirs", rm_cmd, timeout_s=timeout_s, artefacts=art)
-    if rm_res.spawn_error or rm_res.timed_out or rm_res.exit_code != 0:
-        err = rm_res.spawn_error or ("timeout" if rm_res.timed_out else f"exit {rm_res.exit_code}")
-        logger.warning(f"Versions purge rmdirs failed ({versions_root}): {err}")
-        return {"ok": False, "versions_root": versions_root, "error": err}
-
-    return {"ok": True, "versions_root": versions_root}
+    return {"ok": len(failed) == 0, "versions_root": versions_root, "purged": purged, "failed": failed}

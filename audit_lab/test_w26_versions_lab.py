@@ -80,3 +80,57 @@ def test_v12_copy_only_mode_preserves_deletes_and_saves_replaced(sandbox, unc_na
     assert r2["status"] == "LAN_COMPLETE"
     assert (dst_local / "new.txt").read_bytes() == b"arrived"
     assert (dst_local / "del.txt").read_bytes() == b"still-here"
+
+
+def test_rf1_l1_old_mtime_deleted_file_kept_91d(sandbox, unc_nas):
+    import datetime as dt
+    import os
+    from core.lan_versions import purge_old_versions
+
+    src = sandbox / "src_rf1_l1" / "FY26-27"
+    src.mkdir(parents=True, exist_ok=True)
+    dst_local, dst_unc_p = unc_nas
+    dst_unc = str(dst_unc_p).replace("/", "\\")
+
+    old_file = src / "old.txt"
+    old_file.write_bytes(b"ancient-payload-2025")
+    (src / "keep.txt").write_bytes(b"keep-me")
+    old_ts = dt.datetime(2025, 1, 1, 12, 0, tzinfo=dt.timezone.utc).timestamp()
+    os.utime(old_file, (old_ts, old_ts))
+    orig_md5 = _md5(old_file)
+
+    cfg = LanConfig(retry_count=1, retry_wait_seconds=1)
+    art1 = sandbox / "runs_rf1_l1" / "r1"
+    art1.mkdir(parents=True)
+    assert run_lan_mirror(cfg, str(src), dst_unc, str(art1), max_delete=10)["status"] == "LAN_COMPLETE"
+
+    old_file.unlink()
+    bdir = backup_dir_for_run(dst_unc, "AAM_versions", "FY26-27", "2026-11-25T21:01:00+05:30", run_tag="rf1l1")
+    art2 = sandbox / "runs_rf1_l1" / "r2"
+    art2.mkdir(parents=True)
+    assert run_lan_mirror(cfg, str(src), dst_unc, str(art2), max_delete=10, mode="sync", backup_dir=bdir)["status"] == "LAN_COMPLETE"
+
+    res = purge_old_versions(dst_unc, "AAM_versions", retention_days=91, today=dt.date(2026, 11, 25))
+    assert res["ok"] is True
+    kept = dst_local.parent / "AAM_versions" / "2026-11-25_2101_FY26-27_rf1l1" / "old.txt"
+    assert kept.is_file() and _md5(kept) == orig_md5
+
+
+def test_rf1_l2_old_run_folder_purged(sandbox, unc_nas):
+    import datetime as dt
+    from core.lan_versions import purge_old_versions
+
+    dst_local, dst_unc_p = unc_nas
+    dst_unc = str(dst_unc_p).replace("/", "\\")
+    vroot = dst_local.parent / "AAM_versions"
+    old_folder = vroot / "2026-08-01_2101_FY26-27"
+    today_folder = vroot / "2026-11-25_2101_FY26-27"
+    old_folder.mkdir(parents=True, exist_ok=True)
+    today_folder.mkdir(parents=True, exist_ok=True)
+    (old_folder / "stale.txt").write_bytes(b"stale")
+    (today_folder / "fresh.txt").write_bytes(b"fresh")
+
+    res = purge_old_versions(dst_unc, "AAM_versions", retention_days=91, today=dt.date(2026, 11, 25))
+    assert res["ok"] is True
+    assert not old_folder.exists()
+    assert (today_folder / "fresh.txt").is_file()

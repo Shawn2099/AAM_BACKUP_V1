@@ -22,22 +22,25 @@ def test_v9_folders_to_purge_uses_folder_date_and_retention_days(tmp_path):
     assert due == [old_d, exact_d]
 
 
-def test_v9_purge_old_versions_runs_rclone_delete_min_age_and_rmdirs(tmp_path, monkeypatch):
+def test_v9_purge_old_versions_runs_rclone_purge_on_due_folders_only(tmp_path, monkeypatch):
     nas = tmp_path / "nas"
     mirror = nas / "FY26-27"
     mirror.mkdir(parents=True)
     vroot = nas / "AAM_versions"
     vroot.mkdir()
+    due = vroot / "2026-01-01_2101_FY26-27"
+    due.mkdir()
 
     calls = []
     monkeypatch.setattr(
         lan_versions, "run_tool",
         lambda step, cmd, **kw: calls.append((step, cmd)) or SimpleNamespace(exit_code=0, spawn_error=None, timed_out=False),
     )
-    res = lan_versions.purge_old_versions(str(mirror), "AAM_versions", retention_days=91)
+    res = lan_versions.purge_old_versions(
+        str(mirror), "AAM_versions", retention_days=91, today=dt.date(2026, 11, 25),
+    )
     assert res["ok"] is True
-    assert len(calls) == 2
-    assert calls[0][1][1] == "delete" and "--min-age" in calls[0][1] and "91d" in calls[0][1]
-    assert str(vroot) in calls[0][1]
+    assert len(calls) == 1
+    assert calls[0][1][1] == "purge" and str(due) in calls[0][1]
+    assert "--min-age" not in calls[0][1] and "rmdirs" not in calls[0][1]
     assert str(mirror) not in calls[0][1]
-    assert calls[1][1][1] == "rmdirs" and "--leave-root" in calls[1][1]

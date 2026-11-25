@@ -130,6 +130,10 @@ HELP: dict[str, tuple[str, str]] = {
                             "Folder name (next to the mirror) or UNC path on the same NAS share, outside the mirror."),
     "lan.versions_retention_days": ("Days to keep old NAS versions",
                                     "Deleted and replaced versions older than this many days are purged."),
+    "lan.versions_purge_timeout_seconds": (
+        "Time allowed for purging old NAS versions",
+        "Each old versions folder is removed within this time; a slower purge is reported and retried next night.",
+    ),
     "approvals.reminder_days": ("Days between pending-deletion reminders",
                                 "Days after a mass-delete block when reminders are sent (weekly after the last day)."),
     "tools.stall_timeout_seconds": ("Kill a stalled backup tool after (seconds)",

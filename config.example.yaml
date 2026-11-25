@@ -95,6 +95,7 @@ lan:
   versions_enabled: true
   versions_folder: "AAM_versions"
   versions_retention_days: 91
+  versions_purge_timeout_seconds: 1800
 
 # ═══════════════════════════════════════════════════
 # WAKE-ON-LAN
