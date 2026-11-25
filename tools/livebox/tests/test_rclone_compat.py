@@ -54,7 +54,7 @@ def test_check_rclone_lan_metrics_validates_complete_partial_suspect_blocked(tmp
             "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             ("r1", "lan", ts, "LAN_COMPLETE", 3, 0, None,
-             json.dumps({"counts_source": "rclone", "arrival": {"verified": True, "hash": {"ran": True}}})),
+             json.dumps({"counts_source": "rclone", "arrival": {"verified": True, "hash": {"ran": True, "verified": True}}})),
         )
         conn.execute(
             "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
@@ -102,6 +102,39 @@ def test_check_rclone_lan_metrics_flags_missing_hash_on_copied_complete(tmp_path
     try:
         v = oracles.check_rclone_lan_metrics(ro, day)
         assert len(v) == 1 and "arrival.hash" in v[0].detail
+    finally:
+        ro.close()
+
+
+def test_check_rclone_lan_metrics_validates_killed_after_cutoff_and_partial_suffix(tmp_path):
+    db = tmp_path / "manifest.db"
+    day = dt.date(2027, 1, 5)
+    ts = "2027-01-05T21:05:00+05:30"
+    conn = _make_db(db)
+    conn.execute(
+        "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r_ok", "lan", ts, "LAN_PARTIAL", 0, 0, "AAM-LAN-04",
+         json.dumps({"counts_source": "rclone", "killed_after_cutoff": True, "budget_stopped": False, "failed_paths": ["ro.txt"]})),
+    )
+    conn.execute(
+        "INSERT INTO run_history (run_id, mode, started_at, status, files_copied, files_deleted, fault_code, extended_metrics) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r_bad", "lan", ts, "LAN_PARTIAL", 0, 0, "AAM-LAN-03",
+         json.dumps({"counts_source": "rclone", "killed_after_cutoff": True, "budget_stopped": True,
+                     "failed_paths": ["ro.txt.7514dbf0.partial"]})),
+    )
+    conn.commit()
+    conn.close()
+
+    ro = oracles.open_ro(db)
+    try:
+        v = oracles.check_rclone_lan_metrics(ro, day)
+        details = [x.detail for x in v]
+        assert len(v) == 3
+        assert any("AAM-LAN-04" in d for d in details)
+        assert any("budget_stopped" in d for d in details)
+        assert any("unstripped partial suffix" in d for d in details)
     finally:
         ro.close()
 

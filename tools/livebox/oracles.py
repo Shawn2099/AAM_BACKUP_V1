@@ -483,8 +483,11 @@ def check_tree(src, dst, label: str = "", ignore: Iterable[str] = ()) -> list[Vi
     return violations
 
 
+_PARTIAL_SUFFIX_RE = re.compile(r"\.[0-9a-f]{8}\.partial$")
+
+
 def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Violation]:
-    """D3/D5: validate rclone LAN extended_metrics (counts_source, arrival, hash, deletes_held)."""
+    """D3/D5: validate rclone LAN extended_metrics (counts_source, arrival, hash, deletes_held, killed_after_cutoff)."""
     out: list[Violation] = []
     for r in run_rows(conn, day):
         if r.get("mode") != "lan":
@@ -505,11 +508,22 @@ def check_rclone_lan_metrics(conn: sqlite3.Connection, day: dt.date) -> list[Vio
             copied = int(r.get("files_copied") or 0)
             if copied > 0:
                 h = arr.get("hash") or {}
-                if not h.get("ran") and not h.get("reason"):
+                if h.get("ran") is True:
+                    if h.get("verified") is not True:
+                        out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_COMPLETE arrival.hash.ran=True but verified={h.get('verified')!r}"))
+                elif not h.get("reason"):
                     out.append(Violation("METRICS", f"{day} {r['run_id']}: LAN_COMPLETE with {copied} copies missing arrival.hash ran/reason"))
-        elif status == "LAN_PARTIAL" and m.get("deletes_held") is True:
-            if int(r.get("files_deleted") or 0) != 0:
+        elif status == "LAN_PARTIAL":
+            if m.get("deletes_held") is True and int(r.get("files_deleted") or 0) != 0:
                 out.append(Violation("METRICS", f"{day} {r['run_id']}: deletes_held=True but files_deleted={r.get('files_deleted')}"))
+            if m.get("killed_after_cutoff") is True:
+                if r.get("fault_code") != "AAM-LAN-04":
+                    out.append(Violation("METRICS", f"{day} {r['run_id']}: killed_after_cutoff=True but fault_code={r.get('fault_code')!r}, want 'AAM-LAN-04'"))
+                if m.get("budget_stopped"):
+                    out.append(Violation("METRICS", f"{day} {r['run_id']}: killed_after_cutoff=True must not set budget_stopped=True"))
+            for fp in m.get("failed_paths") or ():
+                if isinstance(fp, str) and _PARTIAL_SUFFIX_RE.search(fp):
+                    out.append(Violation("METRICS", f"{day} {r['run_id']}: unstripped partial suffix in failed_paths: {fp!r}"))
         elif status == "LAN_SUSPECT":
             arr = m.get("arrival") or {}
             if arr.get("verified") is True:
