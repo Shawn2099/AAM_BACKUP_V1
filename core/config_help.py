@@ -137,7 +137,7 @@ HELP: dict[str, tuple[str, str]] = {
     "approvals.reminder_days": ("Days between pending-deletion reminders",
                                 "Days after a mass-delete block when reminders are sent (weekly after the last day)."),
     "tools.stall_timeout_seconds": ("Kill a stalled backup tool after (seconds)",
-                                    "Stops rclone if it makes no output/log progress for this long (0 = off, 300-14400)."),
+                                    "Stops rclone sync and dry-run if its own progress counters do not change for this long (0 = off, 300-14400). Check, size and report tools are not stopped by this; they have their own time limits."),
 
     # ── WoL ──
     "wol.enabled": ("Switch the NAS on automatically", "Wake the NAS over the network before the backup."),

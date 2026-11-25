@@ -24,6 +24,7 @@ in memory, capped at `max_chars`, and no artefact files are written.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -140,6 +141,56 @@ def _watch_bytes(paths: tuple[Path | None, ...]) -> int:
     return total
 
 
+_STATS_FINGERPRINT_KEYS = (
+    "bytes", "transfers", "checks", "deletes", "deletedDirs",
+    "renames", "listed", "errors", "serverSideCopies", "serverSideMoves",
+)
+
+
+class _LogProgressWatcher:
+    """Incremental rclone JSON-log progress tracker (RF-2)."""
+
+    def __init__(self, log_path: Path):
+        self.log_path = log_path
+        self.offset = 0
+        self.carry = b""
+        self.last_fingerprint: tuple | None = None
+
+    def poll(self) -> bool:
+        try:
+            with open(self.log_path, "rb") as fh:
+                fh.seek(self.offset)
+                chunk = fh.read()
+        except OSError:
+            return False
+        if not chunk:
+            return False
+        self.offset += len(chunk)
+        buf = self.carry + chunk
+        parts = buf.split(b"\n")
+        self.carry = parts.pop()
+        progressed = False
+        for raw in parts:
+            text = raw.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+            try:
+                obj = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(obj, dict):
+                continue
+            stats = obj.get("stats")
+            if isinstance(stats, dict):
+                fp = tuple(stats.get(k) for k in _STATS_FINGERPRINT_KEYS)
+                if fp != self.last_fingerprint:
+                    self.last_fingerprint = fp
+                    progressed = True
+            elif obj.get("level") == "info" and isinstance(obj.get("object"), str) and obj["object"]:
+                progressed = True
+        return progressed
+
+
 def _wait_polling(
     proc: subprocess.Popen,
     timeout_s: float | None,
@@ -147,11 +198,17 @@ def _wait_polling(
     *,
     stall_timeout_s: float = 0.0,
     watch_paths: tuple[Path | None, ...] = (),
+    log_path: Path | None = None,
 ) -> int:
     """`proc.wait(timeout_s)` in short steps, with optional S6 stall detection."""
     now = time.monotonic()
     deadline = None if timeout_s is None else now + timeout_s
-    last_bytes = _watch_bytes(watch_paths) if stall_timeout_s > 0 else 0
+    watcher = _LogProgressWatcher(log_path) if (stall_timeout_s > 0 and log_path is not None) else None
+    if watcher is not None:
+        watcher.poll()
+        last_bytes = 0
+    else:
+        last_bytes = _watch_bytes(watch_paths) if stall_timeout_s > 0 else 0
     last_progress = now
     while True:
         now = time.monotonic()
@@ -165,12 +222,18 @@ def _wait_polling(
             if deadline is not None and now >= deadline:
                 raise
             if stall_timeout_s > 0:
-                cur_bytes = _watch_bytes(watch_paths)
-                if cur_bytes != last_bytes:
-                    last_bytes = cur_bytes
-                    last_progress = now
-                elif now - last_progress >= stall_timeout_s:
-                    raise _StallExpired() from None
+                if watcher is not None:
+                    if watcher.poll():
+                        last_progress = now
+                    elif now - last_progress >= stall_timeout_s:
+                        raise _StallExpired() from None
+                else:
+                    cur_bytes = _watch_bytes(watch_paths)
+                    if cur_bytes != last_bytes:
+                        last_bytes = cur_bytes
+                        last_progress = now
+                    elif now - last_progress >= stall_timeout_s:
+                        raise _StallExpired() from None
 
 
 def _kill_tree(pid: int) -> None:
@@ -255,7 +318,10 @@ def run_tool(
     stalled = False
     spawn_error: str | None = None
     interrupt: BaseException | None = None
-    effective_stall = _configured_stall_seconds() if stall_timeout_s is None else float(stall_timeout_s)
+    if log_path is None and stall_timeout_s is None:
+        effective_stall = 0.0
+    else:
+        effective_stall = _configured_stall_seconds() if stall_timeout_s is None else float(stall_timeout_s)
     logger.info(f"Running {name}: {' '.join(str(a) for a in argv[:4])}... "
                 f"(artefacts: {artefacts.dir})")
     try:
@@ -272,7 +338,8 @@ def run_tool(
                     rc = _wait_polling(
                         proc, timeout_s, _configured_poll_seconds(),
                         stall_timeout_s=effective_stall,
-                        watch_paths=(stdout_path, stderr_path, log_path),
+                        watch_paths=(stdout_path, stderr_path),
+                        log_path=log_path,
                     )
                     exit_code = rc if type(rc) is int else None
                 except _StallExpired:
