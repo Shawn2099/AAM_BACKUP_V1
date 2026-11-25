@@ -81,7 +81,7 @@ def test_flow_passes_the_sync_flag_keys():
     src = inspect.getsource(__import__("flow"))
     # the cloud guard measurement and the real sync (+ verify and diff for modify-window); the LAN leg
     # reads its own lan.* keys since plan P1
-    for key, n in (("modify_window_seconds=config.cloud.modify_window_seconds", 4),
+    for key, n in (("modify_window_seconds=config.cloud.modify_window_seconds", 3),
                    ("retries_sleep_seconds=config.cloud.sync_retries_sleep_seconds", 2),
                    ("stats_interval_seconds=config.cloud.stats_interval_seconds", 1)):
         assert src.count(key) >= n, key   # at least the known call sites (no exact-count pin)

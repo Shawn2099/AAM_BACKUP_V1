@@ -100,6 +100,10 @@ def _lan_pipeline(interrupt_in, exc):
         verify = p("flow.lan_verify_task", new=MagicMock(return_value={
             "verified": True, "matching": 1, "missing": 0, "differ": 0,
             "changed_during_backup": 0, "reason": None}))
+        p("flow.lan_hash_task", new=MagicMock(return_value={
+            "verified": True, "matching": 1, "missing": 0, "differ": 0,
+            "changed_during_backup": 0, "reason": None}))
+        p("flow._hash_plan", return_value=({"ran": True, "verified": True}, []))
         p("flow.lan_preflight_task"), p("flow.wol_check_task")
         health = p("flow.health_check_task")
         p("flow._missed_if_no_budget")

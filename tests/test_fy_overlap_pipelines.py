@@ -122,6 +122,10 @@ def lan_env():
         env.verify = p("flow.lan_verify_task", new=MagicMock(return_value={
             "verified": True, "matching": 1, "missing": 0, "differ": 0,
             "changed_during_backup": 0, "reason": None}))
+        env.hash = p("flow.lan_hash_task", new=MagicMock(return_value={
+            "verified": True, "matching": 1, "missing": 0, "differ": 0,
+            "changed_during_backup": 0, "reason": None}))
+        p("flow._hash_plan", return_value=({"ran": True, "verified": True}, []))
         env.shutdown = p("flow.lan_shutdown_task")
         env.complete_pending = p("flow._complete_pending_rollover_nas_folder")
         yield env

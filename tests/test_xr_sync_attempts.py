@@ -281,7 +281,7 @@ def _cloud_guards(planned, destination_now, already_deleted, approval=None, appr
     db.guard_baseline.return_value = None
     db.get_approval.return_value = approval
     db.mark_approval_used.return_value = True
-    dry = {"planned_deletes": planned, "error": None}
+    dry = {"planned_deletes": planned, "dest_files": destination_now, "source_files": 2000, "error": None}
     with patch("flow.ManifestDB") as mdb, \
             patch("flow.temp_rclone_config"), \
             patch("flow.now_iso", return_value=LATER), \

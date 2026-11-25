@@ -146,7 +146,10 @@ class TestCloudSyncTask:
         with patch("flow.run_cloud_sync", return_value={
                 "status": "CLOUD_FAILED", "exit_code": -1, "timed_out": True, "stats": None}):
             out = flow.cloud_sync_task.fn(_cfg(), "FY26-27", None, budget=_budget(3 * H))
-        assert out["status"] == "CLOUD_PARTIAL" and out["budget_stopped"] is True
+        assert out["status"] == "CLOUD_PARTIAL"
+        assert out["killed_after_cutoff"] is True
+        assert out["budget_stopped"] is False
+        assert out["fault_code"] == "AAM-CLD-08"
 
     def test_no_time_left_does_not_start_rclone(self):
         with patch("flow.run_cloud_sync") as run:
