@@ -166,3 +166,67 @@ def test_a13i_unreadable_sync_log_is_not_verified_and_is_suspect(tmp_path):
     hash_ = _hash_metrics(out)
     assert hash_["ran"] is False
     assert "could not read tonight's sync log" in hash_["reason"]
+
+
+# ── A14 (flow) the hash list cannot be written: SUSPECT, one alert, no shutdown, no crash ──
+
+def test_a14_list_file_write_error_is_suspect_one_alert_and_no_shutdown(tmp_path):
+    real_write = Path.write_bytes
+
+    def failing_write(self, data):
+        if "rclone-lan-hash-files" in self.name:
+            raise OSError(28, "No space left on device")
+        return real_write(self, data)
+
+    cfg = make_config(tmp_path)
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
+    with lan_world(tmp_path, script) as w, \
+            patch.object(Path, "write_bytes", failing_write):
+        out = run_lan(w, cfg)
+    assert out.status == "LAN_SUSPECT", f"status {out.status}; exc {out.exc!r}"
+    assert isinstance(out.exc, flow.PartialRun)
+    assert steps(w) == [PLAN, SYNC, CHECK], "no hash rclone call without a list file"
+    alerts = failures(w)
+    assert len(alerts) == 1, [a.message for a in alerts]
+    assert alerts[0].fault_code == "AAM-LAN-04"
+    assert w.shutdown.call_count == 0
+    hash_ = _hash_metrics(out)
+    assert hash_["verified"] is False
+    assert hash_["reason"].startswith("hash check could not start:")
+
+
+# ── M1 metrics.arrival.hash carries the full hash result keys (matrix section 8, Return) ──
+
+HASH_METRIC_KEYS = {"ran", "verified", "files", "bytes", "matching", "missing", "differ",
+                    "changed_during_backup", "reason", "unverified_paths"}
+
+
+def test_m1_hash_metrics_keys_present_when_the_hash_ran_clean(tmp_path):
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: hash_clean()}
+    cfg = make_config(tmp_path)
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert out.exc is None, f"exc {out.exc!r}"
+    assert steps(w) == [PLAN, SYNC, CHECK, HASH]
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is True
+    assert HASH_METRIC_KEYS <= set(hash_), f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
+    assert hash_["matching"] == 12
+    assert hash_["unverified_paths"] == []
+
+
+def test_m1_hash_metrics_keys_present_when_the_hash_ran_with_a_mismatch(tmp_path):
+    cfg = make_config(tmp_path)
+    src = Path(cfg.paths.source_drive)
+    (src / "new.txt").write_bytes(b"N" * 300)
+    past = time.time() - 3600
+    os.utime(src / "new.txt", (past, past))
+    script = {PLAN: clean_plan(), SYNC: sync_ok(), CHECK: check_clean(), HASH: _md5diff_hash()}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg)
+    assert steps(w) == [PLAN, SYNC, CHECK, HASH]
+    hash_ = _hash_metrics(out)
+    assert hash_["ran"] is True
+    assert hash_["verified"] is False
+    assert HASH_METRIC_KEYS <= set(hash_), f"missing keys: {sorted(HASH_METRIC_KEYS - set(hash_))}"
+    assert hash_["unverified_paths"] == ["new.txt"]

@@ -338,3 +338,27 @@ def test_a13_timeout_result_has_the_arrival_dict_shape(tmp_path):
     result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
                                 epoch=time.time() + 100, timeout=900)
     assert ARRIVAL_KEYS <= set(result)
+
+
+# A14 (R8c, Opus ruling) the list file cannot be written: the hash check must not raise
+
+def test_a14_list_file_write_error_returns_not_verified_and_never_raises(tmp_path):
+    from unittest.mock import patch
+    src, dst, art = _hash_setup(tmp_path)
+    real_write = Path.write_bytes
+
+    def failing_write(self, data):
+        if "rclone-lan-hash-files" in self.name:
+            raise OSError(28, "No space left on device")
+        return real_write(self, data)
+
+    spec = {"exit_code": 0, "stderr": CLEAN_HASH_ERR, "combined": CLEAN_HASH_COMB}
+    with fake_rclone_lan({"rclone-lan-hash": spec}) as fake, \
+            patch.object(Path, "write_bytes", failing_write):
+        result = lan_sync.check_lan_transfers_hash(
+            LanConfig(), str(src), dst, art, paths=HASH_PATHS,
+            changed_after_epoch=time.time() + 100, timeout=900)
+    assert fake.steps() == [], "no rclone call without a list file"
+    assert result["verified"] is False
+    assert result["reason"].startswith("hash check could not start:")
+    assert ARRIVAL_KEYS <= set(result)
