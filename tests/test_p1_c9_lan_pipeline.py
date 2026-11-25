@@ -549,3 +549,91 @@ def test_shutdown_result_is_recorded_in_the_row_and_status_stays_complete(tmp_pa
     assert out.exc is None, out.exc
     assert out.status == "LAN_COMPLETE"
     assert out.metrics["nas_shutdown"]["outcome"] == sd.FAILED
+
+
+# ── W14 hang after the SOFT cutoff (plan review amendment S5, chunk R6) ───
+# Matrix: docs/TESTMATRIX_P1_REVIEW_2026-11-25.md section 6. rclone was given --max-duration
+# with --cutoff-mode SOFT and still did not stop: the run is LAN_PARTIAL with killed_after_cutoff,
+# fault AAM-LAN-04, not "Stopped at the run budget".
+
+HANG_SYNC = {"timed_out": True, "log": ""}   # fake: no exit code, the hard timeout killed rclone
+
+
+def _capture_sync_result(captured: list):
+    """Stands in for flow.lan_sync_task and keeps what the task returned."""
+    real = flow.lan_sync_task.fn
+
+    def capturing(*args, **kwargs):
+        result = real(*args, **kwargs)
+        captured.append(result)
+        return result
+
+    return _Direct(capturing)
+
+
+def test_w14_hang_after_cutoff_is_partial_killed_after_cutoff_no_check_no_shutdown(tmp_path):
+    cfg = make_config(tmp_path)
+    script = {PLAN: clean_plan(), SYNC: HANG_SYNC}
+    captured: list = []
+    with lan_world(tmp_path, script) as w:
+        with patch.object(flow, "lan_sync_task", _capture_sync_result(captured)):
+            out = run_lan(w, cfg, budget_hours=0.5)
+    assert out.status == "LAN_PARTIAL", f"status {out.status}; exc {out.exc!r}"
+    assert isinstance(out.exc, flow.PartialRun)
+    assert captured, "the sync task returned no result"
+    assert captured[0].get("killed_after_cutoff") is True
+    assert not captured[0].get("budget_stopped")
+    alerts = failures(w)
+    assert len(alerts) == 1
+    assert alerts[0].fault_code == "AAM-LAN-04"
+    assert "did not stop" in alerts[0].message
+    assert "Stopped at the run budget" not in alerts[0].message
+    assert steps(w) == [PLAN, SYNC], "a hang skips the arrival check"
+    assert arrival_kwargs(w) == []
+    assert w.shutdown.call_count == 0
+    assert len(sync_argvs(w)) == 1, "a hang is never retried"
+
+
+def test_w14b_limited_timeout_too_small_for_a_cutoff_keeps_the_budget_stop(tmp_path):
+    # budget 850 s: after the 600 s post reserve about 250 s are left, so the hard timeout is
+    # <= 300 s, max_duration is None and no cutoff margin exists: a timeout here is a budget stop.
+    cfg = make_config(tmp_path)
+    script = {PLAN: clean_plan(), SYNC: HANG_SYNC}
+    captured: list = []
+    with lan_world(tmp_path, script) as w:
+        with patch.object(flow, "lan_sync_task", _capture_sync_result(captured)):
+            out = run_lan(w, cfg, budget_hours=850 / 3600)
+    assert out.status == "LAN_PARTIAL", f"status {out.status}; exc {out.exc!r}"
+    assert captured and captured[0].get("budget_stopped") is True
+    assert not captured[0].get("killed_after_cutoff")
+    alerts = failures(w)
+    assert len(alerts) == 1
+    assert "Stopped at the run budget" in alerts[0].message
+    assert "did not stop" not in alerts[0].message
+
+
+def test_w14c_exit_10_with_a_limit_is_still_a_budget_stop(tmp_path):
+    cfg = make_config(tmp_path)
+    script = {PLAN: clean_plan(),
+              SYNC: {"exit_code": 10, "log": _fx("max_duration_exit10.jsonl")}}
+    captured: list = []
+    with lan_world(tmp_path, script) as w:
+        with patch.object(flow, "lan_sync_task", _capture_sync_result(captured)):
+            out = run_lan(w, cfg, budget_hours=0.5)
+    assert out.status == "LAN_PARTIAL", f"status {out.status}; exc {out.exc!r}"
+    assert captured and captured[0].get("budget_stopped") is True
+    assert not captured[0].get("killed_after_cutoff")
+
+
+def test_w14_row_carries_fault_code_aam_lan_04_and_verify_text_says_killed(tmp_path):
+    # Matrix W14 names "the run row/alert". The row is written in the finally block, which only
+    # sees a fault code set on the exception path today, so this row check is the one the
+    # R6 builder must satisfy on the PARTIAL path (flagged to Opus, see the report).
+    cfg = make_config(tmp_path)
+    script = {PLAN: clean_plan(), SYNC: HANG_SYNC}
+    with lan_world(tmp_path, script) as w:
+        out = run_lan(w, cfg, budget_hours=0.5)
+    assert out.status == "LAN_PARTIAL", f"status {out.status}; exc {out.exc!r}"
+    assert out.metrics.get("fault_code") == "AAM-LAN-04", out.metrics
+    assert out.metrics.get("verify") == "skipped - rclone was killed after its time limit", (
+        out.metrics.get("verify"))
