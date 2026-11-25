@@ -32,8 +32,26 @@ def _reserve(artefacts, step, ext="log"):
     return artefacts.new_path(step, ext)
 
 
-def test_steps_are_the_three_lan_step_names():
-    assert LAN_RCLONE_STEPS == ("rclone-lan-plan", "rclone-lan-sync", "rclone-lan-check")
+def test_steps_are_the_lan_step_names():
+    # R8b (review amendment S3) adds the hash step; flagged to Opus: this exact-tuple
+    # expectation changed because LAN_RCLONE_STEPS gains "rclone-lan-hash" by plan.
+    assert LAN_RCLONE_STEPS == ("rclone-lan-plan", "rclone-lan-sync", "rclone-lan-check",
+                                "rclone-lan-hash")
+
+
+def test_hash_step_is_accepted_by_the_fake(artefacts):
+    log = _reserve(artefacts, "rclone-lan-hash")
+    with fake_rclone_lan({"rclone-lan-hash": {"exit_code": 0, "log": "H"}}) as fake:
+        result = lan_sync.run_tool("rclone-lan-hash", _sync_argv(log), timeout_s=5,
+                                   artefacts=artefacts, log_path=log)
+    assert result.exit_code == 0
+    assert fake.steps() == ["rclone-lan-hash"]
+
+
+def test_misspelt_hash_step_name_is_rejected_at_setup():
+    with pytest.raises(ValueError, match="unknown step"), \
+            fake_rclone_lan({"rclone-lan-hsah": {"exit_code": 0}}):
+        pass
 
 
 def test_dispatch_returns_a_real_toolresult_and_records_the_call(artefacts):

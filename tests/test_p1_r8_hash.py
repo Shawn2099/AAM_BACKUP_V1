@@ -21,14 +21,18 @@ while the LanConfig fields and config_help entries are missing.
 """
 
 import json
+import time
 from pathlib import Path
 
+import pendulum
 import pytest
 from pydantic import ValidationError
 
 import core.config_help as config_help
 import core.lan_sync as lan_sync
+from core.run_artefacts import RunArtefacts
 from models.config import LanConfig
+from test_support.fake_tools import fake_rclone_lan
 
 FIXTURES = Path(__file__).resolve().parents[1] / "test_support" / "rclone_logs"
 
@@ -182,3 +186,155 @@ class TestRuleClauses:
     def test_copy_without_object_is_not_listed(self):
         log = _log(_entry("Copied (new)", None, size=5))
         assert lan_sync.transferred_files([log]) == ([], 0)
+
+
+# ── R8b: check_lan_transfers_hash (matrix A11, A12, A12b, A12c, A13 wrapper) ──
+#
+# Fixtures lan_hash_clean.* and lan_hash_md5diff.* are real rclone v1.74.3 output of
+# `rclone check SRC DST --one-way --files-from-raw LIST --skip-links --ignore-case --checkers 4`
+# (local disk; see LAN_FIXTURES.md). The clean list is a.txt, sub/b.txt, new.txt (3 matching);
+# the md5diff run had new.txt overwritten with same-size different bytes (X8).
+
+HASH_RUN_ID = "3f2a9c1e-77aa-4c6b-9d11-0a1b2c3d4e5f-lan"
+HASH_STARTED = pendulum.datetime(2026, 11, 25, 9, 0, tz="Asia/Kolkata")
+HASH_PATHS = ["a.txt", "sub/b.txt", "new.txt"]
+A11_PATHS = ["#hash.txt", " lead.txt", "sub/é.txt"]
+CLEAN_HASH_ERR = _fixture("lan_hash_clean.stderr.txt")
+CLEAN_HASH_COMB = _fixture("lan_hash_clean_combined.txt")
+MD5DIFF_ERR = _fixture("lan_hash_md5diff.stderr.txt")
+MD5DIFF_COMB = _fixture("lan_hash_md5diff_combined.txt")
+ARRIVAL_KEYS = {"verified", "reason", "matching", "missing", "differ",
+                "changed_during_backup", "unverified_paths"}
+
+
+def _hash_setup(tmp_path):
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    dst = str(tmp_path / "dst")
+    artefacts = RunArtefacts(tmp_path / "runlogs", HASH_RUN_ID, started=HASH_STARTED)
+    return src, dst, str(artefacts.dir)
+
+
+def _arg(argv, flag):
+    return Path(argv[argv.index(flag) + 1])
+
+
+def _hash_check(config, src, dst, art, spec, *, paths, epoch, timeout=900):
+    with fake_rclone_lan({"rclone-lan-hash": spec}) as fake:
+        result = lan_sync.check_lan_transfers_hash(config, str(src), dst, art, paths=paths,
+                                                   changed_after_epoch=epoch, timeout=timeout)
+    return result, fake
+
+
+# A11 argv and list file
+
+def test_a11_hash_argv_is_the_plan_2_1_hash_argv(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    config = LanConfig()
+    spec = {"exit_code": 0, "stderr": CLEAN_HASH_ERR, "combined": CLEAN_HASH_COMB}
+    _result, fake = _hash_check(config, src, dst, art, spec, paths=A11_PATHS,
+                                epoch=time.time() + 100, timeout=900)
+    assert fake.steps() == ["rclone-lan-hash"]
+    argv = fake[0]["argv"]
+    listing = _arg(argv, "--files-from-raw")
+    combined = _arg(argv, "--combined")
+    assert argv[1:] == [
+        "check", str(src), dst,
+        "--one-way", "--files-from-raw", str(listing),
+        "--skip-links", "--ignore-case",
+        "--checkers", str(config.checkers),
+        "--combined", str(combined),
+    ]
+    assert fake[0]["timeout_s"] == 900
+
+
+def test_a11_list_file_is_utf8_bytes_in_the_run_folder(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": CLEAN_HASH_ERR, "combined": CLEAN_HASH_COMB}
+    _result, fake = _hash_check(LanConfig(), src, dst, art, spec, paths=A11_PATHS,
+                                epoch=time.time() + 100)
+    listing = _arg(fake[0]["argv"], "--files-from-raw")
+    assert listing.parent == Path(art)
+    assert "rclone-lan-hash-files" in listing.name
+    assert listing.read_bytes() == "#hash.txt\n lead.txt\nsub/é.txt\n".encode("utf-8")
+
+
+@pytest.mark.parametrize("flag", [
+    "--size-only", "--exclude", "--files-from", "--download", "--checksum",
+    "--log-file", "--use-json-log",
+])
+def test_a11_hash_argv_never_has_the_forbidden_flags(tmp_path, flag):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": CLEAN_HASH_ERR, "combined": CLEAN_HASH_COMB}
+    _result, fake = _hash_check(LanConfig(), src, dst, art, spec, paths=A11_PATHS,
+                                epoch=time.time() + 100)
+    assert flag not in fake[0]["argv"]
+
+
+def test_a11_checkers_come_from_config(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": CLEAN_HASH_ERR, "combined": CLEAN_HASH_COMB}
+    _result, fake = _hash_check(LanConfig(checkers=7), src, dst, art, spec, paths=A11_PATHS,
+                                epoch=time.time() + 100)
+    argv = fake[0]["argv"]
+    assert argv[argv.index("--checkers") + 1] == "7"
+
+
+# A12 mismatch, A12b explained by a change, A12c clean
+
+def test_a12_same_size_mismatch_is_not_verified_and_listed(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    (src / "new.txt").write_bytes(b"N" * 300)
+    spec = {"exit_code": 1, "stderr": MD5DIFF_ERR, "combined": MD5DIFF_COMB}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
+                                epoch=time.time() + 100)
+    assert result["verified"] is False
+    assert result["unverified_paths"] == ["new.txt"]
+
+
+def test_a12b_mismatch_explained_by_a_change_after_the_epoch_is_verified(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    (src / "new.txt").write_bytes(b"N" * 300)  # created now: changed after an epoch 100 s ago
+    spec = {"exit_code": 1, "stderr": MD5DIFF_ERR, "combined": MD5DIFF_COMB}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
+                                epoch=time.time() - 100)
+    assert result["verified"] is True
+    assert result["changed_during_backup"] == 1
+    assert result["unverified_paths"] == []
+
+
+def test_a12c_clean_hash_is_verified_and_matching_is_the_list_length(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": 0, "stderr": CLEAN_HASH_ERR, "combined": CLEAN_HASH_COMB}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
+                                epoch=time.time() + 100)
+    assert result["verified"] is True
+    assert result["matching"] == len(HASH_PATHS)
+
+
+# A13 wrapper part: timeout, spawn error, result shape
+
+def test_a13_hash_timeout_is_not_verified_with_a_timed_out_reason(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": None, "timed_out": True}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
+                                epoch=time.time() + 100, timeout=900)
+    assert result["verified"] is False
+    assert "timed out" in result["reason"]
+
+
+def test_a13_hash_spawn_error_is_not_verified(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": None, "spawn_error": "FileNotFoundError: missing"}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
+                                epoch=time.time() + 100, timeout=900)
+    assert result["verified"] is False
+    assert result["reason"]
+
+
+def test_a13_timeout_result_has_the_arrival_dict_shape(tmp_path):
+    src, dst, art = _hash_setup(tmp_path)
+    spec = {"exit_code": None, "timed_out": True}
+    result, _fake = _hash_check(LanConfig(), src, dst, art, spec, paths=HASH_PATHS,
+                                epoch=time.time() + 100, timeout=900)
+    assert ARRIVAL_KEYS <= set(result)

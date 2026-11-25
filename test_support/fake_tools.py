@@ -140,7 +140,7 @@ class SubprocessStyleRunTool:
 # "name", "argv", "timeout_s", "log_path", "artefacts", "env"); `.steps()` lists
 # the step names in call order.
 
-LAN_RCLONE_STEPS = ("rclone-lan-plan", "rclone-lan-sync", "rclone-lan-check")
+LAN_RCLONE_STEPS = ("rclone-lan-plan", "rclone-lan-sync", "rclone-lan-check", "rclone-lan-hash")
 _LAN_SPEC_KEYS = frozenset({"exit_code", "log", "combined", "stderr", "stdout",
                             "timed_out", "spawn_error", "raise"})
 
