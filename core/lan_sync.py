@@ -464,12 +464,18 @@ def check_lan_transfers_hash(
         return _arrival_failed(f"hash check could not start: {result.spawn_error}")
     if result.timed_out:
         return _arrival_failed(f"hash check timed out after {timeout}s")
-    return decide_lan_arrival(result.exit_code, result.stderr_text(),
-                              _read_combined(combined_path),
-                              _make_changed_since(source, changed_after_epoch))
-
-
-_COPIED_MSGS = ("Copied (new)", "Copied (replaced existing)")
+    res = decide_lan_arrival(result.exit_code, result.stderr_text(),
+                             _read_combined(combined_path),
+                             _make_changed_since(source, changed_after_epoch))
+    checked = int(res.get("matching") or 0) + int(res.get("missing") or 0) + int(res.get("differ") or 0)
+    if checked < len(paths):
+        gone = sum(1 for p in paths if not (Path(source) / p).exists())
+        if gone:
+            res["changed_during_backup"] = int(res.get("changed_during_backup") or 0) + gone
+    if res.get("verified") is True and checked != len(paths):
+        res["verified"] = False
+        res["reason"] = f"hash check covered {checked} of {len(paths)} listed file(s)"
+    return res
 
 
 def transferred_files(log_texts) -> tuple[list[str], int | None]:
@@ -477,7 +483,7 @@ def transferred_files(log_texts) -> tuple[list[str], int | None]:
 
     Returns (paths, total_bytes): unique paths in first-seen order, bytes = sum of the
     last seen size of each path, None if any listed path has no int size. Only info-level
-    "Copied (new)" / "Copied (replaced existing)" entries with an object count; failed
+    entries whose msg contains "Copied (" with an object count; failed
     files, deletes, renames and dry-runs are not listed.
     """
     sizes: dict[str, int | None] = {}
@@ -492,7 +498,7 @@ def transferred_files(log_texts) -> tuple[list[str], int | None]:
                 continue
             if not isinstance(entry, dict) or entry.get("level") != "info":
                 continue
-            if entry.get("msg") not in _COPIED_MSGS:
+            if "Copied (" not in str(entry.get("msg") or ""):
                 continue
             obj = entry.get("object")
             if not isinstance(obj, str) or not obj:

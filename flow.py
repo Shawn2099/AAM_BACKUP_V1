@@ -1421,10 +1421,16 @@ def lan_sync_task(config, artefacts_dir: str, max_delete: int,
     if limited and result.get("timed_out") and max_duration is not None:
         # S5: rclone had --max-duration with --cutoff-mode SOFT and still did not stop in
         # time: it hung (NAS I/O) and was killed. That is not a clean budget stop.
+        stats = result.get("stats") or {}
+        done = (f"{stats.get('transfers', 'unknown')} file(s) copied in this run"
+                if stats else "progress unknown (no rclone stats)")
         logger.error("LAN mirror: rclone did not stop after its time limit and was killed")
         return {**result, "status": "LAN_PARTIAL", "killed_after_cutoff": True,
                 "fault_code": "AAM-LAN-04",
-                "error": "rclone did not stop after its time limit - NAS I/O may be hung"}
+                "error": (f"rclone did not stop within {cloud_sync.MAX_DURATION_MARGIN_S} s after its time "
+                          f"limit (--max-duration {max_duration}s, --cutoff-mode SOFT) and was killed after "
+                          f"{timeout}s - a large file may still have been copying, or NAS I/O may be "
+                          f"hung. {done}")}
     stopped = result.get("exit_code") == 10 or (limited and result.get("timed_out"))
     if stopped and limited:
         stats = result.get("stats") or {}
@@ -1463,7 +1469,7 @@ def lan_hash_task(config, artefacts_dir: str, paths: list[str], changed_after_ep
         paths=paths, changed_after_epoch=changed_after_epoch, timeout=timeout)
 
 
-def _hash_plan(config, log_paths: list[str], arrival: dict) -> tuple[dict, list[str]]:
+def _hash_plan(config, log_paths: list[str], arrival: dict, *, transfers: int = 0) -> tuple[dict, list[str]]:
     """S3: decide whether tonight's hash check runs. Returns (metrics, paths to hash); the
     metrics carry `ran` False and the reason whenever it does not."""
     def skip(reason, files=None, nbytes=None):
@@ -1486,6 +1492,13 @@ def _hash_plan(config, log_paths: list[str], arrival: dict) -> tuple[dict, list[
             info["verified"] = False
             return info, no_paths
     paths, total = lan_sync.transferred_files(texts)
+    if transfers > 0 and len(paths) < transfers:
+        msg = (f"{transfers} transfers reported but no copied files in the log"
+               if not paths else
+               f"{transfers} transfers reported but only {len(paths)} copied file(s) in the log")
+        info, no_paths = skip(msg, len(paths), total)
+        info["verified"] = False
+        return info, no_paths
     if not paths:
         return skip("nothing copied tonight", 0, 0)
     if total is None:
@@ -2255,9 +2268,11 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                     sync_state["result"] = sync_result
                 if arrival is not None:
                     # S3: content check of tonight's copies, only after a verified arrival
-                    hash_info, hash_paths = _hash_plan(config, sync_logs, arrival)
+                    sync_transfers = int((sync_result.get("stats") or {}).get("transfers") or 0)
+                    hash_info, hash_paths = _hash_plan(config, sync_logs, arrival, transfers=sync_transfers)
                     if hash_info.get("verified") is False and not hash_paths:
                         status = "LAN_SUSPECT"
+                        arrival["verified"] = False
                         sync_result = {**sync_result, "status": status,
                                        "error": "Hash check of tonight's copied files not "
                                                 f"possible: {hash_info.get('reason')}"}
@@ -2272,6 +2287,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                         except BudgetExceeded as e:
                             logger.error(str(e))
                             status = "LAN_PARTIAL"
+                            arrival["verified"] = False
                             hash_info.update(ran=False, verified=False,
                                              reason="no time left for tonight's hash check")
                             sync_result = {**sync_result, "status": status,
@@ -2290,6 +2306,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                                 hash_res.get("unverified_paths") or [])[:config.lan.error_tail_lines]
                             if hash_res.get("verified") is not True:
                                 status = "LAN_SUSPECT"
+                                arrival["verified"] = False
                                 sync_result = {**sync_result, "status": status,
                                                "error": "Hash check of tonight's copied files "
                                                         f"not verified: {hash_res.get('reason')}"}
