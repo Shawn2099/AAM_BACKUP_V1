@@ -163,6 +163,9 @@ def _cancel_orphaned_runs():
     backup_active = False
     if lock_path:
         alive, pid = read_lock_alive(lock_path)
+        if not alive and pid is not None:
+            # Double-read rule: absorb transient parse/AV flaps before unlinking.
+            alive, pid = read_lock_alive(lock_path)
         if alive:
             print(f"[launch] Backup lock held by PID {pid} — skipping cancellation of RUNNING flows")
             backup_active = True

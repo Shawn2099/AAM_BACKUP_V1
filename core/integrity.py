@@ -44,7 +44,7 @@ from loguru import logger
 
 from core import audit_pending
 from core.process import resolve_binary
-from core.rclone_errors import DEFAULT_PATTERNS, find_transport_failure
+from core.rclone_errors import DEFAULT_PATTERNS, NTFS_SYSTEM_EXCLUDES, find_transport_failure
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool
 from models.config import AuditConfig, CloudConfig, LanConfig
@@ -507,9 +507,12 @@ def audit_cloud(
     rclone performs and no --download flag. Single checker.
     """
     dest = f"aam_gcs:{bucket}/{fy_prefix}"
+    extra = ["--config", config_path, "--gcs-no-check-bucket"]
+    for pat in NTFS_SYSTEM_EXCLUDES:
+        extra.extend(["--exclude", pat])
     return _run_rclone_check(
         source, dest, "cloud/full", timeout,
-        extra_args=["--config", config_path, "--gcs-no-check-bucket"],
+        extra_args=extra,
         capability=CAPABILITY_HASH_GCS, **settings,
     )
 

@@ -227,8 +227,11 @@ def run_lan_mirror(
     log_text = "\n".join(t for t in (result.log_text(), result.stderr_text()) if t)
     if getattr(result, "stalled", False):
         out = decide_lan_rclone_result(None, log_text, error_tail_lines=config.error_tail_lines)
+        stats = out.get("stats")
+        max_del = bool(out.get("max_delete_reached"))
+        is_retryable = isinstance(stats, dict) and not max_del and stats.get("fatalError") is not True
         reason = result.describe_failure() or "rclone stalled (no progress) and was terminated"
-        out.update(base, stalled=True, retryable=True, stats_at_least=True, reason=reason, error=reason)
+        out.update(base, stalled=True, retryable=is_retryable, stats_at_least=True, reason=reason, error=reason)
         return out
     if result.timed_out:
         out = decide_lan_rclone_result(None, log_text, error_tail_lines=config.error_tail_lines)

@@ -148,6 +148,10 @@ def _progressing_partial(db, config, leg: str, last: dict | None, now, fy: str |
         return False
     from models.config import DashboardConfig, model_default
 
+    run_ts = run.get("ended_at") or run.get("started_at")
+    if run_ts and (now.timestamp() - pendulum.parse(run_ts).timestamp()) > 2 * 86400:
+        return False
+
     max_days = getattr(config.dashboard, "catching_up_max_days",
                        model_default(DashboardConfig, "catching_up_max_days"))
     since = (last.get("started_at") or last.get("ended_at")) if last else None

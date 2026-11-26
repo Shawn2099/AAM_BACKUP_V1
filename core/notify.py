@@ -39,6 +39,8 @@ from core import netinfo
 from core.time_utils import now_iso
 
 SENT = "SENT"
+SENT_PARTIAL = "SENT_PARTIAL"
+DELIVERED_STATUSES = (SENT, SENT_PARTIAL)
 FAILED = "FAILED"
 SUPPRESSED = "SUPPRESSED"
 DISABLED = "DISABLED"
@@ -106,8 +108,11 @@ def _is_permanent_smtp_error(exc: BaseException) -> bool:
     SMTPSenderRefused / SMTPRecipientsRefused for transient 4xx replies
     too (e.g. "451 try again later"), which must be retried.
     """
-    if isinstance(exc, (smtplib.SMTPNotSupportedError, RecipientsPartlyRefused)):
-        return True  # e.g. STARTTLS / AUTH not offered by the server; a refused address stays refused
+    if isinstance(exc, smtplib.SMTPNotSupportedError):
+        return True  # e.g. STARTTLS / AUTH not offered by the server
+    if isinstance(exc, RecipientsPartlyRefused):
+        codes = [code for code, _msg in exc.refused.values()]
+        return bool(codes) and all(500 <= c < 600 for c in codes)
     if isinstance(exc, smtplib.SMTPRecipientsRefused):
         codes = [code for code, _msg in exc.recipients.values()]
         return bool(codes) and all(500 <= c < 600 for c in codes)
@@ -354,7 +359,7 @@ def send_email(notifications, subject: str, body_html: str,
         wait_random_exponential,
     )
 
-    attempts, first, state = 0, 0, {"rung": None}
+    attempts, first, state = 0, 0, {"rung": None, "recipients": list(target.addresses)}
     while True:
         state["rung"] = None
         try:
@@ -368,7 +373,14 @@ def send_email(notifications, subject: str, body_html: str,
             ):
                 with attempt:
                     attempts += 1
-                    _send_once(notifications, msgs, first, state, recipients=target.addresses)
+                    try:
+                        _send_once(notifications, msgs, first, state, recipients=state["recipients"])
+                    except RecipientsPartlyRefused as pr:
+                        state["recipients"] = [
+                            addr for addr, (code, _msg) in pr.refused.items()
+                            if not (500 <= code < 600)
+                        ] or list(pr.refused.keys())
+                        raise
             break
         except (RetryError, Exception) as e:  # noqa: BLE001
             used = state["rung"]
@@ -377,6 +389,10 @@ def send_email(notifications, subject: str, body_html: str,
                                f"resending with less attached")
                 first = used + 1
                 continue
+            if isinstance(e, RecipientsPartlyRefused):
+                logger.warning(f"Email partly refused {subject!r}: {e}")
+                return DeliveryResult(SENT_PARTIAL, f"{type(e).__name__}: {e}", attempts,
+                                      message_id, used, recipients=to)
             kind = "permanent SMTP error, not retried" if _is_permanent_smtp_error(e)                 else f"failed after {attempts} attempt(s)"
             logger.error(f"Email {kind} {subject!r}: {e}")
             return DeliveryResult(FAILED, f"{type(e).__name__}: {e}", attempts, message_id,
@@ -638,7 +654,7 @@ def _incident(event: AlertEvent, db, config=None) -> tuple[dict | None, str | No
     escalation to a higher severity kind (P1) starts a new cooldown window,
     so its first email is never suppressed. An incident also ends when
     the problem itself ended (`_incident_closed`), even if no RESOLVED mail was sent."""
-    prior = db.last_notification(event.key, status=SENT)
+    prior = db.last_notification(event.key, status=DELIVERED_STATUSES)
     group = incident_group(event)
     if event.kind == "RECOVERED":
         same = prior if prior and not db.sent_in_mode_after(
@@ -675,7 +691,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     else:
         cooldown_h = _cooldown_hours(config, event)
         dup_s = int(getattr(getattr(config, "alerts", None), "duplicate_window_seconds", 0) or 0)
-        prior_any = (db.last_notification(event.key, status=SENT)
+        prior_any = (db.last_notification(event.key, status=DELIVERED_STATUSES)
                      if (event.kind != "RECOVERED" and dup_s > 0) else None)
         is_dup = (prior_any is not None
                   and _KIND_RANK.get(prior_any.get("kind"), 0) >= _KIND_RANK.get(event.kind, 0)
@@ -708,7 +724,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
             "subject": subject, "status": result.status, "error": result.error,
             "attempts": result.attempts, "created_at": now_iso(),
             "fault_code": event.fault_code, "message_id": result.message_id,
-            "thread_id": (root or result.message_id) if result.status == SENT else None,
+            "thread_id": (root or result.message_id) if result.status in DELIVERED_STATUSES else None,
             "attachments_rung": (labels[result.rung] if labels and result.rung is not None
                                  else None),
             "audience": event.audience, "recipients": result.recipients,

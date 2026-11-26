@@ -1792,7 +1792,6 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             except guards.GuardBlocked as gb:
                 if guards.is_g3_only_block(gb.record):
                     guard_record = gb.record
-                    cloud_access_task(config, run_id, artefacts_dir)
                     gb.record["copy_only"] = {
                         "attempted": True,
                         "copied": None,
@@ -1801,6 +1800,7 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                         "error": None,
                     }
                     try:
+                        cloud_access_task(config, run_id, artefacts_dir)
                         copy_res = sync(config, fy_prefix, artefacts_dir,
                                         max_delete=0, budget=budget, mode="copy")
                         cstats = (copy_res or {}).get("stats") or {}
@@ -2204,6 +2204,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         deferred_alert = None   # A2: an interrupted run records itself first, alerts second
         nas_shutdown = None  # WP10: verified shutdown result, if one was attempted
         nas_already_up = False
+        wake_status = None
 
         try:
             approval_id = _approval_of_pass(config, approval_id, fy_pass)
@@ -2229,7 +2230,6 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
             except guards.GuardBlocked as gb:
                 if guards.is_g3_only_block(gb.record):
                     guard_record = gb.record
-                    lan_access_task(config, plan, run_id, copy_only=True)
                     gb.record["copy_only"] = {
                         "attempted": True,
                         "copied": None,
@@ -2238,6 +2238,7 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                         "error": None,
                     }
                     try:
+                        lan_access_task(config, plan, run_id, copy_only=True)
                         copy_res = sync(config, artefacts_dir, max_delete=0,
                                         budget=budget, mode="copy")
                         cstats = (copy_res or {}).get("stats") or {}
@@ -2488,9 +2489,15 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                 guard_record = e.record
             fault_code = faults.classify_run("lan", status, exc=e, guard_record=guard_record,
                                              sync_result=sync_result)
-            # An interrupted run (service stop, cancel) never powers the NAS off.
-            shutdown_on_fail = (allow_shutdown and isinstance(e, Exception) and getattr(
-                config.lan, "shutdown_on_all_retries_exhausted", False) is True)
+            # An interrupted run (service stop, cancel) never powers the NAS off,
+            # and shutdown_only_if_woken applies on failure paths too.
+            shutdown_on_fail = (
+                allow_shutdown
+                and isinstance(e, Exception)
+                and wake_status is not None
+                and getattr(config.lan, "shutdown_on_all_retries_exhausted", False) is True
+                and not (nas_already_up and getattr(config.lan, "shutdown_only_if_woken", True) is True)
+            )
             if not alert_sent and not isinstance(e, guards.GuardBlocked):
                 # The one alert of this run, sent BEFORE any NAS shutdown below.
                 nas_msg = (
@@ -2789,7 +2796,7 @@ def rollover_check_flow(config_path: str = CONFIG_PATH, approval_id: str | None 
 def _send_pending_approval_reminders(config, db) -> None:
     """B5: send at most one reminder per due ladder rung (1, 2, 4, 7, then weekly) for PENDING approvals."""
     try:
-        pending = db.list_approvals(status="PENDING") if hasattr(db, "list_approvals") else []
+        pending = [r for r in db.open_approvals() if r.get("status") == approvals.PENDING]
         now = now_iso()
         rungs = list(getattr(getattr(config, "approvals", None), "reminder_days", [1, 2, 4, 7]))
         for req in pending:
@@ -2803,15 +2810,33 @@ def _send_pending_approval_reminders(config, db) -> None:
             due = approvals.due_reminder_rung(req["created_at"], now, rungs, sent)
             if due is None:
                 continue
+            leg = req.get("leg") or "lan"
+            guard_items = [g for g in (req.get("guards") or []) if isinstance(g, dict)]
+            first_guard = guard_items[0] if guard_items else {}
+            guard_name = first_guard.get("guard") or ""
+            fault_code = (
+                first_guard.get("fault_code")
+                or faults.GUARD_CODES.get(guard_name)
+                or ("AAM-ROL-02" if leg == "rollover" else "AAM-DEL-01")
+            )
+            status = (
+                "ROLLOVER_BLOCKED" if leg == "rollover"
+                else ("LAN_BLOCKED" if leg == "lan" else "CLOUD_BLOCKED")
+            )
             summary = approvals.waiting_summary(req, now_iso=now)
+            if guard_name == "G3_MASS_DELETE" or not guard_name:
+                msg = f"Pending mass-delete approval {aid}: {summary['waiting_label']}."
+            else:
+                guard_list = ", ".join(str(g.get("guard") or "") for g in guard_items if g.get("guard"))
+                msg = f"Pending {leg} approval {aid} ({guard_list}): {summary['waiting_label']}."
             notify(config, AlertEvent(
                 key=f"approval:reminder:{aid}:day{due}",
                 kind="ACTION_REQUIRED",
-                mode=req.get("leg") or "lan",
+                mode=leg,
                 title=f"Reminder: {summary['waiting_label']}",
-                message=f"Pending mass-delete approval {aid}: {summary['waiting_label']}.",
-                status="LAN_BLOCKED" if req.get("leg") == "lan" else "CLOUD_BLOCKED",
-                fault_code="AAM-DEL-01",
+                message=msg,
+                status=status,
+                fault_code=fault_code,
             ), db=db)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Approval reminder check failed: {e}")
@@ -3716,6 +3741,19 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
                         and result.get("status") == "LAN_COMPLETE"
                 except Exception as e:
                     earlier_completed = False
+                    excs.append(e)
+            if (
+                overlap_on
+                and nas["woken"]
+                and switched_to is not None
+                and config.lan.shutdown_after_backup
+                and (earlier_completed or config.lan.shutdown_on_all_retries_exhausted is True)
+                and not (nas["wake_status"] == "already_up"
+                         and getattr(config.lan, "shutdown_only_if_woken", True) is True)
+            ):
+                try:
+                    lan_shutdown_task(config, None)
+                except Exception as e:
                     excs.append(e)
 
         if switched_to is not None:

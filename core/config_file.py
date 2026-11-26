@@ -89,6 +89,8 @@ def write_atomic(config_path: str, yaml, doc, *, tmp_prefix: str,
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml.dump(doc, f)
+            f.flush()
+            os.fsync(f.fileno())
         attempt = 0
         while True:
             try:

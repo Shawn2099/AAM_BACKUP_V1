@@ -108,7 +108,7 @@ def test_both_lists_empty_is_a_recorded_failure_and_nothing_is_sent(audience):
 def test_a_refused_address_is_a_failed_delivery_that_names_it():
     with smtp_server(refuse_rcpt=("boss@firm.example",)) as srv:
         result = nt.send_email(_notif(srv.server_address[1]), "S", "<p>b</p>", audience="reports")
-    assert result.status == nt.FAILED
+    assert result.status == nt.SENT_PARTIAL
     assert "boss@firm.example" in result.error
     assert srv.mail_attempts == 1                      # a refused address is not retried
 

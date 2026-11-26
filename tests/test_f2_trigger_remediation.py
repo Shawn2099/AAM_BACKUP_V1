@@ -265,10 +265,12 @@ def test_guard_api_unreachable_returns_none_tri_state(monkeypatch):
 def test_guard_query_filter_includes_scheduled_with_limit(monkeypatch):
     _, fake = _run_guard(monkeypatch, [])
     assert fake.limits and fake.limits[0] == 200
-    any_ = fake.filters[0].state.type.any_
-    assert StateType.SCHEDULED in any_
-    assert StateType.RUNNING in any_
-    assert StateType.PENDING in any_
+    assert len(fake.filters) >= 2
+    first_any = fake.filters[0].state.type.any_
+    second_any = fake.filters[1].state.type.any_
+    assert StateType.RUNNING in first_any
+    assert StateType.PENDING in first_any
+    assert StateType.SCHEDULED in second_any
 
 
 # ── endpoint behaviour (trigger_cloud / trigger_lan) ─────────────────────────

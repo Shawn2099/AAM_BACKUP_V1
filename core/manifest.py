@@ -4,6 +4,7 @@ WAL mode on every connection. Thread-safe. Single writer (deployments run at
 different times, no contention).
 """
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -447,6 +448,19 @@ class ManifestDB:
                 return True
         return False
 
+    @contextlib.contextmanager
+    def _tx(self):
+        """Acquire self._lock, yield the connection, commit on success, rollback on any error."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                yield conn
+                conn.commit()
+            except BaseException:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+
     def close(self):
         with self._lock:
             if self._conn:
@@ -731,8 +745,7 @@ class ManifestDB:
         missing = [k for k in required if k not in data]
         if missing:
             raise KeyError(f"insert_run missing required keys: {missing}")
-        with self._lock:
-            conn = self._get_conn()
+        with self._tx() as conn:
             conn.execute(
                 """INSERT INTO run_history
                    (run_id, mode, started_at, ended_at, status, exit_code,
@@ -763,7 +776,6 @@ class ManifestDB:
                     data.get("extended_metrics"),
                 ),
             )
-            conn.commit()
 
     def get_runs_since(self, days: int, mode: str | None = None) -> list[dict]:
         cutoff = cutoff_iso(days)
@@ -899,8 +911,7 @@ class ManifestDB:
         if data["status"] not in (AuditStatus.VERIFIED, AuditStatus.VERIFICATION_FAILED,
                                   AuditStatus.AUDIT_INCOMPLETE, AuditStatus.PENDING_BACKUP):
             raise ValueError(f"invalid audit status: {data['status']!r}")
-        with self._lock:
-            conn = self._get_conn()
+        with self._tx() as conn:
             conn.execute(
                 """INSERT INTO integrity_audits
                    (audit_id, mode, scope, started_at, ended_at, status,
@@ -927,7 +938,6 @@ class ManifestDB:
                     data.get("created_at", data["started_at"]),
                 ),
             )
-            conn.commit()
 
     def latest_audit(self, mode: str, scope: str | None = None, *, fy: str | None = None) -> dict | None:
         """Return the audit row that counts for a mode (and optional scope).
@@ -1064,8 +1074,7 @@ class ManifestDB:
                 return cur.rowcount
 
     def record_notification(self, data: dict) -> None:
-        with self._lock:
-            conn = self._get_conn()
+        with self._tx() as conn:
             conn.execute(
                 """INSERT INTO notifications
                    (event_key, kind, mode, subject, status, error, attempts, created_at,
@@ -1077,7 +1086,6 @@ class ManifestDB:
                  data.get("thread_id"), data.get("attachments_rung"), data.get("audience"),
                  json.dumps(data["recipients"]) if data.get("recipients") is not None else None),
             )
-            conn.commit()
 
     # ── FY rollover journal (plan A) ─────────────────────────────────────
 
@@ -1168,10 +1176,15 @@ class ManifestDB:
                                    "state = ?, finished_at = ?, last_error = ?",
                                    (rj.SKIPPED, now, reason))
 
-    def last_notification(self, event_key: str, status: str | None = None) -> dict | None:
+    def last_notification(self, event_key: str, status: str | tuple[str, ...] | list[str] | None = None) -> dict | None:
         with self._lock:
             conn = self._get_conn()
-            if status:
+            if isinstance(status, (tuple, list)) and status:
+                placeholders = ",".join("?" for _ in status)
+                row = conn.execute(
+                    f"SELECT * FROM notifications WHERE event_key = ? AND status IN ({placeholders}) "
+                    "ORDER BY id DESC LIMIT 1", (event_key, *status)).fetchone()
+            elif status:
                 row = conn.execute(
                     "SELECT * FROM notifications WHERE event_key = ? AND status = ? "
                     "ORDER BY id DESC LIMIT 1", (event_key, status)).fetchone()
@@ -1188,7 +1201,7 @@ class ManifestDB:
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                f"SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status = 'SENT' "
+                f"SELECT 1 FROM notifications WHERE mode = ? AND id > ? AND status IN ('SENT', 'SENT_PARTIAL') "
                 f"AND kind {op} 'RECOVERED' LIMIT 1", (mode, after_id)).fetchone()
         return row is not None
 
@@ -1197,9 +1210,9 @@ class ManifestDB:
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT * FROM notifications WHERE mode = ? AND status = 'SENT' "
+                "SELECT * FROM notifications WHERE mode = ? AND status IN ('SENT', 'SENT_PARTIAL') "
                 "AND kind != 'RECOVERED' AND id > COALESCE((SELECT MAX(id) FROM notifications "
-                "WHERE mode = ? AND status = 'SENT' AND kind = 'RECOVERED'), 0) "
+                "WHERE mode = ? AND status IN ('SENT', 'SENT_PARTIAL') AND kind = 'RECOVERED'), 0) "
                 "ORDER BY id DESC LIMIT 1", (mode, mode)).fetchone()
         return dict(row) if row else None
 
@@ -1229,8 +1242,7 @@ class ManifestDB:
             return [dict(r) for r in rows]
 
     def record_config_change(self, data: dict) -> None:
-        with self._lock:
-            conn = self._get_conn()
+        with self._tx() as conn:
             conn.execute(
                 """INSERT INTO config_changes
                    (changed_at, changed_by, key, old_value, new_value, risky, backup_file)
@@ -1238,7 +1250,6 @@ class ManifestDB:
                 (data["changed_at"], data["changed_by"], data["key"], data.get("old_value"),
                  data.get("new_value"), int(data.get("risky", 0)), data.get("backup_file")),
             )
-            conn.commit()
 
     # ── what the overdue check needs to know (core.overdue, core.attention) ─────────────
 
@@ -1248,10 +1259,8 @@ class ManifestDB:
         return row[0] if row else None
 
     def _set_meta(self, key: str, value: str) -> None:
-        with self._lock:
-            conn = self._get_conn()
+        with self._tx() as conn:
             conn.execute("INSERT OR REPLACE INTO db_meta (key, value) VALUES (?, ?)", (key, value))
-            conn.commit()
 
     def meta_created_at(self) -> str | None:
         """When this database file was created (None for one that predates the marker)."""
@@ -1570,8 +1579,8 @@ class ManifestDB:
         pages (~4 MB at default of 1000), per SQLite best practices.
         Override via config.maintenance.sqlite_vacuum_freelist_threshold.
         """
-        with self._lock:
-            conn = self._get_conn()
+        vacuum_info = None
+        with self._tx() as conn:
             cutoff = cutoff_iso(retention_days)
             conn.execute(
                 "DELETE FROM run_history WHERE started_at < ?",
@@ -1582,11 +1591,11 @@ class ManifestDB:
             freelist = conn.execute("PRAGMA freelist_count").fetchone()
             if freelist and freelist[0] > self.vacuum_freelist_threshold:
                 page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-                conn.commit()
-                conn.execute("VACUUM")
-                logger.debug(
-                    f"VACUUM triggered - freelist={freelist[0]} pages "
-                    f"(~{freelist[0] * page_size // 1024} KB)"
-                )
-            else:
-                conn.commit()
+                vacuum_info = (freelist[0], page_size)
+        if vacuum_info is not None:
+            with self._lock:
+                self._get_conn().execute("VACUUM")
+            logger.debug(
+                f"VACUUM triggered - freelist={vacuum_info[0]} pages "
+                f"(~{vacuum_info[0] * vacuum_info[1] // 1024} KB)"
+            )

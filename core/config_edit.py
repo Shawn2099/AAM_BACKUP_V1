@@ -56,12 +56,13 @@ _RISKY_KEYS = frozenset({
     "health.clock_unverified_policy",
     # what counts as "unchanged": a wide window skips same-size edits
     "cloud.modify_window_seconds", "audit.modify_window_seconds", "lan.modify_window_seconds",
+    "cloud.verify_recheck_enabled", "cloud.track_renames", "lan.track_renames",
     # silence a whole kind of alert email (the dashboard still shows the problem)
     "notifications.send_on_failure", "alerts.send_decision_needed", "alerts.send_overdue",
     "alerts.send_action_needed", "alerts.send_resolved", "alerts.send_info",
     # NAS power
     "wol.enabled", "wol.server_ip", "wol.mac_address", "wol.broadcast_address",
-    "lan.shutdown_after_backup", "lan.shutdown_on_all_retries_exhausted",
+    "lan.shutdown_after_backup", "lan.shutdown_only_if_woken", "lan.shutdown_on_all_retries_exhausted",
 })
 
 # Read once when the backup service starts (serve.py / launch.py), not at every run.

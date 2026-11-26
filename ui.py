@@ -28,6 +28,7 @@ from loguru import logger
 from prefect.client.orchestration import get_client
 from prefect.client.schemas.filters import (
     FlowRunFilter,
+    FlowRunFilterNextScheduledStartTime,
     FlowRunFilterState,
     FlowRunFilterStateType,
 )
@@ -227,19 +228,43 @@ async def _prefect_has_active_run(pipeline: str) -> bool | None:
 
 
 async def _read_active_runs() -> list | None:
-    """The RUNNING / PENDING / SCHEDULED flow runs of Prefect (limit 200), or None when the API is unreachable."""
+    """The RUNNING / PENDING / soonest SCHEDULED flow runs of Prefect, or None when the API is unreachable.
+
+    RUNNING/PENDING are queried separately from SCHEDULED so future cron runs never crowd out an active run.
+    """
     try:
         async with get_client() as client:
-            return await client.read_flow_runs(
+            active = await client.read_flow_runs(
                 flow_run_filter=FlowRunFilter(
                     state=FlowRunFilterState(
                         type=FlowRunFilterStateType(
-                            any_=[StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]
+                            any_=[StateType.RUNNING, StateType.PENDING]
                         )
                     )
                 ),
                 limit=200,
             )
+            scheduled = await client.read_flow_runs(
+                flow_run_filter=FlowRunFilter(
+                    state=FlowRunFilterState(
+                        type=FlowRunFilterStateType(
+                            any_=[StateType.SCHEDULED]
+                        )
+                    ),
+                    next_scheduled_start_time=FlowRunFilterNextScheduledStartTime(
+                        before_=datetime.now(timezone.utc) + timedelta(hours=1),
+                    ),
+                ),
+                limit=200,
+            )
+            seen: set = set()
+            merged = []
+            for r in (*active, *scheduled):
+                key = getattr(r, "id", None) or id(r)
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(r)
+            return merged
     except Exception as e:
         logger.error(f"Failed to query Prefect API: {e}")
         return None
@@ -302,20 +327,8 @@ async def _is_verify_running() -> bool | None:
     (``"integrity"`` tag) that _is_running deliberately skips. Tri-state:
     True / False / None (Prefect unreachable — callers fail closed).
     """
-    try:
-        async with get_client() as client:
-            runs = await client.read_flow_runs(
-                flow_run_filter=FlowRunFilter(
-                    state=FlowRunFilterState(
-                        type=FlowRunFilterStateType(
-                            any_=[StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]
-                        )
-                    )
-                ),
-                limit=200,
-            )
-    except Exception as e:
-        logger.error(f"Failed to query Prefect API: {e}")
+    runs = await _read_active_runs()
+    if runs is None:
         return None
     for run in runs:
         tags = run.tags or []
@@ -1366,16 +1379,8 @@ async def _prefect_busy_reason(due_within_s: int) -> str | None:
     """Why the backup service must not be restarted now: ANY flow run (backup, audit,
     rollover check, report) running or queued, or one due within `due_within_s`.
     Prefect unreachable counts as busy (fail closed)."""
-    try:
-        async with get_client() as client:
-            runs = await client.read_flow_runs(
-                flow_run_filter=FlowRunFilter(
-                    state=FlowRunFilterState(
-                        type=FlowRunFilterStateType(
-                            any_=[StateType.RUNNING, StateType.PENDING, StateType.SCHEDULED]))),
-                limit=200)
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"Failed to query Prefect API: {e}")
+    runs = await _read_active_runs()
+    if runs is None:
         return "the scheduler could not be asked whether a run is active"
     horizon = datetime.now(timezone.utc) + timedelta(seconds=due_within_s)
     for run in runs:

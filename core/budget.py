@@ -30,10 +30,18 @@ from zoneinfo import ZoneInfo
 from cronsim import CronSim
 
 # Names as the Settings page shows them.
-_JOB_NAMES = {"lan": "LAN backup", "cloud": "Cloud backup", "audit": "weekly safety check"}
-_BUDGET_KEY = {"lan": "budget.lan_max_hours", "cloud": "budget.cloud_max_hours",
-               "audit": "budget.audit_max_hours"}
-_CRON_KEY = {"lan": "schedule.lan_cron", "cloud": "schedule.cloud_cron", "audit": "schedule.audit_cron"}
+_JOB_NAMES = {
+    "lan": "LAN backup", "cloud": "Cloud backup", "audit": "weekly safety check",
+    "rollover": "daily FY rollover check",
+}
+_BUDGET_KEY = {
+    "lan": "budget.lan_max_hours", "cloud": "budget.cloud_max_hours",
+    "audit": "budget.audit_max_hours", "rollover": "schedule.rollover_cron",
+}
+_CRON_KEY = {
+    "lan": "schedule.lan_cron", "cloud": "schedule.cloud_cron",
+    "audit": "schedule.audit_cron", "rollover": "schedule.rollover_cron",
+}
 _ROUND_TO_MINUTES = 15
 
 
@@ -178,6 +186,27 @@ def _overlap_message(name: str, nxt: str, t: datetime, t_next: datetime, budget_
         f"{_hours(wait_s)} for it, so it could be skipped. "
         f"[{_CRON_KEY[name]} {cron!r}, {_CRON_KEY[nxt]} {next_cron!r}: "
         f"{_hours(budget_s)} > {_hours(gap)} + {_hours(wait_s)}]")
+
+
+def rollover_schedule_warnings(config) -> list[str]:
+    """Non-fatal schedule overlap warnings when rollover_cron collides with backup/audit budgets."""
+    jobs = {}
+    if config.cloud.enabled and config.cloud.scheduled:
+        jobs["cloud"] = (config.schedule.cloud_cron, config.budget.cloud_max_hours * 3600)
+    if config.lan.enabled and config.lan.scheduled:
+        jobs["lan"] = (config.schedule.lan_cron, config.budget.lan_max_hours * 3600)
+    jobs["audit"] = (config.schedule.audit_cron, config.budget.audit_max_hours * 3600)
+    jobs["rollover"] = (
+        config.schedule.rollover_cron,
+        max(config.maintenance.concurrency_wait_seconds + 1800, 7200),
+    )
+    return [
+        p for p in schedule_problems(
+            jobs, config.schedule.timezone, config.maintenance.concurrency_wait_seconds,
+            _suggest=False,
+        )
+        if "rollover" in p
+    ]
 
 
 def schedule_problems(jobs: dict[str, tuple[str, float]], timezone: str,

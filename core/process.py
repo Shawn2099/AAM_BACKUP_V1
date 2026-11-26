@@ -14,6 +14,7 @@ used by nginx, gunicorn, supervisord, and systemd.
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 import psutil
@@ -112,14 +113,21 @@ def read_lock_alive(lock_path: Path) -> tuple[bool, int | None]:
     if not lock_path.exists():
         return False, None
 
-    try:
-        raw = lock_path.read_text(encoding="utf-8").strip()
-    except PermissionError:
-        # File is exclusively locked (e.g. by Antivirus).
-        # Fail safe and assume the backup process is still actively writing/locking it.
-        return True, -1
-    except OSError:
-        return False, None
+    raw = None
+    for attempt in range(3):
+        try:
+            raw = lock_path.read_text(encoding="utf-8").strip()
+            break
+        except PermissionError:
+            if attempt < 2:
+                time.sleep(0.05)
+                continue
+            # File remains exclusively locked (e.g. by Antivirus).
+            # Fail safe and assume the backup process is still actively locking it.
+            return True, -1
+        except OSError:
+            return False, None
+    assert raw is not None
 
     # Parse "pid:create_time" (new format) or bare "pid" (legacy).
     if ":" in raw:
@@ -201,10 +209,15 @@ def acquire_lock(lock_path: Path) -> bool:
     if alive:
         return False
 
+    stale_path = lock_path.with_name(f"{lock_path.name}.stale.{os.getpid()}.{time.monotonic_ns()}")
     try:
-        lock_path.unlink()
+        os.rename(str(lock_path), str(stale_path))
     except OSError:
         return False
+    try:
+        stale_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     try:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except OSError:

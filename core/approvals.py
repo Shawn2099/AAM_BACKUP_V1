@@ -28,7 +28,7 @@ _WORSE_IF_HIGHER: dict[str, tuple[str, ...]] = {
 # Metrics that must be IDENTICAL (approval was for this exact situation).
 _MUST_MATCH: dict[str, tuple[str, ...]] = {
     "G4_DESTINATION_IDENTITY": ("destination",),
-    "G5_CANARY": ("destination",),
+    "G5_CANARY": ("destination", "destination_has_files"),
     "G1_SOURCE_HAS_FILES": ("source",),
     "G6_FY_ROLLOVER": ("from_fy", "to_fy"),
 }
@@ -166,12 +166,15 @@ def due_reminder_rung(
 
 def waiting_summary(req: dict, now_iso: str | None = None) -> dict:
     """Dashboard summary for a pending approval: deletions_waiting, waiting_days, waiting_label."""
+    items = [r for r in (req.get("guards") or req.get("results") or ()) if isinstance(r, dict)]
     planned = 0
-    for r in (req.get("results") or ()):
-        if isinstance(r, dict) and r.get("guard") == "G3_MASS_DELETE":
+    has_g3 = False
+    for r in items:
+        if r.get("guard") == "G3_MASS_DELETE":
+            has_g3 = True
             planned = int((r.get("metrics") or {}).get("planned_deletes") or 0)
             break
-    if not planned:
+    if not planned and not has_g3:
         planned = int((req.get("metrics") or {}).get("planned_deletes") or 0)
     days = 0
     if req.get("created_at"):
@@ -180,8 +183,13 @@ def waiting_summary(req: dict, now_iso: str | None = None) -> dict:
             days = max(0, int((now_dt - pendulum.parse(req["created_at"])).total_seconds() // 86400))
         except Exception:  # noqa: BLE001
             days = 0
+    if has_g3 or planned > 0 or not items:
+        label = f"{planned} deletions waiting, {days} days"
+    else:
+        guards_str = ", ".join(str(r.get("guard") or "guard") for r in items)
+        label = f"{guards_str} approval waiting, {days} days"
     return {
         "deletions_waiting": planned,
         "waiting_days": days,
-        "waiting_label": f"{planned} deletions waiting, {days} days",
+        "waiting_label": label,
     }
