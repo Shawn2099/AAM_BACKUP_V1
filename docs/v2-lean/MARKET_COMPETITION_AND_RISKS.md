@@ -106,3 +106,20 @@
 | **P1 (High Value)** | **3-Step Guided Restore Flow + Single-Time Initial Seed + `[AAM RESOLVED]` emails** | Closes the biggest UX gaps vs. commercial tools and eliminates alert fatigue. |
 | **P1 (High Value)** | **Activate Dead-Man's Switch (`healthcheck_url`) + Detached Silent Upgrade hook** | Prevents silent server-death failures and enables zero-RDP field updates. |
 | **P2 (Post-Launch)** | **Lightweight `Win32_ShadowCopy` VSS wrapper + GCS Object Retention Lock + optional `rclone crypt`** | Unlocks 24/7 locked-DB shops, true WORM immutability, and strict DPDP zero-knowledge clients. |
+
+---
+
+## 5. Additional Production Traps (Licensing, Email Auth, Ports & Paths)
+
+1. **Microsoft 365 SMTP AUTH Deprecation (End of December 2026):**
+   * Microsoft is disabling Basic Auth for `SMTP AUTH` **by default** across Exchange Online tenants at the end of December 2026 (full removal in 2027), which breaks `smtp.office365.com:587` username/password and App Passwords.
+   * **Mitigation:** Support standard SMTP relays (Gmail App Passwords, Zoho, or transactional providers like AWS SES / Postmark / Brevo / SendGrid) as the primary recommendation, and plan OAuth2 / Microsoft Graph support if clients insist on sending via M365 mailboxes.
+2. **Caddy Port 80/443 Conflicts on Windows Server:**
+   * Production Windows Servers often already bind ports `80` and `443` to **IIS, SQL Server Reporting Services (SSRS), or RD Web**. Binding `AamCaddy` to `:443` will fail on startup.
+   * **Mitigation:** Bind AAM's Caddy HTTPS listener to a dedicated high port (e.g. `:8443` or `:9443`) by default, and verify port availability during `AAMBackupSetup.exe` install.
+3. **Windows `MAX_PATH` (260-Character Limit):**
+   * CA/accounting folders are often deeply nested. While `rclone.exe` uses `\\?\` extended paths internally, Python file operations and restored folders in Windows Explorer can fail at 260 chars.
+   * **Mitigation:** Have `AAMBackupSetup.exe` enable `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled = 1` (and `use_long_paths` in the app manifest).
+4. **Open-Source Licensing for Commercial Distribution (`fpdf2` LGPLv3):**
+   * `Servy` (MIT), `Nuitka` (Apache 2.0; commercial plugins are proprietary but compiled output is unrestricted), `rclone` (MIT), and `Caddy` (Apache 2.0) are permissive.
+   * **`fpdf2` is LGPLv3:** Permissible in commercial/proprietary apps without open-sourcing your app, provided `fpdf2` isn't statically linked in a way that prevents user replacement/relinking (using Nuitka `--standalone` rather than `--onefile` helps, or swap to a BSD/MIT PDF library like `reportlab` BSD if strict zero-LGPL compliance is preferred). Include third-party license notices (`THIRD_PARTY_LICENSES.txt`) in the installer.
