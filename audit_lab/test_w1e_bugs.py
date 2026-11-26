@@ -1,4 +1,4 @@
-﻿"""WAVE 1E â€” the two suspected silent-failure bugs + lock/DB adversarial tests.
+"""WAVE 1E â€” the two suspected silent-failure bugs + lock/DB adversarial tests.
 
 BUG-1 (watchdog alert is dead code): core/notifications does not exist.
 BUG-2 (run_history records a success status for a failed flow run).
