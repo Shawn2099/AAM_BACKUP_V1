@@ -736,7 +736,7 @@ def run_cloud_sync(
         )
         logger.error(f"rclone error (exit {code}); full log: {log_path}\n{detail}")
 
-    if status == "CLOUD_FAILED":
+    if status in ("CLOUD_FAILED", "CLOUD_PARTIAL"):
         # fault code evidence (audit 2026-10-18): TLS interception / DNS / auth
         cause = find_transport_failure(log_text)
         base["transport_category"] = cause.category if cause else None

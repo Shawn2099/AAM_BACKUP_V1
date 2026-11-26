@@ -1796,7 +1796,14 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                         "attempted": True,
                         "copied": None,
                         "bytes": None,
-                        "deletes_held": gb.record.get("planned_deletes", 0),
+                        "deletes_held": next(
+                            (
+                                int((r.get("metrics") or {}).get("planned_deletes") or 0)
+                                for r in (gb.record.get("results") or ())
+                                if isinstance(r, dict) and r.get("guard") == "G3_MASS_DELETE"
+                            ),
+                            gb.record.get("planned_deletes", 0),
+                        ),
                         "error": None,
                     }
                     try:
@@ -3111,11 +3118,16 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         fy_rollover.create_source_folder(
             src_root, to_fy, placeholder_name=config.rollover.source_placeholder_name)
 
+    nas_wake_status = None
+
     def step_nas_folder():
+        nonlocal nas_wake_status
         if not config.lan.enabled:
             return ("skipped", "LAN backup is disabled")
         if config.wol.enabled:
-            ensure_server_online(config)     # wake + wait, exactly as the LAN leg does
+            nas_wake_status = wol.ensure_server_online_status(config)
+            if nas_wake_status == "failed":
+                raise RuntimeError("NAS did not wake up for rollover folder creation")
         fy_rollover.create_nas_folder(lan_root, to_fy)
 
     def step_config_switch():
@@ -3147,6 +3159,8 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         if not (config.lan.enabled and config.lan.shutdown_after_backup
                 and config.wol.enabled):
             return ("skipped", "NAS shutdown is not configured")
+        if nas_wake_status == "already_up" and getattr(config.lan, "shutdown_only_if_woken", True) is True:
+            return ("skipped", "NAS was already online before rollover")
         lan_shutdown_task(config)
 
     def step_announce():

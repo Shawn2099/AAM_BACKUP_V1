@@ -149,12 +149,14 @@ def _reload_tunables(last_mtime: float | None) -> float | None:
     """Re-read the `watchdog:` tunables when config.yaml changed, so a setting saved on the
     dashboard applies on the next check (no service restart). A config that does not load
     keeps the values in use. Returns the mtime to remember."""
+    global BACKUP_LOCK_PATH
     mtime = _config_mtime()
     if mtime == last_mtime:
         return last_mtime
     try:
         from models.config import CONFIG_PATH, load_config
         cfg = load_config(CONFIG_PATH)
+        BACKUP_LOCK_PATH = cfg.paths.backup_lock_path
         _apply_config(cfg.watchdog, cfg.run_logs)
         logger.info("config.yaml changed - watchdog settings reloaded")
     except Exception as exc:  # noqa: BLE001

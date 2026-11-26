@@ -382,9 +382,10 @@ def code_of(exc: BaseException | None) -> str | None:
 
 
 def blocked_guard_code(guard_record: dict | None) -> str | None:
-    """Code of the first BLOCKing guard (its own code, else by guard name)."""
+    """Code of the first unapproved BLOCKing guard (its own code, else by guard name)."""
+    approved = set((guard_record or {}).get("approved_guards") or ())
     for result in (guard_record or {}).get("results", []):
-        if result.get("verdict") == "BLOCK":
+        if result.get("verdict") == "BLOCK" and result.get("guard") not in approved:
             return result.get("fault_code") or GUARD_CODES.get(result.get("guard"))
     return None
 
