@@ -257,8 +257,16 @@ class Seams:
                     raise seams.wake_error
                 return seams.wake_result
 
+            def wake_status_spy(*args, **kwargs):
+                seams.wake_calls.append({"args": args, "kwargs": kwargs})
+                if seams.wake_error is not None:
+                    raise seams.wake_error
+                return "woken" if seams.wake_result is True else seams.wake_result
+
             wake_spy.livebox_spy = True
+            wake_status_spy.livebox_spy = True
             p.setattr(flow, "ensure_server_online", wake_spy)
+            p.setattr(flow, "ensure_server_online_status", wake_status_spy)
             p.setattr(flow, "lan_shutdown_task", _ShutdownSpy(self.shutdown_calls))
             p.setattr(wol, "_send_magic_packet", _raiser("wol_send_magic_packet"))
             p.setattr(wol, "wol_send", _raiser("wol_send"))

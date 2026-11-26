@@ -265,8 +265,13 @@ def check_shutdown_raisers(shutdown_fn: Any, wol_fn: Any, lan_shutdown_task: Any
         wake = getattr(flow, "ensure_server_online", None)
         if not (_is_spy(wake) or _is_raiser(wake)):
             raise SafetyRefusal("S9", "flow.ensure_server_online is not a livebox spy or raiser")
+        if hasattr(flow, "ensure_server_online_status"):
+            wake_status = getattr(flow, "ensure_server_online_status", None)
+            if not (_is_spy(wake_status) or _is_raiser(wake_status)):
+                raise SafetyRefusal("S9", "flow.ensure_server_online_status is not a livebox spy or raiser")
     for mod, fn_name, global_name, what in (
             (wol, "ensure_server_online", "_send_magic_packet", "core.wol.ensure_server_online sends with"),
+            (wol, "ensure_server_online_status", "_send_magic_packet", "core.wol.ensure_server_online_status sends with"),
             (sd, "shutdown_from_config", "shutdown_server", "core.shutdown.shutdown_from_config calls")):
         if mod is None:
             continue
