@@ -225,8 +225,8 @@ def build_results(evidence_dir) -> Results:
     res = Results()
     try:
         _fill(res, Path(evidence_dir))
-    except Exception:
-        pass
+    except Exception as exc:
+        res.notes.append(f"HARNESS_RESULTS_ERROR: {type(exc).__name__}: {exc}")
     return res
 
 

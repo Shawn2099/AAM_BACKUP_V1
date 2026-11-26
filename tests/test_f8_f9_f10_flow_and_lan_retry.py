@@ -72,8 +72,9 @@ def test_f8_overlap_last_pass_skipped_still_shuts_down_woken_nas():
         patch.object(flow, "_open_run_artefacts", return_value=None),
         patch.object(flow, "_finalize_run_artefacts"),
     ):
-        with pytest.raises(Exception):
-            flow.backup.fn("lan")
+        with pytest.raises(ExceptionGroup) as exc_info:
+            flow.backup.fn(mode="lan")
+        assert any(isinstance(e, flow.PartialRun) for e in exc_info.value.exceptions)
 
     assert calls == [False]
     shutdown_mock.assert_called_once()

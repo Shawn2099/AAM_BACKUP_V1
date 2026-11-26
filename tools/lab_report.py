@@ -27,10 +27,16 @@ def main(junit: str, out: str, code: str) -> None:
                     bad.append((name, tag, first[0][:300] if first else ""))
             if case.find("skipped") is not None:
                 skipped += 1
+    if failed or errors or code != "0":
+        verdict = "NEEDS ATTENTION"
+    elif skipped:
+        verdict = f"PARTIAL ({skipped} skipped)"
+    else:
+        verdict = "ALL GREEN"
     lines = [
         f"# Audit lab report - {datetime.now():%Y-%m-%d %H:%M}",
         "",
-        f"- Result: **{'ALL GREEN' if not (failed or errors) and code == '0' else 'NEEDS ATTENTION'}** (pytest exit code {code})",
+        f"- Result: **{verdict}** (pytest exit code {code})",
         f"- {total} tests: {total - failed - errors - skipped} passed, {failed} failed, {errors} errors, {skipped} skipped",
         f"- Test time: {seconds / 60:.0f} minutes",
         "- Known intentional red: none expected (W16 was fixed by plan WP8). Anything below is new.",

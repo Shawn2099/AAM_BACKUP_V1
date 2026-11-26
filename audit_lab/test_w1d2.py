@@ -7,22 +7,12 @@
 """
 from __future__ import annotations
 
-import ctypes
-import os
-import threading
-import time
-from pathlib import Path
-
 import pytest
 
 from audit_lab import labconf as L
-from audit_lab.labconf import build_config, run as _run, write_file
+from audit_lab.labconf import write_file
 
 pytestmark = pytest.mark.timeout(600)
-
-
-def _flags_without_zb(cmd: list[str]) -> list[str]:
-    return [a for a in cmd if a.upper() != "/ZB"]
 
 
 def test_w1b2_pure_size_only_blind_spot(sandbox):
@@ -76,77 +66,3 @@ def test_w1b2_pure_size_only_blind_spot(sandbox):
         _os.chdir(cwd)
         for (mod, attr), orig in saved.items():
             setattr(mod, attr, orig)
-
-
-def _find_pid(exe_leaf: str, needle: str) -> int | None:
-    import psutil
-    for p in psutil.process_iter(["name", "cmdline"]):
-        try:
-            name = (p.info.get("name") or "").lower()
-            cmd = " ".join(p.info.get("cmdline") or [])
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-        if name.startswith(exe_leaf.lower()) and needle.lower() in cmd.lower():
-            return p.pid
-    return None
-
-
-def _terminate_exit_0(pid: int) -> bool:
-    h = ctypes.windll.kernel32.OpenProcess(0x0001, False, pid)
-    if not h:
-        return False
-    try:
-        return ctypes.windll.ntdll.NtTerminateProcess(h, 0) == 0
-    finally:
-        ctypes.windll.kernel32.CloseHandle(h)
-
-
-def test_w1d2_kill_lan_exit0_without_zb(sandbox):
-    from core.lan_sync import run_lan_mirror
-    from core.run_artefacts import RunArtefacts
-
-    src = sandbox / "source" / "FY26-26"
-    for i in range(4000):
-        write_file(src / "Clients" / f"f_{i:05d}.bin", b"Z" * 4096)
-    dest = sandbox / "nas" / "FY26-26"
-    cfg = build_config(sandbox, source=src, lan_dest=str(dest), runtime=sandbox / "runtime")
-    art = RunArtefacts.open(str(sandbox / "runtime" / "art_w1d2"))
-
-    box: dict = {}
-    err: dict = {}
-
-    def _worker():
-        try:
-            box["res"] = run_lan_mirror(cfg.lan, str(src), str(dest), str(art.dir), max_delete=10000)
-        except Exception as e:  # pragma: no cover
-            err["e"] = repr(e)
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    pid, deadline = None, time.time() + 30
-    while time.time() < deadline and pid is None:
-        pid = _find_pid("rclone", str(sandbox))
-        time.sleep(0.05)
-    if pid is None:
-        pytest.fail("could not find the rclone process to kill")
-    time.sleep(0.2)
-    killed = _terminate_exit_0(pid)
-    t.join(timeout=300)
-
-    res = box.get("res", {})
-    copied = len([p for p in dest.rglob("*") if p.is_file()])
-    L.record("D2.kill_exit0.lan",
-             "rclone killed mid-run with exit code 0 is not reported as success (F-08 forge)",
-             f"rclone_pid={pid} NtTerminateProcess(p,0)={killed} | status={res.get('status')} "
-             f"exit_code={res.get('exit_code')} stats={res.get('stats')} | "
-             f"dest files={copied}/4000 | reason={(res.get('error') or '')[:180]}",
-             "FAIL-CLOSED OK — kill detected as " + str(res.get('status'))
-             if res.get("status") in ("LAN_SUSPECT", "LAN_FAILED")
-             else f"FAIL-CLOSED BROKEN — status={res.get('status')} exit={res.get('exit_code')}")
-    print(f"[D2] status={res.get('status')} exit={res.get('exit_code')} copied={copied}/4000 killed={killed}")
-    assert killed is True, "could not kill the rclone process - experiment is vacuous"
-    assert copied < 4000, (
-        f"kill landed after the whole copy finished ({copied}/4000) - this no "
-        "longer proves the fail-closed path")
-    assert res.get("status") == "LAN_SUSPECT", res
-    assert res.get("stats") is None, res

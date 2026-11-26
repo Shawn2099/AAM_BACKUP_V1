@@ -60,7 +60,8 @@ class MtimeNormaliser:
 
     def normalise(self, sim_ts: float) -> int:
         n = 0
-        for dp, dns, fns in os.walk(self.root):
+        for dp, dns, fns in os.walk(self.root, topdown=False):
+            dir_touched = False
             for name in dns + fns:
                 p = os.path.join(dp, name)
                 if p in self.seen:
@@ -69,6 +70,9 @@ class MtimeNormaliser:
                 os.utime(p, (sim_ts, sim_ts))
                 _set_creation_time(Path(p), sim_ts)
                 n += 1
+                dir_touched = True
+            if dir_touched and dp != str(self.root):
+                os.utime(dp, (sim_ts, sim_ts))
         return n
 
 

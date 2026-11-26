@@ -284,3 +284,36 @@ def test_spy_wake_per_pass_is_fail_after_e4(tmp_path):
     )
     h._event_checks(day, ev, out, wake=2, shut=1, arch=0)
     assert any(c["check_id"] == "SPY_WAKE_PER_PASS" and c["verdict"] == "FAIL" for c in out.checks)
+
+
+def test_xr2_and_xr4_wired_injections_and_expectations(tmp_path):
+    from tools.livebox.scenarios import rclone as rsc
+
+    by_id = {s.id: s for s in rsc.SCENARIOS}
+    assert by_id["XR2"].injection_wired is True
+    assert by_id["XR4"].injection_wired is True
+
+    rig2 = SimpleNamespace(source_dir=tmp_path / "xr2_src")
+    by_id["XR2"].setup(rig2)
+    assert len(list((rig2.source_dir / "burst_old").glob("*.txt"))) == 300
+    by_id["XR2"].on_day(rig2, SimpleNamespace(index=1))
+    assert not (rig2.source_dir / "burst_old").exists()
+    assert len(list((rig2.source_dir / "burst_new").glob("*.txt"))) == 300
+
+    assert by_id["XR2"].expect(SimpleNamespace(rows=[{"leg": "lan", "status": "LAN_COMPLETE"}]))
+    assert not by_id["XR2"].expect(
+        SimpleNamespace(rows=[{"leg": "lan", "status": "LAN_COMPLETE"}, {"leg": "lan", "status": "LAN_COMPLETE"}])
+    )
+
+    rig4 = SimpleNamespace(source_dir=tmp_path / "xr4_src")
+    by_id["XR4"].setup(rig4)
+    assert (rig4.source_dir / "ver_target.txt").read_text(encoding="utf-8").startswith("v1")
+    by_id["XR4"].on_day(rig4, SimpleNamespace(index=1))
+    assert "v2" in (rig4.source_dir / "ver_target.txt").read_text(encoding="utf-8")
+    by_id["XR4"].on_day(rig4, SimpleNamespace(index=50))
+    assert "v3" in (rig4.source_dir / "ver_target.txt").read_text(encoding="utf-8")
+
+    assert by_id["XR4"].expect(SimpleNamespace(rows=[{"leg": "lan", "status": "LAN_COMPLETE"}]))
+    assert not by_id["XR4"].expect(
+        SimpleNamespace(rows=[{"leg": "lan", "status": "LAN_COMPLETE"} for _ in range(90)])
+    )

@@ -16,22 +16,34 @@ from core.wol import (
 
 
 class TestSmbPortOpen:
-    def test_port_closed(self, tmp_path):
-        """Port 445 on localhost likely closed → False."""
-        result = _smb_port_open("127.0.0.1", timeout=1)
-        # May be True or False depending on system
-        assert isinstance(result, bool)
+    def test_port_closed_returns_false(self):
+        """Non-zero connect_ex on port 445 -> False."""
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.return_value = 10061
+        with patch("core.wol.socket.socket", return_value=mock_sock):
+            assert _smb_port_open("127.0.0.1", timeout=1) is False
+
+    def test_port_open_returns_true(self):
+        """connect_ex == 0 on port 445 -> True."""
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.return_value = 0
+        with patch("core.wol.socket.socket", return_value=mock_sock):
+            assert _smb_port_open("127.0.0.1", timeout=1) is True
 
 
 class TestSendMagicPacket:
     def test_sends_without_error(self):
-        """Magic packet send doesn't crash."""
+        """Magic packet sends both global and subnet-directed WoL broadcasts."""
         mac = "AA:BB:CC:DD:EE:FF"
-        # Should not raise
-        try:
-            _send_magic_packet(mac, "192.168.10.255")
-        except OSError:
-            pass  # Network error is acceptable in test env
+        with patch("core.wol.wol_send") as mock_wol, patch("core.wol.time.sleep"):
+            _send_magic_packet(mac, "192.168.10.255", repeat=2, interval=1)
+        assert mock_wol.call_count == 4
+        mock_wol.assert_any_call(mac, ip_address="255.255.255.255", port=9)
+        mock_wol.assert_any_call(mac, ip_address="192.168.10.255", port=9)
 
 
 class TestWaitForServer:

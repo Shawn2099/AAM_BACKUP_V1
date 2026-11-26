@@ -37,10 +37,12 @@ def test_c1_measure_planned_deletes_uses_combined_for_source_and_dest_counts(tmp
 
 
 def test_c3_write_probe_enabled_is_deprecated_and_dropped():
+    from models.config import CloudConfig
+
     raw = {"cloud": {"write_probe_enabled": False, "bucket": "b"}}
     cleaned = _drop_deprecated_keys(raw)
     assert "write_probe_enabled" not in cleaned["cloud"]
-    assert "write_probe_enabled" in AppConfig.model_fields["cloud"].annotation.__name__ or True
+    assert "write_probe_enabled" not in CloudConfig.model_fields
 
 
 def test_c3_cloud_access_task_does_not_call_probe_cloud_write(tmp_path, monkeypatch):

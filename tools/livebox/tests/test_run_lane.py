@@ -348,7 +348,8 @@ def test_main_refuses_dev_root_without_flag(tmp_path, capsys):
     assert not (tmp_path / "s1").exists()
 
 
-def test_main_dry_run_prints_plan_and_touches_nothing(tmp_path, capsys):
+def test_main_dry_run_prints_plan_and_touches_nothing(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(rl(), "preflight_rules", lambda *a, **k: [("R1", "ok", "stub")])
     called = []
     code = rl().main(["--lane", "A", "--stamp", "s1", "--days", "3", "--root", str(tmp_path),
                       "--allow-dev-path", "--dry-run"],

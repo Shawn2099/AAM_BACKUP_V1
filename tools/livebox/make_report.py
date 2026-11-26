@@ -328,7 +328,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     counts = build_report([Path(p) for p in a.evidence], Path(a.out))
     print(", ".join(f"{k}={v}" for k, v in counts.items()))
-    return 0
+    return 1 if (counts.get("FAIL", 0) or counts.get("HARNESS-FAIL", 0)) else 0
 
 
 if __name__ == "__main__":

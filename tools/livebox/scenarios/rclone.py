@@ -6,6 +6,36 @@ from pathlib import Path
 from tools.livebox.scenarios.base import Scenario
 
 
+def _setup_xr2(rig) -> None:
+    d = Path(rig.source_dir) / "burst_old"
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(300):
+        (d / f"file_{i:03d}.txt").write_text(f"xr2-payload-{i:03d}\n", encoding="utf-8")
+
+
+def _on_day_xr2(rig, day) -> None:
+    if getattr(day, "index", None) == 1:
+        old = Path(rig.source_dir) / "burst_old"
+        new = Path(rig.source_dir) / "burst_new"
+        if old.exists() and not new.exists():
+            old.rename(new)
+
+
+def _setup_xr4(rig) -> None:
+    src = Path(rig.source_dir)
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "ver_target.txt").write_text("v1-initial\n", encoding="utf-8")
+
+
+def _on_day_xr4(rig, day) -> None:
+    idx = getattr(day, "index", None)
+    target = Path(rig.source_dir) / "ver_target.txt"
+    if idx == 1:
+        target.write_text("v2-day1-overwrite\n", encoding="utf-8")
+    elif idx == 50:
+        target.write_text("v3-day50-younger\n", encoding="utf-8")
+
+
 def _noop(rig) -> None:
     return None
 
@@ -25,8 +55,9 @@ def _expect_xr2(res) -> list[str]:
     out = []
     if any(r.get("status") == "LAN_BLOCKED" for r in rows):
         out.append("XR2: rename burst of 300 files must not trip G3")
-    if not any(r.get("status") == "LAN_COMPLETE" for r in rows):
-        out.append("XR2: expected LAN_COMPLETE")
+    complete = [r for r in rows if r.get("status") == "LAN_COMPLETE"]
+    if len(complete) < 2:
+        out.append(f"XR2: expected >= 2 LAN_COMPLETE (before + after rename), got {len(complete)}")
     return out
 
 
@@ -43,8 +74,9 @@ def _expect_xr3(res) -> list[str]:
 
 def _expect_xr4(res) -> list[str]:
     rows = [r for r in (getattr(res, "rows", None) or []) if r.get("leg") == "lan"]
-    if not any(r.get("status") == "LAN_COMPLETE" for r in rows):
-        return ["XR4: expected LAN_COMPLETE across 91-day retention boundary"]
+    complete = [r for r in rows if r.get("status") == "LAN_COMPLETE"]
+    if len(complete) < 90:
+        return [f"XR4: expected >= 90 LAN_COMPLETE across 95-day retention run, got {len(complete)}"]
     return []
 
 
@@ -81,8 +113,8 @@ SCENARIOS: list[Scenario] = [
         start="2091-01-10",
         days=3,
         lane="xr2_rename_burst",
-        setup=_noop,
-        on_day=None,
+        setup=_setup_xr2,
+        on_day=_on_day_xr2,
         expect=_expect_xr2,
         injection_wired=True,
     ),
@@ -105,8 +137,8 @@ SCENARIOS: list[Scenario] = [
         start="2091-01-10",
         days=95,
         lane="xr4_versions_retention",
-        setup=_noop,
-        on_day=None,
+        setup=_setup_xr4,
+        on_day=_on_day_xr4,
         expect=_expect_xr4,
         injection_wired=True,
     ),

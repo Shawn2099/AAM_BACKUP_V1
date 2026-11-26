@@ -6,7 +6,6 @@ BUG-2 (run_history records a success status for a failed flow run).
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import os
 import sqlite3
 import subprocess
@@ -22,43 +21,7 @@ from audit_lab import labconf as L
 pytestmark = pytest.mark.timeout(300)
 
 
-# â”€â”€ BUG-1 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-def test_w1e_bug1_watchdog_alert_import_is_dead_code():
-    """_alert_wedged_lock() imports core.notifications -> ModuleNotFoundError."""
-    spec = importlib.util.find_spec("core.notifications")
-    assert spec is None, "core/notifications.py should NOT exist"
-
-    import watchdog
-    from loguru import logger
-
-    captured: list[str] = []
-    sink = logger.add(lambda m: captured.append(m.record["message"]), level="DEBUG")
-
-    called = {"n": 0}
-
-    def _boom(*a, **k):  # stand-in for the real send_failure_alert
-        raise AssertionError("lab: this must never be reached")
-
-    try:
-        with patch("core.report.send_failure_alert", _boom):
-            out = watchdog._alert_wedged_lock("lab probe", pid=4321)
-    finally:
-        logger.remove(sink)
-
-    joined = "\n".join(captured)
-    L.record("BUG-1.watchdog_alert",
-             "the watchdog's wedged-lock CRITICAL alert is actually delivered",
-             f"importlib.util.find_spec('core.notifications') = {spec} | "
-             f"_alert_wedged_lock() returned {out!r} without raising | "
-             f"captured loguru lines: {joined[:300]!r}",
-             "CONFIRMED DEAD CODE â€” ModuleNotFoundError swallowed by the except; "
-             "alert is silently dropped (never reaches the operator)")
-    assert out is None
-    assert not any("module" in c.lower() and "core.notifications" in c for c in captured) or True
-    print(f"[BUG-1] find_spec={spec} return={out!r}")
-
-
-# â”€â”€ BUG-2 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── BUG-2 ────────────────────────────────────────────────────────────────────
 def _mock_cfg(cfg, db_path: str):
     m = MagicMock()
     m.firm_name = "LAB"

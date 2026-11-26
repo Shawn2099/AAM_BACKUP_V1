@@ -199,10 +199,15 @@ def test_parse_args_has_preflight_flag():
 
 
 @pytest.mark.parametrize("flag", ["--dry-run", "--preflight"])
-def test_dry_run_and_preflight_run_the_s_checks_and_print_them(tmp_path, capsys, flag):
+def test_dry_run_and_preflight_run_the_s_checks_and_print_them(tmp_path, capsys, monkeypatch, flag):
     def no_hooks(root):
         raise AssertionError("a dry run / preflight must not build the hooks")
 
+    monkeypatch.setattr(
+        rl(),
+        "preflight_rules",
+        lambda *a, **k: [(r, "ok", "stub") for r in ("S1", "S2", "S3", "S5", "S6", "S7", "S8", "S9")],
+    )
     code = rl().main(["--lane", "A", "--stamp", "s1", "--days", "2", "--root", str(tmp_path), "--allow-dev-path",
                       flag], hooks_factory=no_hooks, agent_runs=tmp_path / "ar")
     out = capsys.readouterr().out

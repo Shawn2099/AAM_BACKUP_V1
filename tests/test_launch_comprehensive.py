@@ -219,8 +219,8 @@ class TestMainPrefectApiReady:
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
-        # G10: deployments() returns 5 — cloud, lan, weekly, monthly, rollover
-        mock_deployments = tuple(MagicMock() for _ in range(5))
+        # deployments() returns 6 — cloud, lan, weekly, monthly, rollover, integrity-audit
+        mock_deployments = tuple(MagicMock() for _ in range(6))
         return {
             "launch._check_prefect_api": patch("launch._check_prefect_api", return_value=True),
             "launch._run_dashboard": patch("launch._run_dashboard"),
@@ -236,19 +236,20 @@ class TestMainPrefectApiReady:
     def test_api_ready_immediately(self):
         from launch import main
         patches = self._main_patches()
-        with patches["launch._check_prefect_api"], \
+        with patches["launch._check_prefect_api"] as mock_api, \
              patches["launch._run_dashboard"], \
-             patches["launch._ensure_concurrency_limit"], \
-             patches["launch._cancel_orphaned_runs"], \
-             patches["prefect.serve"], \
+             patches["launch._ensure_concurrency_limit"] as mock_lim, \
+             patches["launch._cancel_orphaned_runs"] as mock_cancel, \
+             patches["prefect.serve"] as mock_serve, \
              patches["launch.time.sleep"], \
              patches["launch.threading.Thread"], \
              patches["models.config.load_config"], \
              patches["serve.deployments"]:
-            try:
-                main()
-            except Exception:
-                pass
+            main()
+        mock_api.assert_called_once()
+        mock_lim.assert_called_once()
+        mock_cancel.assert_called_once()
+        mock_serve.assert_called_once()
 
     def test_api_ready_after_retries(self):
         from launch import main
@@ -263,16 +264,14 @@ class TestMainPrefectApiReady:
              patches["launch._run_dashboard"], \
              patches["launch._ensure_concurrency_limit"], \
              patches["launch._cancel_orphaned_runs"], \
-             patches["prefect.serve"], \
+             patches["prefect.serve"] as mock_serve, \
              patches["launch.time.sleep"], \
              patches["launch.threading.Thread"], \
              patches["models.config.load_config"], \
              patches["serve.deployments"]:
-            try:
-                main()
-            except Exception:
-                pass
-            assert call_count == 3
+            main()
+        assert call_count == 3
+        mock_serve.assert_called_once()
 
     def test_api_never_ready_exits(self):
         from launch import main
@@ -303,22 +302,20 @@ class TestMainFyRollover:
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
-        mock_deployments = tuple(MagicMock() for _ in range(5))  # G10: 5 deployments
+        mock_deployments = tuple(MagicMock() for _ in range(6))
         with patch("launch._check_prefect_api", return_value=True), \
              patch("launch._run_dashboard"), \
              patch("launch._ensure_concurrency_limit"), \
              patch("launch._cancel_orphaned_runs"), \
-             patch("prefect.serve"), \
+             patch("prefect.serve") as mock_serve, \
              patch("launch.time.sleep"), \
              patch("launch.threading.Thread"), \
              patch("models.config.load_config", return_value=mock_cfg), \
              patch("core.fy_rollover.create_new_fy_folders") as folders, \
              patch("core.fy_rollover.update_config_yaml") as update, \
              patch("serve.deployments", return_value=mock_deployments):
-            try:
-                main()
-            except Exception:
-                pass
+            main()
+        mock_serve.assert_called_once()
         folders.assert_not_called()
         update.assert_not_called()
 
@@ -334,7 +331,7 @@ class TestMainShutdown:
         mock_cfg = MagicMock()
         mock_cfg.dashboard.bind_address = "127.0.0.1"
         mock_cfg.dashboard.port = 8080
-        mock_deployments = tuple(MagicMock() for _ in range(5))  # G10: 5 deployments
+        mock_deployments = tuple(MagicMock() for _ in range(6))
         with patch("launch._check_prefect_api", return_value=True), \
              patch("launch._run_dashboard"), \
              patch("launch._ensure_concurrency_limit"), \

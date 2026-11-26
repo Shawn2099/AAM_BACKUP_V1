@@ -249,11 +249,12 @@ class TestMainLoop:
         with patch("httpx.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=False), \
-             patch("watchdog._service_is_running", return_value=True), \
-             patch("watchdog._restart_stack"):
+             patch("watchdog._service_state", return_value="RUNNING"), \
+             patch("watchdog._restart_stack") as mock_restart:
             mock_sleep = self._run_loop(watchdog.FAILURE_THRESHOLD)
             # After threshold, the ordered restart runs
             assert mock_sleep.call_count >= watchdog.FAILURE_THRESHOLD
+            mock_restart.assert_called_once()
 
     def test_threshold_transferring_defers(self):
         with patch("httpx.get", side_effect=Exception("dead")), \
@@ -287,12 +288,13 @@ class TestMainLoop:
         with patch("httpx.get", side_effect=Exception("dead")), \
              patch("watchdog._is_backup_running", return_value=False), \
              patch("watchdog._transfer_process_running", return_value=True), \
-             patch("watchdog._service_is_running", return_value=True), \
-             patch("watchdog._restart_stack"), \
+             patch("watchdog._service_state", return_value="RUNNING"), \
+             patch("watchdog._restart_stack") as mock_restart, \
              patch("watchdog.BACKUP_LOCK_PATH", mock_lock):
             total_iters = watchdog.FAILURE_THRESHOLD + watchdog.MAX_TRANSFER_DEFERRALS
-            mock_sleep = self._run_loop(total_iters)
+            self._run_loop(total_iters)
             mock_lock.unlink.assert_called()
+            mock_restart.assert_called_once()
 
     def test_lock_deferral_cap_preserves_live_lock(self):
         """Remediation contract: at MAX_DEFERRALS with a PID-live lock owner

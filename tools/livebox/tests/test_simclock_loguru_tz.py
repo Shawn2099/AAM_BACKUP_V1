@@ -78,3 +78,21 @@ def test_aware_now_survives_on_loguru_07_shape(monkeypatch):
     monkeypatch.setattr(ld, "aware_now", aware_now_07)
     _run(monkeypatch)
     assert not hasattr(ld, "_get_tzinfo")
+
+
+def test_mtime_normaliser_restamps_seen_parent_dir_when_new_child_added(tmp_path):
+    from tools.livebox.spike_clock import MtimeNormaliser
+
+    root = tmp_path / "run_logs"
+    day_dir = root / "2026-10-01"
+    (day_dir / "0201_cloud").mkdir(parents=True)
+    norm = MtimeNormaliser(root)
+    t1 = 1790800260.0  # 2026-10-01
+    norm.normalise(t1)
+    assert abs(day_dir.stat().st_mtime - t1) < 2
+
+    # Second run later the same simulated day adds a child dir, bumping NTFS mtime to real wall clock
+    (day_dir / "2101_lan").mkdir()
+    t2 = t1 + 19 * 3600
+    norm.normalise(t2)
+    assert abs(day_dir.stat().st_mtime - t2) < 2

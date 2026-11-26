@@ -798,7 +798,7 @@ def test_w16_shutdown_command_contract(monkeypatch, tmp_path):
 
     def fake_popen(cmd, stdout=None, stderr=None, **kw):
         captured["cmd"] = list(cmd)
-        stderr.write(b"127.0.0.1: Access is denied.(5)\n")
+        stderr.write(b"192.0.2.50: Access is denied.(5)\n")
         return types.SimpleNamespace(pid=0, wait=lambda timeout=None: 5)
 
     def no_probe(host, port, timeout_s):
@@ -808,15 +808,15 @@ def test_w16_shutdown_command_contract(monkeypatch, tmp_path):
     kw = dict(delay_s=300, command_timeout_s=30, verify_timeout_s=600, poll_interval_s=1,
               connect_timeout_s=1, closed_probes=2, tcp_probe=no_probe)
     monkeypatch.setattr(tr.subprocess, "Popen", fake_popen)
-    result = real("127.0.0.1", artefacts=RunArtefacts(tmp_path, "w16-sd", day="d"), **kw)
+    result = real("192.0.2.50", artefacts=RunArtefacts(tmp_path, "w16-sd", day="d"), **kw)
 
     def fake_missing(cmd, **k):
         raise FileNotFoundError("shutdown")
 
     monkeypatch.setattr(tr.subprocess, "Popen", fake_missing)
-    result_missing = real("127.0.0.1", artefacts=RunArtefacts(tmp_path, "w16-sd2", day="d"), **kw)
+    result_missing = real("192.0.2.50", artefacts=RunArtefacts(tmp_path, "w16-sd2", day="d"), **kw)
 
-    expected_cmd = ["shutdown", "/s", "/m", "\\\\127.0.0.1", "/t", "300", "/f"]
+    expected_cmd = ["shutdown", "/s", "/m", "\\\\192.0.2.50", "/t", "300", "/f"]
     ok = (result.outcome == sh.FAILED and result.exit_code == 5
           and "Access is denied.(5)" in result.detail
           and result_missing.outcome == sh.FAILED and result_missing.exit_code is None
