@@ -245,7 +245,10 @@ def test_lan_pipeline_guard_block_records_lan_blocked(
     guards_task.side_effect = _blocked("lan")
     with pytest.raises(g.GuardBlocked):
         flow._run_lan_pipeline(_pipeline_cfg(), "run-b", "2026-10-14T21:00:00")
-    sync.with_options.return_value.assert_not_called()
+    # AF-1: a G3-only block runs one copy-only pass (mode="copy", max_delete=0) before raising.
+    sync.with_options.return_value.assert_called_once()
+    assert sync.with_options.return_value.call_args.kwargs["mode"] == "copy"
+    assert sync.with_options.return_value.call_args.kwargs["max_delete"] == 0
     shutdown.assert_not_called()
     args, kwargs = rec.call_args
     assert args[4] == "LAN_BLOCKED"
@@ -518,7 +521,10 @@ def test_cloud_pipeline_guard_block_records_cloud_blocked(
     guards_task.side_effect = _blocked("cloud")
     with pytest.raises(g.GuardBlocked):
         flow._run_cloud_pipeline(_pipeline_cfg(), "run-cb", "2026-10-14T22:00:00")
-    sync.with_options.return_value.assert_not_called()
+    # AF-1: a G3-only block runs one copy-only pass (mode="copy", max_delete=0) before raising.
+    sync.with_options.return_value.assert_called_once()
+    assert sync.with_options.return_value.call_args.kwargs["mode"] == "copy"
+    assert sync.with_options.return_value.call_args.kwargs["max_delete"] == 0
     args, kwargs = rec.call_args
     assert args[4] == "CLOUD_BLOCKED"
     em = json.loads(kwargs["extended_metrics"])

@@ -95,6 +95,8 @@ HELP: dict[str, tuple[str, str]] = {
                       "The schedule is kept, so switch it back on to return to the nightly run."),
     "lan.shutdown_after_backup": ("Switch the NAS off after the backup",
                                   "Saves power: the NAS is switched on for the backup and off again."),
+    "lan.shutdown_only_if_woken": ("Only switch off if WoL woke the NAS",
+                                   "On (recommended) = skip shutdown when the NAS was already online so staff are not interrupted."),
     "lan.shutdown_on_all_retries_exhausted": ("Switch the NAS off even if the backup failed", ""),
     "lan.min_free_dest_gb": ("Free space to keep on the NAS", "The backup stops if the NAS would get fuller than this."),
     "lan.retry_count": ("Retries per file", "How often the NAS copy retries a file that could not be copied (rclone --retries)."),
@@ -142,6 +144,7 @@ HELP: dict[str, tuple[str, str]] = {
                                       "The rclone major.minor series this backup engine was tested against (e.g. 1.74)."),
     "tools.rclone_version_policy": ("When rclone version differs",
                                     "'block' stops the backup with AAM-SYS-04 if rclone's major.minor version does not match; 'warn' logs and emails once per day."),
+    "tools.rclone_version_timeout_seconds": ("Timeout for checking rclone version (seconds)", ""),
 
     # ── WoL ──
     "wol.enabled": ("Switch the NAS on automatically", "Wake the NAS over the network before the backup."),
@@ -193,7 +196,10 @@ HELP: dict[str, tuple[str, str]] = {
     "cloud.modify_window_seconds": ("Time difference treated as equal",
                                     "File times closer than this count as the same."),
     "cloud.track_renames": ("Treat renamed files as moves",
-                            "A renamed folder is not counted as deleted files by the safety check."),
+                            "Off by default for Google Cloud (GCS has no Move, so renames still delete). "
+                            "When off, renames are uploaded and old names counted honestly by the safety check."),
+    "cloud.verify_recheck_enabled": ("Recheck cloud verify mismatches once",
+                                     "Runs one recheck pass if rclone check finds missing/modified files before failing."),
     "cloud.retries_sleep_seconds": ("Wait between network retries in the difference report", ""),
     "cloud.sync_retries_sleep_seconds": ("Wait between network retries in the upload", ""),
     "cloud.stats_interval_seconds": ("Progress line in the upload log every", ""),
@@ -280,6 +286,8 @@ HELP: dict[str, tuple[str, str]] = {
                                          "The marker file is removed when a backup ends; a virus scanner can "
                                          "briefly block that."),
     "maintenance.lock_release_delay_ms": ("Wait between those retries", ""),
+    "maintenance.record_run_retries": ("Retries when saving a run row to the database", ""),
+    "maintenance.record_run_retry_delay_ms": ("Delay between run-row save retries (ms)", ""),
     "maintenance.tool_poll_seconds": ("How quickly a stopped backup is noticed",
                                       "While a copy runs, the program checks this often whether the backup "
                                       "was stopped, and then stops the copy."),

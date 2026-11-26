@@ -303,12 +303,12 @@ def test_failed_lan_final_blocks_the_switch_until_a_manual_copy_then_switches_on
     with OverlapCalendar(cfg) as cal:
         cal.run(_at(2026, 12, 30), _at(2027, 3, 31, 23, 59))
         cal.leg_status["lan"] = "LAN_FAILED"                       # the NAS is not reachable from 1 Apr
-        cal.run(_at(2027, 4, 1), _at(2027, 4, 2, 13, 59))
-        cal.leg_status["lan"] = "LAN_COMPLETE"                     # 2 Apr 14:00: someone runs the NAS card
-        cal.manual("lan", _at(2027, 4, 2, 14))
+        cal.run(_at(2027, 4, 1), _at(2027, 4, 3, 1, 30))
+        cal.leg_status["lan"] = "LAN_COMPLETE"                     # 3 Apr 02:00: someone runs the NAS card
+        cal.manual("lan", _at(2027, 4, 3, 2))
         assert [b["fy"] for b in cal.backups if b["via"] == "manual-lan"] == ["FY26-27", "FY27-28"]
-        cal.leg_status["lan"] = "LAN_FAILED"                       # the next nights fail again
-        cal.run(_at(2027, 4, 2, 14, 1), _at(2027, 4, 3, 23, 59))
+        cal.leg_status["lan"] = "LAN_FAILED"                       # rollover's own 06:00 NAS check fails again
+        cal.run(_at(2027, 4, 3, 2, 1), _at(2027, 4, 3, 23, 59))
 
         rollovers = [(w, r) for w, j, r in cal.log if j == "rollover" and r != "NO_ROLLOVER_NEEDED"]
         assert [(w, r) for w, r in rollovers] == [

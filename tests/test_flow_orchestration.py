@@ -168,7 +168,7 @@ class TestWolCheckTask:
         config.wol.enabled = False
         wol_check_task.fn(config)  # Should not raise
 
-    @patch("flow.ensure_server_online")
+    @patch("flow.ensure_server_online_status")
     def test_wakes_when_enabled(self, mock_wol):
         config = MagicMock()
         config.wol.enabled = True

@@ -227,9 +227,9 @@ class TestRaceGuard:
         reads = []
 
         def reload(path):
-            # the first read is the run's own; from then on config.yaml says FY27-28 is the configured year
+            # read 1 = initial load_config, read 2 = pre-first-pass race check; switch happens mid-run
             reads.append(path)
-            return cfg if len(reads) == 1 else switched
+            return cfg if len(reads) <= 2 else switched
 
         with backup_env(cfg, reloads=reload) as env:
             with pytest.raises(ExceptionGroup) as info:   # a non-success end must raise (review F3)
@@ -248,7 +248,7 @@ class TestRaceGuard:
 
         def reload(path):
             reads.append(path)
-            if len(reads) == 1:
+            if len(reads) <= 2:
                 return cfg
             raise OSError("config.yaml locked")
 

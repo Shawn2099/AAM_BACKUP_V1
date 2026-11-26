@@ -145,6 +145,7 @@ _UNITS = {
     "dashboard.admin_password_min_length": "characters", "dashboard.history_nights": "nights",
     "maintenance.sqlite_vacuum_freelist_threshold": "pages", "maintenance.config_backups_keep": "copies",
     "maintenance.config_replace_retries": "times", "maintenance.lock_release_retries": "times",
+    "maintenance.record_run_retries": "times",
     "rollover.archive_alert_after_days": "days",
     "guards.max_delete_files": "files", "guards.min_delete_floor_files": "files",
     "audit.detail_max_paths": "paths",

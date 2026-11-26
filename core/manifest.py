@@ -1358,6 +1358,31 @@ class ManifestDB:
                 best, best_ts = dict(row), ts
         return best
 
+    def latest_run_since(self, leg: str, fy: str, since_iso: str, *,
+                         exclude_started_at: str | None = None) -> dict | None:
+        """The newest finished run (any non-RUNNING status) of `fy` made by `leg` at or after
+        `since_iso` (AF-4). Used to detect a newer failure after an earlier verified copy."""
+        import pendulum
+
+        with self._lock:
+            rows = self._get_conn().execute(
+                "SELECT * FROM run_history WHERE mode = ? AND status != 'RUNNING' "
+                "AND json_valid(extended_metrics) "
+                "AND json_extract(extended_metrics, '$.guards.fy') = ?",
+                (leg, fy)).fetchall()
+        floor = pendulum.parse(since_iso).timestamp()
+        best, best_ts = None, None
+        for row in rows:
+            if exclude_started_at and row["started_at"] == exclude_started_at:
+                continue
+            try:
+                ts = pendulum.parse(row["started_at"]).timestamp()
+            except Exception:  # noqa: BLE001 - an unreadable row counts as nothing
+                continue
+            if ts >= floor and (best_ts is None or ts > best_ts):
+                best, best_ts = dict(row), ts
+        return best
+
     def first_partial_after(self, mode: str, since_iso: str | None, *, fy: str | None = None) -> str | None:
         """When the earliest PARTIAL run of this leg after `since_iso` started (None if there is none):
         how long a large upload has been spread over several nights."""

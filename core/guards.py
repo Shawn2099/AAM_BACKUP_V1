@@ -325,13 +325,15 @@ def enforce(leg: str, results: list[GuardResult],
 
 def is_g3_only_block(record: dict | None) -> bool:
     """True when `record` is blocked and G3_MASS_DELETE is the ONLY unapproved failing guard (Phase 1b)."""
-    if not isinstance(record, dict) or not record.get("blocked"):
+    if not isinstance(record, dict):
         return False
     approved = set(record.get("approved_guards") or ())
     failing = {
         r.get("guard")
         for r in (record.get("results") or ())
-        if isinstance(r, dict) and not r.get("passed") and r.get("guard") not in approved
+        if isinstance(r, dict)
+        and r.get("verdict") == BLOCK
+        and r.get("guard") not in approved
     }
     return failing == {"G3_MASS_DELETE"}
 

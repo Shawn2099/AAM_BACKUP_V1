@@ -12,6 +12,7 @@ folder creation (+ placeholder), config backup/update, archive transition.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -384,13 +385,16 @@ def create_nas_folder(lan_root: str, new_fy: str) -> Path:
     inside an existing share (never invented on a wrong or offline path, F-9), and the
     caller records the failure instead of swallowing it.
     """
-    root = Path(lan_root)
-    if not root.is_dir():
-        raise OSError(f"NAS share {lan_root} is not reachable - the new folder was not created")
+    from core import fy_overlap
+
+    outcome = fy_overlap.ensure_nas_folder(lan_root, new_fy)
     new_lan = Path(_child_path(lan_root, new_fy))
-    new_lan.mkdir(exist_ok=True)
-    (new_lan / MOUNT_MARKER).touch(exist_ok=True)
-    logger.info(f"FY rollover: NAS folder {new_lan} ready")
+    if outcome == fy_overlap.NAS_NEEDS_APPROVAL:
+        raise OSError(
+            f"NAS folder {new_lan} already exists, is non-empty, and has no {MOUNT_MARKER} marker; "
+            "owner inspection/approval is required before mirroring into it"
+        )
+    logger.info(f"FY rollover: NAS folder {new_lan} ready ({outcome})")
     return new_lan
 
 
@@ -489,18 +493,67 @@ def run_archive_transition(
         logger.info("FY rollover: no GCS key file found, using ambient gcloud authentication")
 
     # First prove gcloud starts at all (a missing Python made every transition a silent no-op).
-    # --recursive on the bare prefix (no ** glob) - no shell wildcard expansion.
-    steps = [("gcloud-check", [gcloud_exe, "--version"], auth_timeout),
-             ("gcloud-archive", [gcloud_exe, "storage", "objects", "update",
-                                 f"gs://{bucket}/{old_fy}/", "--storage-class=ARCHIVE",
-                                 "--recursive"], archive_timeout)]
-    for name, argv, timeout in steps:
-        result = run_tool(name, argv, timeout_s=timeout, artefacts=artefacts, env=env)
+    check_res = run_tool("gcloud-check", [gcloud_exe, "--version"], timeout_s=auth_timeout,
+                         artefacts=artefacts, env=env)
+    if not check_res.completed or check_res.exit_code != 0:
+        detail = check_res.describe_failure() or (
+            f"exit {check_res.exit_code}: {check_res.stderr_text().strip() or 'no output'}")
+        logger.warning(f"FY rollover: gcloud-check failed for gs://{bucket}/{old_fy}/ ({detail}); "
+                       f"full output in {artefacts.dir}")
+        return False
+
+    # AF-7: list objects first so retries skip objects already in ARCHIVE storage class.
+    prefix_url = f"gs://{bucket}/{old_fy}/"
+    list_res = run_tool("gcloud-list", [gcloud_exe, "storage", "objects", "list", prefix_url,
+                                        "--format=json"],
+                        timeout_s=archive_timeout, artefacts=artefacts, env=env)
+    if not list_res.completed or list_res.exit_code != 0:
+        detail = list_res.describe_failure() or (
+            f"exit {list_res.exit_code}: {list_res.stderr_text().strip() or 'no output'}")
+        logger.warning(f"FY rollover: gcloud-list failed for {prefix_url} ({detail}); "
+                       f"full output in {artefacts.dir}")
+        return False
+
+    update_batches: list[list[str]] = []
+    raw_list = list_res.stdout_text().strip()
+    parsed_list = None
+    if raw_list:
+        try:
+            data = json.loads(raw_list)
+            if isinstance(data, list):
+                parsed_list = data
+        except ValueError:
+            parsed_list = None
+
+    if parsed_list is not None:
+        todo = [
+            f"gs://{bucket}/{obj['name']}"
+            for obj in parsed_list
+            if isinstance(obj, dict) and obj.get("name")
+            and str(obj.get("storage_class", "")).upper() != "ARCHIVE"
+        ]
+        if not todo:
+            logger.info(f"FY rollover: all {len(parsed_list)} object(s) under {prefix_url} "
+                        "are already ARCHIVE - nothing to update")
+            return True
+        logger.info(f"FY rollover: {len(todo)}/{len(parsed_list)} object(s) under {prefix_url} "
+                    "still need ARCHIVE transition")
+        for i in range(0, len(todo), 50):
+            update_batches.append([gcloud_exe, "storage", "objects", "update",
+                                   "--storage-class=ARCHIVE", *todo[i:i + 50]])
+    else:
+        # Fallback when list output is unavailable (e.g. minimal mock stdout): recursive update.
+        update_batches.append([gcloud_exe, "storage", "objects", "update",
+                               prefix_url, "--storage-class=ARCHIVE", "--recursive"])
+
+    for argv in update_batches:
+        result = run_tool("gcloud-archive", argv, timeout_s=archive_timeout,
+                          artefacts=artefacts, env=env)
         if not result.completed or result.exit_code != 0:
             detail = result.describe_failure() or (
                 f"exit {result.exit_code}: {result.stderr_text().strip() or 'no output'}")
-            logger.warning(f"FY rollover: {name} failed for gs://{bucket}/{old_fy}/ ({detail}); "
+            logger.warning(f"FY rollover: gcloud-archive failed for {prefix_url} ({detail}); "
                            f"full output in {artefacts.dir}")
             return False
-    logger.info(f"FY rollover: archive transition succeeded for gs://{bucket}/{old_fy}/")
+    logger.info(f"FY rollover: archive transition succeeded for {prefix_url}")
     return True

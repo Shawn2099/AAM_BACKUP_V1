@@ -11,7 +11,7 @@ from loguru import logger
 from core.guards import require_source_files
 from core.process import resolve_binary
 from core.rclone_config import temp_rclone_config
-from core.rclone_errors import find_transport_failure
+from core.rclone_errors import NTFS_SYSTEM_EXCLUDES, find_transport_failure
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool, tail_lines
 from models.config import CloudConfig, model_default
@@ -334,11 +334,11 @@ def measure_planned_deletes(
     config_path: str | None = None,
     fast_list: bool = False,
     ignore_case: bool = False,
-    track_renames: bool = model_default(CloudConfig, "track_renames"),
+    track_renames: bool = True,
     modify_window_seconds: int = model_default(CloudConfig, "modify_window_seconds"),
     retries: int = model_default(CloudConfig, "retry_count"),
     retries_sleep_seconds: int = model_default(CloudConfig, "sync_retries_sleep_seconds"),
-    excludes: tuple[str, ...] = (),
+    excludes: tuple[str, ...] = NTFS_SYSTEM_EXCLUDES,
     timeout: int = model_default(CloudConfig, "dry_run_timeout_seconds"),
     artefacts: RunArtefacts | None = None,
     step: str = "rclone-dry-run",
@@ -510,6 +510,7 @@ def build_rclone_sync_command(
     max_delete: int | None = None,
     track_renames: bool = model_default(CloudConfig, "track_renames"),
     mode: str = "sync",
+    excludes: tuple[str, ...] = NTFS_SYSTEM_EXCLUDES,
 ) -> list[str]:
     """Build rclone sync (or copy on G3 block) command with GCS-optimized flags.
 
@@ -566,11 +567,13 @@ def build_rclone_sync_command(
         ])
     if mode == "sync" and max_delete is not None:
         cmd.extend(["--max-delete", str(int(max_delete))])
-    if track_renames:
+    if track_renames and mode == "sync":
         # A renamed file is moved server-side instead of deleted + uploaded; the
         # G3 measurement (measure_planned_deletes) uses the same flag, so its
-        # prediction matches what this sync really does.
+        # prediction matches what this sync really does. Never used in copy mode.
         cmd.append("--track-renames")
+    for pattern in excludes:
+        cmd.extend(["--exclude", pattern])
 
     return cmd
 
@@ -653,9 +656,13 @@ def run_cloud_sync(
                 "error": "rclone not found" if missing else result.spawn_error,
                 **({"fault_code": "AAM-SYS-04"} if missing else {})}
     if getattr(result, "stalled", False):
+        stats = final_stats(result.log_text())
+        log_text = "\n".join(t for t in (result.log_text(), result.stderr_text()) if t)
+        max_del = max_delete_reached(log_text)
+        is_retryable = isinstance(stats, dict) and not max_del and stats.get("fatalError") is not True
         return {**base, "status": "CLOUD_FAILED", "exit_code": -1, "stalled": True,
-                "retryable": True, "stats_at_least": True,
-                "stats": final_stats(result.log_text()),
+                "retryable": is_retryable, "max_delete_reached": max_del,
+                "stats_at_least": True, "stats": stats,
                 "error": result.describe_failure() or "rclone stalled (no progress) and was terminated"}
     if result.timed_out:
         # G7: a timeout is an interruption, not a data event — rclone sync

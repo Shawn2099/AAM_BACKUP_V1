@@ -121,6 +121,24 @@ def check_source_parent(config, parent: str) -> dict:
         out["problems"].append(f"{source} holds no files. The backup would stop (guard G1) rather than "
                                "mirror an empty folder.")
         return out
+    try:
+        from core import fy_overlap
+        from core.manifest import ManifestDB
+        db = ManifestDB.from_config(config)
+        try:
+            next_fy = fy_overlap.active_next_fy(config, db)
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        next_fy = None
+    if next_fy:
+        next_src = fy_rollover._child_path(parent, next_fy)
+        if not os.path.isdir(next_src) or _is_link(next_src):
+            out["problems"].append(
+                f"Overlap is active for {next_fy}, but {next_src} does not exist (or is a link) "
+                "under the selected parent."
+            )
+            return out
     out["ok"] = True
     out["warnings"].append("If this folder holds fewer files than the one backed up now, the next backup "
                            "stops and asks for your approval (guard G2): a smaller source is treated as "

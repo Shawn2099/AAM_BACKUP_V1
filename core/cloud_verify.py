@@ -27,6 +27,7 @@ import re
 from loguru import logger
 
 from core.cloud_reporter import parse_combined_diff
+from core.rclone_errors import NTFS_SYSTEM_EXCLUDES
 from core.process import resolve_binary
 from core.run_artefacts import RunArtefacts
 from core.tool_runner import run_tool
@@ -125,6 +126,7 @@ def verify_cloud_integrity(
     timeout: int,
     checkers: int,
     modify_window_seconds: int,
+    excludes: tuple[str, ...] = NTFS_SYSTEM_EXCLUDES,
     artefacts: RunArtefacts | None = None,
 ) -> dict:
     """Run rclone check --one-way --size-only to verify source matches GCS.
@@ -160,6 +162,8 @@ def verify_cloud_integrity(
         "--config", config_path,
         "--gcs-no-check-bucket",   # Bucket already verified by preflight; skip redundant check
     ]
+    for pattern in excludes:
+        cmd.extend(["--exclude", pattern])
 
     logger.info(f"Cloud verify: checking {source} <-> {bucket}/{fy_prefix}")
 
@@ -268,6 +272,7 @@ def verify_cloud_and_diff(
     modify_window_seconds: int,
     retries: int = 3,
     retries_sleep_seconds: int = 10,
+    excludes: tuple[str, ...] = NTFS_SYSTEM_EXCLUDES,
     artefacts: RunArtefacts | None = None,
 ) -> dict:
     """Run one `rclone check --one-way --combined --size-only` for verify, diff, and manifest."""
@@ -289,6 +294,8 @@ def verify_cloud_and_diff(
         "--config", config_path,
         "--gcs-no-check-bucket",
     ]
+    for pattern in excludes:
+        cmd.extend(["--exclude", pattern])
     logger.info(f"Cloud verify+diff: checking {source} <-> {bucket}/{fy_prefix}")
     result = run_tool("rclone-verify", cmd, timeout_s=timeout, artefacts=art)
 

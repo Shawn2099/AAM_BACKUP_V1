@@ -41,3 +41,4 @@ audit_lab/raw/*_report.txt
 
 # Worker-agent runs (AGENT_TASKS.md): claims, full logs, reports stay local
 agent_runs/
+rclone_local.conf

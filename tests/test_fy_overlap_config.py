@@ -29,12 +29,12 @@ def test_overlap_can_be_switched_off():
     assert RolloverConfig(overlap_enabled=False).overlap_enabled is False
 
 
-@pytest.mark.parametrize("day", ["01-15", "10-01", "12-31", "02-28", "03-31"])
+@pytest.mark.parametrize("day", ["01-15", "12-01", "12-31", "02-28", "03-31"])
 def test_valid_activation_days_are_accepted(day):
     assert RolloverConfig(overlap_activate_on=day).overlap_activate_on == day
 
 
-@pytest.mark.parametrize("day", ["02-29", "04-01", "13-01", "12-32", "1231", "00-10", "12/31", "ab-cd"])
+@pytest.mark.parametrize("day", ["02-29", "04-01", "04-02", "10-01", "13-01", "12-32", "1231", "00-10", "12/31", "ab-cd"])
 def test_invalid_activation_days_are_refused_in_plain_words(day):
     with pytest.raises(ValidationError, match="MM-DD"):
         RolloverConfig(overlap_activate_on=day)

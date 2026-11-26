@@ -10,20 +10,15 @@ from test_a2_interrupted_run_status import _cloud_pipeline, _lan_pipeline, _make
 import flow
 from core import guards, statuses
 
-G3_BLOCK = {
-    "guard": "G3_MASS_DELETE",
-    "verdict": "BLOCK",
-    "passed": False,
-    "reason": "This backup would delete 900 of 1,000 files.",
-    "metrics": {"planned_deletes": 900},
-}
-G1_BLOCK = {
-    "guard": "G1_SOURCE_HAS_FILES",
-    "verdict": "BLOCK",
-    "passed": False,
-    "reason": "Source appears empty.",
-    "metrics": {},
-}
+G3_BLOCK = guards.g3_mass_delete(900, 1000, 50, 10.0)
+G1_BLOCK = guards.g1_source_has_files(None, "D:\\src")
+
+
+def _real_blocked_record(leg: str, results: list[guards.GuardResult]) -> dict:
+    try:
+        return guards.enforce(leg, results, fy="FY26-27", max_delete=0)
+    except guards.GuardBlocked as gb:
+        return gb.record
 
 
 def test_rf3_5_copy_only_note_unit():
@@ -45,7 +40,7 @@ def test_rf3_5_copy_only_note_unit():
 
 
 def test_rf3_1_6_7_lan_g3_block_copy_only_mail_row_and_metrics():
-    rec_g3 = {"fy": "FY26-27", "blocked": True, "results": [G3_BLOCK], "max_delete": 0}
+    rec_g3 = _real_blocked_record("lan", [G3_BLOCK])
     with _lan_pipeline("pre", None) as (record_run, _rec), \
             patch("flow.lan_guards_task", side_effect=guards.GuardBlocked("lan", rec_g3)), \
             patch("flow.lan_sync_task") as copy_task, \
@@ -72,7 +67,7 @@ def test_rf3_1_6_7_lan_g3_block_copy_only_mail_row_and_metrics():
 
 
 def test_rf3_2_cloud_g3_block_copy_only_mail():
-    rec_g3 = {"fy": "FY26-27", "blocked": True, "results": [G3_BLOCK], "max_delete": 0}
+    rec_g3 = _real_blocked_record("cloud", [G3_BLOCK])
     with _cloud_pipeline("pre", None) as (_record_run, _rec, _alert), \
             patch("flow.cloud_guards_task", side_effect=guards.GuardBlocked("cloud", rec_g3)), \
             patch("flow.cloud_sync_task") as copy_task, \
@@ -94,7 +89,7 @@ def test_rf3_2_cloud_g3_block_copy_only_mail():
 
 
 def test_rf3_3_lan_copy_only_failure_reports_unknown_in_mail():
-    rec_g3 = {"fy": "FY26-27", "blocked": True, "results": [G3_BLOCK], "max_delete": 0}
+    rec_g3 = _real_blocked_record("lan", [G3_BLOCK])
     with _lan_pipeline("pre", None) as (_record_run, _rec), \
             patch("flow.lan_guards_task", side_effect=guards.GuardBlocked("lan", rec_g3)), \
             patch("flow.lan_sync_task") as copy_task, \
@@ -112,7 +107,7 @@ def test_rf3_3_lan_copy_only_failure_reports_unknown_in_mail():
 
 
 def test_rf3_4_multi_guard_block_skips_copy_only_and_keeps_nothing_changed():
-    rec_g1_g3 = {"fy": "FY26-27", "blocked": True, "results": [G1_BLOCK, G3_BLOCK], "max_delete": 0}
+    rec_g1_g3 = _real_blocked_record("lan", [G1_BLOCK, G3_BLOCK])
     with _lan_pipeline("pre", None) as (_record_run, _rec), \
             patch("flow.lan_guards_task", side_effect=guards.GuardBlocked("lan", rec_g1_g3)), \
             patch("flow.lan_sync_task") as copy_task, \

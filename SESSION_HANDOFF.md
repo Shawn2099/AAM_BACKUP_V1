@@ -1,6 +1,62 @@
 # SESSION HANDOFF — read this first in every new session
 
-**Last updated:** 2026-11-25 (see the newest block right below).
+**Last updated:** 2026-11-26 (see the newest block right below).
+
+---
+
+## >>> 2026-11-26 (architecture review + lean-arch proposal; REVIEW ONLY, NO PRODUCT CODE CHANGED) <<<
+
+Read-only session on `rclone-engine`. Subagents (Haiku inventory/research, Sonnet file reviewers, Opus flow and rollover reviewers) reviewed the whole tree; an Opus architect is writing a lean-architecture plan. Nothing was built or committed by this work. Copies of all docs below also live in `docs/new_arch/` (put new-arch material there from now on).
+
+**Owner decisions (2026-11-26):**
+- A closed FY needs NO further sync after Apr 1 (so the "old FY unprotected" finding is withdrawn).
+- Dead-man's switch (heartbeat / daily all-OK mail): LATER, not now.
+- VSS / locked-file snapshots: OUT OF SCOPE for now (rclone has no VSS support; locked files stay a failed/partial run).
+- Direction wanted: unified rclone engine, guards as preflight, cloud + LAN modules (backup + verify), SQLite as the single source for dashboard/reports, one reporting/alerting layer, a recovery/retry layer, human only when something is genuinely breaking, Prefect replaced by APScheduler (+ tenacity), keep a watchdog, reuse most of `core/`.
+
+**New files from this work (all under `docs/`, copies in `docs/new_arch/`):**
+1. `docs/ARCH_REVIEW_2026-11-26.md` - verdict, inventory, over-complexity, FY rollover trace, Prefect question, recommended actions (section 0 = owner decisions).
+2. `docs/ARCH_REVIEW_2026-11-26_APPENDIX_A.md` - file-level bug list A1-A7 (core sync/verify, guards/process, manifest/notify/reports, rollover/config/secrets, flow nightly, ui/config, rollover/audit/launch/watchdog) incl. order of operations as implemented.
+3. `docs/ARCH_RESEARCH_2026-11-26.md` - web research: APScheduler 3.11.x vs 4.x, NSSM/WinSW, tenacity, locks, rclone flags/exit codes/RC/SMB (UNVERIFIED items listed; test on the box).
+4. `docs/OPUS_DESIGN_RCLONE_ONLY_NO_PREFECT_2026-11-25.md` - earlier design (pre-existing, copied for reference).
+5. `docs/PLAN_LEAN_ARCH_2026-11-26.md` - the lean-architecture plan (WRITTEN BY THE OPUS ARCHITECT; if this file is missing the agent had not finished - check `docs/new_arch/` and re-run the planning step).
+
+**Top findings to remember (details in appendix A):** approval reminders never run (`flow.py:2792` calls non-existent `db.list_approvals`); `manifest.py` writes without rollback after "database is locked"; failure-path NAS shutdown ignores `shutdown_only_if_woken` (`flow.py:2492`); cloud copy-only reads a `planned_deletes` key `enforce()` never writes (`flow.py:1800`); copy-only access check can replace the GuardBlocked (`flow.py:1795/2232`); cloud verify and weekly cloud audit lack NTFS excludes (matters only for a drive-root source); `process.py` PermissionError on the lock = "alive"; dashboard 200-run Prefect query can hide the RUNNING run (`ui.py:229-341`); rollover 06:00 not in the schedule budget check; guard bounds can be set to disable G2/G3.
+
+**Next:** owner reads `docs/PLAN_LEAN_ARCH_2026-11-26.md`, answers its open questions, then run the spikes it lists before any build. Do not stack the migration on the in-progress rclone LAN switch / shadow trial without the owner's go. Another session's AF-1..AF-17 work (block below) is separate and uncommitted in the tree.
+
+---
+
+## >>> 2026-11-26 (latest) - AUDIT FIXES AF-1..AF-17 COMPLETE ON `rclone-engine` (pending AF-17 dead-code owner go) <<<
+
+**NEWEST STATE (read this first):**
+- **Audit fixes (`docs/PLAN_AUDIT_FIXES_2026-11-25.md`) implemented on `rclone-engine`**:
+  - **Phase A (AF-1..AF-3)**:
+    - **AF-1**: `core/guards.py` `is_g3_only_block` fixed to check `r.get("verdict") == BLOCK`; `tests/test_af1_g3_only_block.py` + `test_b4_copy_only.py`/`test_rf3_copy_only_truth.py`/`test_rf4_copy_only_space.py` aligned with real `guards.enforce()` records.
+    - **AF-2**: `core/cloud_sync.py` `build_rclone_sync_command` gates `--track-renames` on `track_renames and mode == "sync"`.
+    - **AF-3 (Owner option a)**: `CloudConfig.track_renames` default changed to `False` (`models/config.py`, `core/config_help.py`, `config.example.yaml`); `measure_planned_deletes` keeps `track_renames: bool = True` default for LAN/unit callers while `flow.py` passes `config.cloud.track_renames`.
+  - **Phase B (AF-4..AF-7)**:
+    - **AF-4**: `core/manifest.py` `latest_run_since(..., exclude_started_at=...)` + `core/fy_overlap.py` `final_copy_state` now reject an earlier verified copy when a newer finished run for `(leg, from_fy)` ended non-verified (`tests/test_af4_final_copy_gate.py`).
+    - **AF-5 (Owner option c)**: Accepted as designed (old FY not tracked after successful switch).
+    - **AF-6**: `core/fy_rollover.py` `create_nas_folder` now delegates to `fy_overlap.ensure_nas_folder` and raises `OSError` on `NAS_NEEDS_APPROVAL` without stamping `MOUNT_MARKER` (`tests/test_af6_rollover_nas_folder.py`).
+    - **AF-7**: Raised `HealthConfig.rollover_archive_timeout_seconds` default `600 -> 3600` (`le=21600`); `core/fy_rollover.py` `run_archive_transition` lists objects via `gcloud storage objects list --format=json` first and updates only non-`ARCHIVE` objects in batches (`tests/test_af7_archive_timeout.py`).
+  - **Phase C (AF-8..AF-10)**:
+    - **AF-8**: `core/wol.py` `ensure_server_online_status` distinguishes `disabled` / `already_up` / `woken`; added `LanConfig.shutdown_only_if_woken` (default `True`); `flow.py` skips NAS shutdown in LAN pipeline, audit, and overlap multi-pass when `already_up` (`tests/test_af8_wol_shutdown.py`).
+    - **AF-9**: `core/shutdown.py` `validate_shutdown_target` blocks empty/loopback/local-host targets and UNC literal-IP mismatches against `paths.lan_destination` in `shutdown_server` and `flow.lan_shutdown_task` (`tests/test_af9_shutdown_target.py`).
+    - **AF-10**: `flow.py` `_auto_backup_dir` fails loud when `lan.versions_enabled=True` instead of swallowing exceptions (`tests/test_af10_auto_backup_dir.py`).
+  - **Phase D (AF-11..AF-14)**:
+    - **AF-11**: Shared `NTFS_SYSTEM_EXCLUDES` in `core/rclone_errors.py` across `lan_sync.py`, `cloud_sync.py` (sync + dry-run), and `cloud_verify.py` (`tests/test_af11_cloud_ntfs_excludes.py`).
+    - **AF-12**: Added `CloudConfig.verify_recheck_enabled` (default `True`); `flow.py` runs one recheck pass when cloud verify reports `added`/`modified` diffs before failing `CLOUD_VERIFY_FAILED` (`tests/test_af12_cloud_verify_recheck.py`).
+    - **AF-13**: Added `MaintenanceConfig.record_run_retries` (`3`) & `record_run_retry_delay_ms` (`200`) (+ `core/config_edit.py` unit); `flow._record_run` retries transient DB persistence failures (`tests/test_af13_record_run_retry.py`).
+    - **AF-14**: `flow.py` `evidence_ok` no longer fails on reporting-only `rclone size` `_error` (`tests/test_af14_size_error_gate.py`).
+  - **Phase E (AF-15..AF-17)**:
+    - **AF-15**: `core/cloud_sync.py` stall kill checks `stats`, `max_delete_reached`, and `fatalError` before setting `retryable=True`; added `ToolsConfig.rclone_version_timeout_seconds` (`30`) and `core/health.py` `rclone_version_fault` caches only passing checks; `flow.py` initializes `dry = None` before `if first_file:` (`tests/test_af15_resilience.py`).
+    - **AF-16**: `RolloverConfig.overlap_activate_on` restricted to Dec–Mar (`12`..`03`, excluding `04-01`); `core/fy_overlap.py` reuses `core.time_utils.IST`; `flow.py` calls `end_overlap` inside `step_config_switch` while holding `_backup_slot` and runs `_switched_fy` before the first pass too; `core/source_picker.py` validates active next-FY folder under new parent (`tests/test_af16_fy_edges.py`).
+    - **AF-17**: `core/notify.py` `_notify` renders alert email/bundle only after `_switched_off_reason`, cooldown, and duplicate suppression checks (`tests/test_af17_notify_order.py`). Dead-code deletion awaits owner go.
+- **Verification**:
+  - Fast suite (`task-641`): `3866 passed, 4 skipped, 9 deselected` with 6 test alignments fixed afterwards (`task-663`: `96 passed` across `test_flow_orchestration.py`, `test_fy_overlap_backup_flow.py`, `test_fy_overlap_config.py`, `test_m4_settings_admin.py`) and 2 `test_review2_driver.py` S1 dirty-tree failures (expected while uncommitted).
+  - Targeted AF-1..AF-17 suites all green.
+  - Slow calendar suite (`task-405` + `task-557`): `8 passed` + `test_failed_lan_final_blocks_the_switch_until_a_manual_copy_then_switches_on_3_apr` aligned & `1 passed` after AF-4.
 
 ---
 

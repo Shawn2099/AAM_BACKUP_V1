@@ -147,6 +147,13 @@ class LanConfig(StrictModel):
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
     shutdown_after_backup: bool = True
+    shutdown_only_if_woken: bool = Field(
+        default=True,
+        description=(
+            "Only shut down the NAS after a backup or audit if this run actually woke it via WoL. "
+            "If the NAS was already online, skip shutdown so staff using it are not interrupted."
+        ),
+    )
     shutdown_on_all_retries_exhausted: bool = Field(
         default=False,
         description=(
@@ -412,11 +419,18 @@ class CloudConfig(StrictModel):
         description="(max 10: a wide window makes the upload skip same-size edits) rclone --modify-window for the upload, the after-upload check and the "
                     "difference report (seconds); 2 = NTFS modification-time granularity")
     track_renames: bool = Field(
-        default=True,
-        description="rclone --track-renames: a renamed or moved file is moved on the "
-                    "destination, not deleted and uploaded again. Used by the cloud upload and "
-                    "by the cloud mass-delete guard (G3) measurement (the LAN leg has "
+        default=False,
+        description="rclone --track-renames: off by default for GCS (which has Copy but no Move, "
+                    "so renames do server-side copy + delete). When off, renamed files are uploaded "
+                    "and old names deleted normally, counted honestly by G3 (the LAN leg has "
                     "lan.track_renames).")
+    verify_recheck_enabled: bool = Field(
+        default=True,
+        description=(
+            "AF-12: when cloud verify reports missing/modified files after a normal-termination "
+            "check, run one recheck pass before failing CLOUD_VERIFY_FAILED."
+        ),
+    )
     sync_retries_sleep_seconds: int = Field(
         default=30, ge=1, le=600,
         description="rclone --retries-sleep for the upload and its dry-run (seconds); set "
@@ -692,6 +706,14 @@ class MaintenanceConfig(StrictModel):
         default=200, ge=10, le=5000,
         description="A7: wait between two attempts to delete the backup lock file (milliseconds).",
     )
+    record_run_retries: int = Field(
+        default=3, ge=1, le=20,
+        description="AF-13: attempts to record a finished run row in ManifestDB before logging CRITICAL",
+    )
+    record_run_retry_delay_ms: int = Field(
+        default=200, ge=10, le=10000,
+        description="AF-13: base delay (ms) between _record_run DB retry attempts",
+    )
     tool_poll_seconds: float = Field(
         default=1.0,
         ge=0.1,
@@ -915,6 +937,10 @@ class RolloverConfig(StrictModel):
             raise ValueError(f"Enter a real day as MM-DD, for example 12-31 (now: {v!r}); 02-29 does not exist.") from None
         if (month, day) == (4, 1):
             raise ValueError("Enter a day as MM-DD other than 04-01: that is the switch day, not an activation day.")
+        if month not in (12, 1, 2, 3):
+            raise ValueError(
+                f"Enter an activation day in the Dec-Mar pre-switch window (MM-DD, now: {v!r})."
+            )
         return v
 
     @field_validator("source_placeholder_name")
@@ -964,9 +990,9 @@ class HealthConfig(StrictModel):
         description="Timeout for gcloud auth activate-service-account during FY rollover (seconds)",
     )
     rollover_archive_timeout_seconds: int = Field(
-        default=600,
+        default=3600,
         ge=60,
-        le=7200,
+        le=21600,
         description="Timeout for gcloud storage objects update --storage-class=ARCHIVE during FY rollover (seconds)",
     )
 
@@ -1278,6 +1304,10 @@ class ToolsConfig(StrictModel):
     rclone_version_policy: Literal["block", "warn"] = Field(
         default="block",
         description="Action when installed rclone major.minor version differs from rclone_expected_version.",
+    )
+    rclone_version_timeout_seconds: int = Field(
+        default=30, ge=5, le=300,
+        description="AF-15: timeout for the `rclone version` pre-backup check (seconds).",
     )
 
     @field_validator("stall_timeout_seconds")

@@ -120,13 +120,10 @@ def test_rf4_7_lan_access_task_copy_only_fails_closed_when_either_none():
 
 
 def test_rf4_8_lan_g3_copy_only_passes_copy_only_true_to_lan_access():
-    rec_g3 = {
-        "fy": "FY26-27",
-        "blocked": True,
-        "results": [{"guard": "G3_MASS_DELETE", "verdict": "BLOCK", "passed": False,
-                     "reason": "Too many deletes", "metrics": {"planned_deletes": 900}}],
-        "max_delete": 0,
-    }
+    try:
+        guards.enforce("lan", [guards.g3_mass_delete(900, 1000, 50, 10.0)], fy="FY26-27", max_delete=0)
+    except guards.GuardBlocked as gb:
+        rec_g3 = gb.record
     with _lan_pipeline("pre", None), \
             patch("flow.lan_guards_task", side_effect=guards.GuardBlocked("lan", rec_g3)), \
             patch("flow.lan_access_task") as access_mock, \

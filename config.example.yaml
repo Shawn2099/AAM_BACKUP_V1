@@ -52,6 +52,8 @@ lan:
   subprocess_timeout_seconds: 14400
   # Shut down the NAS server after a successful LAN sync
   shutdown_after_backup: true
+  # Only shut down if this run woke the NAS via WoL (skip when already online)
+  shutdown_only_if_woken: true
   # When true, shuts down the NAS even if the backup ended in LAN_PARTIAL or LAN_FAILED
   # once all retry attempts are exhausted. Failure alert is always sent before shutdown.
   shutdown_on_all_retries_exhausted: false
@@ -198,9 +200,11 @@ cloud:
   # difference report: file times closer than this count as equal (2 = NTFS granularity;
   # 0-10 - a wider window would make the upload skip same-size edits)
   modify_window_seconds: 2
-  # rclone --track-renames: a renamed/moved file is moved, not deleted + uploaded again;
-  # also used by the cloud mass-delete guard (G3) measurement
-  track_renames: true
+  # rclone --track-renames: off by default for GCS (no native Move); renames are
+  # uploaded and old names deleted normally, counted honestly by G3
+  track_renames: false
+  # AF-12: re-run cloud verify once on transient diff before failing CLOUD_VERIFY_FAILED
+  verify_recheck_enabled: true
   # rclone --retries-sleep (seconds) for the upload and its dry-run (1-600)
   sync_retries_sleep_seconds: 30
   # rclone --stats: a progress line in the upload log every N seconds (1-3600)
@@ -396,6 +400,8 @@ maintenance:
   # When a backup ends its backup.lock file is deleted; if that fails (antivirus, watchdog read) it is
   # retried this many times (0-50), waiting this many milliseconds between attempts (10-5000) (A7)
   lock_release_retries: 5
+  record_run_retries: 3
+  record_run_retry_delay_ms: 200
   lock_release_delay_ms: 200
   # While rclone/robocopy runs, the agent checks this often (seconds, 0.1-30) whether the
   # flow was cancelled or interrupted; it then kills the tool and records the run (A6)
@@ -503,7 +509,7 @@ health:
   rollover_auth_timeout_seconds: 30
   # Timeout for gcloud storage objects update --storage-class=ARCHIVE during FY rollover (seconds)
   # HDD NOTE: metadata-only op — no data transfer, 600s is normally sufficient
-  rollover_archive_timeout_seconds: 600
+  rollover_archive_timeout_seconds: 3600
 
 
 # ═══════════════════════════════════════════════════
@@ -545,6 +551,7 @@ tools:
   stall_timeout_seconds: 1800
   rclone_expected_version: "1.74"
   rclone_version_policy: "block"
+  rclone_version_timeout_seconds: 30
 
 # ═══════════════════════════════════════════════════
 # FY ROLLOVER (checked daily by the rollover-check schedule)

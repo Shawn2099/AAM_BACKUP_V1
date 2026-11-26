@@ -14,6 +14,11 @@ case-insensitively, most specific category first.
 
 from __future__ import annotations
 
+NTFS_SYSTEM_EXCLUDES = (
+    "System Volume Information/**",
+    "$RECYCLE.BIN/**",
+)
+
 import re
 from dataclasses import dataclass
 

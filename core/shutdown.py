@@ -22,7 +22,11 @@ Outcomes:
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import time
+
+from core.wol_target import _unc_host
 from dataclasses import asdict, dataclass
 
 from loguru import logger
@@ -56,6 +60,40 @@ class ShutdownResult:
         return asdict(self)
 
 
+def validate_shutdown_target(server_ip: str, lan_destination: str | None = None) -> str | None:
+    """Return an error reason if `server_ip` is unsafe to shut down (AF-9), or None if safe.
+
+    Blocks empty targets, loopback/unspecified addresses, the local host's own name, and any
+    literal-IP UNC host mismatch against `lan_destination`.
+    """
+    if not isinstance(server_ip, str):
+        return None
+    target = server_ip.strip()
+    if not target:
+        return "shutdown target is empty"
+    lower = target.lower()
+    if lower in ("localhost", socket.gethostname().lower(), socket.getfqdn().lower()):
+        return f"refusing to shut down local host {target!r}"
+    try:
+        ip = ipaddress.ip_address(target)
+        if ip.is_loopback or ip.is_unspecified:
+            return f"refusing to shut down loopback/unspecified address {target!r}"
+    except ValueError:
+        pass
+    if isinstance(lan_destination, str) and lan_destination:
+        host = _unc_host(lan_destination)
+        if host:
+            try:
+                ipaddress.ip_address(host)
+                literal = True
+            except ValueError:
+                literal = False
+            if literal and host != target:
+                return (f"shutdown target {target!r} does not match lan_destination host "
+                        f"{host!r}")
+    return None
+
+
 def shutdown_server(
     server_ip: str,
     *,
@@ -71,6 +109,10 @@ def shutdown_server(
     tcp_probe=None,
 ) -> ShutdownResult:
     """Schedule the NAS shutdown and verify that the NAS actually went down."""
+    bad_reason = validate_shutdown_target(server_ip)
+    if bad_reason:
+        logger.error(f"NAS shutdown REFUSED for {server_ip!r}: {bad_reason}")
+        return ShutdownResult(FAILED, server_ip, None, bad_reason, 0.0)
     probe = tcp_probe or tcp_port_open
     start = clock()
     argv = ["shutdown", "/s", "/m", f"\\\\{server_ip}", "/t", str(delay_s), "/f"]

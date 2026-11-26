@@ -26,16 +26,13 @@ from core.health import CLOCK_OK, check_clock
 from core.notify import AUDIENCE_REPORTS, AlertEvent, notify
 from core.run_artefacts import RunArtefacts
 from core.statuses import FINAL_COPY_STATUSES
-from core.time_utils import get_fy_prefix, now_iso
+from core.time_utils import IST, get_fy_prefix, now_iso
 
 # ensure_nas_folder() outcomes
 NAS_CREATED = "created"            # folder missing: made, marker written
 NAS_READY = "ready"                # folder and marker already there
 NAS_MARKED = "marked"              # folder existed, empty: marker written
 NAS_NEEDS_APPROVAL = "needs_approval"   # folder has files but no marker: left alone (guard G5 asks)
-
-# Indian Standard Time has no DST; a fixed offset is exact.
-IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 
 _FY_RE = re.compile(r"^FY(\d{2})-(\d{2})$", re.IGNORECASE)
 _SUFFIX_RE = re.compile(r"-(FY\d{2}-\d{2})$")
@@ -447,7 +444,7 @@ def _when(iso: str | None) -> str:
     if not iso:
         return "an unknown time"
     try:
-        return pendulum.parse(iso).in_timezone("Asia/Kolkata").format("D MMM YYYY, HH:mm")
+        return pendulum.parse(iso, tz=IST).in_timezone(IST).format("D MMM YYYY, HH:mm")
     except Exception:  # noqa: BLE001 - an odd stored value is shown as it is
         return str(iso)
 
@@ -490,7 +487,11 @@ def final_copy_state(config, db, from_fy: str, fresh: dict) -> dict:
             item.update(done=True, source="check", status=fresh_status, done_at=result.get("started_at"))
         else:
             copy = db.final_copy_since(leg, from_fy, since)
-            if copy is not None:
+            fresh_started = result.get("started_at") if result else None
+            latest = (db.latest_run_since(leg, from_fy, since, exclude_started_at=fresh_started)
+                      if hasattr(db, "latest_run_since") else None)
+            superseded = latest is not None and latest.get("status") not in FINAL_COPY_STATUSES
+            if copy is not None and not superseded:
                 item.update(done=True, source="earlier", status=copy["status"], done_at=copy["started_at"])
                 if fresh_status:
                     item["warning"] = fresh_status

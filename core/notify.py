@@ -666,7 +666,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
     if same and event.kind != "RECOVERED":
         first = (db.notification_by_message_id(root) if root else None) or same
         event = replace(event, first_reported_at=first["created_at"])
-    subject, body, attachments = render_alert(config, event, db)
+    subject = event.title
     labels: list[str] = []
 
     off = _switched_off_reason(config, event)
@@ -691,6 +691,7 @@ def _notify(config, event: AlertEvent, db) -> DeliveryResult:
                 SUPPRESSED, f"duplicate alert already sent at {prior_any['created_at']} "
                             f"(window {dup_s}s)")
         else:
+            subject, body, attachments = render_alert(config, event, db)
             headers = {"X-AAM-Reference": event.run_id or event.key}
             if event.fault_code:
                 headers["X-AAM-Fault-Code"] = event.fault_code

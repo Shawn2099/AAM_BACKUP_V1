@@ -179,8 +179,8 @@ class TestRunArchiveTransition:
         key = tmp_path / "key.json"
         key.write_text('{"type": "service_account"}')
         ok, calls = self._run(key, exit_code=0)
-        assert ok is True and [c["name"] for c in calls] == ["gcloud-check", "gcloud-archive"]
-        assert [c["timeout_s"] for c in calls] == [30, 600]
+        assert ok is True and [c["name"] for c in calls] == ["gcloud-check", "gcloud-list", "gcloud-archive"]
+        assert [c["timeout_s"] for c in calls] == [30, 600, 600]
 
     def test_archive_command_construction(self, tmp_path):
         """Command includes --storage-class=ARCHIVE and --recursive."""
@@ -202,7 +202,7 @@ class TestRunArchiveTransition:
     def test_no_key_file_uses_ambient_auth(self, tmp_path):
         """No key file → gcloud's own (ambient) login is used: no key override is set."""
         ok, calls = self._run(tmp_path / "nonexistent.json", exit_code=0)
-        assert ok is True and [c["name"] for c in calls] == ["gcloud-check", "gcloud-archive"]
+        assert ok is True and [c["name"] for c in calls] == ["gcloud-check", "gcloud-list", "gcloud-archive"]
         assert "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE" not in calls[-1]["env"]
 
 

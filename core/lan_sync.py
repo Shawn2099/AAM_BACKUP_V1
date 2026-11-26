@@ -22,12 +22,13 @@ from models.config import LanConfig, model_default, resolve_versions_root
 # rclone LAN mirror (plan P1): builder and exit decision.
 # ═══════════════════════════════════════════════════════════════
 
+from core.rclone_errors import NTFS_SYSTEM_EXCLUDES
+
 # Never synced to the NAS: our mount marker, our write-probe files, NTFS system folders.
 LAN_EXCLUDES = (
     ".AAM_TARGET_MOUNTED",
     PROBE_PATTERN,
-    "System Volume Information/**",
-    "$RECYCLE.BIN/**",
+    *NTFS_SYSTEM_EXCLUDES,
 )
 
 

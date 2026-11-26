@@ -56,10 +56,10 @@ from core.process import acquire_lock, read_lock_alive
 from core.rclone_config import temp_rclone_config
 from core.run_artefacts import RunArtefacts
 from core.shutdown import FAILED as SHUTDOWN_FAILED
-from core.shutdown import ShutdownResult, shutdown_from_config
+from core.shutdown import ShutdownResult, shutdown_from_config, validate_shutdown_target
 from core.report_period import ReportPeriod
 from core.time_utils import IST, get_fy_prefix, now_iso
-from core.wol import ensure_server_online
+from core.wol import ensure_server_online, ensure_server_online_status
 from models.config import CONFIG_PATH, load_config
 
 
@@ -679,8 +679,13 @@ def health_check_task(config, mode: str, artefacts_dir: str | None = None):
         artefacts=artefacts,
     )
     if mode in ("cloud", "lan", "all"):
+        ver_timeout = getattr(config.tools, "rclone_version_timeout_seconds", 30)
+        if not isinstance(ver_timeout, int) or ver_timeout < 1:
+            ver_timeout = 30
         ver_fault = health.rclone_version_fault(
-            config.tools.rclone_expected_version, artefacts=artefacts,
+            config.tools.rclone_expected_version,
+            timeout_s=ver_timeout,
+            artefacts=artefacts,
         )
         if ver_fault:
             if config.tools.rclone_version_policy == "block":
@@ -784,6 +789,7 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
     ]
     source_files = 0
     destination_files = 0
+    dry = None
     if first_file:
         # A source without files is already blocked by G1; its dry-run would
         # only plan the deletion of everything.
@@ -812,7 +818,7 @@ def cloud_guards_task(config, fy_prefix: str, artefacts_dir: str | None = None,
             min_floor_files=limits.min_delete_floor_files))
 
     approved, approval_record = _apply_approval(config, "cloud", approval_id, run_id, results)
-    if "G3_MASS_DELETE" in approved:
+    if "G3_MASS_DELETE" in approved and dry is not None:
         # Approved mass deletion: the backstop is the re-measured count the
         # approval was just checked against - nothing beyond it.
         max_delete = dry["planned_deletes"]
@@ -1108,12 +1114,12 @@ def cloud_record_task(
 
 @task(name="wol-check")
 def wol_check_task(config):
-    """Wake backup server if WoL is enabled."""
+    """Wake backup server if WoL is enabled; returns 'disabled', 'already_up', or 'woken'."""
     if not config.wol.enabled:
         logger.info("WoL disabled, skipping")
-        return
+        return "disabled"
     logger.info(f"Waking backup server {config.wol.server_ip}")
-    ensure_server_online(config)
+    return ensure_server_online_status(config)
 
 
 def _auto_backup_dir(config, artefacts_dir: str | None = None) -> str | None:
@@ -1124,13 +1130,12 @@ def _auto_backup_dir(config, artefacts_dir: str | None = None) -> str | None:
     vf = getattr(lan, "versions_folder", None)
     dst = getattr(getattr(config, "paths", None), "lan_destination", None)
     if not isinstance(vf, str) or not isinstance(dst, str):
-        return None
-    try:
-        fy = _effective_fy_prefix(config)
-        tag = Path(artefacts_dir).name[-6:] if artefacts_dir else ""
-        return lan_sync.backup_dir_for_run(dst, vf, fy, run_tag=tag)
-    except Exception:  # noqa: BLE001
-        return None
+        raise ValueError(
+            "lan.versions_enabled is True but lan.versions_folder or paths.lan_destination is invalid"
+        )
+    fy = _effective_fy_prefix(config)
+    tag = Path(artefacts_dir).name[-6:] if artefacts_dir else ""
+    return lan_sync.backup_dir_for_run(dst, vf, fy, run_tag=tag)
 
 
 @task(name="lan-preflight")
@@ -1517,15 +1522,22 @@ def lan_shutdown_task(config, artefacts_dir: str | None = None) -> dict | None:
         logger.info("LAN shutdown disabled, skipping")
         return None
     server_ip = config.wol.server_ip
-    logger.info(f"Shutting down backup server {server_ip}")
-    try:
-        artefacts = (RunArtefacts.open(artefacts_dir) if artefacts_dir
-                     else RunArtefacts.ephemeral("nas-shutdown"))
-        result = shutdown_from_config(config, artefacts)
-    except Exception as e:  # noqa: BLE001 - recorded, never raised
-        logger.error(f"NAS shutdown could not be carried out: {e}")
-        result = ShutdownResult(SHUTDOWN_FAILED, server_ip, None,
-                                f"shutdown could not be carried out: {e}", 0.0)
+    bad_reason = validate_shutdown_target(
+        server_ip, getattr(getattr(config, "paths", None), "lan_destination", None),
+    )
+    if bad_reason:
+        logger.error(f"NAS shutdown REFUSED for {server_ip!r}: {bad_reason}")
+        result = ShutdownResult(SHUTDOWN_FAILED, server_ip, None, bad_reason, 0.0)
+    else:
+        logger.info(f"Shutting down backup server {server_ip}")
+        try:
+            artefacts = (RunArtefacts.open(artefacts_dir) if artefacts_dir
+                         else RunArtefacts.ephemeral("nas-shutdown"))
+            result = shutdown_from_config(config, artefacts)
+        except Exception as e:  # noqa: BLE001 - recorded, never raised
+            logger.error(f"NAS shutdown could not be carried out: {e}")
+            result = ShutdownResult(SHUTDOWN_FAILED, server_ip, None,
+                                    f"shutdown could not be carried out: {e}", 0.0)
     if not result.verified:
         notify(config, AlertEvent(
             key=f"nas_shutdown:{server_ip}", kind="WARNING", mode="lan",
@@ -1869,6 +1881,10 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
             stage_seconds["verify_report_s"] = verify_report_seconds
             diff = verify_data.get("diff") or {}
             size = verify_data.get("size") or {}
+            if "_error" in size:
+                logger.warning(
+                    f"Cloud size check failed (reporting-only, backup gate unaffected): {size['_error']}"
+                )
             evidence_ok = (
                 verify_data.get("verified") is True
                 and verify_data.get("verify_termination", "abnormal") == "normal"
@@ -1876,8 +1892,34 @@ def _run_cloud_pipeline(config, run_id: str, started_at: str, monotonic_start: f
                 and len(diff.get("modified", [])) == 0
                 and not diff.get("_partial")
                 and verify_data.get("manifest_error") is None
-                and "_error" not in size
             )
+            if (
+                not evidence_ok
+                and getattr(config.cloud, "verify_recheck_enabled", True) is True
+                and verify_data.get("verify_termination", "abnormal") == "normal"
+                and not diff.get("_partial")
+                and verify_data.get("manifest_error") is None
+                and (diff.get("added") or diff.get("modified"))
+            ):
+                logger.warning("Cloud verify found diff; running one recheck pass (AF-12)")
+                _t_recheck = time.monotonic()
+                verify_data = verify_report(config, fy_prefix, budget=budget,
+                                            artefacts_dir=artefacts_dir)
+                stage_seconds["verify_recheck_s"] = round(time.monotonic() - _t_recheck, 1)
+                diff = verify_data.get("diff") or {}
+                size = verify_data.get("size") or {}
+                if "_error" in size:
+                    logger.warning(
+                        f"Cloud size check failed on recheck (reporting-only): {size['_error']}"
+                    )
+                evidence_ok = (
+                    verify_data.get("verified") is True
+                    and verify_data.get("verify_termination", "abnormal") == "normal"
+                    and len(diff.get("added", [])) == 0
+                    and len(diff.get("modified", [])) == 0
+                    and not diff.get("_partial")
+                    and verify_data.get("manifest_error") is None
+                )
             if not evidence_ok:
                 # NOTE: rclone `+` (diff["added"]) = missing from cloud,
                 # `-` (diff["removed"]) = extra in cloud (C-F1INV-002 fix).
@@ -2161,14 +2203,16 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
         alert_sent = False   # WP8: exactly one alert per failed run
         deferred_alert = None   # A2: an interrupted run records itself first, alerts second
         nas_shutdown = None  # WP10: verified shutdown result, if one was attempted
+        nas_already_up = False
 
         try:
             approval_id = _approval_of_pass(config, approval_id, fy_pass)
             health_check_task(config, "lan", artefacts_dir)
             if wake_nas is not None:
-                wake_nas()
+                wake_status = wake_nas()
             else:
-                wol_check_task(config)
+                wake_status = wol_check_task(config)
+            nas_already_up = (wake_status == "already_up")
             if fy_pass is not None and fy_pass.extra:
                 # plan 2.3: the next FY's NAS folder is made once the NAS is awake (offline-safe)
                 _ensure_pass_nas_folder(config, fy_pass.fy)
@@ -2371,10 +2415,21 @@ def _run_lan_pipeline(config, run_id: str, started_at: str, monotonic_start: flo
                             logger.warning(f"LAN versions purge had failures: {purge_res['failed']}")
                     except Exception as purge_exc:  # noqa: BLE001 - purge never fails a completed backup
                         logger.warning(f"LAN versions purge failed: {purge_exc}")
+                skip_already_up = (
+                    nas_already_up
+                    and getattr(config.lan, "shutdown_only_if_woken", True) is True
+                )
                 if allow_shutdown:
-                    nas_shutdown = lan_shutdown_task(config, artefacts_dir)
+                    if skip_already_up:
+                        logger.info("skipping shutdown: NAS was already online")
+                    else:
+                        nas_shutdown = lan_shutdown_task(config, artefacts_dir)
             elif status == "LAN_PARTIAL":
-                shutdown_on_fail = (allow_shutdown and getattr(
+                skip_already_up = (
+                    nas_already_up
+                    and getattr(config.lan, "shutdown_only_if_woken", True) is True
+                )
+                shutdown_on_fail = (allow_shutdown and not skip_already_up and getattr(
                     config.lan, "shutdown_on_all_retries_exhausted", False) is True)
                 nas_msg = (
                     "The NAS is scheduled for shutdown as shutdown_on_all_retries_exhausted is enabled."
@@ -2529,25 +2584,39 @@ def _record_run(
         duration = time.monotonic() - monotonic_start
     else:
         duration = time.time() - pendulum.parse(started_at).timestamp()
+    maint = getattr(config, "maintenance", None)
+    retries = getattr(maint, "record_run_retries", 3)
+    if not isinstance(retries, int) or retries < 1:
+        retries = 3
+    delay_ms = getattr(maint, "record_run_retry_delay_ms", 200)
+    if not isinstance(delay_ms, (int, float)) or delay_ms < 0:
+        delay_ms = 200
+    recorded = False
     db = ManifestDB.from_config(config)
     try:
-        if not record_run_history(
-            db,
-            run_id=run_id, mode=mode,
-            started_at=started_at, ended_at=ended_at,
-            status=status, exit_code=exit_code,
-            duration_seconds=duration, error_message=error_msg,
-            files_copied=files_copied, bytes_copied=bytes_copied,
-            files_failed=files_failed,
-            extended_metrics=extended_metrics,
-        ):
-            logger.critical(
-                f"Run history persistence failed for run_id={run_id} mode={mode} "
-                f"status={status} exit_code={exit_code}"
-            )
-            logger.warning(f"Run {run_id} ({mode}) was not recorded to database - check logs above for details")
+        for attempt in range(retries):
+            if record_run_history(
+                db,
+                run_id=run_id, mode=mode,
+                started_at=started_at, ended_at=ended_at,
+                status=status, exit_code=exit_code,
+                duration_seconds=duration, error_message=error_msg,
+                files_copied=files_copied, bytes_copied=bytes_copied,
+                files_failed=files_failed,
+                extended_metrics=extended_metrics,
+            ):
+                recorded = True
+                break
+            if attempt + 1 < retries:
+                time.sleep((delay_ms / 1000.0) * (attempt + 1))
     finally:
         db.close()
+    if not recorded:
+        logger.critical(
+            f"Run history persistence failed for run_id={run_id} mode={mode} "
+            f"status={status} exit_code={exit_code}"
+        )
+        logger.warning(f"Run {run_id} ({mode}) was not recorded to database - check logs above for details")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3028,6 +3097,12 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         nonlocal config_backup
         config_backup = fy_rollover.update_config_yaml(
             config_path, src_root, lan_root, to_fy, expect_fy=from_fy)
+        # AF-16: stamp overlap ended inside the backup slot right when the switch happens
+        # (and before archive/other steps), rather than waiting until after the slot closes.
+        try:
+            fy_overlap.end_overlap(db, from_fy, to_fy, now_iso())
+        except Exception as e:  # noqa: BLE001 - retried idempotently after run_steps
+            logger.warning(f"Could not end the FY overlap record of {to_fy} in step_config_switch: {e}")
 
     def step_archive():
         nonlocal archive_ok
@@ -3352,14 +3427,14 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
 
     # One NAS wake-up and one shutdown for every LAN pass of this run (plan D-8). A wake-up that failed is not
     # retried for the next pass: that pass fails the same way without a second wake-up.
-    nas = {"woken": False, "wake_error": None}
+    nas = {"woken": False, "wake_error": None, "wake_status": None}
 
     def _wake_nas_once() -> None:
         if nas["wake_error"] is not None:
             raise nas["wake_error"]
         if not nas["woken"]:
             try:
-                wol_check_task(config)
+                nas["wake_status"] = wol_check_task(config)
             except Exception as e:
                 nas["wake_error"] = e
                 raise
@@ -3368,6 +3443,10 @@ def integrity_audit_flow(config_path: str = CONFIG_PATH, mode: str = "all", fy: 
     def _shut_nas_down(artefacts_dir: str | None) -> None:
         # Only after a successful wake; a failed shutdown never replaces the verdict.
         if nas["woken"] and config.lan.shutdown_after_backup and config.wol.enabled:
+            if (nas.get("wake_status") == "already_up"
+                    and getattr(config.lan, "shutdown_only_if_woken", True) is True):
+                logger.info("skipping shutdown: NAS was already online")
+                return
             try:
                 lan_shutdown_task(config, artefacts_dir)
             except Exception as e:  # noqa: BLE001
@@ -3578,7 +3657,7 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             cloud_run_id = _stable_run_id("cloud")
             leg_start = time.monotonic()
             for index, p in enumerate(runs):
-                if overlap_on and pass_no and switched_to is None:
+                if overlap_on and switched_to is None:
                     switched_to = _switched_fy(config_path, started_fy)
                 if switched_to is not None:
                     not_run.append(f"cloud {p.fy}")
@@ -3599,21 +3678,22 @@ def backup(config_path: str = CONFIG_PATH, mode: str = "all", approval_id: str |
             lan_run_id = _stable_run_id("lan")
             leg_start = time.monotonic()
             earlier_completed = True   # every pass before this one ended LAN_COMPLETE (plan D-8)
-            nas = {"woken": False, "wake_error": None}
+            nas = {"woken": False, "wake_error": None, "wake_status": None}
 
-            def _wake_nas_once() -> None:
+            def _wake_nas_once():
                 if nas["wake_error"] is not None:
                     raise nas["wake_error"]
                 if not nas["woken"]:
                     try:
-                        wol_check_task(config)
+                        nas["wake_status"] = wol_check_task(config)
                     except Exception as e:
                         nas["wake_error"] = e
                         raise
                     nas["woken"] = True
+                return nas["wake_status"]
 
             for index, p in enumerate(runs):
-                if overlap_on and pass_no and switched_to is None:
+                if overlap_on and switched_to is None:
                     switched_to = _switched_fy(config_path, started_fy)
                 if switched_to is not None:
                     not_run.append(f"lan {p.fy}")

@@ -366,7 +366,8 @@ def test_w4_g3_block_in_the_plan_blocks_and_the_sync_is_never_called(tmp_path):
         out = run_lan(w, cfg)
     assert out.status == "LAN_BLOCKED", f"status {out.status}; exc {out.exc!r}"
     assert isinstance(out.exc, g.GuardBlocked)
-    assert SYNC not in steps(w)
+    # AF-1: a G3-only block runs one copy-only pass (rclone copy), never rclone sync.
+    assert [a[1] for a in sync_argvs(w)] == ["copy"]
     assert w.block_request.call_count == 1
     assert w.shutdown.call_count == 0
 

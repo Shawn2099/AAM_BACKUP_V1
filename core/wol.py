@@ -130,15 +130,13 @@ def _canary_path(config: AppConfig) -> str | None:
     return dest.rstrip("\\/") + "\\" + CANARY_NAME
 
 
-def ensure_server_online(config: AppConfig) -> bool:
-    """Wake backup server and wait for SMB readiness.
-
-    Returns True if server is online (or WoL disabled).
-    Raises WolTimeout on timeout.
+def ensure_server_online_status(config: AppConfig) -> str:
+    """Wake backup server and wait for SMB readiness, returning why:
+    'disabled' (WoL off), 'already_up' (SMB already reachable), or 'woken' (WoL sent and ready).
     """
     if not config.wol.enabled:
         logger.debug("WoL disabled, assuming server is online")
-        return True
+        return "disabled"
 
     server_ip = config.wol.server_ip
     connect_timeout = float(getattr(config.wol, "smb_connect_timeout_seconds", 15.0))
@@ -151,7 +149,7 @@ def ensure_server_online(config: AppConfig) -> bool:
     )
     if already.ready:
         logger.info(f"Backup server {server_ip} already online (SMB usable)")
-        return True
+        return "already_up"
 
     logger.info(f"Backup server {server_ip} offline, sending WoL")
     _send_magic_packet(
@@ -168,4 +166,14 @@ def ensure_server_online(config: AppConfig) -> bool:
         probe_path=probe_path,
         connect_timeout=connect_timeout,
     )
+    return "woken"
+
+
+def ensure_server_online(config: AppConfig) -> bool:
+    """Wake backup server and wait for SMB readiness.
+
+    Returns True if server is online (or WoL disabled).
+    Raises WolTimeout on timeout.
+    """
+    ensure_server_online_status(config)
     return True

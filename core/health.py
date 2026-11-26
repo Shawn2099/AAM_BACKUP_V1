@@ -75,11 +75,12 @@ _RCLONE_VERSION_RE = re.compile(r"^rclone v(\d+\.\d+)\.\d+", re.MULTILINE)
 
 
 def rclone_version_fault(expected: str = "1.74", *,
+                         timeout_s: int = 30,
                          artefacts: RunArtefacts | None = None) -> str | None:
     """Return a fault message if installed rclone major.minor != `expected`, else None.
 
-    Cached per (resolved binary path, expected) so `rclone version` runs at most once
-    per process for a given binary.
+    Caches only a passing check per (resolved binary path, expected) so transient
+    timeouts/errors are retried on the next check (AF-15).
     """
     binary = resolve_binary("rclone")
     if binary is None:
@@ -90,7 +91,7 @@ def rclone_version_fault(expected: str = "1.74", *,
     res = run_tool(
         "rclone-version",
         [binary, "version"],
-        timeout_s=30,
+        timeout_s=timeout_s,
         stall_timeout_s=0,
         artefacts=artefacts or RunArtefacts.ephemeral("rclone-version"),
     )
@@ -98,7 +99,7 @@ def rclone_version_fault(expected: str = "1.74", *,
     if res.spawn_error:
         fault = f"rclone version failed to start: {res.spawn_error}"
     elif res.timed_out:
-        fault = "rclone version timed out after 30s"
+        fault = f"rclone version timed out after {timeout_s}s"
     elif res.exit_code != 0:
         fault = f"rclone version exited {res.exit_code}"
     else:
@@ -112,7 +113,9 @@ def rclone_version_fault(expected: str = "1.74", *,
                 f"rclone {m.group(1)}.x at {binary} does not match "
                 f"expected tools.rclone_expected_version={expected}"
             )
-    _RCLONE_VERSION_CACHE[cache_key] = fault
+    if fault is None:
+        _RCLONE_VERSION_CACHE[cache_key] = None
+    return fault
     return fault
 
 
