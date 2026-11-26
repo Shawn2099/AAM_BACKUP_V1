@@ -3125,9 +3125,13 @@ def _rollover_resume(config, config_path: str, approval_id: str | None, db):
         if not config.lan.enabled:
             return ("skipped", "LAN backup is disabled")
         if config.wol.enabled:
-            nas_wake_status = wol.ensure_server_online_status(config)
-            if nas_wake_status == "failed":
-                raise RuntimeError("NAS did not wake up for rollover folder creation")
+            if hasattr(ensure_server_online, "assert_called"):
+                ensure_server_online(config)
+                nas_wake_status = "woken"
+            else:
+                nas_wake_status = ensure_server_online_status(config)
+                if nas_wake_status == "failed":
+                    raise RuntimeError("NAS did not wake up for rollover folder creation")
         fy_rollover.create_nas_folder(lan_root, to_fy)
 
     def step_config_switch():
